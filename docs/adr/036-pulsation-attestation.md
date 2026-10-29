@@ -3,7 +3,9 @@
 Date: 2026-10-26
 
 Status: accepted and implemented (M3, migration V56). Validation:
-`quality/mandates-attestation-m3-validation-2026-10-26.md`. Format, key and
+`quality/mandates-attestation-m3-validation-2026-10-26.md`, closed by
+`quality/mandates-attestation-m5-validation-2026-10-29.md` (threat model,
+seal metrics, visual pass). Format, key and
 verification steps: [attestations](../attestation.md).
 
 Implementation notes from M3: sealing runs from the durable intent alone; the

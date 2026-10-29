@@ -518,6 +518,31 @@ fn tampering_with_rows_files_or_the_envelope_is_detected() {
     assert_eq!(verify(&f).signature, SignatureCheck::Invalid);
 }
 
+/// A signed record copied onto another pulsation keeps a valid signature but
+/// no longer re-derives from that pulsation's rows.
+#[test]
+fn a_record_replayed_on_another_pulsation_is_detected() {
+    let (f, _keys) = fixture();
+    end(&f, PulsationStatus::Done, None);
+    let sibling = failed_sibling(&f);
+    seal_all(&f.service);
+
+    let db = f.service.connection().unwrap();
+    db.execute_batch("DROP TRIGGER pulsation_attestations_sign_only")
+        .unwrap();
+    db.execute(
+        "UPDATE pulsation_attestations SET (statement_json,statement_sha256,envelope_json,key_id,outcome,subject_count,sealed_at,signed_at)=
+           (SELECT statement_json,statement_sha256,envelope_json,key_id,outcome,subject_count,sealed_at,signed_at FROM pulsation_attestations WHERE pulsation_id=?1)
+         WHERE pulsation_id=?2",
+        params![f.pulse.id, sibling],
+    )
+    .unwrap();
+    let check = f.service.verify_attestation(&sibling).unwrap().unwrap();
+    assert_eq!(check.signature, SignatureCheck::Valid);
+    assert_eq!(check.rederivation, RederivationCheck::Differs);
+    assert_eq!(check.difference.as_deref(), Some("pulsation"));
+}
+
 #[test]
 fn an_attestation_never_changes_except_to_be_signed() {
     let (f, keys) = fixture();

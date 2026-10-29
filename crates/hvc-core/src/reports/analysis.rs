@@ -733,6 +733,128 @@ fn analyze_learning(connection: &Connection, pulsation: &str) -> Result<Value, A
     Ok(row.unwrap_or(Value::Null))
 }
 
+fn table_exists(connection: &Connection, table: &str) -> Result<bool, AnalysisError> {
+    Ok(connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+        [table],
+        |row| row.get(0),
+    )?)
+}
+
+/// What the mandate allowed and refused, what units asked for and were
+/// granted, and how the record was sealed (ADR-035, ADR-036). A block is null
+/// when the database predates its tables or the pulsation has none of it.
+fn analyze_governance(connection: &Connection, pulsation: &str) -> Result<Value, AnalysisError> {
+    let mandates = if table_exists(connection, "execution_mandates")? {
+        let mut by_cause: BTreeMap<String, i64> = BTreeMap::new();
+        let mut statement = connection.prepare(
+            "SELECT cause,COUNT(*) FROM execution_mandates WHERE pulsation_id=?1 GROUP BY cause",
+        )?;
+        for row in statement.query_map([pulsation], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })? {
+            let (cause, count) = row?;
+            by_cause.insert(cause, count);
+        }
+        let enforcement = connection
+            .query_row(
+                "SELECT enforcement FROM execution_mandates WHERE pulsation_id=?1 ORDER BY revision DESC LIMIT 1",
+                [pulsation],
+                |row| row.get::<_, String>(0),
+            )
+            .ok();
+        // Every event is a write or dispatch the host refused; a healthy run
+        // has none, so anything else here is worth reading.
+        let (refused_writes, capability_mismatches) = connection.query_row(
+            "SELECT COALESCE(SUM(CASE WHEN rule='scope_violation' THEN occurrences END),0),COALESCE(SUM(CASE WHEN rule='capability_mismatch' THEN occurrences END),0) FROM mandate_enforcement_events WHERE pulsation_id=?1",
+            [pulsation],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )?;
+        json!({
+            "revisions": by_cause.values().sum::<i64>(),
+            "revisions_by_cause": by_cause,
+            "enforcement": enforcement,
+            "refused_writes": refused_writes,
+            "capability_mismatches": capability_mismatches,
+        })
+    } else {
+        Value::Null
+    };
+
+    let scope_requests = if table_exists(connection, "mandate_scope_requests")? {
+        let mut by_state: BTreeMap<String, i64> = BTreeMap::new();
+        let mut files_granted = 0;
+        let mut parked_seconds = 0.0;
+        let mut statement = connection.prepare(
+            "SELECT state,json_array_length(accepted_json),created_at,decided_at FROM mandate_scope_requests WHERE pulsation_id=?1",
+        )?;
+        for row in statement.query_map([pulsation], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        })? {
+            let (state, files, created_at, decided_at) = row?;
+            // A superseded request was granted before a revision replaced it.
+            if state == "granted" || state == "superseded" {
+                files_granted += files;
+            }
+            parked_seconds +=
+                optional_elapsed(Some(&created_at), decided_at.as_ref()).unwrap_or(0.0);
+            *by_state.entry(state).or_default() += 1;
+        }
+        let count = |state: &str| by_state.get(state).copied().unwrap_or(0);
+        let total = by_state.values().sum::<i64>();
+        let granted = count("granted") + count("superseded");
+        let decided = total - count("pending");
+        json!({
+            "total": total,
+            "by_state": by_state,
+            "grant_percent": ratio(granted as f64, decided as f64),
+            "files_granted": files_granted,
+            "parked_seconds": parked_seconds,
+        })
+    } else {
+        Value::Null
+    };
+
+    // The intent is written with the terminal transition, so its creation is
+    // when sealing could start.
+    let attestation = if table_exists(connection, "attestation_seal_intents")? {
+        connection
+            .query_row(
+                "SELECT i.state,i.created_at,a.signature_state,a.outcome,length(CAST(a.statement_json AS BLOB)),a.subject_count,a.sealed_at
+                   FROM attestation_seal_intents i LEFT JOIN pulsation_attestations a ON a.pulsation_id=i.pulsation_id
+                  WHERE i.pulsation_id=?1",
+                [pulsation],
+                |row| {
+                    let intended_at = row.get::<_, String>(1)?;
+                    let sealed_at = row.get::<_, Option<String>>(6)?;
+                    Ok(json!({
+                        "intent": row.get::<_, String>(0)?,
+                        "signature": row.get::<_, Option<String>>(2)?,
+                        "outcome": row.get::<_, Option<String>>(3)?,
+                        "statement_bytes": row.get::<_, Option<i64>>(4)?,
+                        "subject_count": row.get::<_, Option<i64>>(5)?,
+                        "seal_latency_seconds": optional_elapsed(Some(&intended_at), sealed_at.as_ref()),
+                    }))
+                },
+            )
+            .ok()
+            .unwrap_or(Value::Null)
+    } else {
+        Value::Null
+    };
+
+    Ok(json!({
+        "mandates": mandates,
+        "scope_requests": scope_requests,
+        "attestation": attestation,
+    }))
+}
+
 fn load_validation_errors(
     connection: &Connection,
     pulsation: &str,
@@ -890,6 +1012,7 @@ pub fn analyze(database: &Path, selector: &Selector) -> Result<Value, AnalysisEr
         },
         "checkpoints": checkpoints,
         "retrieval": analyze_retrieval(&connection, &pulsation)?,
+        "governance": analyze_governance(&connection, &pulsation)?,
         "validation_errors": load_validation_errors(&connection, &pulsation)?,
         "plan_quota": analyze_plan_quota(database, &runs[..cli_runs]),
     }))
@@ -1205,6 +1328,70 @@ pub fn render_text(report: &Value) -> String {
         learning["diagnostic"].as_str().unwrap_or(""),
     ));
 
+    let governance = &report["governance"];
+    let mandates = &governance["mandates"];
+    let requests = &governance["scope_requests"];
+    let attestation = &governance["attestation"];
+    if !mandates.is_null() || !requests.is_null() || !attestation.is_null() {
+        out.push_str("\n== Governance ==\n");
+    }
+    if !mandates.is_null() {
+        let causes = mandates["revisions_by_cause"]
+            .as_object()
+            .map(|causes| {
+                causes
+                    .iter()
+                    .map(|(cause, count)| format!("{cause}={count}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .unwrap_or_default();
+        out.push_str(&format!(
+            "  mandate              revisions={} {} enforcement={}\n  refused by mandate   writes={} capability={}\n",
+            mandates["revisions"],
+            causes,
+            mandates["enforcement"].as_str().unwrap_or("(none)"),
+            mandates["refused_writes"],
+            mandates["capability_mismatches"],
+        ));
+        if mandates["refused_writes"].as_i64().unwrap_or(0) > 0 {
+            out.push_str(
+                "  WARNING: the mandate refused writes. A stage tried to change a file it was not given - read mandate_enforcement_events.\n",
+            );
+        }
+    }
+    if !requests.is_null() {
+        let states = requests["by_state"]
+            .as_object()
+            .map(|states| {
+                states
+                    .iter()
+                    .map(|(state, count)| format!("{state}={count}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .unwrap_or_default();
+        out.push_str(&format!(
+            "  scope requests       total={} {} grant rate={} files={} parked {}\n",
+            requests["total"],
+            states,
+            percent(&requests["grant_percent"]),
+            requests["files_granted"],
+            duration(requests["parked_seconds"].as_f64()),
+        ));
+    }
+    if !attestation.is_null() {
+        out.push_str(&format!(
+            "  attestation          {} {} outcome={} bytes={} subjects={} sealed after {}\n",
+            attestation["intent"].as_str().unwrap_or("-"),
+            attestation["signature"].as_str().unwrap_or("-"),
+            attestation["outcome"].as_str().unwrap_or("-"),
+            attestation["statement_bytes"],
+            attestation["subject_count"],
+            duration(attestation["seal_latency_seconds"].as_f64()),
+        ));
+    }
+
     let errors = report["validation_errors"].as_array();
     if errors.is_some_and(|errors| !errors.is_empty()) {
         out.push_str("\n== Rejected model output ==\n");
@@ -1344,6 +1531,44 @@ mod tests {
         assert!(html.contains("<h1>Usage export to CSV</h1>"));
         assert!(html.contains("built from run telemetry only"));
         assert!(html.contains("missing &lt;groups&gt;"));
+    }
+
+    #[test]
+    fn governance_tolerates_an_older_database_and_flags_refused_writes() {
+        let db = Connection::open_in_memory().unwrap();
+        let governance = analyze_governance(&db, "p1").unwrap();
+        assert_eq!(
+            governance,
+            json!({"mandates": null, "scope_requests": null, "attestation": null})
+        );
+        let mut report = analysis();
+        report["governance"] = governance;
+        assert!(!render_text(&report).contains("== Governance =="));
+
+        db.execute_batch(
+            "CREATE TABLE execution_mandates(pulsation_id TEXT,revision INTEGER,cause TEXT,enforcement TEXT);
+             CREATE TABLE mandate_enforcement_events(pulsation_id TEXT,rule TEXT,occurrences INTEGER);
+             INSERT INTO execution_mandates VALUES('p1',1,'issued','enforced_v4'),('p1',2,'transport_fallback','enforced_v4');
+             INSERT INTO mandate_enforcement_events VALUES('p1','scope_violation',3),('p1','capability_mismatch',1),('p2','scope_violation',9);",
+        )
+        .unwrap();
+        let governance = analyze_governance(&db, "p1").unwrap();
+        assert_eq!(governance["mandates"]["revisions"], 2);
+        assert_eq!(
+            governance["mandates"]["revisions_by_cause"],
+            json!({"issued": 1, "transport_fallback": 1})
+        );
+        assert_eq!(governance["mandates"]["refused_writes"], 3);
+        assert_eq!(governance["mandates"]["capability_mismatches"], 1);
+        assert!(governance["scope_requests"].is_null());
+        report["governance"] = governance;
+        let text = render_text(&report);
+        assert!(text.contains("== Governance =="), "{text}");
+        assert!(text.contains("writes=3 capability=1"), "{text}");
+        assert!(
+            text.contains("WARNING: the mandate refused writes"),
+            "{text}"
+        );
     }
 
     #[test]

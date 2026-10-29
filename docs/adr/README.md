@@ -215,7 +215,9 @@ that must change a delivered file it does not own fails with
 `scope_insufficient` and names it; the host derives which files it may be
 granted, and the failure checkpoint shows a "Scope request" card with
 "Grant and retry", which issues a `scope_grant` mandate revision and runs the
-existing Retry on the shared budget. See the
+existing Retry on the shared budget. M5 closed the feature with its threat
+model (`quality/cli-threat-model.md`), the governance block of the post-run
+analysis and a visual pass in the running app. See the
 [decision](035-execution-mandates.md).
 
 ## ADR-036: signed local pulsation attestation

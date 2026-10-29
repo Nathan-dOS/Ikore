@@ -6,8 +6,10 @@ Status: accepted and implemented. M1 (mandates and approval receipts,
 migration V55), M2 (trust layers, no migration) and M4 (just-in-time scope
 grants, migration V57) are implemented. Validation:
 `quality/mandates-attestation-m1-validation-2026-10-26.md`,
-`quality/mandates-attestation-m2-validation-2026-10-26.md` and
-`quality/mandates-attestation-m4-validation-2026-10-29.md`.
+`quality/mandates-attestation-m2-validation-2026-10-26.md`,
+`quality/mandates-attestation-m4-validation-2026-10-29.md` and, for the
+closing milestone M5 (threat model, governance metrics, visual pass),
+`quality/mandates-attestation-m5-validation-2026-10-29.md`.
 
 Implementation notes from M1: the mandate governs only the stages after the
 Specification, so a revision back to the Specification runs it on the live

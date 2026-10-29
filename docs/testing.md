@@ -253,6 +253,30 @@ To check a real bundle with OpenSSL as [attestation.md](attestation.md)
 describes, set `HVC_ATTESTATION_OUT` to a folder before the integration test;
 it saves the finished pulsation's bundle and public key there.
 
+## Governance metrics and visual checks
+
+`analyze_pulsation` (and `scripts/analyze-pulsation.ps1`) prints a Governance
+block: mandate revisions by cause, writes and dispatches the mandate refused
+(a healthy run has none, and the text says so when there are), scope requests
+by state with the grant rate, the files granted and the time parked, and the
+attestation's state, statement size and seal latency. A database older than
+V55 gets nulls. `governance_tolerates_an_older_database_and_flags_refused_writes`
+covers the block on its own, and `scope_escalation` reads it back after a
+grant.
+
+`review_brief_fixture` prepares the screens for a manual pass in the real
+app: `--scope-request` makes the code unit ask for `src/util.rs` and grants
+it, `--stage scope` parks with the request pending, and `--stage done` waits
+for the signed record. Start `hard-vibe-code` with the printed `HVC_DATA_DIR`.
+The fixture keeps its signing key in memory, so the app shows the sealed
+record without reading the credential store; avoid Settings → Security there,
+which reads the real store.
+
+A text that shares a flex row with other elements needs `flex_1().min_w_0()`,
+and its neighbours `flex_shrink_0()`. With `min_w_0()` alone, GPUI can lay the
+text out at zero width, one character per line. The layout tests of the
+Feature 19 cards check each such text with `assert_readable`.
+
 ## Editor revisions, check output and voice setup
 
 The workspace revision is a SHA-256 over the resolved path and the bytes read,

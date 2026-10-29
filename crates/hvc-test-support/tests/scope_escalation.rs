@@ -17,6 +17,7 @@ use hvc_core::orchestration::mandate::{
 };
 use hvc_core::orchestration::review_brief::{FailureDecisionKind, failure_choices};
 use hvc_core::persistence_service::*;
+use hvc_test_support::pulsation_analysis::{Selector, analyze, render_text};
 use hvc_test_support::{IsolatedTestEnvironment, RecordedRequest, ScriptedResponse};
 use serde_json::{Value, json};
 use std::fs;
@@ -282,6 +283,60 @@ fn a_granted_file_becomes_the_units_own_and_is_published() {
         )
         .unwrap();
     assert_eq!(events, 0, "the granted write stays within the mandate");
+
+    // The post-run analysis reads the same story back.
+    wait_until(&harness.service, &harness.pulse, |db| {
+        db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM attestation_seal_intents WHERE pulsation_id=?1 AND state<>'pending')",
+            [&harness.pulse],
+            |r| r.get(0),
+        )
+        .unwrap()
+    });
+    let report = analyze(
+        harness.service.database_path(),
+        &Selector::Id(harness.pulse.clone()),
+    )
+    .unwrap();
+    let governance = &report["governance"];
+    assert_eq!(
+        governance["mandates"]["revisions_by_cause"]["scope_grant"],
+        1
+    );
+    assert_eq!(governance["mandates"]["enforcement"], "enforced_v4");
+    assert_eq!(governance["mandates"]["refused_writes"], 0);
+    assert_eq!(governance["scope_requests"]["total"], 1);
+    assert_eq!(governance["scope_requests"]["by_state"]["granted"], 1);
+    assert_eq!(governance["scope_requests"]["grant_percent"], 100.0);
+    assert_eq!(governance["scope_requests"]["files_granted"], 1);
+    assert!(
+        governance["scope_requests"]["parked_seconds"]
+            .as_f64()
+            .unwrap()
+            >= 0.0
+    );
+    assert_eq!(governance["attestation"]["intent"], "sealed");
+    assert_eq!(governance["attestation"]["signature"], "signed");
+    assert_eq!(governance["attestation"]["outcome"], "done");
+    assert!(
+        governance["attestation"]["statement_bytes"]
+            .as_i64()
+            .unwrap()
+            > 0
+    );
+    assert!(
+        governance["attestation"]["seal_latency_seconds"]
+            .as_f64()
+            .unwrap()
+            >= 0.0
+    );
+    let text = render_text(&report);
+    assert!(text.contains("== Governance =="), "{text}");
+    assert!(text.contains("scope_grant=1"), "{text}");
+    assert!(
+        !text.contains("WARNING: the mandate refused writes"),
+        "{text}"
+    );
 }
 
 #[test]
