@@ -24,6 +24,7 @@ historical check applies to the source and environment identified in that report
 | Trust layers (ADR-035 M2) | [2026-10-26 implementation and validation](mandates-attestation-m2-validation-2026-10-26.md) |
 | Signed local attestation (ADR-036 M3) | [2026-10-26 implementation and validation](mandates-attestation-m3-validation-2026-10-26.md) |
 | Just-in-time scope grants (ADR-035 M4) | [2026-10-29 implementation and validation](mandates-attestation-m4-validation-2026-10-29.md) |
+| Feature 19 closing: threat model, governance metrics, visual pass (ADR-035, ADR-036 M5) | [2026-10-29 closing validation](mandates-attestation-m5-validation-2026-10-29.md) |
 | Repository hygiene | [2026-10-17 change record](repository-hygiene-2026-10-17.md) |
 
 ## Historical design references
