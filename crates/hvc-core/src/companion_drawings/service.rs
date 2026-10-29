@@ -118,7 +118,7 @@ impl CompanionDrawingsService {
         self
     }
 
-    fn changed(&self, project: &str, id: &str, revision: u64) {
+    pub(crate) fn changed(&self, project: &str, id: &str, revision: u64) {
         if let Some(events) = &self.events {
             events.publish(crate::AppEvent::Drawings(DrawingsEvent {
                 project_id: project.into(),
@@ -294,6 +294,28 @@ impl CompanionDrawingsService {
                     }
                 }
             }
+            if let Some(document) = &mut scene.document {
+                for element in &mut document.elements {
+                    element.element_id = ids
+                        .get(&element.element_id)
+                        .cloned()
+                        .ok_or_else(|| invalid("Semantic drawing element does not exist"))?;
+                    for id in [
+                        &mut element.participant_id,
+                        &mut element.lane_id,
+                        &mut element.source_id,
+                        &mut element.target_id,
+                    ]
+                    .into_iter()
+                    .flatten()
+                    {
+                        *id = ids
+                            .get(id)
+                            .cloned()
+                            .ok_or_else(|| invalid("Semantic drawing reference does not exist"))?;
+                    }
+                }
+            }
             let title = format!(
                 "{} copy",
                 original.title.chars().take(115).collect::<String>()
@@ -350,7 +372,7 @@ fn json(value: &impl Serialize) -> Result<String, Error> {
     serde_json::to_string(value).map_err(|_| invalid("Drawing serialization failed"))
 }
 
-fn insert_drawing(
+pub(crate) fn insert_drawing(
     db: &Connection,
     project: &str,
     title: &str,

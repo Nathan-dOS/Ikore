@@ -205,6 +205,29 @@ fn main() {
         );
     }
     if let Some(backend) = official_backend {
+        if stdin.contains("Create one new native Canvas explanation") {
+            // A real CLI process in the host's empty scratch directory, with the
+            // host's Canvas schema. No file or repository tool is needed.
+            assert!(!std::path::Path::new("src").exists());
+            let answer = if stdin.contains("canvas-batch") {
+                serde_json::json!({"type":"tool_calls","calls":[{
+                    "id":"finish","name":"canvas_finish",
+                    "arguments":{"operation_id":"publish","expected_revision":1}
+                }]})
+            } else {
+                serde_json::json!({"type":"tool_calls","calls":[{
+                    "id":"layout","name":"canvas_apply_operations",
+                    "arguments":{"operation_id":"canvas-batch","expected_revision":0,"operations":[
+                        {"op":"upsert_node","id":"ui","kind":"component","label":"Interface","x":0,"y":0,"width":160,"height":80,"participant_id":null,"lane_id":null},
+                        {"op":"upsert_node","id":"core","kind":"component","label":"Core","x":300,"y":0,"width":160,"height":80,"participant_id":null,"lane_id":null},
+                        {"op":"connect","id":"calls","kind":"relationship","source_id":"ui","target_id":"core","label":"Comandos"},
+                        {"op":"set_narrative","narrative":"A interface envia comandos ao Core."}
+                    ]}
+                },{"id":"validate","name":"canvas_validate","arguments":{}}]})
+            };
+            emit_companion_envelope(backend, answer);
+            return;
+        }
         if backend == "claude" && fixture_state == "synthetic_auth_error" {
             println!(
                 r#"{{"type":"system","subtype":"init","session_id":"fixture-auth-session","model":"claude-haiku-4-5-20251001"}}"#
@@ -237,7 +260,19 @@ fn main() {
                     std::process::exit(1);
                 }
             }
-            emit_companion_success(backend);
+            if stdin.contains("canvas-authoring-fixture") {
+                emit_companion_envelope(
+                    backend,
+                    serde_json::json!({
+                        "type":"final_with_canvas_offer",
+                        "text":"canvas-authoring-fixture: A interface chama o Core.",
+                        "offer":{"profile":"architecture","language":"pt-BR","title":"Arquitetura do sistema",
+                            "request_text":"Posso explicar com o Canvas?"}
+                    }),
+                );
+            } else {
+                emit_companion_success(backend);
+            }
         } else {
             emit_official_success(backend, &args);
         }
@@ -354,27 +389,40 @@ fn main() {
 }
 
 fn emit_companion_success(backend: &str) {
-    let envelope = r#"{\"type\":\"final\",\"text\":\"Companion fixture response\"}"#;
+    emit_companion_envelope(
+        backend,
+        serde_json::json!({"type":"final","text":"Companion fixture response"}),
+    );
+}
+
+fn emit_companion_envelope(backend: &str, response: serde_json::Value) {
+    let envelope = response.to_string();
     match backend {
         "codex" => println!(
             "{}",
             serde_json::json!({"type":"item.completed","item":{
-                "type":"agent_message", "text": serde_json::json!({"response":{
-                    "type":"final","text":"Companion fixture response"
-                }}).to_string()
+                "type":"agent_message", "text": serde_json::json!({"response":response}).to_string()
             }})
         ),
         "claude" => println!(
-            r#"{{"type":"result","result":"{envelope}","modelUsage":{{"claude-fixture":{{"inputTokens":8,"outputTokens":5,"cacheReadInputTokens":12}}}}}}"#
+            "{}",
+            serde_json::json!({"type":"result","result":envelope,"modelUsage":{"claude-fixture":{"inputTokens":8,"outputTokens":5,"cacheReadInputTokens":12}}})
         ),
-        "gemini" => println!(r#"{{"type":"message","content":"{envelope}"}}"#),
-        "opencode" => println!(r#"{{"type":"text","part":{{"text":"{envelope}"}}}}"#),
+        "gemini" => println!(
+            "{}",
+            serde_json::json!({"type":"message","content":envelope})
+        ),
+        "opencode" => println!(
+            "{}",
+            serde_json::json!({"type":"text","part":{"text":envelope}})
+        ),
         "antigravity" => {
             println!(
                 r#"{{"event":"init","conversation_id":"fixture-companion","init":{{"model":"gemini-fixture","permission_mode":"request-review"}}}}"#
             );
             println!(
-                r#"{{"event":"result","result":{{"conversation_id":"fixture-companion","status":"SUCCESS","response":"{envelope}","usage":{{"input_tokens":8,"output_tokens":5,"thinking_tokens":0,"cache_read_tokens":12,"total_tokens":13}}}}}}"#
+                "{}",
+                serde_json::json!({"event":"result","result":{"conversation_id":"fixture-companion","status":"SUCCESS","response":envelope,"usage":{"input_tokens":8,"output_tokens":5,"thinking_tokens":0,"cache_read_tokens":12,"total_tokens":13}}})
             );
         }
         _ => unreachable!(),

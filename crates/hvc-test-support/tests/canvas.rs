@@ -39,6 +39,8 @@ fn architecture() -> CanvasSceneV1 {
         80.0,
     );
     ui.label = "UI".into();
+    ui.stroke_rendering = hvc_core::companion_drawings::CanvasStrokeRendering::Sketch;
+    ui.label_font_size = Some(24.);
     let mut core = CanvasElementV1::new(
         CanvasElementKindV1::Rectangle { round: true },
         260.0,
@@ -49,7 +51,7 @@ fn architecture() -> CanvasSceneV1 {
     core.label = "Core & ação".into();
     let mut db = CanvasElementV1::new(CanvasElementKindV1::Ellipse, 500.0, 20.0, 120.0, 80.0);
     db.label = "SQLite".into();
-    let arrow = CanvasElementV1::new(
+    let mut arrow = CanvasElementV1::new(
         CanvasElementKindV1::Arrow {
             points: [[0.0, 0.0], [120.0, 0.0]],
             bidirectional: false,
@@ -69,6 +71,8 @@ fn architecture() -> CanvasSceneV1 {
         120.0,
         0.0,
     );
+    arrow.stroke_rendering = hvc_core::companion_drawings::CanvasStrokeRendering::Sketch;
+    arrow.connector_curve = hvc_core::companion_drawings::CanvasConnectorCurve::CurveLeft;
     CanvasSceneV1 {
         elements: vec![ui, core, db, arrow],
         ..Default::default()
@@ -109,6 +113,12 @@ fn canvas_app_core_round_trip_bindings_export_and_project_isolation() {
     let exported: serde_json::Value =
         serde_json::from_slice(&fs::read(&json_path).unwrap()).unwrap();
     assert_eq!(exported["drawing_id"], drawing.id);
+    let svg = fs::read_to_string(&svg_path).unwrap();
+    assert!(svg.contains("font-size=\"24\""));
+    assert!(
+        svg.contains(" Q "),
+        "the project mirror includes the curved connector"
+    );
     assert!(
         fs::read_to_string(&svg_path)
             .unwrap()
@@ -118,6 +128,21 @@ fn canvas_app_core_round_trip_bindings_export_and_project_isolation() {
         CompanionDrawingsService::new(PersistenceService::initialize(harness.data_dir()).unwrap());
     let loaded = reopened.get(&project_a.id, &drawing.id).unwrap();
     assert_eq!(loaded.scene, saved.scene);
+    assert!(
+        loaded
+            .scene
+            .elements
+            .iter()
+            .any(|element| element.label_font_size == Some(24.))
+    );
+    assert!(
+        loaded
+            .scene
+            .elements
+            .iter()
+            .any(|element| element.connector_curve
+                == hvc_core::companion_drawings::CanvasConnectorCurve::CurveLeft)
+    );
     assert_eq!(loaded.sync_status, DrawingSyncStatus::Synced);
     let before = loaded
         .scene

@@ -1,10 +1,18 @@
 //! Pure editor state. A complete pointer gesture is one history entry.
 use std::collections::VecDeque;
 
+#[path = "semantic_editing.rs"]
+pub(crate) mod semantic_editing;
+#[cfg(test)]
+#[path = "semantic_editor_tests.rs"]
+mod semantic_editor_tests;
+use hvc_core::companion_drawings::semantics::{CanvasProfileV1, CanvasSemanticKindV1};
+
 use hvc_core::companion_drawings::{
-    CanvasElementKindV1 as Kind, CanvasElementV1 as Element, CanvasSceneV1 as Scene,
-    CanvasSemanticColor as Color, CanvasStrokeStyle as Stroke, CanvasStrokeWidth as Width,
-    CanvasViewportV1 as Viewport, geometry,
+    CanvasConnectorCurve, CanvasElementKindV1 as Kind, CanvasElementV1 as Element,
+    CanvasSceneV1 as Scene, CanvasSemanticColor as Color, CanvasStrokeRendering,
+    CanvasStrokeStyle as Stroke, CanvasStrokeWidth as Width, CanvasViewportV1 as Viewport,
+    geometry,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -33,9 +41,52 @@ impl Tool {
         (Self::Text, "Text · T"),
         (Self::Eraser, "Erase · E"),
     ];
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Select => "Select",
+            Self::Hand => "Pan",
+            Self::Rectangle => "Box",
+            Self::Diamond => "Decision",
+            Self::Ellipse => "Ellipse",
+            Self::Arrow => "Arrow",
+            Self::Line => "Line",
+            Self::Text => "Text",
+            Self::Eraser => "Erase",
+        }
+    }
+
+    pub const fn shortcut(self) -> &'static str {
+        match self {
+            Self::Select => "V",
+            Self::Hand => "H",
+            Self::Rectangle => "R",
+            Self::Diamond => "D",
+            Self::Ellipse => "O",
+            Self::Arrow => "A",
+            Self::Line => "L",
+            Self::Text => "T",
+            Self::Eraser => "E",
+        }
+    }
+
+    pub const fn icon(self) -> crate::icons::Icon {
+        use crate::icons::Icon;
+        match self {
+            Self::Select => Icon::Cursor,
+            Self::Hand => Icon::Hand,
+            Self::Rectangle => Icon::Square,
+            Self::Diamond => Icon::Diamond,
+            Self::Ellipse => Icon::Ellipse,
+            Self::Arrow => Icon::ArrowRight,
+            Self::Line => Icon::Line,
+            Self::Text => Icon::Type,
+            Self::Eraser => Icon::Eraser,
+        }
+    }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(crate) struct DrawingStyle {
     pub color: Color,
     pub width: Width,
@@ -43,6 +94,25 @@ pub(crate) struct DrawingStyle {
     pub fill: bool,
     pub round: bool,
     pub bidirectional: bool,
+    pub font_size: f32,
+    pub rendering: CanvasStrokeRendering,
+    pub curve: CanvasConnectorCurve,
+}
+
+impl Default for DrawingStyle {
+    fn default() -> Self {
+        Self {
+            color: Color::default(),
+            width: Width::default(),
+            stroke: Stroke::default(),
+            fill: false,
+            round: true,
+            bidirectional: false,
+            font_size: 16.,
+            rendering: CanvasStrokeRendering::Sketch,
+            curve: CanvasConnectorCurve::Straight,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -87,6 +157,13 @@ pub(crate) struct EditorState {
     pub change: u64,
     pub space_pan: bool,
     pub snap_target: Option<String>,
+    pub creation_kind: CanvasSemanticKindV1,
+    pub participant_id: Option<String>,
+    pub lane_id: Option<String>,
+    pub semantic_source: Option<String>,
+    pub semantic_target: Option<String>,
+    pub semantic_error: Option<String>,
+    pub diagnostics: Vec<hvc_core::companion_drawings::semantics::CanvasDiagnosticV1>,
     gesture: Option<Gesture>,
     undo: VecDeque<Scene>,
     redo: Vec<Scene>,
@@ -106,6 +183,13 @@ impl Default for EditorState {
             change: 0,
             space_pan: false,
             snap_target: None,
+            creation_kind: CanvasSemanticKindV1::Component,
+            participant_id: None,
+            lane_id: None,
+            semantic_source: None,
+            semantic_target: None,
+            semantic_error: None,
+            diagnostics: Vec::new(),
             gesture: None,
             undo: VecDeque::new(),
             redo: Vec::new(),
@@ -116,14 +200,36 @@ impl Default for EditorState {
 
 impl EditorState {
     pub fn load(&mut self, scene: Scene, viewport: Viewport) {
+        let creation_kind = if scene
+            .document
+            .as_ref()
+            .is_some_and(|d| d.profile == CanvasProfileV1::Bpmn)
+        {
+            CanvasSemanticKindV1::Task
+        } else {
+            CanvasSemanticKindV1::Component
+        };
         *self = Self {
             scene,
             viewport,
             tool: self.tool,
             locked: self.locked,
             style: self.style.clone(),
+            creation_kind,
             ..Self::default()
         };
+        self.refresh_diagnostics();
+    }
+
+    pub fn refresh_diagnostics(&mut self) {
+        // Derived from the committed scene, never from a pointer preview or model output.
+        match hvc_core::companion_drawings::semantics::validate_document(&self.scene) {
+            Ok(diagnostics) => self.diagnostics = diagnostics,
+            Err(error) => {
+                self.diagnostics.clear();
+                self.semantic_error = Some(error.to_string());
+            }
+        }
     }
 
     pub fn selected_element(&self) -> Option<&Element> {
@@ -144,6 +250,9 @@ impl EditorState {
     fn bytes(scene: &Scene) -> usize {
         // Count heap storage as well as the enum/element array; avoid serializing on mouse-move.
         std::mem::size_of::<Scene>()
+            + scene.document.as_ref().map_or(0, |document| {
+                serde_json::to_vec(document).map_or(0, |bytes| bytes.len())
+            })
             + scene
                 .elements
                 .iter()
@@ -190,6 +299,20 @@ impl EditorState {
     pub fn commit(&mut self, before: Scene) -> bool {
         geometry::update_bindings(&mut self.scene);
         geometry::update_containers(&mut self.scene);
+        if before.document.is_some() {
+            match self.validate_semantic_edit(&before, &self.scene) {
+                Ok(scene) => {
+                    self.scene = scene;
+                    self.semantic_error = None;
+                }
+                Err(error) => {
+                    self.scene = before;
+                    self.semantic_error = Some(error);
+                    self.keep_selection();
+                    return false;
+                }
+            }
+        }
         if before == self.scene {
             return false;
         }
@@ -198,6 +321,7 @@ impl EditorState {
         self.trim_history();
         self.dirty = true;
         self.change = self.change.saturating_add(1);
+        self.refresh_diagnostics();
         true
     }
 
@@ -211,6 +335,7 @@ impl EditorState {
         self.dirty = true;
         self.change = self.change.saturating_add(1);
         self.keep_selection();
+        self.refresh_diagnostics();
         true
     }
 
@@ -225,6 +350,7 @@ impl EditorState {
         self.dirty = true;
         self.change = self.change.saturating_add(1);
         self.keep_selection();
+        self.refresh_diagnostics();
         true
     }
 
@@ -291,6 +417,15 @@ impl EditorState {
             return;
         }
         let before = self.scene.clone();
+        self.semantic_error = None;
+        if self.scene.document.is_some()
+            && !matches!(self.tool, Tool::Select | Tool::Eraser | Tool::Hand)
+            && self.tool != semantic_editing::semantic_tool(self.creation_kind)
+        {
+            self.semantic_error =
+                Some("Choose an explicit element type in the semantic toolbar.".into());
+            return;
+        }
         match self.tool {
             Tool::Select => {
                 if let Some(element) = self.selected_element().cloned()
@@ -346,7 +481,9 @@ impl EditorState {
                     Tool::Line => Kind::Line {
                         points: [[0., 0.], [1., 1.]],
                     },
-                    _ => Kind::Text { font_size: 16. },
+                    _ => Kind::Text {
+                        font_size: self.style.font_size,
+                    },
                 };
                 let mut element = Element::new(shape, world[0], world[1], 1., 1.);
                 if tool == Tool::Text {
@@ -354,8 +491,11 @@ impl EditorState {
                     element.height = 24.;
                 }
                 element.stroke_color = self.style.color;
+                element.label_font_size = Some(self.style.font_size);
                 element.stroke_width = self.style.width;
                 element.stroke_style = self.style.stroke;
+                element.stroke_rendering = self.style.rendering;
+                element.connector_curve = self.style.curve;
                 element.fill_enabled = self.style.fill;
                 element.z_index = self
                     .scene
@@ -726,5 +866,37 @@ mod tests {
         assert!(editor.undo());
         assert_eq!(editor.scene.elements.len(), 2);
         assert!(editor.scene.elements.iter().any(|element|matches!(&element.shape,Kind::Arrow{start_binding:Some(binding),..} if binding.element_id==target_id)));
+    }
+
+    #[test]
+    fn canvas_sketch_curve_creation_and_style_changes_are_single_undo_steps() {
+        let mut editor = EditorState {
+            tool: Tool::Arrow,
+            ..EditorState::default()
+        };
+        editor.style.curve = CanvasConnectorCurve::CurveRight;
+        editor.press([10., 20.], false);
+        editor.drag([210., 20.]);
+        assert!(editor.release().0);
+        let element = editor.scene.elements.last().expect("created curve");
+        assert_eq!(element.stroke_rendering, CanvasStrokeRendering::Sketch);
+        assert_eq!(element.connector_curve, CanvasConnectorCurve::CurveRight);
+        assert!(
+            editor.mutate(
+                |scene, _| scene.elements[0].connector_curve = CanvasConnectorCurve::CurveLeft
+            )
+        );
+        assert!(editor.undo());
+        assert_eq!(
+            editor.scene.elements[0].connector_curve,
+            CanvasConnectorCurve::CurveRight
+        );
+        assert!(editor.undo());
+        assert!(editor.scene.elements.is_empty());
+        assert!(editor.redo());
+        assert_eq!(
+            editor.scene.elements[0].stroke_rendering,
+            CanvasStrokeRendering::Sketch
+        );
     }
 }

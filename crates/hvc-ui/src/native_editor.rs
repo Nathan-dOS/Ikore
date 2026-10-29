@@ -137,6 +137,30 @@ impl NativeEditor {
         self.autosave_generation
     }
 
+    pub(crate) fn has_marked_text(&self) -> bool {
+        self.marked_range.is_some()
+    }
+
+    pub(crate) fn reset_plain_text(&mut self, text: String, cx: &mut Context<Self>) {
+        self.buffer = EditorBuffer::new(text, "canvas-label");
+        self.marked_range = None;
+        self.last_lines.clear();
+        self.scroll_x = px(0.);
+        self.max_scroll_x = px(0.);
+        self.reveal_cursor = true;
+        self.syntax = None;
+        cx.notify();
+    }
+
+    /// A host-specific newline command that keeps native editor history intact.
+    pub(crate) fn insert_newline(&mut self, cx: &mut Context<Self>) {
+        if self.has_marked_text() {
+            return;
+        }
+        let _ = self.buffer.replace_selection("\n");
+        self.after_edit(cx);
+    }
+
     #[cfg(test)]
     pub(crate) fn insert_text(&mut self, text: &str, cx: &mut Context<Self>) {
         self.buffer.insert(text).unwrap();

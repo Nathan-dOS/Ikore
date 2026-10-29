@@ -110,6 +110,12 @@ pub fn normalize_scene(scene: &CanvasSceneV1) -> Result<CanvasSceneV1, Error> {
         {
             return Err(invalid("Drawing text size must be between 8 and 96 units"));
         }
+        if element
+            .label_font_size
+            .is_some_and(|size| !size.is_finite() || !(8.0..=96.0).contains(&size))
+        {
+            return Err(invalid("Drawing label size must be between 8 and 96 units"));
+        }
     }
     for element in &scene.elements {
         if let Some(container_id) = &element.container_id {
@@ -222,6 +228,7 @@ pub fn normalize_scene(scene: &CanvasSceneV1) -> Result<CanvasSceneV1, Error> {
         .into_iter()
         .cloned()
         .collect();
+    super::semantics::normalize_document(&mut normalized)?;
     let json =
         serde_json::to_string(&normalized).map_err(|_| invalid("Drawing serialization failed"))?;
     if json.len() > MAX_SCENE_BYTES {

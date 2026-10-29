@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "qualifiedAtUtc": "2026-10-29T11:37:24.055765+00:00",
+  "baseCommit": "92f6a0c291c2d0e05703e228547e4faa26b95d8e",
+  "qualifiedIndexTree": "ce651c87810c7ceb0be4265db713c442b0390e97",
+  "sourceFingerprint": "canvas-ai-publication-source-fingerprint-2026-10-29.json",
+  "verifiedSourceFiles": 884,
+  "sourceDrift": 0,
+  "verifiedIndexSourceBlobs": 884,
+  "unrelatedVoiceChangesExcluded": true,
+  "totals": {
+    "passed": 1778,
+    "failed": 0,
+    "ignored": 16,
+    "filtered": 0,
+    "targetSummaries": 55
+  },
+  "passedChecks": 9,
+  "gateDurationSeconds": 2933.376,
+  "gateRecord": "canvas-ai-publication-stage7-run-2026-10-29.json",
+  "testResults": "canvas-ai-publication-test-results-2026-10-29.json",
+  "releaseBinarySha256": "24544db91b7a7f964af4fb33f447638d5de1ebef00341aea2431aab47eb8bbfa",
+  "nativeSmoke": {
+    "gracefulShutdown": true,
+    "exitCode": 0,
+    "isolatedProfileRemoved": true
+  }
+}

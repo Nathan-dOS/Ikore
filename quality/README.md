@@ -22,6 +22,7 @@ historical check applies to the source and environment identified in that report
 | Dependency advisories | [2026-10-24 lockfile remediation and validation](dependency-advisories-2026-10-24.md) |
 | Review corrections (editor revisions, check output, quota client, voice setup) | [2026-10-25 implementation and validation](review-corrections-2026-10-25.md) |
 | Repository hygiene | [2026-10-17 change record](repository-hygiene-2026-10-17.md) |
+| Canvas AI consent, publication and semantic editing | [2026-10-28 workflow candidate and validation](canvas-ai-workflow-validation-2026-10-28.md) |
 
 ## Historical design references
 

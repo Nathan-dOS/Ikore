@@ -205,3 +205,53 @@ cargo test --locked -p hvc-terminal --lib --no-default-features -- --test-thread
 Check the terminal-to-zeroize optional edge, not global absence of zeroize:
 other libraries can use zeroize independently. The full workspace tests exercise
 the default collector configuration. See [ADR-031](adr/031-terminal-boundary.md).
+
+## Canvas AI authoring candidate
+
+The [authoring implementation](canvas-ai-authoring.md) passed local technical
+qualification on 2026-10-29. The complete workspace suite passed 1,782 tests,
+zero failed, 16 ignored and zero filtered across 55 target summaries in 894.904
+seconds. All nine adopted gate checks passed in 1,405.906 seconds, including the
+release build and graceful Windows smoke with exit 0 and its temporary profile
+removed. The qualified fingerprint covers 887 source files with zero drift.
+No task branch or worktree was created, and no commit or push was performed. See the
+[qualification record](../quality/canvas-ai-workflow-qualification-2026-10-28.json).
+Focused selections are:
+
+```powershell
+cargo test --locked -p hvc-core --lib companion_drawings:: -- --test-threads=2
+cargo test --locked -p hvc-core --lib chat_service::canvas_authoring::tests -- --test-threads=2
+cargo test --locked -p hvc-test-support --test canvas_semantics -- --test-threads=2
+cargo test --locked -p hvc-test-support --test cli_executor canvas_cli_offer_requires_consent -- --test-threads=2
+cargo test --locked -p hvc-terminal --lib companion_extracts_canvas_offer -- --test-threads=2
+cargo test --locked -p hvc-ui canvas -- --test-threads=2
+```
+
+Core/controller tests cover closed schemas, legacy scenes, profile topology,
+atomic batches, limits, authorization scope, expiry and idempotency. Durable-store
+tests cover source hashes and unavailable sources, target admission/replay,
+hidden staging, transactional publication/rollback, cancellation races, restart,
+deleted-result tombstones and project cascade. Loopback API tests exercise scoped
+tools, configuration drift and in-flight cancellation. The Windows CLI fixture
+drives offers, consent and publication across supported backends without an
+authenticated provider; it is not a live-model quality test.
+
+The semantic service integration target checks sanitization, save/reopen,
+duplication/reference remapping and export. Native UI tests cover explicit
+approval/decline/stop, API and CLI target snapshots, stale/scoped callbacks,
+restart/event hydration without navigation, explicit result opening, semantic
+controls and geometry/semantic Undo/Redo. These selections overlap with the
+complete suite and their counts must not be added together. The native semantic
+control fixture also checks that warnings appear for an incomplete scene, clear
+after a valid labeled addition and return on Undo. The completed gate included
+`cargo test-all` and the checks documented above. Authenticated providers and
+physical display/DPI/IME behavior remain unqualified; the optional document
+resolver is not exposed. Actual results and execution limits are recorded in the
+[workflow validation record](../quality/canvas-ai-workflow-validation-2026-10-28.md).
+
+Quota meter tests distinguish historical captured windows from live-window
+fixtures. Tests needing live windows copy the fixture and set relative future
+resets; captured files and production expiry rules remain unchanged.
+`claude_run_events_keep_expired_windows_out_of_the_live_meter` separately checks
+that expired windows stay out of the live meter. The workflow report retains the
+time-dependent third gate failure and the 17-test focused correction result.

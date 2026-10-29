@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "capturedAtUtc": "2026-10-27T23:11:03.7802580Z",
+  "processor": "AMD Ryzen 5 5600 6-Core Processor              ",
+  "logicalProcessors": 12,
+  "os": "Microsoft Windows 11 Pro",
+  "osVersion": "10.0.26300",
+  "visibleMemoryKiB": 33475460,
+  "video": [
+    {
+      "Name": "Parsec Virtual Display Adapter",
+      "CurrentHorizontalResolution": null,
+      "CurrentVerticalResolution": null,
+      "CurrentRefreshRate": null
+    },
+    {
+      "Name": "NVIDIA GeForce RTX 5060 Ti",
+      "CurrentHorizontalResolution": 2560,
+      "CurrentVerticalResolution": 1440,
+      "CurrentRefreshRate": 164
+    }
+  ],
+  "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+  "cargo": "cargo 1.98.0 (797e8a9bc 2026-08-05)",
+  "note": "Display inventory is not a frame presentation measurement; each benchmark report records its actual client dimensions and scale factor. Other desktop workloads are uncontrolled."
+}

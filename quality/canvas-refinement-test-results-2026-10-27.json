@@ -1,0 +1,642 @@
+{
+  "schemaVersion": 1,
+  "capturedAtUtc": "2026-10-28T00:19:12.5364981Z",
+  "command": "cargo test-all",
+  "testThreads": 2,
+  "scope": "Full workspace on main including preserved pre-existing Whisper changes",
+  "passed": true,
+  "totals": {
+    "passed": 1678,
+    "failed": 0,
+    "ignored": 16,
+    "measured": 0,
+    "filteredOut": 0
+  },
+  "targetCount": 54,
+  "targets": [
+    {
+      "target": "unittests src\\main.rs (target\\debug\\deps\\hard_vibe_code-3a8756eab4c58741.exe)",
+      "status": "ok",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 0.0
+    },
+    {
+      "target": "unittests src\\lib.rs (target\\debug\\deps\\hvc_contracts-e3b94d17c0bde74f.exe)",
+      "status": "ok",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 0.0
+    },
+    {
+      "target": "tests\\contracts.rs (target\\debug\\deps\\contracts-e2ae472ab91c2866.exe)",
+      "status": "ok",
+      "passed": 11,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 0.0
+    },
+    {
+      "target": "unittests src\\lib.rs (target\\debug\\deps\\hvc_core-698a918f608b5f51.exe)",
+      "status": "ok",
+      "passed": 906,
+      "failed": 0,
+      "ignored": 1,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 397.15
+    },
+    {
+      "target": "unittests src\\lib.rs (target\\debug\\deps\\hvc_editor-82becd12b17aa858.exe)",
+      "status": "ok",
+      "passed": 17,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 0.03
+    },
+    {
+      "target": "unittests src\\lib.rs (target\\debug\\deps\\hvc_terminal-55d5a3c77188ae57.exe)",
+      "status": "ok",
+      "passed": 201,
+      "failed": 0,
+      "ignored": 3,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 82.89
+    },
+    {
+      "target": "unittests src\\lib.rs (target\\debug\\deps\\hvc_test_support-1659541aff4fe05d.exe)",
+      "status": "ok",
+      "passed": 22,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 7.13
+    },
+    {
+      "target": "unittests src\\bin\\check_fixture.rs (target\\debug\\deps\\check_fixture-8a044b8b6f36c1d6.exe)",
+      "status": "ok",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 0.0
+    },
+    {
+      "target": "unittests src\\bin\\cli_fixture.rs (target\\debug\\deps\\cli_fixture-b8977031a28c7283.exe)",
+      "status": "ok",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 0.0
+    },
+    {
+      "target": "unittests src\\bin\\nemo_fixture.rs (target\\debug\\deps\\nemo_fixture-95ed3be096bfe35c.exe)",
+      "status": "ok",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 0.0
+    },
+    {
+      "target": "tests\\antigravity_live_pulsation.rs (target\\debug\\deps\\antigravity_live_pulsation-d69d5040de6d08e1.exe)",
+      "status": "ok",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 2,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 0.0
+    },
+    {
+      "target": "tests\\brownfield_bf5.rs (target\\debug\\deps\\brownfield_bf5-dae28b611cc071b4.exe)",
+      "status": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 9.19
+    },
+    {
+      "target": "tests\\canvas.rs (target\\debug\\deps\\canvas-2a97594683aabc70.exe)",
+      "status": "ok",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 1.89
+    },
+    {
+      "target": "tests\\cli_executor.rs (target\\debug\\deps\\cli_executor-840687b7f3e109c8.exe)",
+      "status": "ok",
+      "passed": 15,
+      "failed": 0,
+      "ignored": 6,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 49.1
+    },
+    {
+      "target": "tests\\cli_validation_gate.rs (target\\debug\\deps\\cli_validation_gate-c8982784c2c08301.exe)",
+      "status": "ok",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 61.08
+    },
+    {
+      "target": "tests\\composition_benchmark.rs (target\\debug\\deps\\composition_benchmark-84f7b93b2b2b0853.exe)",
+      "status": "ok",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 14.2
+    },
+    {
+      "target": "tests\\composition_cargo.rs (target\\debug\\deps\\composition_cargo-65449c5fcbbd73b7.exe)",
+      "status": "ok",
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 16.25
+    },
+    {
+      "target": "tests\\composition_checks.rs (target\\debug\\deps\\composition_checks-d084d0173004c0d8.exe)",
+      "status": "ok",
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 21.52
+    },
+    {
+      "target": "tests\\composition_cli.rs (target\\debug\\deps\\composition_cli-b011443e720215e0.exe)",
+      "status": "ok",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 24.7
+    },
+    {
+      "target": "tests\\composition_failures.rs (target\\debug\\deps\\composition_failures-857e5a6d0d98c127.exe)",
+      "status": "ok",
+      "passed": 7,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 22.04
+    },
+    {
+      "target": "tests\\composition_parallel.rs (target\\debug\\deps\\composition_parallel-b80d06d4b82edc45.exe)",
+      "status": "ok",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 19.44
+    },
+    {
+      "target": "tests\\composition_path_confirmation.rs (target\\debug\\deps\\composition_path_confirmation-eda8f316e7a3598a.exe)",
+      "status": "ok",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 3.83
+    },
+    {
+      "target": "tests\\composition_pipeline.rs (target\\debug\\deps\\composition_pipeline-9ec4b6fccff4efb9.exe)",
+      "status": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 5.41
+    },
+    {
+      "target": "tests\\composition_recipes.rs (target\\debug\\deps\\composition_recipes-b6c745e1bb8f0622.exe)",
+      "status": "ok",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 11.4
+    },
+    {
+      "target": "tests\\composition_review.rs (target\\debug\\deps\\composition_review-e07a7dfc2368906b.exe)",
+      "status": "ok",
+      "passed": 8,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 35.36
+    },
+    {
+      "target": "tests\\composition_units.rs (target\\debug\\deps\\composition_units-952e39c7ec5e1562.exe)",
+      "status": "ok",
+      "passed": 6,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 21.58
+    },
+    {
+      "target": "tests\\composition_validation.rs (target\\debug\\deps\\composition_validation-0d5df5516b6f086d.exe)",
+      "status": "ok",
+      "passed": 7,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 6.21
+    },
+    {
+      "target": "tests\\coordination_upgrade.rs (target\\debug\\deps\\coordination_upgrade-0605cadd2ff46e28.exe)",
+      "status": "ok",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 1.21
+    },
+    {
+      "target": "tests\\corrective_retry.rs (target\\debug\\deps\\corrective_retry-27e58c1580037df0.exe)",
+      "status": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 5.92
+    },
+    {
+      "target": "tests\\learning_worker.rs (target\\debug\\deps\\learning_worker-73e6c006b615ebff.exe)",
+      "status": "ok",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 4.08
+    },
+    {
+      "target": "tests\\orchestration_baseline.rs (target\\debug\\deps\\orchestration_baseline-d318225dffd6d433.exe)",
+      "status": "ok",
+      "passed": 9,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 0.53
+    },
+    {
+      "target": "tests\\preparation_workflow.rs (target\\debug\\deps\\preparation_workflow-e9be34e30bf0b69d.exe)",
+      "status": "ok",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 3.52
+    },
+    {
+      "target": "tests\\pulsation_m5.rs (target\\debug\\deps\\pulsation_m5-bed1b4851aa20894.exe)",
+      "status": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 61.76
+    },
+    {
+      "target": "tests\\review_brief.rs (target\\debug\\deps\\review_brief-75e1c9252dc1cb79.exe)",
+      "status": "ok",
+      "passed": 7,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 36.06
+    },
+    {
+      "target": "tests\\serial_upgrade.rs (target\\debug\\deps\\serial_upgrade-df4b9ee54b69cd38.exe)",
+      "status": "ok",
+      "passed": 25,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 18.85
+    },
+    {
+      "target": "tests\\serial_worker.rs (target\\debug\\deps\\serial_worker-f9aeec9f8c75206f.exe)",
+      "status": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 5.73
+    },
+    {
+      "target": "tests\\stage_failure_checkpoint.rs (target\\debug\\deps\\stage_failure_checkpoint-2579df64c24a8842.exe)",
+      "status": "ok",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 12.46
+    },
+    {
+      "target": "tests\\terminal_host_integration.rs (target\\debug\\deps\\terminal_host_integration-8abc4e990add0e76.exe)",
+      "status": "ok",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 2.2
+    },
+    {
+      "target": "tests\\thinking_budget_ab.rs (target\\debug\\deps\\thinking_budget_ab-05f2f5b1aba7f5b2.exe)",
+      "status": "ok",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 1,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 0.0
+    },
+    {
+      "target": "tests\\token_usage.rs (target\\debug\\deps\\token_usage-760034fcff3dec09.exe)",
+      "status": "ok",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 1.97
+    },
+    {
+      "target": "tests\\tool_scope_ab.rs (target\\debug\\deps\\tool_scope_ab-6ad9410c35fbf2d0.exe)",
+      "status": "ok",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 1,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 0.0
+    },
+    {
+      "target": "tests\\voice_runtime.rs (target\\debug\\deps\\voice_runtime-8e50fc872fca4206.exe)",
+      "status": "ok",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 1,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 0.26
+    },
+    {
+      "target": "tests\\workspace_flow.rs (target\\debug\\deps\\workspace_flow-f4e0c645fb939a12.exe)",
+      "status": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 0.04
+    },
+    {
+      "target": "unittests examples\\pulsation_ui_fixture.rs (target\\debug\\examples\\pulsation_ui_fixture-1e7331ffef80ac5b.exe)",
+      "status": "ok",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 1.17
+    },
+    {
+      "target": "unittests src\\lib.rs (target\\debug\\deps\\hvc_ui-70880bd221521a10.exe)",
+      "status": "ok",
+      "passed": 368,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 93.09
+    },
+    {
+      "target": "unittests src\\lib.rs (target\\debug\\deps\\hvc_voice-24bfa7fff33d5635.exe)",
+      "status": "ok",
+      "passed": 15,
+      "failed": 0,
+      "ignored": 1,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 0.44
+    },
+    {
+      "target": "hvc_contracts",
+      "status": "ok",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 0.0
+    },
+    {
+      "target": "hvc_core",
+      "status": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 0.0
+    },
+    {
+      "target": "hvc_core",
+      "status": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 0.21
+    },
+    {
+      "target": "hvc_editor",
+      "status": "ok",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 0.0
+    },
+    {
+      "target": "hvc_terminal",
+      "status": "ok",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 0.0
+    },
+    {
+      "target": "hvc_test_support",
+      "status": "ok",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 0.0
+    },
+    {
+      "target": "hvc_ui",
+      "status": "ok",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 0.0
+    },
+    {
+      "target": "hvc_voice",
+      "status": "ok",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filteredOut": 0,
+      "durationSeconds": 0.0
+    }
+  ],
+  "ignoredTests": [
+    {
+      "target": "unittests src\\lib.rs (target\\debug\\deps\\hvc_core-698a918f608b5f51.exe)",
+      "test": "agent_runtime::prompt_tests::print_the_prompt_a_compact_model_receives",
+      "reason": "manual inspection aid"
+    },
+    {
+      "target": "unittests src\\lib.rs (target\\debug\\deps\\hvc_terminal-55d5a3c77188ae57.exe)",
+      "test": "quota::endpoints::spikes::spike_claude_usage_endpoint_shape",
+      "reason": "spike S2: reads the signed-in Claude Code token and calls api.anthropic.com once"
+    },
+    {
+      "target": "unittests src\\lib.rs (target\\debug\\deps\\hvc_terminal-55d5a3c77188ae57.exe)",
+      "test": "quota::endpoints::spikes::spike_codex_usage_endpoint_shape",
+      "reason": "spike S1: reads the signed-in Codex token and calls chatgpt.com once, honestly identified"
+    },
+    {
+      "target": "unittests src\\lib.rs (target\\debug\\deps\\hvc_terminal-55d5a3c77188ae57.exe)",
+      "test": "terminals::plan_usage::tests::codex_plan_usage_live_read",
+      "reason": "requires an installed Codex CLI and a signed-in subscription account"
+    },
+    {
+      "target": "tests\\antigravity_live_pulsation.rs (target\\debug\\deps\\antigravity_live_pulsation-d69d5040de6d08e1.exe)",
+      "test": "authenticated_antigravity_runs_a_whole_pulsation_on_gemini_flash",
+      "reason": "Requires local Antigravity (agy) authentication and network; runs a whole pulsation on Gemini Flash"
+    },
+    {
+      "target": "tests\\antigravity_live_pulsation.rs (target\\debug\\deps\\antigravity_live_pulsation-d69d5040de6d08e1.exe)",
+      "test": "authenticated_antigravity_runs_the_specification_stage_on_claude_sonnet",
+      "reason": "Requires local Antigravity (agy) authentication, network and Claude/GPT quota; runs Intake and Specification"
+    },
+    {
+      "target": "tests\\cli_executor.rs (target\\debug\\deps\\cli_executor-840687b7f3e109c8.exe)",
+      "test": "authenticated_antigravity_accepts_every_registry_payload_schema",
+      "reason": "Requires local Antigravity (agy) authentication and network; sends six synthetic prompts"
+    },
+    {
+      "target": "tests\\cli_executor.rs (target\\debug\\deps\\cli_executor-840687b7f3e109c8.exe)",
+      "test": "authenticated_antigravity_companion_smoke",
+      "reason": "Requires local Antigravity (agy) authentication and network; sends one synthetic message"
+    },
+    {
+      "target": "tests\\cli_executor.rs (target\\debug\\deps\\cli_executor-840687b7f3e109c8.exe)",
+      "test": "authenticated_antigravity_pipeline_smoke",
+      "reason": "Requires local Antigravity (agy) authentication and network; sends two synthetic prompts"
+    },
+    {
+      "target": "tests\\cli_executor.rs (target\\debug\\deps\\cli_executor-840687b7f3e109c8.exe)",
+      "test": "authenticated_claude_model_identity_smoke",
+      "reason": "Requires local Claude authentication and network; sends one synthetic Haiku identity probe"
+    },
+    {
+      "target": "tests\\cli_executor.rs (target\\debug\\deps\\cli_executor-840687b7f3e109c8.exe)",
+      "test": "authenticated_codex_companion_smoke",
+      "reason": "Requires local Codex authentication and network; sends only synthetic messages"
+    },
+    {
+      "target": "tests\\cli_executor.rs (target\\debug\\deps\\cli_executor-840687b7f3e109c8.exe)",
+      "test": "authenticated_codex_turn_context_model_smoke",
+      "reason": "Requires local Codex authentication and network; sends one synthetic model identity probe"
+    },
+    {
+      "target": "tests\\thinking_budget_ab.rs (target\\debug\\deps\\thinking_budget_ab-05f2f5b1aba7f5b2.exe)",
+      "test": "claude_thinking_budget_paired_ab_on_specification_and_contract",
+      "reason": "paid: runs the real Claude CLI (Haiku) for Specification and Contract"
+    },
+    {
+      "target": "tests\\tool_scope_ab.rs (target\\debug\\deps\\tool_scope_ab-6ad9410c35fbf2d0.exe)",
+      "test": "context_scope_real_run",
+      "reason": "paid: runs the real Claude CLI (Haiku) for Intake, Contract, Code and Test"
+    },
+    {
+      "target": "tests\\voice_runtime.rs (target\\debug\\deps\\voice_runtime-8e50fc872fca4206.exe)",
+      "test": "live_pinned_runtime_transcribes_a_recording",
+      "reason": "downloads the real runtime and model"
+    },
+    {
+      "target": "unittests src\\lib.rs (target\\debug\\deps\\hvc_voice-24bfa7fff33d5635.exe)",
+      "test": "hotkey::tests::push_to_talk_reports_the_press_and_the_release",
+      "reason": "sends global keystrokes; run by hand on a desktop session"
+    }
+  ],
+  "additionalExampleRuns": "Grid benchmark 7 (4 grid cases overlap UI coverage), Canvas preview 2; not added to this total",
+  "sourceFingerprint": "canvas-refinement-source-fingerprint-2026-10-27.json"
+}

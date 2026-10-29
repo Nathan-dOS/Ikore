@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "startedAt": "2026-10-29T02:58:16.9681081Z",
+  "finishedAt": "2026-10-29T03:10:57.0597264Z",
+  "durationSeconds": 760.085,
+  "passed": false,
+  "steps": [
+    {
+      "name": "estrutura exclusivamente GPUI/Rust",
+      "durationSeconds": 8.648,
+      "passed": true,
+      "exitCode": 0
+    },
+    {
+      "name": "crate dependency boundaries",
+      "durationSeconds": 0.174,
+      "passed": true,
+      "exitCode": 0
+    },
+    {
+      "name": "cargo fmt",
+      "durationSeconds": 4.801,
+      "passed": true,
+      "exitCode": 0
+    },
+    {
+      "name": "Clippy",
+      "durationSeconds": 37.265,
+      "passed": true,
+      "exitCode": 0
+    },
+    {
+      "name": "testes Rust",
+      "durationSeconds": 709.165,
+      "passed": false,
+      "exitCode": 101
+    }
+  ]
+}

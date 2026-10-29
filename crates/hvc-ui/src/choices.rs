@@ -147,6 +147,9 @@ impl AppModel {
         Some((model, profiles))
     }
     pub(crate) fn choice_options(&self, id: &str, cx: &App) -> Vec<Choice> {
+        if id.starts_with("canvas-semantic-") {
+            return self.canvas_choices(id);
+        }
         if id.starts_with("usage-") {
             return self.usage_choices(id, cx);
         }
@@ -555,6 +558,10 @@ impl AppModel {
             return;
         };
         if choice.selected || choice.reason.is_some() {
+            return;
+        }
+        if id.starts_with("canvas-semantic-") {
+            self.apply_canvas_choice(id, value, cx);
             return;
         }
         if id.starts_with("usage-") {

@@ -23,6 +23,88 @@ fn latest_migration_version() -> i64 {
         .expect("the embedded migration set is nonempty")
 }
 
+#[test]
+fn v57_to_v58_adds_canvas_authoring_without_rewriting_drawings_chat_or_history() {
+    use hvc_core::companion_drawings::{CanvasSceneV1, CanvasViewportV1};
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("hard-vibe-code.db");
+    let mut db = Connection::open(&path).unwrap();
+    cli_migrations::migrations::runner()
+        .set_target(refinery::Target::Version(57))
+        .run(&mut db)
+        .unwrap();
+    db.execute("INSERT INTO projects(id,name,workspace_path,created_at,updated_at) VALUES('project','Preserved','C:/canvas-authoring-upgrade','before','before')", []).unwrap();
+    let scene = serde_json::to_string(&CanvasSceneV1::default()).unwrap();
+    let viewport = serde_json::to_string(&CanvasViewportV1::default()).unwrap();
+    db.execute("INSERT INTO companion_drawings(id,project_id,title,scene_json,viewport_json,revision,basename,created_at,updated_at) VALUES('drawing','project','Keep me',?1,?2,7,'drawing','before','before')", params![scene, viewport]).unwrap();
+    db.execute("INSERT INTO chat_conversations(id,project_id,provider_id_snapshot,model_id_snapshot,title,created_at,updated_at,transport_kind,cli_backend,model_source) VALUES('conversation','project','codex','default','Keep chat','before','before','cli','codex','default')", []).unwrap();
+    db.execute("INSERT INTO chat_messages(id,conversation_id,ordinal,role,content,status,created_at,updated_at) VALUES('answer','conversation',0,'assistant','Preserve the explanation.','completed','before','before')", []).unwrap();
+    let history: Vec<(i64, String, String)> = db
+        .prepare("SELECT version,name,checksum FROM refinery_schema_history ORDER BY version")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    drop(db);
+    PersistenceService::initialize(root.path()).unwrap();
+    PersistenceService::initialize(root.path()).unwrap();
+    let db = Connection::open(path).unwrap();
+    let drawing: (String, String, String, u64) = db.query_row("SELECT title,scene_json,viewport_json,revision FROM companion_drawings WHERE id='drawing'", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).unwrap();
+    assert_eq!(drawing, ("Keep me".into(), scene, viewport, 7));
+    assert_eq!(
+        db.query_row(
+            "SELECT content FROM chat_messages WHERE id='answer'",
+            [],
+            |row| row.get::<_, String>(0)
+        )
+        .unwrap(),
+        "Preserve the explanation."
+    );
+    let preserved: Vec<(i64, String, String)> = db.prepare("SELECT version,name,checksum FROM refinery_schema_history WHERE version<=57 ORDER BY version").unwrap().query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap().collect::<Result<_, _>>().unwrap();
+    assert_eq!(history, preserved);
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM refinery_schema_history WHERE version=58",
+            [],
+            |row| row.get::<_, u64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM companion_canvas_requests",
+            [],
+            |row| row.get::<_, u64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    let columns: Vec<String> = db
+        .prepare("SELECT name FROM pragma_table_info('companion_canvas_requests')")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    for forbidden in [
+        "api_key",
+        "credential",
+        "password",
+        "access_token",
+        "refresh_token",
+    ] {
+        assert!(columns.iter().all(|column| !column.contains(forbidden)));
+    }
+    let violations: u64 = db
+        .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(violations, 0);
+}
+
 /// V54 rebuilds the three role-checked tables for the Documentation
 /// Reconciler (ADR-034 M5); its own test proves their rows survive. The
 /// earlier "nothing is rebuilt" checks, which upgrade to the latest version,

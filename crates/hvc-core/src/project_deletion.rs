@@ -87,17 +87,27 @@ impl PersistenceService {
 
     /// The caller must close/detach any active workspace watcher and reject dirty editor tabs.
     /// No user data is touched when confirmation, path safety or active-run checks fail.
-    pub fn delete_project_permanently(
+    pub(crate) fn validate_project_deletion_request(
         &self,
         id: &str,
         confirmation: &str,
-    ) -> Result<ProjectDeletionOutcome, Error> {
+    ) -> Result<ProjectDeletionPreview, Error> {
         let preview = self.preview_project_deletion(id)?;
         if confirmation != preview.project.name {
             return Err(Error::Validation(
                 "Type the exact project name to confirm permanent deletion.".into(),
             ));
         }
+        check_deletion_idle(&self.connection()?, id)?;
+        Ok(preview)
+    }
+
+    pub fn delete_project_permanently(
+        &self,
+        id: &str,
+        confirmation: &str,
+    ) -> Result<ProjectDeletionOutcome, Error> {
+        let preview = self.validate_project_deletion_request(id, confirmation)?;
         let root = fs::canonicalize(&preview.project.workspace_path)?;
         let parent = root
             .parent()
@@ -114,19 +124,7 @@ impl PersistenceService {
                     "The project changed while deletion was prepared. Reload and try again.".into(),
                 ));
             }
-            if active_work(&tx, id)? {
-                return Err(Error::Validation("The project has an active Companion turn, agent, terminal or filesystem operation. Stop it before deletion.".into()));
-            }
-            let pending: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM project_deletion_journal)",
-                [],
-                |r| r.get(0),
-            )?;
-            if pending {
-                return Err(Error::Validation(
-                    "Another project deletion still needs recovery.".into(),
-                ));
-            }
+            check_deletion_idle(&tx, id)?;
             tx.execute("INSERT INTO project_deletion_journal(project_id,root_path,quarantine_path,was_archived,phase,started_at) VALUES(?1,?2,?3,?4,'prepared',strftime('%Y-%m-%dT%H:%M:%fZ','now'))",params![id,root.to_string_lossy(),quarantine.to_string_lossy(),i64::from(latest.is_archived)])?;
             tx.execute("UPDATE projects SET is_archived=1 WHERE id=?1", [id])?;
             tx.commit()?;
@@ -298,12 +296,30 @@ fn active_work(db: &Connection, id: &str) -> Result<bool, Error> {
     let active:bool=db.query_row("SELECT
         EXISTS(SELECT 1 FROM runtime_slots WHERE project_id=?1)
         OR EXISTS(SELECT 1 FROM jobs WHERE project_id=?1 AND status='running')
+        OR EXISTS(SELECT 1 FROM companion_canvas_requests WHERE project_id=?1 AND state='running')
         OR EXISTS(SELECT 1 FROM terminal_runs WHERE project_id=?1 AND status IN ('queued','starting','running'))
         OR EXISTS(SELECT 1 FROM artifact_publications WHERE project_id=?1 AND state='applying')
         OR EXISTS(SELECT 1 FROM chat_messages m JOIN chat_conversations c ON c.id=m.conversation_id WHERE c.project_id=?1 AND m.status IN ('pending','streaming'))
         OR EXISTS(SELECT 1 FROM forge_turns t JOIN forge_features f ON f.id=t.feature_id WHERE f.project_id=?1 AND t.status='running')
         OR EXISTS(SELECT 1 FROM companion_note_turns t JOIN companion_notes n ON n.id=t.note_id WHERE n.project_id=?1 AND t.status='running')",[id],|r|r.get(0))?;
     Ok(active)
+}
+
+fn check_deletion_idle(db: &Connection, id: &str) -> Result<(), Error> {
+    if active_work(db, id)? {
+        return Err(Error::Validation("The project has an active Companion turn, agent, terminal or filesystem operation. Stop it before deletion.".into()));
+    }
+    let pending: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM project_deletion_journal)",
+        [],
+        |row| row.get(0),
+    )?;
+    if pending {
+        return Err(Error::Validation(
+            "Another project deletion still needs recovery.".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn rollback_prepared(

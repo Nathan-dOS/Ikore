@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "command": "cargo test-all",
+  "observedAtUtc": "2026-10-29T03:47:11.8760727Z",
+  "durationSeconds": 894.904,
+  "exitCode": 0,
+  "executionMode": "outside-sandbox",
+  "temporaryDirectoryMode": "host-default (no task override)",
+  "testThreadsPerTarget": 2,
+  "rustToolchain": "1.98.0",
+  "platform": "Windows x64",
+  "baseCommit": "92f6a0c291c2d0e05703e228547e4faa26b95d8e",
+  "sourceFingerprint": "canvas-ai-workflow-source-fingerprint-2026-10-28.json",
+  "verifiedSourceFiles": 887,
+  "sourceDrift": 0,
+  "totals": {
+    "passed": 1782,
+    "failed": 0,
+    "ignored": 16,
+    "filtered": 0,
+    "targetSummaries": 55
+  }
+}

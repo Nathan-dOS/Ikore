@@ -1,0 +1,34 @@
+{
+  "gatePassed": true,
+  "durationSeconds": 1675.002,
+  "steps": 9,
+  "releaseAppSha256": "5bbb70d7fae339466b59a662fd1474c9b9c206bccae26f68394e71e3e0c6eff7",
+  "gridBenchmarkSha256": "45f989c1fc153bcf8afb8ece643fdf2c864595f21bb22b68496426860e1cf9cf",
+  "canvasPreviewReleaseSha256": "5b4586bdaa898d471343208bff6958f23770a60036a72de8ec903c0f525b4295",
+  "smokeGracefulShutdown": true,
+  "smokeExitCode": 0,
+  "sourceFingerprint": "canvas-refinement-source-fingerprint-2026-10-27.json",
+  "testResults": "canvas-refinement-test-results-2026-10-27.json",
+  "measurementResults": "canvas-grid-comparison-2026-10-27.json",
+  "sourceCommitCreated": false,
+  "worktreeOrBranchCreated": false,
+  "pushPerformed": false,
+  "additionalExampleTests": {
+    "gridBenchmarkPassed": 7,
+    "canvasPreviewPassed": 2,
+    "failed": 0,
+    "overlappingGridCases": 4,
+    "addedToFullSuiteTotal": false
+  },
+  "schemaVersion": 1,
+  "finalPreservationAudit": {
+    "preExistingWhisperPaths": 16,
+    "matchingOriginalHashes": 12,
+    "matchingOriginalLocalDiffs": 4,
+    "gitIndexEmpty": true,
+    "mainHead": "92f6a0c291c2d0e05703e228547e4faa26b95d8e",
+    "mandatesHead": "744c4988d8a44f197ba15189bf17ec4403dfe87f",
+    "sourceHashesVerified": 28,
+    "rawMeasurementHashesVerified": 6
+  }
+}

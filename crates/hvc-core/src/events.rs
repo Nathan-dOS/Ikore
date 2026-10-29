@@ -27,6 +27,7 @@ pub enum AppEvent {
     WorkspaceChanged(WorkspaceChangedEvent),
     Llm(LlmEventEnvelope),
     Chat(ChatEventEnvelope),
+    CanvasAuthoring(crate::chat_service::canvas_authoring::CanvasAuthoringChangedV1),
     Terminal(Box<TerminalEventEnvelope>),
     Indexing(IndexingEvent),
     ModelPull(ModelPullEvent),
@@ -43,6 +44,7 @@ impl AppEvent {
             Self::WorkspaceChanged(_) => crate::workspace_service::WORKSPACE_CHANGED_EVENT,
             Self::Llm(envelope) => envelope.event.event_name(),
             Self::Chat(envelope) => envelope.event_name(),
+            Self::CanvasAuthoring(_) => "canvas-authoring://changed",
             Self::Terminal(envelope) => envelope.event_name(),
             Self::Indexing(event) => match event {
                 IndexingEvent::Progress { .. } => "indexing://progress",
@@ -133,6 +135,9 @@ impl LlmEventSink for AppEventBus {
 impl ChatEventSink for AppEventBus {
     fn emit(&self, envelope: &ChatEventEnvelope) {
         self.publish(AppEvent::Chat(envelope.clone()));
+    }
+    fn emit_canvas(&self, event: &crate::chat_service::canvas_authoring::CanvasAuthoringChangedV1) {
+        self.publish(AppEvent::CanvasAuthoring(event.clone()));
     }
 }
 

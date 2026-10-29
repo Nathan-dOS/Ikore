@@ -32,6 +32,8 @@ use crate::terminals::{
 };
 use crate::usage::{UsageContext, UsageTransport, api::UsageRecorder};
 
+pub mod canvas_authoring;
+
 const MAX_MODEL_ROUNDS: usize = 8;
 const MAX_TOOL_CALLS: usize = 24;
 const MAX_TOOL_RESULT_BYTES: usize = 256 * 1024;
@@ -193,6 +195,7 @@ impl ChatEventEnvelope {
 
 pub trait ChatEventSink: Send + Sync {
     fn emit(&self, envelope: &ChatEventEnvelope);
+    fn emit_canvas(&self, _event: &canvas_authoring::CanvasAuthoringChangedV1) {}
 }
 
 #[derive(Default)]
@@ -424,6 +427,7 @@ struct ChatRuntime {
     turns: Mutex<HashMap<String, ActiveTurn>>,
     sequences: Mutex<HashMap<String, u64>>,
     turns_idle: Notify,
+    canvas_authoring: canvas_authoring::CanvasRuntime,
 }
 
 #[derive(Clone)]
@@ -1676,8 +1680,16 @@ struct ModelFailure {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum CompanionControlEnvelope {
-    Final { text: String },
-    ToolCalls { calls: Vec<CompanionControlCall> },
+    Final {
+        text: String,
+    },
+    FinalWithCanvasOffer {
+        text: String,
+        offer: canvas_authoring::CanvasOfferProposalV1,
+    },
+    ToolCalls {
+        calls: Vec<CompanionControlCall>,
+    },
 }
 
 fn exceeds_remaining_read_budget(envelope: &CompanionControlEnvelope, remaining: usize) -> bool {
@@ -1786,15 +1798,20 @@ impl ChatService {
 
         match result {
             Ok(()) => {
-                let _ =
-                    self.set_message_status(&context.assistant_message_id, "completed", None, None);
-                let _ = self.emit_turn_event(
-                    ChatEventKind::TurnCompleted,
-                    context,
-                    ChatEventDetail::Empty {},
-                );
+                let completed = self
+                    .set_message_status(&context.assistant_message_id, "completed", None, None)
+                    .is_ok();
+                if completed {
+                    let _ = self.emit_turn_event(
+                        ChatEventKind::TurnCompleted,
+                        context,
+                        ChatEventDetail::Empty {},
+                    );
+                }
+                self.finish_canvas_offer(context, completed);
             }
             Err(TurnOutcome::Cancelled) => {
+                self.finish_canvas_offer(context, false);
                 let _ = self.set_message_status(
                     &context.assistant_message_id,
                     "cancelled",
@@ -1808,6 +1825,7 @@ impl ChatService {
                 );
             }
             Err(TurnOutcome::Failed(error)) => {
+                self.finish_canvas_offer(context, false);
                 let _ = self.set_message_status(
                     &context.assistant_message_id,
                     "failed",
@@ -1921,6 +1939,7 @@ impl ChatService {
                         &messages,
                         &exchanges,
                         &usage,
+                        false,
                     )
                     .await;
                 usage
@@ -1970,6 +1989,18 @@ impl ChatService {
                 (Some(total), Some(current)) => Some(total + current),
                 _ => None,
             };
+
+            if let Some(answer) = canvas_authoring::parse_terminal_offer(&response)? {
+                self.stream_visible_content(context, &answer.text).await?;
+                self.queue_canvas_offer(context, answer.offer)?;
+                self.update_message_usage(
+                    &context.assistant_message_id,
+                    total_input_tokens,
+                    total_output_tokens,
+                    total_cost,
+                )?;
+                return Ok(());
+            }
 
             if response.tool_calls.is_empty() {
                 if response.content.trim().is_empty() {
@@ -2284,6 +2315,14 @@ impl ChatService {
             };
 
             match envelope {
+                CompanionControlEnvelope::FinalWithCanvasOffer { text, offer } => {
+                    self.stream_visible_content(context, &text).await?;
+                    self.queue_canvas_offer(context, offer)?;
+                    self.connection()?.execute(
+                        "UPDATE chat_messages SET input_tokens=(SELECT SUM(input_tokens) FROM chat_model_calls WHERE assistant_message_id=?1),output_tokens=(SELECT SUM(output_tokens) FROM chat_model_calls WHERE assistant_message_id=?1),updated_at=?2 WHERE id=?1",
+                        params![context.assistant_message_id,now_iso()])?;
+                    return Ok(());
+                }
                 CompanionControlEnvelope::Final { text } => {
                     self.stream_visible_content(context, &text).await?;
                     self.connection()?.execute(
@@ -3556,13 +3595,14 @@ impl ChatService {
         messages: &[ProtocolMessage],
         exchanges: &[ToolExchange],
         usage: &UsageRecorder,
+        canvas_authoring_mode: bool,
     ) -> Result<ModelResponse, ModelFailure> {
         let policy = crate::sanitization::SanitizationStore::new(&self.db_path)
             .policy_for_project(&context.conversation.project_id)
             .map_err(|_| sanitization_failure())?;
         let (messages, exchanges) =
             prepare_companion_inputs(messages, exchanges, policy.identity())?;
-        let payload = match profile.protocol {
+        let mut payload = match profile.protocol {
             ProviderProtocol::OpenaiResponses => {
                 build_openai_responses_payload(model, &messages, &exchanges)
             }
@@ -3571,6 +3611,9 @@ impl ChatService {
                 build_anthropic_payload(model, &messages, &exchanges)
             }
         };
+        if canvas_authoring_mode {
+            canvas_authoring::configure_canvas_payload(&mut payload, profile.protocol);
+        }
         let input_bytes = serde_json::to_vec(&payload)
             .map_err(|_| sanitization_failure())?
             .len();
@@ -3963,7 +4006,7 @@ fn additional_fragment_bytes(target: &str, fragment: &str) -> usize {
 }
 
 fn system_prompt() -> &'static str {
-    "You are the Hard Vibe Code Chat Companion. Analyse architecture, explain code and recommend CLI and model settings in text, using only general knowledge and the read-only local tools provided. Consult agent outputs only on demand through a tool; they are never automatic context. Never ask for or try to use a shell, Git, the network, the web, writes, renames, plugins, external MCP or remote tools. Never change settings and never claim to have applied changes. When you propose code changes, use a copyable unified diff and say explicitly that it is a proposal that was not applied. Distinguish observed evidence, catalog data, uncertainty and opinion. Answer in the developer's language."
+    "You are the Hard Vibe Code Chat Companion. Analyse architecture, explain code and recommend CLI and model settings in text, using only general knowledge and the read-only local tools provided. Consult agent outputs only on demand through a tool; they are never automatic context. Never ask for or try to use a shell, Git, the network, the web, repository writes, renames, plugins, external MCP or remote tools. Never change settings and never claim to have applied changes. When you propose code changes, use a copyable unified diff and say explicitly that it is a proposal that was not applied. Distinguish observed evidence, catalog data, uncertainty and opinion. Answer in the developer's language. If a completed architecture explanation benefits from Canvas, use the transport's explicit terminal Canvas-offer control with the complete answer and a short permission question in the conversation language. This records an offer only: never draw or claim authorization. Keep ordinary final answers when a diagram adds little. Never mix a terminal Canvas offer with repository reads in the same round."
 }
 
 fn empty_json_object() -> Value {
@@ -3980,6 +4023,14 @@ fn parse_companion_control_envelope(
         )
     })?;
     match &envelope {
+        CompanionControlEnvelope::FinalWithCanvasOffer { text, offer } => {
+            canvas_authoring::validate_terminal_answer(
+                &canvas_authoring::CanvasTerminalAnswerV1 {
+                    text: text.clone(),
+                    offer: offer.clone(),
+                },
+            )?;
+        }
         CompanionControlEnvelope::Final { text } => {
             if text.trim().is_empty() || text.chars().count() > 100_000 {
                 return Err(ChatCommandError::new(
@@ -4013,7 +4064,7 @@ fn parse_companion_control_envelope(
 }
 
 fn companion_control_envelope_schema() -> Value {
-    json!({
+    let mut schema = json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
             {
@@ -4052,7 +4103,12 @@ fn companion_control_envelope_schema() -> Value {
                 "additionalProperties": false
             }
         ]
-    })
+    });
+    schema["oneOf"].as_array_mut().expect("host envelope variants").push(json!({
+        "type":"object","properties":{"type":{"const":"final_with_canvas_offer"},
+        "text":{"type":"string","minLength":1,"maxLength":16000},"offer":canvas_authoring::offer_schema()},
+        "required":["type","text","offer"],"additionalProperties":false}));
+    schema
 }
 
 // Codex Structured Outputs requires a closed root object and fully required
@@ -4111,9 +4167,12 @@ fn companion_schema_for_backend(backend: CliBackend) -> Value {
     tools["properties"]["calls"]["items"] = json!({"anyOf": calls});
     let mut final_response = schema["oneOf"][0].clone();
     final_response["properties"]["type"] = json!({"type": "string", "enum": ["final"]});
+    let mut offer_response = schema["oneOf"][2].clone();
+    offer_response["properties"]["type"] =
+        json!({"type":"string","enum":["final_with_canvas_offer"]});
     json!({
         "type": "object",
-        "properties": {"response": {"anyOf": [final_response, tools]}},
+        "properties": {"response": {"anyOf": [final_response, tools, offer_response]}},
         "required": ["response"],
         "additionalProperties": false
     })
@@ -4283,8 +4342,16 @@ fn chat_cli_error(error: TerminalError) -> ChatCommandError {
     ChatCommandError::new(code, message)
 }
 
+fn companion_wire_schemas() -> Vec<(&'static str, &'static str, Value)> {
+    let mut schemas = repository_tool_schemas();
+    schemas.push((canvas_authoring::CANVAS_OFFER_CONTROL,
+        "Finalize the completed explanation and ask whether the developer permits one new Canvas drawing. This never grants permission or draws.",
+        canvas_authoring::offer_control_schema()));
+    schemas
+}
+
 fn tool_definitions_openai_responses() -> Vec<Value> {
-    repository_tool_schemas()
+    companion_wire_schemas()
         .into_iter()
         .map(|(name, description, parameters)| {
             json!({
@@ -4298,7 +4365,7 @@ fn tool_definitions_openai_responses() -> Vec<Value> {
 }
 
 fn tool_definitions_openai_chat() -> Vec<Value> {
-    repository_tool_schemas()
+    companion_wire_schemas()
         .into_iter()
         .map(|(name, description, parameters)| {
             json!({
@@ -4314,7 +4381,7 @@ fn tool_definitions_openai_chat() -> Vec<Value> {
 }
 
 fn tool_definitions_anthropic() -> Vec<Value> {
-    repository_tool_schemas()
+    companion_wire_schemas()
         .into_iter()
         .map(|(name, description, parameters)| {
             json!({

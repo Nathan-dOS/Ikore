@@ -282,6 +282,13 @@ impl AppCore {
             runtime.clone(),
         ));
         chat.recover_interrupted_turns()?;
+        chat.attach_canvas_authoring(
+            crate::companion_drawings::authoring_store::CanvasAuthoringStore::new(
+                crate::companion_drawings::service::CompanionDrawingsService::new(
+                    persistence.clone(),
+                ),
+            ),
+        )?;
         let terminal_sink: Arc<dyn TerminalEventSink> = events.clone();
         let terminals = Arc::new(TerminalService::new(
             persistence.database_path(),
@@ -377,6 +384,10 @@ impl AppCore {
         project_id: &str,
         confirmation: &str,
     ) -> Result<crate::project_deletion::ProjectDeletionOutcome, PersistenceServiceError> {
+        let _canvas_deletion_guard = self
+            .chat
+            .block_canvas_project_deletion(project_id)
+            .map_err(|error| PersistenceServiceError::Runtime(error.message))?;
         self.drawings().with_project_guard(project_id, || {
             self.delete_project_with_drawings_idle(project_id, confirmation)
         })
@@ -690,6 +701,7 @@ impl AppCore {
         self.worker_cancellation.cancel();
         self.persistence.cancel_all_active_jobs();
         self.chat.cancel_all_turns();
+        self.chat.cancel_all_canvas_jobs();
         self.feature_agent.cancel_all();
         self.notes_scribe.cancel_all();
         self.doc_reconciler.cancel_all();
@@ -715,6 +727,7 @@ impl AppCore {
             let _ = worker.await;
         }
         let _ = self.chat.wait_for_idle(Duration::from_secs(3)).await;
+        self.chat.wait_for_canvas_idle().await;
         self.feature_agent.wait_for_idle().await;
         self.notes_scribe.wait_for_idle().await;
         self.doc_reconciler.wait_for_idle().await;
@@ -798,6 +811,137 @@ mod tests {
         );
         drop(core);
         runtime.shutdown_timeout(Duration::from_secs(1));
+    }
+
+    #[test]
+    fn project_deletion_preserves_canvas_until_acceptance_and_waits_for_running_jobs() {
+        use crate::chat_service::canvas_authoring::{
+            CanvasAuthoringRequestStateV1, CanvasAuthoringStore, CanvasOfferProposalV1,
+        };
+        use crate::companion_drawings::semantics::CanvasProfileV1;
+        use rusqlite::params;
+
+        for fault in [
+            "confirmation",
+            "path",
+            "active",
+            "terminal",
+            "canvas",
+            "accepted",
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let workspace = directory.path().join("workspace");
+            fs::create_dir(&workspace).unwrap();
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .unwrap();
+            let core = AppCore::initialize(
+                AppPaths::from_data_dir(directory.path().join("data")),
+                runtime.handle().clone(),
+            )
+            .unwrap();
+            let project = core
+                .persistence
+                .ensure_project_for_workspace(
+                    crate::persistence_service::EnsureProjectForWorkspaceRequest {
+                        workspace_path: workspace.to_string_lossy().into_owned(),
+                        preferred_name: Some("Canvas project".into()),
+                    },
+                )
+                .unwrap()
+                .project;
+            let db = core.persistence.connection().unwrap();
+            db.execute("INSERT INTO chat_conversations(id,project_id,provider_id_snapshot,model_id_snapshot,title,created_at,updated_at,transport_kind,cli_backend,model_source) VALUES('delete-chat',?1,'codex','default','Conversation','now','now','cli','codex','default')", [&project.id]).unwrap();
+            db.execute("INSERT INTO chat_messages(id,conversation_id,ordinal,role,content,status,created_at,updated_at) VALUES('delete-source','delete-chat',0,'assistant','The UI calls the Core.','completed','now','now')", []).unwrap();
+            let store = CanvasAuthoringStore::new(core.drawings());
+            let mut offer = store
+                .propose(
+                    &project.id,
+                    "delete-chat",
+                    "delete-source",
+                    &CanvasOfferProposalV1 {
+                        profile: CanvasProfileV1::Architecture,
+                        language: "en".into(),
+                        title: "Architecture".into(),
+                        request_text: "May I explain with Canvas?".into(),
+                    },
+                    1_000,
+                )
+                .unwrap();
+            match fault {
+                "path" => {
+                    db.execute(
+                        "UPDATE projects SET workspace_path='relative-untrusted-path' WHERE id=?1",
+                        [&project.id],
+                    )
+                    .unwrap();
+                }
+                "active" => {
+                    db.execute("INSERT INTO chat_messages(id,conversation_id,ordinal,role,content,status,created_at,updated_at) VALUES('active-message','delete-chat',1,'assistant','','streaming','now','now')", []).unwrap();
+                }
+                "terminal" => {
+                    db.execute("INSERT INTO terminal_runs(id,project_id,agent_role,origin,execution_mode,backend,status,created_at,updated_at) VALUES('active-terminal',?1,'task_specifier','manual','cli_process','codex','running','now','now')", [&project.id]).unwrap();
+                }
+                "canvas" => {
+                    let target = crate::companion_drawings::authoring::CanvasCompanionTargetSnapshot::capture_from_host(
+                        crate::chat_service::ChatExecutionTargetRequest::Cli { backend: crate::terminals::CliBackend::Codex, model: None, model_profile: None }, "default",
+                    ).unwrap();
+                    offer = store
+                        .admit(
+                            &project.id,
+                            "delete-chat",
+                            &offer.request_id,
+                            1,
+                            "approve",
+                            &target,
+                            &serde_json::json!({"transport":"cli","backend":"codex"}),
+                            1_000,
+                            1_900,
+                        )
+                        .unwrap()
+                        .request;
+                }
+                _ => {}
+            }
+            let confirmation = if fault == "confirmation" {
+                "wrong name"
+            } else {
+                project.name.as_str()
+            };
+            let result = core.delete_project_permanently(&project.id, confirmation);
+            if fault == "accepted" {
+                assert!(result.unwrap().deleted);
+                assert!(!workspace.exists());
+                assert!(
+                    store
+                        .get(&project.id, "delete-chat", &offer.request_id)
+                        .is_err()
+                );
+            } else {
+                assert!(result.is_err(), "{fault}");
+                let after = store
+                    .get(&project.id, "delete-chat", &offer.request_id)
+                    .unwrap();
+                let expected = if fault == "canvas" {
+                    CanvasAuthoringRequestStateV1::Running
+                } else {
+                    CanvasAuthoringRequestStateV1::AwaitingAuthorization
+                };
+                assert_eq!(after.state, expected, "{fault}");
+                assert_eq!(after.request_revision, offer.request_revision, "{fault}");
+                assert!(workspace.exists(), "{fault}");
+                db.execute(
+                    "UPDATE projects SET workspace_path=?1 WHERE id=?2",
+                    params![workspace.to_string_lossy(), project.id],
+                )
+                .unwrap();
+            }
+            runtime.block_on(core.shutdown());
+            drop(core);
+            runtime.shutdown_timeout(Duration::from_secs(1));
+        }
     }
 
     #[test]

@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "command": "cargo test-all",
+  "startedAtUtc": "2026-10-28T17:03:16.8285546Z",
+  "durationSeconds": 1410.888,
+  "exitCode": 0,
+  "temporaryDirectoryMode": "system-default",
+  "executionMode": "outside-sandbox",
+  "totals": {
+    "passed": 1722,
+    "failed": 0,
+    "ignored": 16,
+    "filtered": 0,
+    "targetSummaries": 55
+  }
+}

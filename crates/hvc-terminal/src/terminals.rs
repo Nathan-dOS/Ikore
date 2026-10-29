@@ -8637,7 +8637,7 @@ pub fn extract_companion_envelope_json(output: &str) -> Option<String> {
         if value
             .get("type")
             .and_then(Value::as_str)
-            .is_some_and(|kind| matches!(kind, "final" | "tool_calls"))
+            .is_some_and(|kind| matches!(kind, "final" | "final_with_canvas_offer" | "tool_calls"))
         {
             return Some(value.clone());
         }

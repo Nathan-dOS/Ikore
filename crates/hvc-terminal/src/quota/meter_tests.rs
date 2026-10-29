@@ -101,6 +101,21 @@ fn reading(used: f64, hours_left: i64) -> QuotaReading {
     }
 }
 
+/// The captured frame remains fixed for parser tests. Live-meter scenarios use
+/// a copy with reset windows relative to their own clock so the capture cannot
+/// expire underneath an otherwise unchanged test suite.
+fn claude_frame_with_reset_windows(now: chrono::DateTime<Utc>) -> Vec<u8> {
+    let mut frame: serde_json::Value =
+        serde_json::from_str(&fixture("claude/rate-limit-event.jsonl")).unwrap();
+    let five_hour = (now + chrono::Duration::hours(2)).timestamp();
+    let weekly = (now + chrono::Duration::days(3)).timestamp();
+    frame["rate_limit_info"]["resetsAt"] = serde_json::json!(five_hour);
+    frame["rate_limit_info"]["unifiedWindows"]["five_hour"]["resetsAt"] =
+        serde_json::json!(five_hour);
+    frame["rate_limit_info"]["unifiedWindows"]["seven_day"]["resetsAt"] = serde_json::json!(weekly);
+    serde_json::to_vec(&frame).unwrap()
+}
+
 fn discovery() -> Vec<CliAvailability> {
     METERED_BACKENDS
         .into_iter()
@@ -305,7 +320,7 @@ async fn quota_kill_switch_disables_credential_collectors_only() {
     assert!(claude.disclosure.is_none());
     assert!(overview.credential_collectors_off.is_some());
     // Run events still fill the Claude bar.
-    assert!(meter.observe_claude_frame(fixture("claude/rate-limit-event.jsonl").trim().as_bytes()));
+    assert!(meter.observe_claude_frame(&claude_frame_with_reset_windows(Utc::now())));
 }
 
 #[cfg(feature = "quota-credential-collectors")]
@@ -448,7 +463,7 @@ async fn claude_run_events_fill_the_bar_and_are_kept_in_history() {
     let collectors = Arc::new(Scripted::default());
     let (meter, _data) = meter(collectors, true);
     meter.refresh(&discovery(), Utc::now(), false).await;
-    assert!(meter.observe_claude_frame(fixture("claude/rate-limit-event.jsonl").trim().as_bytes()));
+    assert!(meter.observe_claude_frame(&claude_frame_with_reset_windows(Utc::now())));
     assert!(!meter.observe_claude_frame(br#"{"type":"assistant"}"#));
     let overview = meter.overview();
     let claude = quota(&overview, CliBackend::Claude);
@@ -461,6 +476,46 @@ async fn claude_run_events_fill_the_bar_and_are_kept_in_history() {
             .latest(CliBackend::Claude)
             .unwrap()
             .is_some_and(|stored| stored.source == QuotaSource::ClaudeStreamEvent)
+    );
+}
+
+#[tokio::test]
+async fn claude_run_events_keep_expired_windows_out_of_the_live_meter() {
+    let collectors = Arc::new(Scripted::default());
+    let (meter, _data) = meter(collectors, true);
+    let now = Utc::now();
+    meter.refresh(&discovery(), now, false).await;
+    let expired = claude_frame_with_reset_windows(now - chrono::Duration::days(8));
+    assert!(!meter.observe_claude_frame(&expired));
+    let expired_overview = meter.overview();
+    let expired_claude = quota(&expired_overview, CliBackend::Claude);
+    assert!(!matches!(
+        expired_claude.state,
+        QuotaState::Fresh | QuotaState::Exhausted
+    ));
+    assert_eq!(
+        expired_claude
+            .snapshot
+            .as_ref()
+            .unwrap()
+            .current_windows(now)
+            .count(),
+        0
+    );
+
+    let current = claude_frame_with_reset_windows(now);
+    assert!(meter.observe_claude_frame(&current));
+    let current_overview = meter.overview();
+    let current_claude = quota(&current_overview, CliBackend::Claude);
+    assert_eq!(current_claude.state, QuotaState::Fresh);
+    assert_eq!(
+        current_claude
+            .snapshot
+            .as_ref()
+            .unwrap()
+            .current_windows(now)
+            .count(),
+        2
     );
 }
 

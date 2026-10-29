@@ -56,6 +56,47 @@ fn companion_drawings_scene_round_trip_is_stable_and_camera_free() {
 }
 
 #[test]
+fn companion_drawings_label_sizes_preserve_legacy_defaults_and_export() {
+    let mut shape = rectangle("shape", 30., 40., 100., 80.);
+    shape.label = "A\nB".into();
+    let legacy = serde_json::to_value(&shape).expect("legacy shape");
+    assert!(legacy.get("label_font_size").is_none());
+    let decoded: CanvasElementV1 = serde_json::from_value(legacy).expect("old scene loads");
+    assert_eq!(label_font_size(&decoded), 16.);
+    shape.label_font_size = Some(28.);
+    assert_eq!(label_font_size(&shape), 28.);
+    assert_eq!(label_bounds(&shape).height, 2. * 28. * 1.3);
+    let normalized = normalize_scene(&scene(vec![shape])).expect("size accepted");
+    let json = scene_json(&normalized).expect("serialize");
+    let round_trip: CanvasSceneV1 = serde_json::from_str(&json).expect("round trip");
+    assert_eq!(round_trip.elements[0].label_font_size, Some(28.));
+    let svg = export_svg(&normalized).expect("svg");
+    assert!(svg.contains("font-size=\"28\""));
+}
+
+#[test]
+fn companion_drawings_label_sizes_reject_invalid_and_extreme_values() {
+    for size in [
+        f32::NAN,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        -1.,
+        0.,
+        7.9,
+        96.1,
+    ] {
+        let mut shape = rectangle("shape", 0., 0., 100., 80.);
+        shape.label_font_size = Some(size);
+        assert!(normalize_scene(&scene(vec![shape])).is_err(), "size {size}");
+    }
+    for size in [8., 16., 96.] {
+        let mut shape = rectangle("shape", 0., 0., 100., 80.);
+        shape.label_font_size = Some(size);
+        assert!(normalize_scene(&scene(vec![shape])).is_ok(), "size {size}");
+    }
+}
+
+#[test]
 fn companion_drawings_normalizes_reverse_drag_and_vertical_connectors() {
     let reverse = rectangle("reverse", 100.0, 200.0, -40.0, -80.0);
     let vertical = arrow("vertical", [20.0, 100.0], [20.0, -20.0]);

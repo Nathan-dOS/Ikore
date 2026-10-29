@@ -5,7 +5,8 @@
 //! test in this crate can prove every `Icon` variant maps to a real file; a typo in a path is
 //! otherwise an invisible icon at runtime, not an error.
 //!
-//! Icons are Lucide (ISC licence, see `assets/icons/LICENSE-lucide.txt`): 24x24, stroke-only,
+//! Icons use Lucide (ISC licence, see `assets/icons/LICENSE-lucide.txt`) and original
+//! `canvas-*` glyphs with the same 24x24, stroke-only vocabulary:
 //! `currentColor`. The renderer keeps only the alpha mask and tints it with the element's
 //! `text_color`, so the stroke colour inside the file never matters.
 
@@ -31,6 +32,15 @@ pub(crate) static ASSETS: &[(&str, &[u8])] = &[
     icon_asset!("ban"),
     icon_asset!("bell"),
     icon_asset!("bot"),
+    icon_asset!("canvas-cursor"),
+    icon_asset!("canvas-hand"),
+    icon_asset!("canvas-diamond"),
+    icon_asset!("canvas-ellipse"),
+    icon_asset!("canvas-line"),
+    icon_asset!("canvas-type"),
+    icon_asset!("canvas-eraser"),
+    icon_asset!("canvas-lock"),
+    icon_asset!("canvas-lock-open"),
     icon_asset!("brain"),
     icon_asset!("chart-column"),
     icon_asset!("check"),
@@ -133,7 +143,7 @@ mod tests {
             assert!(text.contains("<svg"), "{} is not an svg", icon.path());
             assert!(
                 text.contains("viewBox=\"0 0 24 24\""),
-                "{} is not a 24x24 Lucide icon",
+                "{} is not a 24x24 vector icon",
                 icon.path()
             );
         }

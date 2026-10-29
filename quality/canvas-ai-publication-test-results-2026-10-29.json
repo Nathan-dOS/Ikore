@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "command": "cargo test-all",
+  "observedAtUtc": "2026-10-29T11:37:24.055765+00:00",
+  "scope": "Selected Canvas publication tree; pre-existing voice changes excluded",
+  "durationSeconds": 2023.458,
+  "exitCode": 0,
+  "totals": {
+    "passed": 1778,
+    "failed": 0,
+    "ignored": 16,
+    "filtered": 0,
+    "targetSummaries": 55
+  }
+}

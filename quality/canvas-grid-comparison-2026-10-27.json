@@ -1,0 +1,179 @@
+{
+  "schemaVersion": 1,
+  "startedAtUtc": "2026-10-27T23:32:59.9087968Z",
+  "completedAtUtc": "2026-10-27T23:33:56.6636295Z",
+  "binarySha256": "45f989c1fc153bcf8afb8ece643fdf2c864595f21bb22b68496426860e1cf9cf",
+  "buildProfile": "release",
+  "fixture": "canvas_grid_benchmark",
+  "machineRecord": "canvas-refinement-benchmark-machine-2026-10-27.json",
+  "sourceFingerprint": "canvas-refinement-source-fingerprint-2026-10-27.json",
+  "samplesPerCase": 1000,
+  "warmupFramesPerCase": 500,
+  "runOrder": "legacy, optimized, off at zoom 1; then legacy, optimized, off at zoom 0.5",
+  "matchingWindowAndScale": true,
+  "scope": "Grid insertion CPU and GPUI callback intervals in an otherwise empty native canvas; not compositor FPS, input latency or complete diagram performance. Other desktop workload uncontrolled; no Canvas Cargo build during samples.",
+  "cases": [
+    {
+      "mode": "legacy",
+      "zoom": 1.0,
+      "clientLogicalPixels": [
+        1280.0,
+        820.0
+      ],
+      "scaleFactor": 1.0,
+      "expectedDotsMin": 1802,
+      "expectedDotsMax": 1855,
+      "insertionCpu": {
+        "samples": 1000,
+        "medianMs": 0.8039,
+        "p95Ms": 1.1668,
+        "p99Ms": 1.3075,
+        "maxMs": 1.5649
+      },
+      "callbackInterval": {
+        "samples": 1000,
+        "medianMs": 6.0325999999999995,
+        "p95Ms": 8.2337,
+        "p99Ms": 8.7691,
+        "maxMs": 9.750200000000001
+      },
+      "rawFile": "quality/canvas-grid-legacy-z100-2026-10-27.json",
+      "rawSha256": "571d43f9005ea950e02b87686c5ddfbf25164920f4213302b020f418efa315d6"
+    },
+    {
+      "mode": "optimized",
+      "zoom": 1.0,
+      "clientLogicalPixels": [
+        1280.0,
+        820.0
+      ],
+      "scaleFactor": 1.0,
+      "expectedDotsMin": 1802,
+      "expectedDotsMax": 1855,
+      "insertionCpu": {
+        "samples": 1000,
+        "medianMs": 0.0532,
+        "p95Ms": 0.0693,
+        "p99Ms": 0.0768,
+        "maxMs": 0.1268
+      },
+      "callbackInterval": {
+        "samples": 1000,
+        "medianMs": 6.0455,
+        "p95Ms": 8.1035,
+        "p99Ms": 8.632000000000001,
+        "maxMs": 9.1144
+      },
+      "rawFile": "quality/canvas-grid-optimized-z100-2026-10-27.json",
+      "rawSha256": "ab81c2bce17a5608e3fcce671cfcf337d877d6214de21f52ada09e95ad774ed7"
+    },
+    {
+      "mode": "off",
+      "zoom": 1.0,
+      "clientLogicalPixels": [
+        1280.0,
+        820.0
+      ],
+      "scaleFactor": 1.0,
+      "expectedDotsMin": 0,
+      "expectedDotsMax": 0,
+      "insertionCpu": {
+        "samples": 1000,
+        "medianMs": 0.0,
+        "p95Ms": 9.999999999999999E-05,
+        "p99Ms": 9.999999999999999E-05,
+        "maxMs": 0.0007
+      },
+      "callbackInterval": {
+        "samples": 1000,
+        "medianMs": 6.0276000000000005,
+        "p95Ms": 8.0952,
+        "p99Ms": 8.6877,
+        "maxMs": 9.163499999999999
+      },
+      "rawFile": "quality/canvas-grid-off-z100-2026-10-27.json",
+      "rawSha256": "c9fe61328919a8280862737d9051f5c2ddd7063322f77499c1fd3eb33d5b049e"
+    },
+    {
+      "mode": "legacy",
+      "zoom": 0.5,
+      "clientLogicalPixels": [
+        1280.0,
+        820.0
+      ],
+      "scaleFactor": 1.0,
+      "expectedDotsMin": 7208,
+      "expectedDotsMax": 7383,
+      "insertionCpu": {
+        "samples": 1000,
+        "medianMs": 4.9498,
+        "p95Ms": 5.846900000000001,
+        "p99Ms": 7.7208,
+        "maxMs": 8.2254
+      },
+      "callbackInterval": {
+        "samples": 1000,
+        "medianMs": 5.9345,
+        "p95Ms": 8.201,
+        "p99Ms": 8.6388,
+        "maxMs": 9.3945
+      },
+      "rawFile": "quality/canvas-grid-legacy-z050-2026-10-27.json",
+      "rawSha256": "303f57f723ae1cb3f4a70907674ea8edeae4b4ce2c7d29832c134113def6879a"
+    },
+    {
+      "mode": "optimized",
+      "zoom": 0.5,
+      "clientLogicalPixels": [
+        1280.0,
+        820.0
+      ],
+      "scaleFactor": 1.0,
+      "expectedDotsMin": 1802,
+      "expectedDotsMax": 1855,
+      "insertionCpu": {
+        "samples": 1000,
+        "medianMs": 0.0536,
+        "p95Ms": 0.0694,
+        "p99Ms": 0.0787,
+        "maxMs": 0.1071
+      },
+      "callbackInterval": {
+        "samples": 1000,
+        "medianMs": 6.0309,
+        "p95Ms": 7.9579,
+        "p99Ms": 8.5143,
+        "maxMs": 9.8932
+      },
+      "rawFile": "quality/canvas-grid-optimized-z050-2026-10-27.json",
+      "rawSha256": "efd803095709b8c17931dfad626c919ea9eaf96d85f10c46f56671e55e147c82"
+    },
+    {
+      "mode": "off",
+      "zoom": 0.5,
+      "clientLogicalPixels": [
+        1280.0,
+        820.0
+      ],
+      "scaleFactor": 1.0,
+      "expectedDotsMin": 0,
+      "expectedDotsMax": 0,
+      "insertionCpu": {
+        "samples": 1000,
+        "medianMs": 0.0,
+        "p95Ms": 9.999999999999999E-05,
+        "p99Ms": 9.999999999999999E-05,
+        "maxMs": 0.0007
+      },
+      "callbackInterval": {
+        "samples": 1000,
+        "medianMs": 6.0177,
+        "p95Ms": 7.9948,
+        "p99Ms": 8.635399999999999,
+        "maxMs": 9.1299
+      },
+      "rawFile": "quality/canvas-grid-off-z050-2026-10-27.json",
+      "rawSha256": "d7dc19254a613e05801ae324f42c97e1027c9496b2e4dda85b35b5bab785a02d"
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "qualifiedAtUtc": "2026-10-29T03:55:21.0684992Z",
+  "validationLocalDate": "2026-10-29",
+  "timezone": "America/Sao_Paulo",
+  "baseCommit": "92f6a0c291c2d0e05703e228547e4faa26b95d8e",
+  "branch": "main",
+  "executionMode": "outside-sandbox",
+  "sourceFingerprint": "canvas-ai-workflow-source-fingerprint-2026-10-28.json",
+  "sourceFingerprintSha256": "6ce7fe3f55b8eb4d6a7233ea12b101de8ab3ed56ae011a704048542e758d7a98",
+  "verifiedSourceFiles": 887,
+  "sourceDrift": 0,
+  "testResults": "canvas-ai-workflow-test-results-2026-10-28.json",
+  "totals": {
+    "passed": 1782,
+    "failed": 0,
+    "ignored": 16,
+    "filtered": 0,
+    "targetSummaries": 55
+  },
+  "gateRecord": "canvas-ai-workflow-stage7-run-2026-10-28.json",
+  "gateDurationSeconds": 1405.906,
+  "passedChecks": 9,
+  "nativeSmoke": {
+    "gracefulShutdown": true,
+    "exitCode": 0,
+    "isolatedProfileRemoved": true
+  },
+  "releaseBinary": {
+    "path": "target/release/hard-vibe-code.exe",
+    "sha256": "3023af13265c2c094968339df7a78f91d3a3b327abfa02bc93bac2d1c298546d"
+  },
+  "noTaskBranchOrWorktreeCreated": true,
+  "noCommitOrPushPerformed": true
+}

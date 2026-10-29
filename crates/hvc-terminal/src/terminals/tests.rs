@@ -430,6 +430,35 @@ fn codex_companion_reads_nested_stdout_errors_without_exposing_other_events() {
     );
 }
 
+#[test]
+fn companion_extracts_canvas_offer_control_without_treating_it_as_authority() {
+    let answer = serde_json::json!({
+        "type": "final_with_canvas_offer",
+        "text": "The UI calls the domain service.",
+        "offer": {
+            "profile": "architecture",
+            "language": "en",
+            "title": "System architecture",
+            "request_text": "May I illustrate this explanation on Canvas?"
+        }
+    });
+    for wrapped in [
+        answer.to_string(),
+        serde_json::json!({"response": answer.clone()}).to_string(),
+        serde_json::json!({"type":"result", "result":answer.to_string()}).to_string(),
+    ] {
+        let extracted = extract_companion_envelope_json(&wrapped).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&extracted).unwrap(), answer);
+    }
+    assert!(
+        extract_companion_envelope_json(r#"{"type":"approve_canvas","approved":true}"#).is_none()
+    );
+    assert!(
+        extract_companion_envelope_json(r#"{"type":"canvas_finish","drawing_id":"arbitrary"}"#)
+            .is_none()
+    );
+}
+
 /// Mirrors a real `claude -p --include-partial-messages --json-schema` run
 /// (2026-09-26): a long answer streamed as ~750 delta frames holding about
 /// 2,400 braces before the whole `assistant` and `result` events. The

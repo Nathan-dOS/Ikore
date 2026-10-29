@@ -66,11 +66,30 @@ pub fn element_bounds(element: &CanvasElementV1) -> Bounds {
     }
 }
 
+/// Visual extents include curved connectors and subtle sketch strokes. Editing
+/// handles continue to use the stable logical bounds stored in the document.
+pub fn ink_bounds(element: &CanvasElementV1) -> Bounds {
+    let bounds = element_bounds(element);
+    if let Some(control) = super::visual_geometry::connector_control(element) {
+        return bounds.union(Bounds {
+            x: control[0],
+            y: control[1],
+            width: 0.,
+            height: 0.,
+        });
+    }
+    if element.stroke_rendering == super::CanvasStrokeRendering::Sketch {
+        bounds.expanded(2.5)
+    } else {
+        bounds
+    }
+}
+
 pub fn label_font_size(element: &CanvasElementV1) -> f32 {
-    match element.shape {
+    element.label_font_size.unwrap_or(match element.shape {
         CanvasElementKindV1::Text { font_size } => font_size,
         _ => 16.0,
-    }
+    })
 }
 
 /// Explicit newlines are the same layout units in both rendering backends.
@@ -96,7 +115,8 @@ pub fn label_bounds(element: &CanvasElementV1) -> Bounds {
             height,
         }
     } else {
-        let centre = element_bounds(element).centre();
+        let centre = super::visual_geometry::connector_at(element, 0.5)
+            .unwrap_or_else(|| element_bounds(element).centre());
         // Keep connector strokes below their labels in both native and SVG output.
         let top = if element.shape.is_connector() {
             centre[1] - height - 6.0
@@ -117,7 +137,7 @@ pub fn scene_bounds(scene: &CanvasSceneV1) -> Bounds {
         .elements
         .iter()
         .map(|element| {
-            let shape = element_bounds(element).expanded(element.stroke_width.units() / 2.0 + 14.0);
+            let shape = ink_bounds(element).expanded(element.stroke_width.units() / 2.0 + 14.0);
             if element.label.is_empty() {
                 shape
             } else {
@@ -195,6 +215,20 @@ pub fn distance_to_segment(point: [f32; 2], start: [f32; 2], end: [f32; 2]) -> f
 
 pub fn hit_element(element: &CanvasElementV1, point: [f32; 2], tolerance: f32) -> bool {
     if let Some([start, end]) = connector_world_points(element) {
+        if super::visual_geometry::connector_control(element).is_some() {
+            let mut previous = start;
+            for index in 1..=32 {
+                let next = super::visual_geometry::connector_at(element, index as f32 / 32.)
+                    .unwrap_or(end);
+                if distance_to_segment(point, previous, next)
+                    <= tolerance.max(element.stroke_width.units() / 2.0)
+                {
+                    return true;
+                }
+                previous = next;
+            }
+            return false;
+        }
         return distance_to_segment(point, start, end)
             <= tolerance.max(element.stroke_width.units() / 2.0);
     }

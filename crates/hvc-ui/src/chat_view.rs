@@ -478,6 +478,11 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                 if conversation.provider_id=="specification" {"Questions presented by Specification, without extra LLM. Answer in the Pulsations view; this conversation preserves history."}else{"The pinned connection was removed or blocked. History remains readable."},
                             ))))
                         })
+                        .when_some(model.canvas_authoring_load_error(cx), |panel, error| {
+                            panel.child(centred(chat_column().child(
+                                div().p_3().text_sm().text_color(theme::danger()).child(error),
+                            )))
+                        })
                         .child(
                             div()
                                 .id("chat-messages-scroll")
@@ -525,7 +530,7 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                                     )
                                                     .child(crate::widgets::info_tip(
                                                         "chat-companion-scope",
-                                                        "The Companion can list, search, and read safe snippets. It cannot apply diffs or modify files.",
+                                                        "The Companion can list, search, and read safe snippets. Canvas explanations require your approval; repository source stays read-only.",
                                                     )),
                                             ),
                                     )
@@ -548,7 +553,12 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                     )
                                 })
                                 .children(messages.into_iter().map(|message| {
-                                    render_message(message, cx)
+                                    let canvas_card = if message.role == "assistant" && message.status == "completed" {
+                                        crate::canvas_authoring_ui::render_canvas_authoring_card(model, &message.id, cx)
+                                    } else {
+                                        None
+                                    };
+                                    render_message_with_canvas(message, canvas_card, cx)
                                 })))),
                         )
                         .when(disclosure_required && !disclosure_accepted, |panel| {
@@ -674,6 +684,14 @@ fn should_show_tool_activity(
 }
 
 pub(crate) fn render_message(message: ChatMessage, cx: &mut Context<AppModel>) -> AnyElement {
+    render_message_with_canvas(message, None, cx)
+}
+
+fn render_message_with_canvas(
+    message: ChatMessage,
+    canvas_card: Option<AnyElement>,
+    cx: &mut Context<AppModel>,
+) -> AnyElement {
     let assistant = message.role == "assistant";
     let copy_text = copyable_chat_message_text(&message);
     let meta = format!(
@@ -777,7 +795,8 @@ pub(crate) fn render_message(message: ChatMessage, cx: &mut Context<AppModel>) -
                                 ))
                             }),
                     )
-                    .child(body),
+                    .child(body)
+                    .when_some(canvas_card, |message, card| message.child(card)),
             )
             .into_any_element()
     } else {

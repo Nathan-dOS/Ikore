@@ -7,6 +7,7 @@ mod agents_view;
 mod app_model;
 mod assets;
 mod canvas;
+mod canvas_authoring_ui;
 #[cfg(test)]
 mod canvas_integration_tests;
 mod canvas_view;

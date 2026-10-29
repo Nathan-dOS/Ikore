@@ -1,9 +1,13 @@
 //! Native architectural drawing contracts, independent of the UI framework.
 
+pub mod authoring;
+pub mod authoring_store;
 pub mod geometry;
+pub mod semantics;
 pub mod service;
 pub mod svg;
 pub mod validation;
+pub mod visual_geometry;
 pub mod workspace_sync;
 
 pub use service::{
@@ -107,6 +111,35 @@ pub enum CanvasStrokeStyle {
     Dotted,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CanvasStrokeRendering {
+    #[default]
+    Clean,
+    Sketch,
+}
+
+impl CanvasStrokeRendering {
+    fn is_clean(&self) -> bool {
+        *self == Self::Clean
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CanvasConnectorCurve {
+    #[default]
+    Straight,
+    CurveLeft,
+    CurveRight,
+}
+
+impl CanvasConnectorCurve {
+    fn is_straight(&self) -> bool {
+        *self == Self::Straight
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ArrowBindingV1 {
@@ -167,7 +200,14 @@ pub struct CanvasElementV1 {
     pub fill_enabled: bool,
     pub stroke_width: CanvasStrokeWidth,
     pub stroke_style: CanvasStrokeStyle,
+    #[serde(default, skip_serializing_if = "CanvasStrokeRendering::is_clean")]
+    pub stroke_rendering: CanvasStrokeRendering,
+    #[serde(default, skip_serializing_if = "CanvasConnectorCurve::is_straight")]
+    pub connector_curve: CanvasConnectorCurve,
     pub label: String,
+    /// Optional label size; old scenes retain their original shape/text defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label_font_size: Option<f32>,
     pub container_id: Option<String>,
     pub z_index: i32,
     pub shape: CanvasElementKindV1,
@@ -185,7 +225,10 @@ impl CanvasElementV1 {
             fill_enabled: false,
             stroke_width: CanvasStrokeWidth::Medium,
             stroke_style: CanvasStrokeStyle::Solid,
+            stroke_rendering: CanvasStrokeRendering::Clean,
+            connector_curve: CanvasConnectorCurve::Straight,
             label: String::new(),
+            label_font_size: None,
             container_id: None,
             z_index: 0,
             shape,
@@ -200,6 +243,9 @@ pub struct CanvasSceneV1 {
     pub background_mode: CanvasBackgroundMode,
     pub show_grid: bool,
     pub elements: Vec<CanvasElementV1>,
+    /// Absent on legacy/free drawings; visual geometry never infers a profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub document: Option<semantics::CanvasDocumentV1>,
 }
 
 impl Default for CanvasSceneV1 {
@@ -209,6 +255,7 @@ impl Default for CanvasSceneV1 {
             background_mode: CanvasBackgroundMode::Dark,
             show_grid: true,
             elements: Vec::new(),
+            document: None,
         }
     }
 }
@@ -234,4 +281,8 @@ impl Default for CanvasViewportV1 {
 #[cfg(test)]
 mod domain_tests;
 #[cfg(test)]
+mod semantic_tests;
+#[cfg(test)]
 mod service_tests;
+#[cfg(test)]
+mod style_tests;

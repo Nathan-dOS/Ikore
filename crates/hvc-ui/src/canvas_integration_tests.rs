@@ -202,6 +202,181 @@ fn canvas_label_editor_keeps_unicode_and_local_undo(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn canvas_enter_applies_and_only_shift_enter_adds_a_line(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| crate::layout_tests::fixture(cx));
+    visual.update(|_, cx| {
+        crate::native_editor::register_editor_keybindings(cx);
+        crate::shell::register_navigation_keybindings(cx);
+        crate::canvas::register_canvas_keybindings(cx);
+    });
+    install(&model, visual, true);
+    let id = model.read_with(visual, |model, _| {
+        model.canvas.editor.scene.elements[0].id.clone()
+    });
+    visual.update(|window, cx| {
+        model.update(cx, |model, cx| model.start_canvas_label(id, window, cx))
+    });
+    visual.run_until_parked();
+    visual.simulate_keystrokes("ctrl-a");
+    visual.simulate_input("Decis\u{e3}o");
+    visual.simulate_keystrokes("shift-enter");
+    visual.simulate_input("A\u{e7}\u{e3}o");
+    visual.run_until_parked();
+    assert_eq!(
+        model.read_with(visual, |model, cx| model
+            .canvas
+            .label
+            .read(cx)
+            .buffer
+            .text()),
+        "Decis\u{e3}o\nA\u{e7}\u{e3}o"
+    );
+    visual.simulate_keystrokes("ctrl-z");
+    visual.run_until_parked();
+    assert!(model.read_with(visual, |model, _| model.canvas.editing_label.is_some()));
+    visual.simulate_keystrokes("ctrl-y");
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    model.read_with(visual, |model, _| {
+        assert!(
+            model.canvas.editing_label.is_none(),
+            "Enter applies the label"
+        );
+        assert_eq!(
+            model.canvas.editor.scene.elements[0].label,
+            "Decis\u{e3}o\nA\u{e7}\u{e3}o"
+        );
+        assert!(!model.forge.new_open);
+    });
+    // The same Enter reopens editing on the selected shape; it must not append a newline.
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    assert!(model.read_with(visual, |model, _| model.canvas.editing_label.is_some()));
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    assert_eq!(
+        model.read_with(visual, |model, _| model.canvas.editor.scene.elements[0]
+            .label
+            .clone()),
+        "Decis\u{e3}o\nA\u{e7}\u{e3}o"
+    );
+}
+
+#[gpui::test]
+fn canvas_label_apply_waits_for_composition_and_reopening_clears_old_marks(
+    cx: &mut TestAppContext,
+) {
+    use gpui::EntityInputHandler;
+    let (model, visual) = cx.add_window_view(|_, cx| crate::layout_tests::fixture(cx));
+    visual.update(|_, cx| crate::canvas::register_canvas_keybindings(cx));
+    install(&model, visual, true);
+    let id = model.read_with(visual, |model, _| {
+        model.canvas.editor.scene.elements[0].id.clone()
+    });
+    visual.update(|window, cx| {
+        model.update(cx, |model, cx| {
+            model.start_canvas_label(id.clone(), window, cx)
+        })
+    });
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        model.update(cx, |model, cx| {
+            model.canvas.label.update(cx, |input, cx| {
+                input.replace_and_mark_text_in_range(Some(0..4), "漢", None, window, cx);
+            });
+            model.apply_canvas_label(&crate::canvas::ApplyLabel, window, cx);
+            assert!(model.canvas.editing_label.is_some());
+            assert!(model.canvas.label.read(cx).has_marked_text());
+            model.start_canvas_label(id.clone(), window, cx);
+            assert_eq!(
+                model.canvas.label.read(cx).buffer.text(),
+                "漢",
+                "opening a label cannot discard an unfinished composition"
+            );
+            assert!(model.canvas.label.read(cx).has_marked_text());
+            model.newline_canvas_label(&crate::canvas::NewlineLabel, window, cx);
+            assert_eq!(model.canvas.label.read(cx).buffer.text(), "漢");
+            model.canvas.label.update(cx, |input, cx| {
+                input.replace_text_in_range(None, "漢字", window, cx);
+            });
+            model.apply_canvas_label(&crate::canvas::ApplyLabel, window, cx);
+            assert!(model.canvas.editing_label.is_none());
+            assert_eq!(model.canvas.editor.scene.elements[0].label, "漢字");
+            model.start_canvas_label(id.clone(), window, cx);
+            model.canvas.label.update(cx, |input, cx| {
+                input.replace_and_mark_text_in_range(Some(0..2), "仮", None, window, cx);
+            });
+            model.cancel_canvas_label(&crate::canvas::CancelLabel, window, cx);
+            model.start_canvas_label(id, window, cx);
+            assert!(!model.canvas.label.read(cx).has_marked_text());
+            assert_eq!(model.canvas.label.read(cx).buffer.text(), "漢字");
+        })
+    });
+}
+
+#[gpui::test]
+fn canvas_label_size_controls_are_bounded_undoable_and_apply_to_shapes(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| crate::layout_tests::fixture(cx));
+    install(&model, visual, true);
+    model.update(visual, |model, cx| {
+        model.canvas.editor.selected = Some(model.canvas.editor.scene.elements[0].id.clone());
+        cx.notify();
+    });
+    visual.run_until_parked();
+    click(visual, "canvas-text-larger");
+    assert_eq!(
+        model.read_with(visual, |model, _| {
+            hvc_core::companion_drawings::geometry::label_font_size(
+                &model.canvas.editor.scene.elements[0],
+            )
+        }),
+        18.
+    );
+    model.update(visual, |model, cx| {
+        model.canvas_action(CanvasAction::Undo, cx)
+    });
+    assert_eq!(
+        model.read_with(visual, |model, _| {
+            hvc_core::companion_drawings::geometry::label_font_size(
+                &model.canvas.editor.scene.elements[0],
+            )
+        }),
+        16.
+    );
+    model.update(visual, |model, cx| {
+        model.canvas_action(CanvasAction::FontSize(96.), cx)
+    });
+    visual.run_until_parked();
+    click(visual, "canvas-text-larger");
+    model.update(visual, |model, cx| {
+        for invalid in [f32::NAN, 0., 97.] {
+            model.canvas_action(CanvasAction::FontSize(invalid), cx);
+        }
+    });
+    assert_eq!(
+        model.read_with(visual, |model, _| {
+            hvc_core::companion_drawings::geometry::label_font_size(
+                &model.canvas.editor.scene.elements[0],
+            )
+        }),
+        96.
+    );
+    model.update(visual, |model, cx| {
+        model.canvas_action(CanvasAction::FontSize(8.), cx)
+    });
+    visual.run_until_parked();
+    click(visual, "canvas-text-smaller");
+    assert_eq!(
+        model.read_with(visual, |model, _| {
+            hvc_core::companion_drawings::geometry::label_font_size(
+                &model.canvas.editor.scene.elements[0],
+            )
+        }),
+        8.
+    );
+}
+
+#[gpui::test]
 fn canvas_close_refuses_to_discard_a_failed_or_pending_commit(cx: &mut TestAppContext) {
     let (model, visual) = cx.add_window_view(|_, cx| crate::layout_tests::fixture(cx));
     install(&model, visual, true);

@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-28",
+  "phase": "P1",
+  "qualification": "P1-regression-passed",
+  "baseRevision": "92f6a0c291c2d0e05703e228547e4faa26b95d8e",
+  "files": [
+    {
+      "path": "crates/hvc-core/src/companion_drawings/mod.rs",
+      "sha256": "9f368875e4a1ce628f13999984c4973c19aaed8b8b648690617af36d901b591b"
+    },
+    {
+      "path": "crates/hvc-core/src/companion_drawings/semantics.rs",
+      "sha256": "d9f0889913d012fa1dc44af5f2079e1f79d857cb104269d53cee2fb489f303de"
+    },
+    {
+      "path": "crates/hvc-core/src/companion_drawings/semantic_tests.rs",
+      "sha256": "4b9cae6d1a49085981584a2cee0ee4e8b09d3239429beb2661fed1d76d2b5485"
+    },
+    {
+      "path": "crates/hvc-core/src/companion_drawings/authoring.rs",
+      "sha256": "137d992c97ed2946a6aba5c6e9aad8f1d0410fd7d531e14a6750f045dec0616e"
+    },
+    {
+      "path": "crates/hvc-core/src/companion_drawings/authoring_tests.rs",
+      "sha256": "7d31ef10c6d89aa9a69f535a8f286f6b2cca6a12e5647f1aa9c8e9f8d3084a07"
+    },
+    {
+      "path": "crates/hvc-core/src/companion_drawings/validation.rs",
+      "sha256": "da2b3a18dbe58f448a60b1946c0db2893e819885bb676e72f50996ca1edbbd01"
+    },
+    {
+      "path": "crates/hvc-core/src/companion_drawings/service.rs",
+      "sha256": "7fbe957a0bade42b47839d8f4c7b97eac7fb15253ec6c7fecc123ffdf7499321"
+    },
+    {
+      "path": "crates/hvc-test-support/tests/canvas_semantics.rs",
+      "sha256": "31401e5c94e47513759adbd1af7e9223156d2c1f91875565b8764a0a9e74332a"
+    }
+  ]
+}

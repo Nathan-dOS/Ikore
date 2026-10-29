@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-27",
+  "fixture": "canvas_preview",
+  "profile": "debug",
+  "binarySha256": "ebfe3f7a90ec584995778ae910aa187d8e3694d855823913f4d316934584b69b",
+  "temporaryDatabase": true,
+  "credentialEndpointCollectorsDisabledInValidatedRun": true,
+  "observed": [
+    "Embedded tool SVGs and shortcut letters",
+    "Text hover shows name and shortcut",
+    "New rounded Sketch rectangle via icon and drag",
+    "Immediate label focus and Unicode typing",
+    "Shift+Enter inserts second line",
+    "Enter applies without adding another newline",
+    "A+ changes shape label size from 16 to 18",
+    "Open-stroke arrow and Curve left",
+    "Grid toggled off and on",
+    "Pan with grid enabled",
+    "Saved status before normal window close"
+  ],
+  "limits": [
+    "Functional walkthrough, not frame-rate measurement",
+    "OS IME candidate windows and every DPI configuration not certified",
+    "Other desktop workload uncontrolled"
+  ],
+  "closedNormally": true
+}

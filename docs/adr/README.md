@@ -65,7 +65,13 @@ Model-authored structured prose and artifacts must be English. The host
 validates that policy before acceptance/publication. Host-rendered documents
 may quote developer-owned input verbatim; this does not grant a model an
 exception from its output contract. UI text is also English. ADR-029 makes one
-narrow exception: a Companion note follows its author's language.
+narrow exception: a Companion note follows its author's language. The local
+Canvas authoring candidate also preserves the conversation language in its
+Canvas-owned title, labels, narrative and internal source explanation. Host UI,
+schemas and other generated artifacts retain the English policy. The separate
+consent-bound authoring runner grants only four Canvas operations; the ordinary
+Companion repository dispatcher remains read-only. See [Canvas AI authoring](../canvas-ai-authoring.md)
+and its linked validation record for the candidate's gate and qualification limits.
 
 ## ADR-015: navigation
 

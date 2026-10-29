@@ -1,0 +1,126 @@
+{
+  "schemaVersion": 1,
+  "capturedAtUtc": "2026-10-27T23:54:26.7800249Z",
+  "repository": "HARD-VC",
+  "branch": "main",
+  "baseCommit": "92f6a0c291c2d0e05703e228547e4faa26b95d8e",
+  "sourceCount": 28,
+  "files": [
+    {
+      "path": "crates/hvc-core/src/companion_drawings/domain_tests.rs",
+      "sha256": "dbd7a73055b0a54cbfa61fed2b92c219bb7dd724c08cf7dace945e6d70781943"
+    },
+    {
+      "path": "crates/hvc-core/src/companion_drawings/geometry.rs",
+      "sha256": "dc966c295c429238d3a159373cc1dea5ee4306fecd2b2b6df871472270686dd3"
+    },
+    {
+      "path": "crates/hvc-core/src/companion_drawings/mod.rs",
+      "sha256": "b7e1890d650f5b6a39c84c3d001f9def5d5587d89a77740102242e21a66f5fa7"
+    },
+    {
+      "path": "crates/hvc-core/src/companion_drawings/style_tests.rs",
+      "sha256": "b02426131c324d5695f8a96acddcd60a3ddcab28f57ec2f1e76853628bf90005"
+    },
+    {
+      "path": "crates/hvc-core/src/companion_drawings/svg.rs",
+      "sha256": "bad8c073aaaa7116dade8cf080db622bb01e786102a7087226fce28f50a3b82a"
+    },
+    {
+      "path": "crates/hvc-core/src/companion_drawings/validation.rs",
+      "sha256": "71d77cfc76da791133119dcebaae7576e95720898aa4791128ef33f6201320c4"
+    },
+    {
+      "path": "crates/hvc-core/src/companion_drawings/visual_geometry.rs",
+      "sha256": "66f6d67424efc1f17b972b274deb1b51de7bbb3b27afe054431555f423f22c55"
+    },
+    {
+      "path": "crates/hvc-test-support/tests/canvas.rs",
+      "sha256": "7ac614de7c3203b5ac958546089eaa41d20ff9df390dd6fc3040f38c47153523"
+    },
+    {
+      "path": "crates/hvc-ui/assets/icons/canvas-cursor.svg",
+      "sha256": "f531734882b42c2899a03f29f2e1c2144a8fe0cedf88db9d6a3f941f91a1a4f6"
+    },
+    {
+      "path": "crates/hvc-ui/assets/icons/canvas-diamond.svg",
+      "sha256": "da0d5b1665511f62aec577687ac73d2a13d8d4e6c875ad05399f2251c88d7e6b"
+    },
+    {
+      "path": "crates/hvc-ui/assets/icons/canvas-ellipse.svg",
+      "sha256": "beeed0a386e5fcd9b8e28e4584918afd6f9323df34898f8e269821304446f7d1"
+    },
+    {
+      "path": "crates/hvc-ui/assets/icons/canvas-eraser.svg",
+      "sha256": "ef5e4361dc2e8957e499e214fc62853b6656988581e4553672f6a3be11d36192"
+    },
+    {
+      "path": "crates/hvc-ui/assets/icons/canvas-hand.svg",
+      "sha256": "29318a7401552b3eb42bf66096dd0aa908489e7db0a6abb70a6d798b0b7b276c"
+    },
+    {
+      "path": "crates/hvc-ui/assets/icons/canvas-line.svg",
+      "sha256": "5033d804183537f74699067e8be5b8441c0b96a59b5cf1852d89d0a91162f87e"
+    },
+    {
+      "path": "crates/hvc-ui/assets/icons/canvas-lock-open.svg",
+      "sha256": "096efad06d5df3c2cf772e60d2fc76182ca60098d539063efb9855dc7ebc9ef4"
+    },
+    {
+      "path": "crates/hvc-ui/assets/icons/canvas-lock.svg",
+      "sha256": "17a086eb1e5ded97b3ca96553209e77e96e00d2fbb679419ccbc2fd49fae3654"
+    },
+    {
+      "path": "crates/hvc-ui/assets/icons/canvas-type.svg",
+      "sha256": "663c22c0c80a45aeb93806df459d137f5d19e6bd82642cf1d65be4b6deba78f2"
+    },
+    {
+      "path": "crates/hvc-ui/examples/canvas_grid_benchmark.rs",
+      "sha256": "110abfa0d7673258d5ebef43336d6ddfe1d7355dbb2c6ff13c969f91c64725f8"
+    },
+    {
+      "path": "crates/hvc-ui/src/assets.rs",
+      "sha256": "5ac3b5c5c81c01675fcaaa6e2f7cb4d6f494c98ff78dc711ce1b883c93f4b798"
+    },
+    {
+      "path": "crates/hvc-ui/src/canvas_integration_tests.rs",
+      "sha256": "576f3ff439e95a4d216592e06308c22fb9d0eae4e5aed521ce957e53d489100d"
+    },
+    {
+      "path": "crates/hvc-ui/src/canvas_tool_tests.rs",
+      "sha256": "d67857f1f3d9c46c73919655bb588ee167627e865062172c9a5094df5b0dac47"
+    },
+    {
+      "path": "crates/hvc-ui/src/canvas_view.rs",
+      "sha256": "f4efff8d3437e8f1ecaa9c3038c5f5e996697319eddfbb10739e3cd3e3a72dbb"
+    },
+    {
+      "path": "crates/hvc-ui/src/canvas.rs",
+      "sha256": "fc7b2e10285f6afaadc8238755c4fb21797a8bc0d04ca1056a5c0b6c795974da"
+    },
+    {
+      "path": "crates/hvc-ui/src/canvas/grid.rs",
+      "sha256": "839206d7226bc8bc5002074ad5df60c337384792f2b581e39124fc6416ef4d0d"
+    },
+    {
+      "path": "crates/hvc-ui/src/canvas/state.rs",
+      "sha256": "b5d65bc33a406bae2351535235046cf03c4339566f2d7acc72cfc43da4f9caf1"
+    },
+    {
+      "path": "crates/hvc-ui/src/icons.rs",
+      "sha256": "61dd4a77063e6ca78b8e717abf51caa66eee4067ba5121cb49275da4eb5552ed"
+    },
+    {
+      "path": "crates/hvc-ui/src/native_editor.rs",
+      "sha256": "af35e6d0b4aa8f4193ee5a4e7f3fe46af68ee0e35c95d2c203c46cdfbcbbe396"
+    },
+    {
+      "path": "crates/hvc-test-support/tests/cli_executor.rs",
+      "sha256": "e18b16272ae186fead75be00b9afdc41d2a46f361aeacc16a023af31835d5905"
+    }
+  ],
+  "preExistingWhisperWorkPreserved": true,
+  "preservationEvidence": "12 original source files match SHA256 manifest and literal backups; four overlapping files retain original local diff; see integration journal in target/canvas-integration-2026-10-27",
+  "commitPerformed": false,
+  "branchOrWorktreeCreated": false
+}

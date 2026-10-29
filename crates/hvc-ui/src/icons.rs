@@ -1,4 +1,4 @@
-//! The shell's icon vocabulary. One variant per Lucide glyph the UI uses; `path()` is the asset
+//! The shell's icon vocabulary. One variant per vector glyph the UI uses; `path()` is the asset
 //! key served by `assets::HvcAssets`. Rendered through `widgets::icon` / `widgets::icon_button`.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -135,11 +135,29 @@ pub(crate) enum Icon {
     NotebookPen,
     /// Voice dictation settings (ADR-029).
     Mic,
+    /// Canvas selection pointer.
+    Cursor,
+    /// Canvas pan tool.
+    Hand,
+    /// Canvas decision shape.
+    Diamond,
+    /// Canvas ellipse shape.
+    Ellipse,
+    /// Canvas straight line tool.
+    Line,
+    /// Canvas plain text tool.
+    Type,
+    /// Canvas erase tool.
+    Eraser,
+    /// Keep a drawing tool active.
+    Lock,
+    /// Return to selection after drawing.
+    LockOpen,
 }
 
 impl Icon {
     #[cfg(test)]
-    pub(crate) const ALL: [Self; 66] = [
+    pub(crate) const ALL: [Self; 75] = [
         Self::House,
         Self::Plus,
         Self::Hammer,
@@ -206,6 +224,15 @@ impl Icon {
         Self::Pencil,
         Self::NotebookPen,
         Self::Mic,
+        Self::Cursor,
+        Self::Hand,
+        Self::Diamond,
+        Self::Ellipse,
+        Self::Line,
+        Self::Type,
+        Self::Eraser,
+        Self::Lock,
+        Self::LockOpen,
     ];
 
     /// Asset path served by `HvcAssets`; `icons/<lucide-name>.svg`.
@@ -277,6 +304,15 @@ impl Icon {
             Self::Pencil => "icons/pencil.svg",
             Self::NotebookPen => "icons/notebook-pen.svg",
             Self::Mic => "icons/mic.svg",
+            Self::Cursor => "icons/canvas-cursor.svg",
+            Self::Hand => "icons/canvas-hand.svg",
+            Self::Diamond => "icons/canvas-diamond.svg",
+            Self::Ellipse => "icons/canvas-ellipse.svg",
+            Self::Line => "icons/canvas-line.svg",
+            Self::Type => "icons/canvas-type.svg",
+            Self::Eraser => "icons/canvas-eraser.svg",
+            Self::Lock => "icons/canvas-lock.svg",
+            Self::LockOpen => "icons/canvas-lock-open.svg",
         }
     }
 }

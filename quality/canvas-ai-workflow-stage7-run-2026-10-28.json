@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "startedAt": "2026-10-29T03:31:21.3960130Z",
+  "finishedAt": "2026-10-29T03:54:47.3122886Z",
+  "durationSeconds": 1405.906,
+  "passed": true,
+  "steps": [
+    {
+      "name": "estrutura exclusivamente GPUI/Rust",
+      "durationSeconds": 0.668,
+      "passed": true,
+      "exitCode": 0
+    },
+    {
+      "name": "crate dependency boundaries",
+      "durationSeconds": 0.136,
+      "passed": true,
+      "exitCode": 0
+    },
+    {
+      "name": "cargo fmt",
+      "durationSeconds": 4.867,
+      "passed": true,
+      "exitCode": 0
+    },
+    {
+      "name": "Clippy",
+      "durationSeconds": 8.028,
+      "passed": true,
+      "exitCode": 0
+    },
+    {
+      "name": "testes Rust",
+      "durationSeconds": 894.904,
+      "passed": true,
+      "exitCode": 0
+    },
+    {
+      "name": "build release GPUI",
+      "durationSeconds": 486.057,
+      "passed": true,
+      "exitCode": 0
+    },
+    {
+      "name": "smoke Windows GPUI",
+      "durationSeconds": 2.36,
+      "passed": true,
+      "exitCode": 0
+    },
+    {
+      "name": "licenças e fontes Rust",
+      "durationSeconds": 1.397,
+      "passed": true,
+      "exitCode": 0
+    },
+    {
+      "name": "advisories Rust",
+      "durationSeconds": 7.461,
+      "passed": true,
+      "exitCode": 0
+    }
+  ]
+}

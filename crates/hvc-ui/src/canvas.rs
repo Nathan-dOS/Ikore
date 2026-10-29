@@ -1,5 +1,10 @@
 //! Canvas lifecycle and commands. Blocking persistence never runs in paint or pointer handlers.
+pub(crate) mod grid;
 pub(crate) mod state;
+
+#[cfg(test)]
+#[path = "canvas_authored_navigation_tests.rs"]
+mod authored_navigation_tests;
 
 use std::{cell::Cell, rc::Rc, time::Duration};
 
@@ -8,8 +13,8 @@ use gpui::{
     Pixels, Point, Subscription, Task, Window, actions,
 };
 use hvc_core::companion_drawings::{
-    CanvasBackgroundMode, CanvasElementKindV1, CanvasSemanticColor, CanvasStrokeStyle,
-    CanvasStrokeWidth, geometry,
+    CanvasBackgroundMode, CanvasConnectorCurve, CanvasElementKindV1, CanvasSemanticColor,
+    CanvasStrokeRendering, CanvasStrokeStyle, CanvasStrokeWidth, geometry,
     service::{CompanionDrawing, CompanionDrawingSummary},
 };
 
@@ -18,11 +23,16 @@ use crate::{
 };
 pub(crate) use state::{EditorState, Tool};
 
-actions!(canvas_label, [ApplyLabel, CancelLabel, SaveLabel]);
+actions!(
+    canvas_label,
+    [ApplyLabel, NewlineLabel, CancelLabel, SaveLabel]
+);
 
 pub(crate) fn register_canvas_keybindings(cx: &mut App) {
     cx.bind_keys([
+        KeyBinding::new("enter", ApplyLabel, Some("CanvasLabel")),
         KeyBinding::new("ctrl-enter", ApplyLabel, Some("CanvasLabel")),
+        KeyBinding::new("shift-enter", NewlineLabel, Some("CanvasLabel")),
         KeyBinding::new("escape", CancelLabel, Some("CanvasLabel")),
         KeyBinding::new("ctrl-s", SaveLabel, Some("CanvasLabel")),
     ]);
@@ -49,6 +59,7 @@ pub(crate) struct CanvasUi {
     pub error: Option<String>,
     pub notice: Option<String>,
     pub redaction_notice: bool,
+    pub show_explanation: bool,
     draft_title: Option<String>,
     generation: u64,
     library_epoch: u64,
@@ -96,6 +107,7 @@ impl CanvasUi {
             error: None,
             notice: None,
             redaction_notice: false,
+            show_explanation: false,
             draft_title: None,
             generation: 0,
             library_epoch: 0,
@@ -190,6 +202,7 @@ impl CanvasUi {
             });
             self.redaction_notice = title_redacted || label_redacted;
             self.editor.scene = drawing.scene.clone();
+            self.editor.refresh_diagnostics();
             self.editor.dirty = false;
             self.draft_title = None;
             // A title input opened during this write is still owned by the developer.
@@ -252,6 +265,9 @@ pub(crate) enum CanvasAction {
     Color(CanvasSemanticColor),
     Width(CanvasStrokeWidth),
     Stroke(CanvasStrokeStyle),
+    FontSize(f32),
+    Rendering(CanvasStrokeRendering),
+    Curve(CanvasConnectorCurve),
     Fill,
     Round,
     Bidirectional,
@@ -261,9 +277,246 @@ pub(crate) enum CanvasAction {
     Zoom(f32),
     Fit,
     ToggleList,
+    ToggleExplanation,
+}
+
+fn resolve_canvas_selection(
+    requested: Option<&str>,
+    previous: Option<String>,
+    drawings: &[CompanionDrawingSummary],
+) -> Result<Option<String>, String> {
+    if let Some(requested) = requested {
+        return drawings
+            .iter()
+            .find(|drawing| drawing.id == requested)
+            .map(|drawing| Some(drawing.id.clone()))
+            .ok_or_else(|| "The requested drawing is no longer available.".into());
+    }
+    Ok(previous
+        .filter(|id| drawings.iter().any(|drawing| &drawing.id == id))
+        .or_else(|| drawings.first().map(|drawing| drawing.id.clone())))
 }
 
 impl AppModel {
+    pub(crate) fn canvas_choice_id(&self, field: &str) -> String {
+        format!(
+            "canvas-semantic-{field}:{}:{}",
+            self.canvas.active.as_ref().map_or("", |d| d.id.as_str()),
+            self.canvas.editor.selected.as_deref().unwrap_or("new")
+        )
+    }
+
+    pub(crate) fn canvas_choices(&self, id: &str) -> Vec<crate::select_menu::Choice> {
+        use crate::select_menu::Choice;
+        use hvc_core::companion_drawings::semantics::CanvasSemanticKindV1 as Semantic;
+        use state::semantic_editing::{semantic_kinds, semantic_name};
+        let Some(field) = id
+            .strip_prefix("canvas-semantic-")
+            .and_then(|s| s.split(':').next())
+        else {
+            return vec![];
+        };
+        if id != self.canvas_choice_id(field) || self.canvas.busy || self.canvas_project_switching {
+            return vec![];
+        }
+        let editor = &self.canvas.editor;
+        let Some(document) = &editor.scene.document else {
+            return vec![];
+        };
+        let selected = editor.selected_semantic();
+        if matches!(field, "create" | "type") {
+            let current = match (field, selected) {
+                ("type", Some(selected)) => selected.kind,
+                ("type", None) => return vec![],
+                _ => editor.creation_kind,
+            };
+            return semantic_kinds(document.profile)
+                .iter()
+                .enumerate()
+                .map(|(index, kind)| {
+                    Choice::new(
+                        index,
+                        semantic_name(*kind),
+                        *kind == current
+                            && (field == "type"
+                                || (editor.selected.is_none()
+                                    && editor.tool
+                                        == state::semantic_editing::semantic_tool(*kind))),
+                    )
+                })
+                .collect();
+        }
+        let current = match field {
+            "participant" => selected
+                .and_then(|e| e.participant_id.as_deref())
+                .or_else(|| {
+                    selected
+                        .is_none()
+                        .then_some(editor.participant_id.as_deref())
+                        .flatten()
+                }),
+            "lane" => selected.and_then(|e| e.lane_id.as_deref()).or_else(|| {
+                selected
+                    .is_none()
+                    .then_some(editor.lane_id.as_deref())
+                    .flatten()
+            }),
+            "source" => selected.and_then(|e| e.source_id.as_deref()).or_else(|| {
+                selected
+                    .is_none()
+                    .then_some(editor.semantic_source.as_deref())
+                    .flatten()
+            }),
+            "target" => selected.and_then(|e| e.target_id.as_deref()).or_else(|| {
+                selected
+                    .is_none()
+                    .then_some(editor.semantic_target.as_deref())
+                    .flatten()
+            }),
+            _ => return vec![],
+        };
+        let mut values = if matches!(field, "participant" | "lane") {
+            vec![Choice::new("", "None", current.is_none())]
+        } else {
+            vec![]
+        };
+        let participant = selected
+            .and_then(|e| e.participant_id.as_deref())
+            .or(editor.participant_id.as_deref());
+        for entry in &document.elements {
+            if match field {
+                "participant" => entry.kind != Semantic::Participant,
+                "lane" => {
+                    entry.kind != Semantic::Lane || entry.participant_id.as_deref() != participant
+                }
+                _ => matches!(
+                    entry.kind,
+                    Semantic::Relationship
+                        | Semantic::SequenceFlow
+                        | Semantic::MessageFlow
+                        | Semantic::Association
+                ),
+            } {
+                continue;
+            }
+            let label = editor
+                .scene
+                .elements
+                .iter()
+                .find(|e| e.id == entry.element_id)
+                .map(|e| e.label.as_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or(semantic_name(entry.kind));
+            values.push(Choice::new(
+                &entry.element_id,
+                format!(
+                    "{label} · {}",
+                    &entry.element_id[..entry.element_id.len().min(8)]
+                ),
+                current == Some(entry.element_id.as_str()),
+            ));
+        }
+        values
+    }
+
+    pub(crate) fn apply_canvas_choice(&mut self, id: &str, value: &str, cx: &mut Context<Self>) {
+        use state::semantic_editing::semantic_kinds;
+        let Some(field) = id
+            .strip_prefix("canvas-semantic-")
+            .and_then(|s| s.split(':').next())
+        else {
+            return;
+        };
+        if id != self.canvas_choice_id(field) || self.canvas.busy || self.canvas_project_switching {
+            return;
+        }
+        self.commit_canvas_label(cx);
+        if self.canvas.editing_label.is_some() {
+            return;
+        }
+        let editor = &mut self.canvas.editor;
+        let changed = match field {
+            "create" | "type" => {
+                let Some(kind) = editor
+                    .scene
+                    .document
+                    .as_ref()
+                    .and_then(|d| {
+                        value
+                            .parse::<usize>()
+                            .ok()
+                            .and_then(|i| semantic_kinds(d.profile).get(i))
+                    })
+                    .copied()
+                else {
+                    return;
+                };
+                if field == "create" {
+                    editor.set_creation_kind(kind);
+                    false
+                } else {
+                    editor.set_selected_kind(kind)
+                }
+            }
+            "participant" | "lane" => {
+                let selected = editor.selected_semantic();
+                let participant = selected
+                    .map(|e| e.participant_id.clone())
+                    .unwrap_or_else(|| editor.participant_id.clone());
+                let chosen = (!value.is_empty()).then(|| value.to_owned());
+                if field == "participant" {
+                    editor.set_membership(chosen, None)
+                } else {
+                    editor.set_membership(participant, chosen)
+                }
+            }
+            "source" | "target" => editor.set_endpoint(field == "source", value),
+            _ => false,
+        };
+        if changed && self.canvas.editor.dirty {
+            self.schedule_canvas_save(cx);
+        }
+        cx.notify();
+    }
+
+    /// Only an explicit developer action opens a published explanation.
+    pub(crate) fn open_authored_canvas(
+        &mut self,
+        project_id: String,
+        drawing_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        if self.canvas_project(cx).as_deref() != Some(project_id.as_str())
+            || self.canvas_project_switching
+        {
+            self.set_status_message("Return to the drawing's project before opening Canvas.");
+            cx.notify();
+            return;
+        }
+        if self
+            .canvas
+            .project_id
+            .as_deref()
+            .is_some_and(|owner| owner != project_id)
+            && self.canvas.has_pending()
+        {
+            self.set_status_message("Save the current drawing before opening another project.");
+            cx.notify();
+            return;
+        }
+        self.select_view(crate::AppView::Canvas, cx);
+        self.canvas.pending_action = Some(CanvasAction::Open(drawing_id));
+        self.resume_canvas_pending_action(cx);
+    }
+
+    fn resume_canvas_pending_action(&mut self, cx: &mut Context<Self>) {
+        if self.canvas.busy || self.canvas.saving || self.canvas.error.is_some() {
+            return;
+        }
+        if let Some(action) = self.canvas.pending_action.take() {
+            self.canvas_action(action, cx);
+        }
+    }
     pub(crate) fn observe_canvas_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.canvas.focus_observed {
             return;
@@ -342,6 +595,7 @@ impl AppModel {
             self.canvas.sync_requested = false;
             self.canvas.project_id = project.clone();
             self.canvas.drawings.clear();
+            self.canvas.pending_action = None;
             self.canvas.set_active(None, cx);
         }
         if project.is_some() && !self.canvas.busy && !self.canvas.saving {
@@ -409,6 +663,9 @@ impl AppModel {
             }
             CanvasAction::Tool(tool) => {
                 self.commit_canvas_label(cx);
+                if self.canvas.editing_label.is_some() {
+                    return;
+                }
                 self.canvas.editor.cancel();
                 self.canvas.editor.tool = tool;
                 cx.notify();
@@ -431,6 +688,10 @@ impl AppModel {
                 self.canvas.list_collapsed = !self.canvas.list_collapsed;
                 cx.notify();
             }
+            CanvasAction::ToggleExplanation => {
+                self.canvas.show_explanation = !self.canvas.show_explanation;
+                cx.notify();
+            }
             CanvasAction::Lock => {
                 self.canvas.editor.locked = !self.canvas.editor.locked;
                 cx.notify();
@@ -440,6 +701,9 @@ impl AppModel {
                     return;
                 }
                 self.commit_canvas_label(cx);
+                if self.canvas.editing_label.is_some() {
+                    return;
+                }
                 let changed = match other {
                     CanvasAction::Undo => self.canvas.editor.undo(),
                     CanvasAction::Redo => self.canvas.editor.redo(),
@@ -487,6 +751,53 @@ impl AppModel {
                                 .find(|e| Some(&e.id) == id.as_ref())
                             {
                                 element.stroke_style = stroke;
+                            }
+                        })
+                    }
+                    CanvasAction::Rendering(rendering) => {
+                        self.canvas.editor.style.rendering = rendering;
+                        self.canvas.editor.mutate(|scene, id| {
+                            if let Some(element) = scene
+                                .elements
+                                .iter_mut()
+                                .find(|e| Some(&e.id) == id.as_ref())
+                            {
+                                element.stroke_rendering = rendering;
+                            }
+                        })
+                    }
+                    CanvasAction::Curve(curve) => {
+                        self.canvas.editor.style.curve = curve;
+                        self.canvas.editor.mutate(|scene, id| {
+                            if let Some(element) = scene
+                                .elements
+                                .iter_mut()
+                                .find(|e| Some(&e.id) == id.as_ref())
+                                && element.shape.is_connector()
+                            {
+                                element.connector_curve = curve;
+                            }
+                        })
+                    }
+                    CanvasAction::FontSize(size) => {
+                        if !size.is_finite() || !(8.0..=96.0).contains(&size) {
+                            return;
+                        }
+                        self.canvas.editor.style.font_size = size;
+                        self.canvas.editor.mutate(|scene, id| {
+                            if let Some(element) = scene
+                                .elements
+                                .iter_mut()
+                                .find(|e| Some(&e.id) == id.as_ref())
+                            {
+                                element.label_font_size = Some(size);
+                                if let CanvasElementKindV1::Text { font_size } = &mut element.shape
+                                {
+                                    *font_size = size;
+                                    let bounds = geometry::label_bounds(element);
+                                    element.width = bounds.width.max(16.);
+                                    element.height = bounds.height.max(24.);
+                                }
                             }
                         })
                     }
@@ -578,6 +889,10 @@ impl AppModel {
                 .spawn_blocking(move || -> Result<_, String> {
                     let service = core.drawings();
                     let mut selection = selected;
+                    let requested = match &action {
+                        CanvasAction::Open(id) => Some(id.clone()),
+                        _ => None,
+                    };
                     match action {
                         CanvasAction::New => {
                             selection = Some(
@@ -611,9 +926,8 @@ impl AppModel {
                     let drawings = service
                         .list_summaries(&request_project)
                         .map_err(|e| e.to_string())?;
-                    let selected = selection
-                        .filter(|id| drawings.iter().any(|d| &d.id == id))
-                        .or_else(|| drawings.first().map(|d| d.id.clone()));
+                    let selected =
+                        resolve_canvas_selection(requested.as_deref(), selection, &drawings)?;
                     let drawing = selected
                         .map(|id| {
                             service
@@ -677,6 +991,7 @@ impl AppModel {
                 if self.canvas.editor.dirty {
                     self.schedule_canvas_save(cx);
                 }
+                self.resume_canvas_pending_action(cx);
             }
             Err(error) => {
                 self.canvas.error = Some(error);
@@ -871,6 +1186,11 @@ impl AppModel {
             return;
         }
         self.commit_canvas_label(cx);
+        if self.canvas.editing_label.is_some() {
+            self.canvas.label.read(cx).focus_handle(cx).focus(window);
+            cx.stop_propagation();
+            return;
+        }
         self.canvas.focus.focus(window);
         let point = self.canvas_screen_point(event.position);
         if event.click_count == 2 && self.canvas.editor.tool == Tool::Select {
@@ -949,6 +1269,13 @@ impl AppModel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.canvas.editing_label.is_some() {
+            self.commit_canvas_label(cx);
+            if self.canvas.editing_label.is_some() {
+                self.canvas.label.read(cx).focus_handle(cx).focus(window);
+                return;
+            }
+        }
         if let Some(element) = self
             .canvas
             .editor
@@ -966,8 +1293,7 @@ impl AppModel {
             let generation = self.canvas.generation;
             let focused_before_mount = window.focused(cx);
             self.canvas.label.update(cx, |input, cx| {
-                input.buffer = hvc_editor::EditorBuffer::new(text, "canvas-label");
-                cx.notify();
+                input.reset_plain_text(text, cx);
             });
             let model = cx.weak_entity();
             window.defer(cx, move |window, cx| {
@@ -993,6 +1319,9 @@ impl AppModel {
     }
 
     pub(crate) fn commit_canvas_label(&mut self, cx: &mut Context<Self>) {
+        if self.canvas.label.read(cx).has_marked_text() {
+            return;
+        }
         let Some(id) = self.canvas.editing_label.take() else {
             return;
         };
@@ -1024,8 +1353,25 @@ impl AppModel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.canvas.label.read(cx).has_marked_text() {
+            cx.stop_propagation();
+            return;
+        }
         self.commit_canvas_label(cx);
-        self.canvas.focus.focus(window);
+        if self.canvas.editing_label.is_none() {
+            self.canvas.focus.focus(window);
+        }
+        cx.stop_propagation();
+    }
+    pub(crate) fn newline_canvas_label(
+        &mut self,
+        _: &NewlineLabel,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.canvas
+            .label
+            .update(cx, |label, cx| label.insert_newline(cx));
         cx.stop_propagation();
     }
     pub(crate) fn cancel_canvas_label(
@@ -1048,7 +1394,9 @@ impl AppModel {
     ) {
         self.commit_canvas_label(cx);
         self.flush_canvas(cx);
-        self.canvas.focus.focus(window);
+        if self.canvas.editing_label.is_none() {
+            self.canvas.focus.focus(window);
+        }
         cx.stop_propagation();
     }
 

@@ -1263,16 +1263,21 @@ async fn companion_cli_uses_existing_cli_auth_without_hvc_credentials_and_persis
         .lock()
         .await;
     let binaries = tempfile::tempdir().unwrap();
-    std::fs::copy(
-        env!("CARGO_BIN_EXE_cli_fixture"),
-        binaries.path().join("claude.exe"),
-    )
-    .unwrap();
-    std::fs::copy(
-        env!("CARGO_BIN_EXE_cli_fixture"),
-        binaries.path().join("codex.exe"),
-    )
-    .unwrap();
+    // Discovery waits for every backend, not only the selected chat backend.
+    // Keep real CLI authentication probes (up to 45 s) out of this 30 s fixture.
+    for name in [
+        "codex.exe",
+        "claude.exe",
+        "gemini.exe",
+        "opencode.exe",
+        "agy.exe",
+    ] {
+        std::fs::copy(
+            env!("CARGO_BIN_EXE_cli_fixture"),
+            binaries.path().join(name),
+        )
+        .unwrap();
+    }
     let original_path = std::env::var_os("PATH");
     let _restore = PathRestore(original_path.clone());
     let mut paths = vec![binaries.path().to_path_buf()];
@@ -1431,6 +1436,213 @@ async fn authenticated_codex_companion_smoke() {
         }
     }
     assert_eq!(credentials.0.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn canvas_cli_offer_requires_consent_and_publishes_one_localized_drawing_on_all_backends() {
+    use hvc_core::chat_service::canvas_authoring::{
+        ApproveCanvasRequestV1, CanvasAuthoringRequestStateV1, DecideCanvasRequestV1,
+        GetCanvasRequestV1, ListCanvasRequestsV1,
+    };
+    use hvc_core::companion_drawings::{
+        CompanionDrawingsService, authoring_store::CanvasAuthoringStore,
+    };
+
+    let _path_lock = PATH_TEST_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let binaries = tempfile::tempdir().unwrap();
+    for name in [
+        "codex.exe",
+        "claude.exe",
+        "gemini.exe",
+        "opencode.exe",
+        "agy.exe",
+    ] {
+        std::fs::copy(
+            env!("CARGO_BIN_EXE_cli_fixture"),
+            binaries.path().join(name),
+        )
+        .unwrap();
+    }
+    let original_path = std::env::var_os("PATH");
+    let _restore = PathRestore(original_path.clone());
+    let mut paths = vec![binaries.path().to_path_buf()];
+    if let Some(path) = original_path {
+        paths.extend(std::env::split_paths(&path));
+    }
+    // SAFETY: all PATH-mutating tests in this binary share this lock and restore guard.
+    unsafe { std::env::set_var("PATH", std::env::join_paths(paths).unwrap()) };
+
+    for backend in [
+        CliBackend::Codex,
+        CliBackend::Claude,
+        CliBackend::Gemini,
+        CliBackend::Opencode,
+        CliBackend::Antigravity,
+    ] {
+        let harness = harness(Vec::new());
+        let persistence = PersistenceService::initialize(harness._data.path()).unwrap();
+        let drawings = CompanionDrawingsService::new(persistence);
+        let credentials = Arc::new(NoHvcCredentials::default());
+        let chat = Arc::new(ChatService::new(
+            &harness.database_path,
+            credentials.clone(),
+            Arc::new(NoopChatEventSink),
+        ));
+        chat.attach_terminal_service(harness.terminals.clone());
+        chat.attach_canvas_authoring(CanvasAuthoringStore::new(drawings.clone()))
+            .unwrap();
+        let target = ChatExecutionTargetRequest::Cli {
+            backend,
+            model: None,
+            model_profile: None,
+        };
+        let conversation = chat
+            .create_conversation(CreateChatConversationRequest {
+                project_id: harness.project_id.clone(),
+                target: target.clone(),
+            })
+            .unwrap()
+            .conversation;
+        chat.start_turn(
+            SendChatMessageRequest {
+                conversation_id: conversation.id.clone(),
+                content: "canvas-authoring-fixture: explique UI e Core".into(),
+                expected_target: None,
+            },
+            harness._workspace.path(),
+        )
+        .unwrap();
+        assert!(
+            chat.wait_for_idle(Duration::from_secs(30)).await,
+            "{backend:?}"
+        );
+        let scope = ListCanvasRequestsV1 {
+            project_id: harness.project_id.clone(),
+            conversation_id: conversation.id.clone(),
+        };
+        let rows = chat.list_canvas_requests(scope.clone()).unwrap();
+        assert_eq!(rows.len(), 1, "{backend:?}");
+        let offer = &rows[0];
+        assert_eq!(
+            offer.state,
+            CanvasAuthoringRequestStateV1::AwaitingAuthorization
+        );
+        assert!(drawings.list(&harness.project_id).unwrap().is_empty());
+        let before = chat
+            .get_conversation(GetChatConversationRequest {
+                conversation_id: conversation.id.clone(),
+            })
+            .unwrap();
+        let source = before
+            .messages
+            .iter()
+            .find(|message| message.id == offer.assistant_message_id)
+            .unwrap();
+        assert_eq!(source.status, "completed");
+        assert_eq!(
+            source.content,
+            "canvas-authoring-fixture: A interface chama o Core."
+        );
+        assert!(
+            before.tool_calls.is_empty(),
+            "the offer is control, not a repository tool"
+        );
+
+        assert!(
+            chat.approve_canvas_request(ApproveCanvasRequestV1 {
+                project_id: "foreign-project".into(),
+                conversation_id: conversation.id.clone(),
+                request_id: offer.request_id.clone(),
+                expected_request_revision: offer.request_revision,
+                action_id: "foreign".into(),
+                expected_target: target.clone(),
+            })
+            .is_err()
+        );
+        chat.approve_canvas_request(ApproveCanvasRequestV1 {
+            project_id: harness.project_id.clone(),
+            conversation_id: conversation.id.clone(),
+            request_id: offer.request_id.clone(),
+            expected_request_revision: offer.request_revision,
+            action_id: "human-approve".into(),
+            expected_target: target,
+        })
+        .unwrap();
+        tokio::time::timeout(Duration::from_secs(30), chat.wait_for_canvas_idle())
+            .await
+            .unwrap();
+        let ready = chat.list_canvas_requests(scope.clone()).unwrap().remove(0);
+        assert_eq!(
+            ready.state,
+            CanvasAuthoringRequestStateV1::Ready,
+            "{backend:?}: {:?}",
+            ready.failure
+        );
+        let locator = GetCanvasRequestV1 {
+            project_id: harness.project_id.clone(),
+            conversation_id: conversation.id.clone(),
+            request_id: offer.request_id.clone(),
+        };
+        let receipt = chat.resolve_canvas_ready_target(locator.clone()).unwrap();
+        assert_eq!(chat.resolve_canvas_ready_target(locator).unwrap(), receipt);
+        let published = drawings.list(&harness.project_id).unwrap();
+        assert_eq!(published.len(), 1);
+        assert_eq!(published[0].id, receipt.drawing_id);
+        assert_eq!(published[0].scene.elements.len(), 3);
+        let document = published[0].scene.document.as_ref().unwrap();
+        assert_eq!(document.language, "pt-BR");
+        assert_eq!(document.narrative, "A interface envia comandos ao Core.");
+        assert_eq!(document.provenance.as_ref().unwrap().source_id, source.id);
+        let after = chat
+            .get_conversation(GetChatConversationRequest {
+                conversation_id: conversation.id.clone(),
+            })
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&before.messages).unwrap(),
+            serde_json::to_value(&after.messages).unwrap(),
+            "Canvas must not rewrite the completed answer"
+        );
+        assert_eq!(credentials.0.load(Ordering::SeqCst), 0);
+        let usage =
+            hvc_core::usage::query_usage(&harness.database_path, &Default::default()).unwrap();
+        assert_eq!(
+            usage.totals.records, 3,
+            "one chat call and two Canvas calls"
+        );
+
+        // A later explanation is a new offer; declining it preserves the first drawing.
+        chat.start_turn(
+            SendChatMessageRequest {
+                conversation_id: conversation.id.clone(),
+                content: "canvas-authoring-fixture: explique novamente".into(),
+                expected_target: None,
+            },
+            harness._workspace.path(),
+        )
+        .unwrap();
+        assert!(chat.wait_for_idle(Duration::from_secs(30)).await);
+        let later = chat
+            .list_canvas_requests(scope)
+            .unwrap()
+            .into_iter()
+            .find(|row| row.request_id != offer.request_id)
+            .unwrap();
+        let declined = chat
+            .decline_canvas_request(DecideCanvasRequestV1 {
+                project_id: harness.project_id.clone(),
+                conversation_id: conversation.id.clone(),
+                request_id: later.request_id,
+                expected_request_revision: later.request_revision,
+                action_id: "human-decline".into(),
+            })
+            .unwrap();
+        assert_eq!(declined.state, CanvasAuthoringRequestStateV1::Declined);
+        assert_eq!(drawings.list(&harness.project_id).unwrap().len(), 1);
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

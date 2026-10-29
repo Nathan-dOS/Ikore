@@ -307,6 +307,7 @@ pub struct AppModel {
     pub(crate) forge: crate::forge::ForgeUi,
     pub(crate) notes: crate::notes::NotesUi,
     pub(crate) canvas: crate::canvas::CanvasUi,
+    pub(crate) canvas_authoring: crate::canvas_authoring_ui::CanvasAuthoringUi,
     pending_canvas_workspace: Option<String>,
     pub(crate) canvas_close_requested: bool,
     pub(crate) canvas_project_switching: bool,
@@ -538,6 +539,9 @@ impl AppModel {
             Arc::new(CoreAgentsBackend::new(Arc::clone(&core)));
         let logs_backend: Arc<dyn LogsBackend> = Arc::new(CoreLogsBackend::new(Arc::clone(&core)));
         let chat_backend: Arc<dyn ChatBackend> = Arc::new(CoreChatBackend::new(Arc::clone(&core)));
+        let canvas_authoring_backend = Arc::new(
+            crate::canvas_authoring_ui::CoreCanvasAuthoringBackend::new(Arc::clone(&core)),
+        );
         let mut model = Self::build(
             Some(core),
             Some(session_persistence),
@@ -550,6 +554,7 @@ impl AppModel {
         model.agents_backend = Some(agents_backend);
         model.logs_backend = Some(logs_backend);
         model.chat_backend = Some(chat_backend);
+        model.canvas_authoring.backend = Some(canvas_authoring_backend);
         model.start_lifecycle(cx);
         model.start_quota_poller(cx);
         cx.on_app_quit(|model, cx| model.flush_pending_session(cx))
@@ -835,6 +840,7 @@ impl AppModel {
             forge: crate::forge::ForgeUi::new(cx),
             notes: crate::notes::NotesUi::new(cx),
             canvas: crate::canvas::CanvasUi::new(cx),
+            canvas_authoring: crate::canvas_authoring_ui::CanvasAuthoringUi::default(),
             pending_canvas_workspace: None,
             canvas_close_requested: false,
             canvas_project_switching: false,
@@ -1077,6 +1083,10 @@ impl AppModel {
 
     pub fn status(&self) -> &SharedString {
         &self.status
+    }
+
+    pub(crate) fn set_status_message(&mut self, message: impl Into<SharedString>) {
+        self.status = message.into();
     }
 
     pub fn event_count(&self) -> u64 {
@@ -3961,6 +3971,7 @@ impl AppModel {
                 };
                 if applied {
                     model.schedule_session_persistence(cx);
+                    model.refresh_canvas_authoring(cx);
                 }
                 cx.notify();
             });
@@ -3989,6 +4000,7 @@ impl AppModel {
         }) {
             return;
         }
+        self.refresh_canvas_authoring(cx);
         self.schedule_session_persistence(cx);
         cx.notify();
         self.chat_task = Some(cx.spawn(async move |this, cx| {
@@ -4003,6 +4015,7 @@ impl AppModel {
                                 snapshot,
                             );
                         });
+                        model.refresh_canvas_authoring(cx);
                     }
                     Err(error) => model.chat.update(cx, |chat, _| chat.set_error(error)),
                 }
@@ -4338,6 +4351,8 @@ impl AppModel {
     }
 
     fn handle_chat_event(&mut self, envelope: ChatEventEnvelope, cx: &mut Context<Self>) {
+        let completed = envelope.kind == hvc_core::chat_service::ChatEventKind::TurnCompleted;
+        let conversation_id = envelope.conversation_id.clone();
         let outcome = self.chat.update(cx, |chat, _| chat.consume_event(envelope));
         match outcome {
             ChatEventOutcome::Ignored | ChatEventOutcome::Applied => {}
@@ -4348,6 +4363,17 @@ impl AppModel {
                 self.needs_resync = true;
                 self.resync_chat_turn(generation_id, conversation_id, cx);
             }
+        }
+        if completed
+            && self
+                .chat
+                .read(cx)
+                .active_conversation
+                .as_ref()
+                .map(|id| id.as_ref())
+                == Some(conversation_id.as_str())
+        {
+            self.refresh_canvas_authoring(cx);
         }
     }
 
@@ -4386,6 +4412,7 @@ impl AppModel {
                         if applied {
                             model.needs_resync = false;
                             model.status = "Turno do Chat ressincronizado".into();
+                            model.refresh_canvas_authoring(cx);
                         }
                     }
                     Err(error) => model.chat.update(cx, |chat, _| chat.set_error(error)),
@@ -7625,6 +7652,7 @@ impl AppModel {
         // Workspace changes may also have been lost; refresh its index without
         // replacing open buffers, the current project, or navigation state.
         self.mark_vault_stale(cx);
+        self.refresh_canvas_authoring(cx);
     }
 
     /// An applied Agents snapshot is the resync for a terminal/agents sequence gap. A lagged
@@ -8323,6 +8351,9 @@ impl AppModel {
                 {
                     self.refresh_canvas(cx);
                 }
+            }
+            AppEvent::CanvasAuthoring(event) => {
+                self.handle_canvas_authoring_changed(event.project_id, event.conversation_id, cx)
             }
             AppEvent::Voice(_) => self.refresh_voice_status(cx),
             AppEvent::DocDrift(event) => {

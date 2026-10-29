@@ -4,9 +4,10 @@ use gpui::{
     TextRun, Window, canvas, div, fill, font, point, prelude::*, px, rgb, size,
 };
 use hvc_core::companion_drawings::{
-    CanvasBackgroundMode, CanvasElementKindV1 as Kind, CanvasElementV1 as Element,
-    CanvasSceneV1 as Scene, CanvasSemanticColor as Color, CanvasStrokeStyle as Stroke,
-    CanvasStrokeWidth as Width, CanvasViewportV1 as Viewport, geometry,
+    CanvasBackgroundMode, CanvasConnectorCurve as Curve, CanvasElementKindV1 as Kind,
+    CanvasElementV1 as Element, CanvasSceneV1 as Scene, CanvasSemanticColor as Color,
+    CanvasStrokeRendering as Rendering, CanvasStrokeStyle as Stroke, CanvasStrokeWidth as Width,
+    CanvasViewportV1 as Viewport, geometry, visual_geometry,
 };
 
 use crate::{
@@ -16,6 +17,10 @@ use crate::{
     theme,
     widgets::{ButtonVariant, btn},
 };
+
+#[cfg(test)]
+#[path = "canvas_tool_tests.rs"]
+mod tool_tests;
 
 pub(crate) fn canvas_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
     if model.workspace.read(cx).project_id.is_none() {
@@ -65,6 +70,65 @@ fn action(
         cx,
         move |model, cx| model.canvas_action(command.clone(), cx),
     )
+}
+
+/// Compact, keyboard-readable controls: the glyph identifies the tool and the full
+/// name stays available in the native hover tooltip.
+#[allow(clippy::too_many_arguments)]
+fn tool_control(
+    id: impl Into<SharedString>,
+    glyph: Icon,
+    name: &'static str,
+    shortcut: &'static str,
+    command: Action,
+    enabled: bool,
+    selected: bool,
+    cx: &mut Context<AppModel>,
+) -> AnyElement {
+    let id = id.into();
+    let debug_id = id.clone();
+    let glyph_debug = format!("{id}:icon");
+    let key_debug = format!("{id}:key");
+    let ink = if selected {
+        theme::accent()
+    } else {
+        theme::text_muted()
+    };
+    let tooltip = crate::widgets::Tooltip::new(name).with_shortcut(shortcut);
+    crate::widgets::button_frame(
+        div().id(id).debug_selector(move || debug_id.to_string()),
+        if selected {
+            ButtonVariant::Selected
+        } else {
+            ButtonVariant::Ghost
+        },
+        enabled,
+    )
+    .w(px(56.))
+    .h(px(36.))
+    .gap(px(6.))
+    .tab_index(0)
+    .tooltip(move |_, cx| cx.new(|_| tooltip.clone()).into())
+    .when(enabled, |button| {
+        button.on_click(cx.listener(move |model, _, _, cx| {
+            model.canvas_action(command.clone(), cx);
+        }))
+    })
+    .child(
+        div()
+            .debug_selector(move || glyph_debug.clone())
+            .flex()
+            .items_center()
+            .child(crate::widgets::icon(glyph, px(18.), ink)),
+    )
+    .child(
+        div()
+            .debug_selector(move || key_debug.clone())
+            .text_xs()
+            .font_family(theme::FONT_MONO)
+            .child(shortcut),
+    )
+    .into_any_element()
 }
 
 fn master(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
@@ -383,29 +447,45 @@ fn detail(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
         .gap_1()
         .px_2()
         .py_1();
-    for (index, (tool, label)) in Tool::ALL.into_iter().enumerate() {
-        tools = tools.child(action(
+    for (index, (tool, _)) in Tool::ALL.into_iter().enumerate() {
+        if ui.editor.scene.document.is_some()
+            && !matches!(tool, Tool::Select | Tool::Hand | Tool::Eraser)
+        {
+            continue;
+        }
+        tools = tools.child(tool_control(
             format!("canvas-tool-{index}"),
-            label,
+            tool.icon(),
+            tool.name(),
+            tool.shortcut(),
             Action::Tool(tool),
             enabled,
             ui.editor.tool == tool,
             cx,
         ));
     }
-    tools = tools.child(action(
+    tools = tools.child(tool_control(
         "canvas-tool-lock",
         if ui.editor.locked {
-            "Locked · Q"
+            Icon::Lock
         } else {
-            "Lock · Q"
+            Icon::LockOpen
         },
+        if ui.editor.locked {
+            "Tool locked"
+        } else {
+            "Keep tool active"
+        },
+        "Q",
         Action::Lock,
         enabled,
         ui.editor.locked,
         cx,
     ));
     panel = panel.child(tools).child(styles(model, cx));
+    if ui.editor.scene.document.is_some() {
+        panel = panel.child(semantic_controls(model, cx));
+    }
     panel = panel.child(surface(model, cx));
     panel
         .child(
@@ -496,6 +576,217 @@ fn detail(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
         .into_any_element()
 }
 
+fn semantic_controls(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
+    use crate::canvas::state::semantic_editing::semantic_name;
+    use hvc_core::companion_drawings::semantics::{
+        CanvasProfileV1, CanvasSemanticKindV1 as Semantic,
+    };
+    let editor = &model.canvas.editor;
+    let document = editor.scene.document.as_ref().expect("semantic document");
+    let selected = editor.selected_semantic();
+    let kind = selected.map_or(editor.creation_kind, |e| e.kind);
+    let enabled = !model.canvas.busy && !model.canvas_project_switching;
+    let value_label = |id: Option<&str>| {
+        id.and_then(|id| editor.scene.elements.iter().find(|e| e.id == id))
+            .map(|e| {
+                if e.label.is_empty() {
+                    e.id[..e.id.len().min(8)].to_owned()
+                } else {
+                    e.label.clone()
+                }
+            })
+            .unwrap_or_else(|| "None".into())
+    };
+    let mut row = div()
+        .id("canvas-semantic-controls")
+        .debug_selector(|| "canvas-semantic-controls".into())
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap_2()
+        .px_2()
+        .py_1()
+        .border_b_1()
+        .border_color(theme::border())
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme::text_muted())
+                .child(match document.profile {
+                    CanvasProfileV1::Architecture => "Architecture",
+                    CanvasProfileV1::Bpmn => "Process · HVC BPMN profile",
+                }),
+        )
+        .child(crate::select_menu::compact_control(
+            model.canvas_choice_id("create"),
+            "Add",
+            semantic_name(editor.creation_kind),
+            enabled,
+            cx,
+        ));
+    if selected.is_some() {
+        row = row.child(crate::select_menu::compact_control(
+            model.canvas_choice_id("type"),
+            "Type",
+            semantic_name(kind),
+            enabled,
+            cx,
+        ));
+    }
+    if document.profile == CanvasProfileV1::Bpmn
+        && matches!(
+            kind,
+            Semantic::Task
+                | Semantic::UserTask
+                | Semantic::ServiceTask
+                | Semantic::StartEvent
+                | Semantic::EndEvent
+                | Semantic::ExclusiveGateway
+                | Semantic::ParallelGateway
+                | Semantic::Lane
+        )
+    {
+        let participant = selected
+            .map(|e| e.participant_id.as_deref())
+            .unwrap_or(editor.participant_id.as_deref());
+        row = row.child(crate::select_menu::compact_control(
+            model.canvas_choice_id("participant"),
+            "Pool",
+            value_label(participant),
+            enabled,
+            cx,
+        ));
+        if kind != Semantic::Lane {
+            let lane = selected
+                .map(|e| e.lane_id.as_deref())
+                .unwrap_or(editor.lane_id.as_deref());
+            row = row.child(crate::select_menu::compact_control(
+                model.canvas_choice_id("lane"),
+                "Lane",
+                value_label(lane),
+                enabled,
+                cx,
+            ));
+        }
+    }
+    if matches!(
+        kind,
+        Semantic::Relationship
+            | Semantic::SequenceFlow
+            | Semantic::MessageFlow
+            | Semantic::Association
+    ) {
+        for (field, label, default) in [
+            ("source", "From", editor.semantic_source.as_deref()),
+            ("target", "To", editor.semantic_target.as_deref()),
+        ] {
+            let value = selected
+                .map(|e| {
+                    if field == "source" {
+                        e.source_id.as_deref()
+                    } else {
+                        e.target_id.as_deref()
+                    }
+                })
+                .unwrap_or(default);
+            row = row.child(crate::select_menu::compact_control(
+                model.canvas_choice_id(field),
+                label,
+                value_label(value),
+                enabled,
+                cx,
+            ));
+        }
+    }
+    row = row.child(action(
+        "canvas-explanation",
+        "Explanation",
+        Action::ToggleExplanation,
+        true,
+        model.canvas.show_explanation,
+        cx,
+    ));
+    let mut panel = div().flex().flex_col().child(row);
+    if !editor.diagnostics.is_empty() {
+        let mut guidance = div()
+            .id("canvas-semantic-guidance")
+            .debug_selector(|| "canvas-semantic-guidance".into())
+            .px_3()
+            .py_1()
+            .text_xs()
+            .text_color(theme::warning())
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(format!(
+                "{} guidance warning(s). These draft checks do not prove process correctness.",
+                editor.diagnostics.len()
+            ));
+        for warning in editor.diagnostics.iter().take(3) {
+            let label = warning
+                .element_id
+                .as_deref()
+                .and_then(|id| editor.scene.elements.iter().find(|e| e.id == id))
+                .map(|e| e.label.chars().take(80).collect::<String>())
+                .filter(|label| !label.is_empty());
+            guidance = guidance.child(match label {
+                Some(label) => format!("{label}: {}", warning.message),
+                None => warning.message.clone(),
+            });
+        }
+        if editor.diagnostics.len() > 3 {
+            guidance = guidance.child(format!(
+                "{} additional guidance warning(s) remain.",
+                editor.diagnostics.len() - 3
+            ));
+        }
+        panel = panel.child(guidance);
+    }
+    if let Some(error) = &editor.semantic_error {
+        panel = panel.child(
+            div()
+                .px_3()
+                .py_1()
+                .text_xs()
+                .text_color(theme::danger())
+                .child(error.clone()),
+        );
+    }
+    if model.canvas.show_explanation {
+        let source = document
+            .provenance
+            .as_ref()
+            .map(|p| {
+                format!(
+                    "Source {} · revision {}",
+                    p.source_id,
+                    p.source_revision
+                        .map_or_else(|| "snapshot".into(), |r| r.to_string())
+                )
+            })
+            .unwrap_or_else(|| "Manually authored document".into());
+        panel = panel.child(
+            div()
+                .id("canvas-explanation-text")
+                .max_h(px(140.))
+                .overflow_y_scroll()
+                .px_3()
+                .py_2()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_muted())
+                        .child(source),
+                )
+                .child(div().text_sm().child(document.narrative.clone())),
+        );
+    }
+    panel.into_any_element()
+}
+
 fn styles(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
     let ui = &model.canvas;
     let selected = ui.editor.selected_element();
@@ -564,6 +855,39 @@ fn styles(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
             cx,
         ));
     }
+    let rendering = selected.map_or(ui.editor.style.rendering, |e| e.stroke_rendering);
+    for (index, value, label) in [
+        (0, Rendering::Sketch, "Sketch"),
+        (1, Rendering::Clean, "Clean"),
+    ] {
+        row = row.child(action(
+            format!("canvas-rendering-{index}"),
+            label,
+            Action::Rendering(value),
+            enabled,
+            rendering == value,
+            cx,
+        ));
+    }
+    if selected.is_some_and(|e| e.shape.is_connector())
+        || (selected.is_none() && matches!(ui.editor.tool, Tool::Arrow | Tool::Line))
+    {
+        let curve = selected.map_or(ui.editor.style.curve, |e| e.connector_curve);
+        for (index, value, label) in [
+            (0, Curve::Straight, "Straight"),
+            (1, Curve::CurveLeft, "Curve left"),
+            (2, Curve::CurveRight, "Curve right"),
+        ] {
+            row = row.child(action(
+                format!("canvas-curve-{index}"),
+                label,
+                Action::Curve(value),
+                enabled,
+                curve == value,
+                cx,
+            ));
+        }
+    }
     row = row.child(action(
         "canvas-fill",
         "Fill",
@@ -608,6 +932,36 @@ fn styles(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
             cx,
         ));
     }
+    let font_size = selected.map_or(ui.editor.style.font_size, geometry::label_font_size);
+    row = row.child(
+        div()
+            .flex()
+            .items_center()
+            .gap_1()
+            .ml_2()
+            .child(action(
+                "canvas-text-smaller",
+                "A−",
+                Action::FontSize((font_size - 2.).max(8.)),
+                enabled && font_size > 8.,
+                false,
+                cx,
+            ))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme::text_muted())
+                    .child(format!("{font_size:.0}")),
+            )
+            .child(action(
+                "canvas-text-larger",
+                "A+",
+                Action::FontSize((font_size + 2.).min(96.)),
+                enabled && font_size < 96.,
+                false,
+                cx,
+            )),
+    );
     row.child(action(
         "canvas-background",
         if ui.editor.scene.background_mode == CanvasBackgroundMode::Dark {
@@ -738,13 +1092,14 @@ fn surface(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
                     cx.listener(|_, _, _, cx| cx.stop_propagation()),
                 )
                 .on_action(cx.listener(AppModel::apply_canvas_label))
+                .on_action(cx.listener(AppModel::newline_canvas_label))
                 .on_action(cx.listener(AppModel::cancel_canvas_label))
                 .on_action(cx.listener(AppModel::save_canvas_label))
                 .child(
                     div()
                         .text_xs()
                         .text_color(theme::text_muted())
-                        .child("Label · Ctrl+Enter to apply · Escape to cancel"),
+                        .child("Enter applies · Shift+Enter adds a line · Esc cancels"),
                 )
                 .child(div().flex_1().min_h_0().child(ui.label.clone()))
                 .child(
@@ -764,7 +1119,7 @@ fn surface(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
                             div()
                                 .text_xs()
                                 .text_color(theme::text_subtle())
-                                .child("Enter adds a line"),
+                                .child("Enter applies without adding a line"),
                         ),
                 ),
         );
@@ -784,32 +1139,7 @@ fn paint_scene(
     cx: &mut App,
 ) {
     if scene.show_grid {
-        let mut spacing = 24. * view.zoom;
-        while spacing < 12. {
-            spacing *= 2.;
-        }
-        let start_x = view.pan_x.rem_euclid(spacing);
-        let start_y = view.pan_y.rem_euclid(spacing);
-        let color = if scene.background_mode == CanvasBackgroundMode::Dark {
-            rgb(0x1d2937)
-        } else {
-            rgb(0xd8dde5)
-        };
-        let mut y = start_y;
-        while y < f32::from(bounds.size.height) {
-            let mut x = start_x;
-            while x < f32::from(bounds.size.width) {
-                window.paint_quad(fill(
-                    Bounds::new(
-                        point(bounds.left() + px(x), bounds.top() + px(y)),
-                        size(px(1.), px(1.)),
-                    ),
-                    color,
-                ));
-                x += spacing;
-            }
-            y += spacing;
-        }
+        crate::canvas::grid::paint_grid(bounds, view, scene.background_mode, window);
     }
     let visible = geometry::Bounds {
         x: -view.pan_x / view.zoom,
@@ -818,7 +1148,12 @@ fn paint_scene(
         height: f32::from(bounds.size.height) / view.zoom,
     };
     for element in geometry::paint_order(scene) {
-        if !geometry::element_bounds(element)
+        let semantic_kind = scene
+            .document
+            .as_ref()
+            .and_then(|d| d.elements.iter().find(|s| s.element_id == element.id))
+            .map(|s| s.kind);
+        if !geometry::ink_bounds(element)
             .union(geometry::label_bounds(element))
             .expanded(20.)
             .intersects(visible)
@@ -837,8 +1172,19 @@ fn paint_scene(
             }
         }
         if !matches!(element.shape, Kind::Text { .. }) {
-            let mut builder = PathBuilder::stroke(px(element.stroke_width.units() * view.zoom));
-            builder = match element.stroke_style {
+            use hvc_core::companion_drawings::semantics::CanvasSemanticKindV1 as Semantic;
+            let stroke = match semantic_kind {
+                Some(Semantic::MessageFlow) => Stroke::Dashed,
+                Some(Semantic::Association) => Stroke::Dotted,
+                _ => element.stroke_style,
+            };
+            let line_width = if semantic_kind == Some(Semantic::EndEvent) {
+                element.stroke_width.units().max(4.)
+            } else {
+                element.stroke_width.units()
+            };
+            let mut builder = PathBuilder::stroke(px(line_width * view.zoom));
+            builder = match stroke {
                 Stroke::Solid => builder,
                 Stroke::Dashed => builder.dash_array(&[px(8. * view.zoom), px(6. * view.zoom)]),
                 Stroke::Dotted => builder.dash_array(&[px(view.zoom), px(5. * view.zoom)]),
@@ -850,27 +1196,39 @@ fn paint_scene(
             if let Kind::Arrow { bidirectional, .. } = element.shape
                 && let Some([start, end]) = geometry::connector_world_points(element)
             {
-                paint_arrowhead(
-                    start,
-                    end,
-                    element.stroke_width.units(),
-                    view,
-                    bounds,
-                    color,
-                    window,
-                );
-                if bidirectional {
+                if element.stroke_rendering == Rendering::Sketch
+                    || element.connector_curve != Curve::Straight
+                {
+                    paint_styled_arrowhead(element, false, view, bounds, color, window);
+                    if bidirectional {
+                        paint_styled_arrowhead(element, true, view, bounds, color, window);
+                    }
+                } else {
                     paint_arrowhead(
-                        end,
                         start,
+                        end,
                         element.stroke_width.units(),
                         view,
                         bounds,
                         color,
                         window,
                     );
+                    if bidirectional {
+                        paint_arrowhead(
+                            end,
+                            start,
+                            element.stroke_width.units(),
+                            view,
+                            bounds,
+                            color,
+                            window,
+                        );
+                    }
                 }
             }
+        }
+        if let Some(kind) = semantic_kind {
+            paint_semantic_marker(kind, element, view, bounds, color, window, cx);
         }
         if editing != Some(element.id.as_str()) && !element.label.is_empty() {
             let font_size = geometry::label_font_size(element) * view.zoom;
@@ -891,8 +1249,7 @@ fn paint_scene(
                     &[run],
                     None,
                 );
-                let centre =
-                    geometry::world_to_screen(view, [element.x + element.width / 2., label.y]);
+                let centre = geometry::world_to_screen(view, [label.centre()[0], label.y]);
                 let x = if is_text {
                     element.x * view.zoom + view.pan_x
                 } else {
@@ -934,7 +1291,70 @@ fn paint_scene(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn paint_semantic_marker(
+    kind: hvc_core::companion_drawings::semantics::CanvasSemanticKindV1,
+    element: &Element,
+    view: &Viewport,
+    bounds: Bounds<Pixels>,
+    color: gpui::Rgba,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    use hvc_core::companion_drawings::semantics::CanvasSemanticKindV1 as Semantic;
+    let marker = match kind {
+        Semantic::ExclusiveGateway => "×",
+        Semantic::ParallelGateway => "+",
+        Semantic::UserTask => "User",
+        Semantic::ServiceTask => "Service",
+        Semantic::Participant => "Pool",
+        Semantic::Lane => "Lane",
+        _ => return,
+    };
+    let gateway = matches!(kind, Semantic::ExclusiveGateway | Semantic::ParallelGateway);
+    let font_size = if gateway { 14. } else { 10. } * view.zoom;
+    let run = TextRun {
+        len: marker.len(),
+        font: font(theme::FONT_UI),
+        color: color.into(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let line = window
+        .text_system()
+        .shape_line(marker.into(), px(font_size), &[run], None);
+    let position = geometry::world_to_screen(
+        view,
+        if gateway {
+            [
+                element.x + element.width / 2.,
+                element.y + element.height * 0.2,
+            ]
+        } else {
+            [element.x + 6., element.y + 3.]
+        },
+    );
+    let x = if gateway {
+        position[0] - f32::from(line.width) / 2.
+    } else {
+        position[0]
+    };
+    let _ = line.paint(
+        point(bounds.left() + px(x), bounds.top() + px(position[1])),
+        px(font_size * 1.2),
+        window,
+        cx,
+    );
+}
+
 fn shape_path(path: &mut PathBuilder, element: &Element, view: &Viewport, bounds: Bounds<Pixels>) {
+    if element.stroke_rendering == Rendering::Sketch
+        || (element.shape.is_connector() && element.connector_curve != Curve::Straight)
+    {
+        vector_path(path, &visual_geometry::element_path(element), view, bounds);
+        return;
+    }
     let p = |x: f32, y: f32| {
         let p = geometry::world_to_screen(view, [x, y]);
         point(bounds.left() + px(p[0]), bounds.top() + px(p[1]))
@@ -981,6 +1401,51 @@ fn shape_path(path: &mut PathBuilder, element: &Element, view: &Viewport, bounds
             }
         }
         Kind::Text { .. } => {}
+    }
+}
+
+fn vector_path(
+    path: &mut PathBuilder,
+    vector: &visual_geometry::VectorPath,
+    view: &Viewport,
+    bounds: Bounds<Pixels>,
+) {
+    let p = |world| {
+        let screen = geometry::world_to_screen(view, world);
+        point(bounds.left() + px(screen[0]), bounds.top() + px(screen[1]))
+    };
+    for command in &vector.commands {
+        match command {
+            visual_geometry::Command::Move(a) => path.move_to(p(*a)),
+            visual_geometry::Command::Line(a) => path.line_to(p(*a)),
+            visual_geometry::Command::Quadratic(control, end) => {
+                path.curve_to(p(*end), p(*control))
+            }
+            visual_geometry::Command::Cubic(a, b, end) => {
+                path.cubic_bezier_to(p(*end), p(*a), p(*b))
+            }
+            visual_geometry::Command::Close => path.close(),
+        }
+    }
+}
+
+fn paint_styled_arrowhead(
+    element: &Element,
+    at_start: bool,
+    view: &Viewport,
+    bounds: Bounds<Pixels>,
+    color: gpui::Rgba,
+    window: &mut Window,
+) {
+    let vector = visual_geometry::arrowhead_path(element, at_start);
+    let mut builder = if vector.closed {
+        PathBuilder::fill()
+    } else {
+        PathBuilder::stroke(px(element.stroke_width.units() * view.zoom))
+    };
+    vector_path(&mut builder, &vector, view, bounds);
+    if let Ok(path) = builder.build() {
+        window.paint_path(path, color);
     }
 }
 
