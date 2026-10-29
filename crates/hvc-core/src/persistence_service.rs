@@ -60,6 +60,14 @@ fn sanitized_observation_json(value: &Value) -> Value {
 
 #[path = "orchestration/anticipation.rs"]
 mod anticipation;
+#[path = "orchestration/attestation_persistence.rs"]
+mod attestation_persistence;
+pub use crate::attestation::{
+    AttestationExport, AttestationFileCheck, AttestationKeyRecord, AttestationKeyState,
+    AttestationKeyStatus, AttestationState, AttestationStatus, AttestationVerification, FileKey,
+    RederivationCheck, SignatureCheck, SubjectCheck, WorkspaceCheck,
+};
+pub use attestation_persistence::ATTESTATION_SEALING_SETTING;
 #[path = "orchestration/brownfield_context.rs"]
 mod brownfield_context;
 #[path = "orchestration/brownfield_enrichment.rs"]
@@ -98,8 +106,13 @@ pub(crate) use forge_batches::StructuredRequest;
 mod indexing;
 #[path = "orchestration/integration.rs"]
 mod integration;
+#[path = "orchestration/layers_persistence.rs"]
+mod layers_persistence;
 #[path = "orchestration/learning.rs"]
 mod learning;
+#[path = "orchestration/mandate_persistence.rs"]
+mod mandate_persistence;
+pub use mandate_persistence::{MandateEnforcementEvent, MandatePreview, MandateRevisionRecord};
 #[path = "orchestration/preparation.rs"]
 mod preparation;
 #[path = "orchestration/pulsation_report.rs"]
@@ -108,6 +121,9 @@ mod pulsation_report;
 mod reconciliation;
 #[path = "orchestration/resolution.rs"]
 mod resolution;
+#[path = "orchestration/scope_persistence.rs"]
+mod scope_persistence;
+pub use scope_persistence::ScopeRequestView;
 #[path = "orchestration/serial.rs"]
 mod serial;
 #[path = "orchestration/supervisor.rs"]
@@ -981,6 +997,10 @@ pub struct StageFailureCheckpoint {
     pub remaining_extra_invocations: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stage_execution_id: Option<String>,
+    /// The scope request a `scope_insufficient` kept with this checkpoint
+    /// (ADR-035 M4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_request: Option<ScopeRequestView>,
 }
 
 /// The model output that was rejected on the last attempt, so the operator can see
@@ -1000,6 +1020,20 @@ pub struct ResolveStageFailureRequest {
     pub expected_state_version: u64,
     pub decision: StageFailureDecision,
     pub feedback: Option<String>,
+}
+
+/// A waiting failure checkpoint, as the decision that settles it finds it.
+struct WaitingFailure {
+    pulsation_id: String,
+    stage_raw: String,
+    producer_job_id: String,
+    class_raw: String,
+    allow_retry: bool,
+    allow_revision: bool,
+    revision_stage_raw: Option<String>,
+    error_code: String,
+    stage_execution_id: Option<String>,
+    allowed_targets_json: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1692,71 +1726,79 @@ impl PersistenceService {
     }
 
     fn load_runtime_config(&self) -> Result<AgentRuntimeConfig, PersistenceServiceError> {
+        Self::runtime_config_from(&self.connection()?)
+    }
+
+    /// The runtime configuration read on `connection`, for callers inside an
+    /// open transaction: a second connection there can deadlock against a
+    /// writer waiting to commit.
+    pub(crate) fn runtime_config_from(
+        connection: &Connection,
+    ) -> Result<AgentRuntimeConfig, PersistenceServiceError> {
         let mut config = AgentRuntimeConfig::default();
-        let connection = self.connection()?;
 
         if let Some(raw_provider) =
-            Self::read_runtime_setting(&connection, SETTING_RUNTIME_PROVIDER)?
+            Self::read_runtime_setting(connection, SETTING_RUNTIME_PROVIDER)?
             && let Some(provider) = LlmProvider::parse(raw_provider.trim())
         {
             config.provider = provider;
         }
 
-        if let Some(raw_model) = Self::read_runtime_setting(&connection, SETTING_RUNTIME_MODEL)? {
+        if let Some(raw_model) = Self::read_runtime_setting(connection, SETTING_RUNTIME_MODEL)? {
             config.model = raw_model;
         }
 
         if let Some(raw_temperature) =
-            Self::read_runtime_setting(&connection, SETTING_RUNTIME_TEMPERATURE)?
+            Self::read_runtime_setting(connection, SETTING_RUNTIME_TEMPERATURE)?
             && let Ok(parsed) = raw_temperature.parse::<f32>()
         {
             config.temperature = parsed;
         }
 
         if let Some(raw_max_output_tokens) =
-            Self::read_runtime_setting(&connection, SETTING_RUNTIME_MAX_OUTPUT_TOKENS)?
+            Self::read_runtime_setting(connection, SETTING_RUNTIME_MAX_OUTPUT_TOKENS)?
             && let Ok(parsed) = raw_max_output_tokens.parse::<u32>()
         {
             config.max_output_tokens = parsed;
         }
 
         if let Some(raw_timeout_ms) =
-            Self::read_runtime_setting(&connection, SETTING_RUNTIME_TIMEOUT_MS)?
+            Self::read_runtime_setting(connection, SETTING_RUNTIME_TIMEOUT_MS)?
             && let Ok(parsed) = raw_timeout_ms.parse::<u64>()
         {
             config.timeout_ms = parsed;
         }
 
         if let Some(raw_max_retries) =
-            Self::read_runtime_setting(&connection, SETTING_RUNTIME_MAX_RETRIES)?
+            Self::read_runtime_setting(connection, SETTING_RUNTIME_MAX_RETRIES)?
             && let Ok(parsed) = raw_max_retries.parse::<u8>()
         {
             config.max_retries = parsed;
         }
 
         if let Some(raw_context_limit) =
-            Self::read_runtime_setting(&connection, SETTING_RUNTIME_CONTEXT_LIMIT)?
+            Self::read_runtime_setting(connection, SETTING_RUNTIME_CONTEXT_LIMIT)?
             && let Ok(parsed) = raw_context_limit.parse::<usize>()
         {
             config.context_chars_limit = parsed;
         }
 
         if let Some(raw_max_context_files) =
-            Self::read_runtime_setting(&connection, SETTING_RUNTIME_MAX_CONTEXT_FILES)?
+            Self::read_runtime_setting(connection, SETTING_RUNTIME_MAX_CONTEXT_FILES)?
             && let Ok(parsed) = raw_max_context_files.parse::<usize>()
         {
             config.max_context_files = parsed;
         }
 
         if let Some(raw_strategy) =
-            Self::read_runtime_setting(&connection, SETTING_RUNTIME_CONTEXT_STRATEGY)?
+            Self::read_runtime_setting(connection, SETTING_RUNTIME_CONTEXT_STRATEGY)?
             && let Some(parsed) = ContextStrategy::parse(raw_strategy.trim())
         {
             config.context_strategy = parsed;
         }
 
         if let Some(raw_embedding_enabled) =
-            Self::read_runtime_setting(&connection, SETTING_RUNTIME_EMBEDDING_ENABLED)?
+            Self::read_runtime_setting(connection, SETTING_RUNTIME_EMBEDDING_ENABLED)?
         {
             config.embedding_enabled = matches!(
                 raw_embedding_enabled.trim(),
@@ -1765,41 +1807,41 @@ impl PersistenceService {
         }
 
         if let Some(raw_embedding_provider) =
-            Self::read_runtime_setting(&connection, SETTING_RUNTIME_EMBEDDING_PROVIDER)?
+            Self::read_runtime_setting(connection, SETTING_RUNTIME_EMBEDDING_PROVIDER)?
             && let Some(parsed) = EmbeddingProvider::parse(raw_embedding_provider.trim())
         {
             config.embedding_provider = parsed;
         }
 
         if let Some(raw_embedding_model) =
-            Self::read_runtime_setting(&connection, SETTING_RUNTIME_EMBEDDING_MODEL)?
+            Self::read_runtime_setting(connection, SETTING_RUNTIME_EMBEDDING_MODEL)?
         {
             config.embedding_model = raw_embedding_model;
         }
 
         if let Some(raw_embedding_top_k) =
-            Self::read_runtime_setting(&connection, SETTING_RUNTIME_EMBEDDING_TOP_K)?
+            Self::read_runtime_setting(connection, SETTING_RUNTIME_EMBEDDING_TOP_K)?
             && let Ok(parsed) = raw_embedding_top_k.parse::<usize>()
         {
             config.embedding_top_k = parsed;
         }
 
         if let Some(raw_mode) =
-            Self::read_runtime_setting(&connection, SETTING_RUNTIME_ADAPTIVE_CONTEXT_MODE)?
+            Self::read_runtime_setting(connection, SETTING_RUNTIME_ADAPTIVE_CONTEXT_MODE)?
             && let Some(parsed) = AdaptiveContextMode::parse(raw_mode.trim())
         {
             config.adaptive_context_mode = parsed;
         }
 
         if let Some(raw_policy) =
-            Self::read_runtime_setting(&connection, SETTING_RUNTIME_DYNAMIC_CONTEXT_POLICY)?
+            Self::read_runtime_setting(connection, SETTING_RUNTIME_DYNAMIC_CONTEXT_POLICY)?
             && let Ok(parsed) = serde_json::from_str::<DynamicContextPolicy>(&raw_policy)
         {
             config.dynamic_context_policy = parsed;
         }
 
         if let Some(raw_mode) =
-            Self::read_runtime_setting(&connection, SETTING_RUNTIME_ROUTING_V2_MODE)?
+            Self::read_runtime_setting(connection, SETTING_RUNTIME_ROUTING_V2_MODE)?
         {
             config.routing_v2_mode = RoutingMode::parse(&raw_mode);
         }
@@ -2209,6 +2251,8 @@ impl PersistenceService {
                 "UPDATE pulsation_review_policy_snapshots SET content_json=NULL WHERE pulsation_id=?1 AND content_json IS NOT NULL",
                 [current.id.as_str()],
             )?;
+            // ADR-036: sealing runs later, from this intent.
+            Self::enqueue_attestation_seal(transaction, &current.id)?;
         }
 
         let event_id = Uuid::new_v4().to_string();
@@ -3209,6 +3253,33 @@ impl PersistenceService {
                 ],
             )?;
         }
+        // ADR-035 M1: the approved API fallback is a transport amendment of
+        // the mandate in force; before the Specification there is none, and
+        // the issued mandate then records the override as resolved.
+        if request.decision == CliFallbackDecision::UseApi {
+            Self::amend_mandate_transport(
+                &transaction,
+                &pulsation_id,
+                role,
+                checkpoint_id,
+                stage,
+                request.expected_state_version,
+            )?;
+        }
+        Self::record_approval_receipt(
+            &transaction,
+            mandate_persistence::ReceiptInput {
+                checkpoint_id,
+                pulsation_id: &pulsation_id,
+                purpose: "cli_fallback",
+                stage: stage.as_db_value(),
+                decision: request.decision.as_db_value(),
+                state_version: request.expected_state_version,
+                reviewed: Vec::new(),
+                confirmed_paths: Vec::new(),
+                feedback: None,
+            },
+        )?;
         transaction.commit()?;
         for job_id in cancellation_ids {
             self.request_job_cancellation(&job_id);
@@ -3315,10 +3386,15 @@ impl PersistenceService {
                 allowed_revision_targets,
                 remaining_extra_invocations,
                 stage_execution_id: row.get(16)?,
+                scope_request: None,
             })
         })?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(PersistenceServiceError::from)
+        let mut checkpoints = rows.collect::<Result<Vec<_>, _>>()?;
+        for checkpoint in &mut checkpoints {
+            checkpoint.scope_request =
+                Self::scope_request_view(connection, &checkpoint.checkpoint_id)?;
+        }
+        Ok(checkpoints)
     }
 
     pub fn read_stage_failure_detail(
@@ -3410,38 +3486,7 @@ impl PersistenceService {
         let mut connection = self.connection()?;
         let transaction =
             connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        // `Specification` stringifies as SPECIFICATION but legacy rows say Specification.
-        let found = transaction
-            .query_row(
-                "SELECT c.pulsation_id,f.stage,f.job_id,f.failure_class,f.allow_retry,
-                        f.allow_revision,f.revision_stage,f.error_code,f.stage_execution_id,
-                        f.allowed_revision_targets_json
-                 FROM stage_failure_requests f
-                 JOIN checkpoints c ON c.id=f.checkpoint_id
-                 JOIN pulsations p ON p.id=f.pulsation_id
-                 WHERE c.id=?1 AND c.purpose='stage_failure' AND c.status='waiting'
-                   AND f.decision IS NULL AND p.status='checkpoint'
-                   AND c.state_version=?2 AND p.state_version=?2
-                   AND c.input_revision=p.input_revision
-                   AND (c.stage=p.stage OR (c.stage='Specification' AND p.stage='SPECIFICATION'))",
-                params![checkpoint_id, request.expected_state_version],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, i64>(4)? != 0,
-                        row.get::<_, i64>(5)? != 0,
-                        row.get::<_, Option<String>>(6)?,
-                        row.get::<_, String>(7)?,
-                        row.get::<_, Option<String>>(8)?,
-                        row.get::<_, Option<String>>(9)?,
-                    ))
-                },
-            )
-            .optional()?;
-        let Some((
+        let WaitingFailure {
             pulsation_id,
             stage_raw,
             producer_job_id,
@@ -3452,22 +3497,11 @@ impl PersistenceService {
             error_code,
             stage_execution_id,
             allowed_targets_json,
-        )) = found
-        else {
-            return Err(PersistenceServiceError::Validation(
-                "The failure checkpoint is missing or stale. Refresh before deciding.".to_string(),
-            ));
-        };
-        let waiting: i64 = transaction.query_row(
-            "SELECT COUNT(*) FROM checkpoints WHERE pulsation_id=?1 AND status='waiting'",
-            [&pulsation_id],
-            |row| row.get(0),
+        } = Self::waiting_stage_failure(
+            &transaction,
+            checkpoint_id,
+            request.expected_state_version,
         )?;
-        if waiting != 1 {
-            return Err(PersistenceServiceError::Validation(
-                "The failure checkpoint is ambiguous. Refresh before deciding.".to_string(),
-            ));
-        }
         // The UI hides unavailable buttons; the host must not rely on that.
         let permitted = match request.decision {
             StageFailureDecision::RetryStage => allow_retry,
@@ -3524,6 +3558,13 @@ impl PersistenceService {
              WHERE checkpoint_id=?1",
             params![checkpoint_id, request.decision.as_db_value(), now],
         )?;
+        // ADR-035 M4: any other action declines the checkpoint's scope request.
+        Self::decline_scope_request(
+            &transaction,
+            checkpoint_id,
+            request.decision.as_db_value(),
+            &now,
+        )?;
 
         let mut cancellation_ids = Vec::new();
         let result = match request.decision {
@@ -3579,38 +3620,7 @@ impl PersistenceService {
                 updated
             }
             StageFailureDecision::RetryStage => {
-                // Transition first: the claim requires j.state_version=p.state_version,
-                // and the resume UPDATE below reads the post-transition value.
-                let updated = Self::transition_pulsation(
-                    &transaction,
-                    &current,
-                    PulsationStatus::Planning,
-                    stage,
-                    "stage_failure_retry",
-                    Some("Stage retry requested by the user."),
-                )?;
-                // `attempts` is intentionally NOT reset: the automatic budget stays
-                // spent, so one click buys exactly one agent call and a fresh failure
-                // reopens this checkpoint instead of looping.
-                let changed = transaction.execute(
-                    "UPDATE jobs SET status='pending',last_error=NULL,started_at=NULL,finished_at=NULL,
-                       cancel_requested_at=NULL,cancellation_reason=NULL,available_at=?2,updated_at=?2,
-                       state_version=(SELECT state_version FROM pulsations WHERE id=?3),
-                       generation=generation+1
-                     WHERE id=?1 AND pulsation_id=?3 AND status='interrupted'",
-                    params![producer_job_id, now, pulsation_id],
-                )?;
-                if changed != 1 {
-                    return Err(PersistenceServiceError::Validation(
-                        "The failed job is no longer available to resume.".to_string(),
-                    ));
-                }
-                transaction.execute(
-                    "UPDATE agent_runs SET status='failed',updated_at=?2
-                     WHERE job_id=?1 AND status='awaiting_decision'",
-                    params![producer_job_id, now],
-                )?;
-                updated
+                Self::resume_failed_stage(&transaction, &current, stage, &producer_job_id, &now)?
             }
             StageFailureDecision::RequestRevision => {
                 let target_raw = revision_stage_raw.ok_or_else(|| {
@@ -3698,12 +3708,125 @@ impl PersistenceService {
                 updated
             }
         };
+        Self::record_approval_receipt(
+            &transaction,
+            mandate_persistence::ReceiptInput {
+                checkpoint_id,
+                pulsation_id: &pulsation_id,
+                purpose: "stage_failure",
+                stage: stage.as_db_value(),
+                decision: request.decision.as_db_value(),
+                state_version: request.expected_state_version,
+                reviewed: Vec::new(),
+                confirmed_paths: Vec::new(),
+                feedback: request.feedback.as_deref(),
+            },
+        )?;
         transaction.commit()?;
         for job_id in cancellation_ids {
             self.request_job_cancellation(&job_id);
         }
         self.wake_scheduler();
         Ok(ResolveStageFailureResponse { pulsation: result })
+    }
+
+    /// The waiting failure checkpoint a decision settles, fresh against the
+    /// state version the developer saw and the only open checkpoint.
+    fn waiting_stage_failure(
+        transaction: &Connection,
+        checkpoint_id: &str,
+        expected_state_version: u64,
+    ) -> Result<WaitingFailure, PersistenceServiceError> {
+        // `Specification` stringifies as SPECIFICATION but legacy rows say Specification.
+        let found = transaction
+            .query_row(
+                "SELECT c.pulsation_id,f.stage,f.job_id,f.failure_class,f.allow_retry,
+                        f.allow_revision,f.revision_stage,f.error_code,f.stage_execution_id,
+                        f.allowed_revision_targets_json
+                 FROM stage_failure_requests f
+                 JOIN checkpoints c ON c.id=f.checkpoint_id
+                 JOIN pulsations p ON p.id=f.pulsation_id
+                 WHERE c.id=?1 AND c.purpose='stage_failure' AND c.status='waiting'
+                   AND f.decision IS NULL AND p.status='checkpoint'
+                   AND c.state_version=?2 AND p.state_version=?2
+                   AND c.input_revision=p.input_revision
+                   AND (c.stage=p.stage OR (c.stage='Specification' AND p.stage='SPECIFICATION'))",
+                params![checkpoint_id, expected_state_version],
+                |row| {
+                    Ok(WaitingFailure {
+                        pulsation_id: row.get(0)?,
+                        stage_raw: row.get(1)?,
+                        producer_job_id: row.get(2)?,
+                        class_raw: row.get(3)?,
+                        allow_retry: row.get::<_, i64>(4)? != 0,
+                        allow_revision: row.get::<_, i64>(5)? != 0,
+                        revision_stage_raw: row.get(6)?,
+                        error_code: row.get(7)?,
+                        stage_execution_id: row.get(8)?,
+                        allowed_targets_json: row.get(9)?,
+                    })
+                },
+            )
+            .optional()?;
+        let Some(found) = found else {
+            return Err(PersistenceServiceError::Validation(
+                "The failure checkpoint is missing or stale. Refresh before deciding.".to_string(),
+            ));
+        };
+        let waiting: i64 = transaction.query_row(
+            "SELECT COUNT(*) FROM checkpoints WHERE pulsation_id=?1 AND status='waiting'",
+            [&found.pulsation_id],
+            |row| row.get(0),
+        )?;
+        if waiting != 1 {
+            return Err(PersistenceServiceError::Validation(
+                "The failure checkpoint is ambiguous. Refresh before deciding.".to_string(),
+            ));
+        }
+        Ok(found)
+    }
+
+    /// The Retry of a parked stage: the interrupted job runs again under a new
+    /// generation, on the same shared budget.
+    fn resume_failed_stage(
+        transaction: &rusqlite::Transaction<'_>,
+        current: &Pulsation,
+        stage: PulsationStage,
+        producer_job_id: &str,
+        now: &str,
+    ) -> Result<Pulsation, PersistenceServiceError> {
+        // Transition first: the claim requires j.state_version=p.state_version,
+        // and the resume UPDATE below reads the post-transition value.
+        let updated = Self::transition_pulsation(
+            transaction,
+            current,
+            PulsationStatus::Planning,
+            stage,
+            "stage_failure_retry",
+            Some("Stage retry requested by the user."),
+        )?;
+        // `attempts` is intentionally NOT reset: the automatic budget stays
+        // spent, so one click buys exactly one agent call and a fresh failure
+        // reopens this checkpoint instead of looping.
+        let changed = transaction.execute(
+            "UPDATE jobs SET status='pending',last_error=NULL,started_at=NULL,finished_at=NULL,
+               cancel_requested_at=NULL,cancellation_reason=NULL,available_at=?2,updated_at=?2,
+               state_version=(SELECT state_version FROM pulsations WHERE id=?3),
+               generation=generation+1
+             WHERE id=?1 AND pulsation_id=?3 AND status='interrupted'",
+            params![producer_job_id, now, current.id],
+        )?;
+        if changed != 1 {
+            return Err(PersistenceServiceError::Validation(
+                "The failed job is no longer available to resume.".to_string(),
+            ));
+        }
+        transaction.execute(
+            "UPDATE agent_runs SET status='failed',updated_at=?2
+             WHERE job_id=?1 AND status='awaiting_decision'",
+            params![producer_job_id, now],
+        )?;
+        Ok(updated)
     }
 
     /// The agent sees the operator's guidance first, then the machine diagnostic that
@@ -8752,6 +8875,13 @@ mod tests {
             })
             .expect("API authorization should resolve fallback");
         assert_eq!(response.pulsation.status, PulsationStatus::Planning);
+        let receipt = service
+            .checkpoint_receipt(&checkpoint.checkpoint_id)
+            .unwrap()
+            .expect("the fallback decision has a receipt");
+        assert_eq!(receipt.purpose, "cli_fallback");
+        assert_eq!(receipt.decision, "use_api");
+        assert_eq!(receipt.state_version, checkpoint.state_version);
         let connection = service.connection().unwrap();
         let (job_status, cancellation_reason): (String, Option<String>) = connection
             .query_row(

@@ -166,6 +166,117 @@ cargo test --locked -p hvc-test-support --test serial_upgrade -- --test-threads=
 in `cli_executor`, like its Notes Scribe twin, needs the Windows `.exe` CLI
 fixtures and fails on Linux before the run starts.
 
+## Execution mandates
+
+ADR-035 M1 keeps its pure rules in `orchestration::mandate` (derivation,
+canonical digests, the write, transport, executor and check checks, and a
+generated-envelope property test) and its host transactions in
+`persistence_service::mandate_persistence` (acceptance and publication refusals,
+receipts, the preview, the transport amendment, the frozen budget). The full v4
+pipeline runs in `hvc-test-support/tests/execution_mandate.rs`; V59 is in
+`serial_upgrade`; the grants card in the layout tests. The receipts of the CLI
+fallback, clarification and path-confirmation decisions are asserted in those
+flows' own tests, and the project-deletion test covers the V59 rows:
+
+```powershell
+cargo test --locked -p hvc-core --lib mandate -- --test-threads=2
+cargo test --locked -p hvc-test-support --test execution_mandate -- --test-threads=2
+```
+
+## Trust layers
+
+ADR-035 M2 keeps the state rules in `orchestration::layers` (one table test per
+trigger and threshold edge, legacy and new pulsations, order independence, the
+50-item cut) and the reader in `persistence_service::layers_persistence` (a
+composed pulsation's mandate, writes and refusals, a tampered mandate, the
+detail read under a concurrent writer). `hvc-test-support/tests/trust_layers.rs`
+follows a v4 pulsation from the Specification to the end and provokes a model
+other than the one requested, a spent repair budget and a failed required
+check. The panel, the brief card and the header dot are in the layout tests,
+and the report's golden file carries the Layers section. The cost probe builds
+a pulsation at the batch limits and times reading and deriving the layers:
+
+```powershell
+cargo test --locked -p hvc-core --lib layers -- --test-threads=2
+cargo test --locked -p hvc-test-support --test trust_layers -- --test-threads=2
+cargo run --locked --release -p hvc-core --example layers_benchmark
+```
+
+## Scope requests
+
+ADR-035 M4 keeps the derivation in `orchestration::mandate::scope` (one table
+test per refusal rule, a mixed request, the path, request and budget limits,
+the risk with the granted files, a Test unit's roles, the amendment of the
+mandate) and the host in `persistence_service::scope_persistence`.
+`hvc-test-support/tests/scope_escalation.rs` runs a v4 pulsation whose Code
+unit asks for a file it only reads: the grant, the new mandate revision and
+receipt, the shared budget and the publication; a file changed after the
+request; another decision declining it; a Test unit asking for a production
+file; a restart between the grant and the dispatch; and a revision that
+supersedes the grant. V61 is in `serial_upgrade`; the card, the stale message
+and the button are in the layout tests:
+
+```powershell
+cargo test --locked -p hvc-core --lib scope -- --test-threads=2
+cargo test --locked -p hvc-test-support --test scope_escalation -- --test-threads=2
+```
+
+## Attestations
+
+ADR-036 M3 keeps the pure parts in `attestation` (the DSSE pre-authentication
+encoding, a golden vector signed with a fixed test seed, envelope tampering,
+the key's stored form) and the host in
+`persistence_service::attestation_persistence` (sealing once and after the
+publications settle, outcomes, the sealing switch, an unavailable, missing or
+replaced key, rotation, the immutability trigger, the size cap, a failed
+derivation and its retry, a restart before the seal, tampered rows, envelope
+and files, export and import, and a scan of every table for the private key).
+`hvc-test-support/tests/attestation.rs` seals a v4 pulsation that finishes and
+one aborted after writing, and checks the report's Provenance section. V60 is
+in `serial_upgrade`; the card, the list mark and the Security page are in the
+layout tests; the report's golden file carries the Provenance section.
+
+Every one of these tests keeps the key in memory. Unit tests of `hvc-core` that
+build a service on the default store never reach the operating system's
+credential store: under `cfg(test)` it reads as empty and refuses writes. The
+one test that uses the Windows Credential Manager is ignored by default and
+writes only under the test service `hard-vibe-code.attestation-test`, removing
+the entry afterwards. Run it only when you want to check the real store:
+
+```powershell
+cargo test --locked -p hvc-core --lib attestation -- --test-threads=2
+cargo test --locked -p hvc-test-support --test attestation -- --test-threads=2
+cargo test --locked -p hvc-test-support --test attestation -- --ignored --test-threads=1
+```
+
+To check a real bundle with OpenSSL as [attestation.md](attestation.md)
+describes, set `HVC_ATTESTATION_OUT` to a folder before the integration test;
+it saves the finished pulsation's bundle and public key there.
+
+## Governance metrics and visual checks
+
+`analyze_pulsation` (and `scripts/analyze-pulsation.ps1`) prints a Governance
+block: mandate revisions by cause, writes and dispatches the mandate refused
+(a healthy run has none, and the text says so when there are), scope requests
+by state with the grant rate, the files granted and the time parked, and the
+attestation's state, statement size and seal latency. A database older than
+V59 gets nulls. `governance_tolerates_an_older_database_and_flags_refused_writes`
+covers the block on its own, and `scope_escalation` reads it back after a
+grant.
+
+`review_brief_fixture` prepares the screens for a manual pass in the real
+app: `--scope-request` makes the code unit ask for `src/util.rs` and grants
+it, `--stage scope` parks with the request pending, and `--stage done` waits
+for the signed record. Start `hard-vibe-code` with the printed `HVC_DATA_DIR`.
+The fixture keeps its signing key in memory, so the app shows the sealed
+record without reading the credential store; avoid Settings → Security there,
+which reads the real store.
+
+A text that shares a flex row with other elements needs `flex_1().min_w_0()`,
+and its neighbours `flex_shrink_0()`. With `min_w_0()` alone, GPUI can lay the
+text out at zero width, one character per line. The layout tests of the
+Feature 19 cards check each such text with `assert_readable`.
+
 ## Editor revisions, check output and voice setup
 
 The workspace revision is a SHA-256 over the resolved path and the bytes read,

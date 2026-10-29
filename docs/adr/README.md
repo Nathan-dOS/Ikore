@@ -215,3 +215,38 @@ validation is done; Windows acceptance is pending. See the
 [decision](034-risk-preflight-and-doc-reconciliation.md), the
 [review policy](../review-policy.md) and
 `quality/feature-10-remaining-validation-2026-10-25.md`.
+
+## ADR-035: execution mandates, scope grants and trust layers
+
+Accepted on 2026-10-26. M1 is implemented (V59): approving a v4 Specification
+issues an immutable mandate that records the approved intent, write envelope,
+executor capabilities, transports, checks and frozen budget parameters. The
+brief shows it before the click ("What approving grants"), stage writes and
+dispatches are checked against it, and every checkpoint resolution records a
+receipt with the reviewed digests. M2 is implemented too: a read-only Layers
+panel on top of the pulsation detail derives Identity, Scope, Guardrails and
+Intent from the host's records, the Contract, Test and Integrator briefs show
+the four states, the header marks a layer that needs a look, and the report
+gains a Layers section. M4 is implemented too (V61): a Code or Test unit
+that must change a delivered file it does not own fails with
+`scope_insufficient` and names it; the host derives which files it may be
+granted, and the failure checkpoint shows a "Scope request" card with
+"Grant and retry", which issues a `scope_grant` mandate revision and runs the
+existing Retry on the shared budget. M5 closed the feature with its threat
+model (`quality/cli-threat-model.md`), the governance block of the post-run
+analysis and a visual pass in the running app. See the
+[decision](035-execution-mandates.md).
+
+## ADR-036: signed local pulsation attestation
+
+Accepted on 2026-10-26 and implemented (M3, V60). Every pulsation that ends is
+sealed as an in-toto statement in a DSSE envelope, signed with an Ed25519 key
+kept in the operating system's credential store. The statement binds intent,
+approvals, host receipts and applied files without carrying any content. The
+pulsation detail's Attestation card verifies the signature, re-derives the
+statement and reports each file's state now, saves the bundle with its public
+key and copies a commit trailer; the list marks attested pulsations, Settings →
+Security rotates the key, switches sealing and verifies a saved file, and the
+report gains a Provenance section. It claims no SLSA level, trusted time or
+personal identity. See the [decision](036-pulsation-attestation.md) and
+[attestations](../attestation.md).

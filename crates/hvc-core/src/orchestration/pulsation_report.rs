@@ -17,12 +17,13 @@ use crate::orchestration::PublicationState;
 use crate::orchestration::composition::CheckSummaryV1;
 use crate::orchestration::composition::review_boundary::risk_level_name;
 use crate::orchestration::composition::review_boundary::{Binding, ReviewInputManifestV1};
-use crate::orchestration::composition::risk::{CoverageRowKind, RiskSignal};
+use crate::orchestration::composition::risk::CoverageRowKind;
 use crate::orchestration::review_brief::{self, StageVisual};
 use crate::reports::{
     self, FileChange, LineCounts, PulsationReport, ReportCheck, ReportConvergence,
-    ReportCoverageRow, ReportCriterion, ReportFile, ReportGap, ReportOutcome, ReportReview,
-    ReportRisk, analysis,
+    ReportCoverageRow, ReportCriterion, ReportFile, ReportGap, ReportLayer, ReportLayerItem,
+    ReportLayers, ReportOutcome, ReportProvenance, ReportReview, ReportRisk, ReportSubject,
+    analysis,
 };
 use coordination::invalid;
 
@@ -141,20 +142,7 @@ impl PersistenceService {
             reasons: assessment
                 .reasons
                 .iter()
-                .map(|reason| {
-                    format!(
-                        "{} `{}` ({})",
-                        match reason.signal {
-                            RiskSignal::IntakeTask => "Intake risk of task",
-                            RiskSignal::NoteRisk => "note risk",
-                            RiskSignal::SensitivePath => "sensitive path",
-                            RiskSignal::InterfaceChange => "changed interface",
-                            RiskSignal::ChangeSize => "change size",
-                        },
-                        reason.subject,
-                        risk_level_name(reason.level)
-                    )
-                })
+                .map(|reason| reason.describe())
                 .collect(),
             unknown_inputs: assessment.unknown_inputs.clone(),
             rows: risk
@@ -183,7 +171,101 @@ impl PersistenceService {
                 .map(|record| format!("{} pending: {}", record.pending, record.reason))
                 .collect(),
         });
+        // ADR-035 M2: the layers as the pulsation detail shows them now.
+        let layers = self.pulsation_layers(&pulse)?;
+        report.layers = Some(ReportLayers {
+            policy_version: layers.layers_policy_version,
+            layers: layers
+                .layers
+                .iter()
+                .map(|layer| ReportLayer {
+                    name: layer.kind.title().to_owned(),
+                    state: layer.state.label().to_owned(),
+                    headline: layer.headline.clone(),
+                    reasons: layer.reasons.clone(),
+                    items: layer
+                        .items
+                        .iter()
+                        .map(|item| ReportLayerItem {
+                            label: item.label.clone(),
+                            value: item.value.clone(),
+                        })
+                        .collect(),
+                    more: layer.truncated_count,
+                })
+                .collect(),
+        });
+        report.provenance = Self::report_provenance(&self.connection()?, &pulse)?;
         Ok(report)
+    }
+
+    /// ADR-036 M3: the attestation and how it checks now, read without
+    /// keeping the check; `None` while the pulsation has none.
+    fn report_provenance(
+        db: &Connection,
+        pulsation_id: &str,
+    ) -> Result<Option<ReportProvenance>, PersistenceServiceError> {
+        use crate::attestation::{AttestationState, StatementV1};
+        let status = Self::attestation_status_on(db, pulsation_id)?;
+        let state = match status.state {
+            AttestationState::NotSealed => return Ok(None),
+            AttestationState::Pending => "pending",
+            AttestationState::Skipped => "not sealed: sealing was off",
+            AttestationState::Failed => "sealing failed",
+            AttestationState::Signed => "signed",
+            AttestationState::Unsigned => "unsigned",
+            AttestationState::TooLarge => "too large to sign",
+        };
+        let check = Self::check_attestation_on(db, pulsation_id)?;
+        let statement: Option<StatementV1> = db
+            .query_row(
+                "SELECT statement_json FROM pulsation_attestations WHERE pulsation_id=?1",
+                [pulsation_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten()
+            .and_then(|json| serde_json::from_str(&json).ok());
+        let workspace = |path: &str| {
+            check
+                .as_ref()
+                .and_then(|check| check.workspace.iter().find(|subject| subject.path == path))
+                .map(|subject| match subject.state {
+                    crate::attestation::WorkspaceCheck::Unchanged => "unchanged",
+                    crate::attestation::WorkspaceCheck::Modified => "changed since the attestation",
+                    crate::attestation::WorkspaceCheck::Missing => "missing",
+                    crate::attestation::WorkspaceCheck::Unreadable => "unreadable",
+                })
+                .unwrap_or("not checked")
+                .to_owned()
+        };
+        Ok(Some(ReportProvenance {
+            state: state.to_owned(),
+            key_id: status.key_id,
+            statement_sha256: status.statement_sha256,
+            sealed_at: status.sealed_at,
+            signature: check
+                .as_ref()
+                .map(|check| check.signature.as_str().replace('_', " ")),
+            rederivation: check.as_ref().map(|check| match &check.difference {
+                Some(block) => format!("differs in `{block}`"),
+                None => check.rederivation.as_str().to_owned(),
+            }),
+            diagnostic: status.diagnostic,
+            subjects: statement
+                .map(|statement| {
+                    statement
+                        .subject
+                        .iter()
+                        .map(|subject| ReportSubject {
+                            path: subject.name.clone(),
+                            sha256: subject.digest.sha256.clone(),
+                            workspace: workspace(&subject.name),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+        }))
     }
 
     /// Renders the report and replaces `reports/<pulsation id>/pulsation-report.html`

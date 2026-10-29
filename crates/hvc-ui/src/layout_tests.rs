@@ -104,6 +104,7 @@ pub(crate) fn fixture(cx: &mut Context<AppModel>) -> AppModel {
                 generated_at: "now".into(),
                 states: vec![],
             },
+            attestation: None,
         });
     });
     model.pulsations.update(cx, |state, _| {
@@ -1266,6 +1267,7 @@ fn parked_failure_window<'a>(
                 allowed_revision_targets: Vec::new(),
                 remaining_extra_invocations: None,
                 stage_execution_id: None,
+                scope_request: None,
             }));
             state.detail_section = PulsationDetailSection::Review;
         });
@@ -1674,6 +1676,9 @@ fn composed_detail(pulse: &Pulsation) -> hvc_core::orchestration::PulsationCoord
                 completeness: UsageCompleteness::Partial,
             },
         }),
+        layers: None,
+        attestation: None,
+        attested: false,
     }
 }
 
@@ -1723,6 +1728,8 @@ fn a_composed_stage_lists_its_units_and_offers_only_permitted_revision_targets(
         cx.notify();
     });
     select(&model, visual, AppView::Pulsations);
+    // The execution sits under the Layers panel, collapsed until opened.
+    click(visual, "execution-details-toggle");
     let panel = visual.debug_bounds("composition-panel").unwrap();
     for unit in ["composition-unit-unit_core", "composition-unit-unit_api"] {
         let row = visual.debug_bounds(unit).unwrap();
@@ -1753,6 +1760,24 @@ fn click(visual: &mut VisualTestContext, selector: &'static str) {
     );
     visual.simulate_click(bounds.center(), Modifiers::default());
     visual.run_until_parked();
+}
+
+/// A text sharing a flex row keeps a usable width. Squeezed, GPUI lays it
+/// out at zero width and wraps one character per line (found by the ADR-035
+/// M5 visual pass).
+fn assert_readable(
+    visual: &mut VisualTestContext,
+    selector: &'static str,
+    min_width: f32,
+    max_height: f32,
+) {
+    let bounds = visual
+        .debug_bounds(selector)
+        .unwrap_or_else(|| panic!("missing {selector}"));
+    assert!(
+        bounds.size.width > px(min_width) && bounds.size.height < px(max_height),
+        "{selector} squeezed: {bounds:?}"
+    );
 }
 
 fn select(model: &Entity<AppModel>, visual: &mut VisualTestContext, view: AppView) {
@@ -6314,6 +6339,376 @@ fn a_high_risk_integrator_review_shows_its_coverage_and_asks_for_a_reason(cx: &m
     });
 }
 
+/// A preview of the mandate an Approve would issue, with `paths` granted and
+/// the first one marked sensitive.
+fn grants_preview(
+    enforcement: hvc_core::orchestration::mandate::Enforcement,
+    paths: usize,
+) -> hvc_core::persistence_service::MandatePreview {
+    use hvc_core::orchestration::mandate::{
+        BudgetParameters, IssueInputs, IssuedBy, StageOutputLimit, TransportCapability, WriteClass,
+        WriteGrant, derive_issued,
+    };
+    let mut mandate = derive_issued(&IssueInputs {
+        pulsation_id: "pulse",
+        project_id: "project",
+        enforcement,
+        title: "Usage export to CSV",
+        issued_by: IssuedBy {
+            checkpoint_id: "brief-checkpoint".into(),
+            stage: "SPECIFICATION".into(),
+            state_version: 1,
+            input_revision: 1,
+        },
+        previous: None,
+        manifest: None,
+        clarification_paths: &[],
+        specification: None,
+        accepted_artifact_sha256s: &[],
+        review_policy_snapshot_sha256: None,
+        project_sensitive_sha256: None,
+        transports: vec![TransportCapability {
+            role: "backend_agent".into(),
+            transport: "cli".into(),
+            backend: Some("claude".into()),
+        }],
+        checks: Vec::new(),
+        budget: BudgetParameters {
+            stage_output_limits: vec![StageOutputLimit {
+                stage: "Code".into(),
+                output_tokens: 16_000,
+            }],
+            context_chars_limit: 16_000,
+            extra_invocation_limit: 2,
+            per_unit_extra_invocation_limit: 1,
+            max_in_flight_units: 1,
+        },
+    })
+    .unwrap();
+    mandate.scope.grants = (0..paths)
+        .map(|index| WriteGrant {
+            path: format!(
+                "crates/hvc-core/src/usage/export_with_a_rather_long_module_name_{index:02}.rs"
+            ),
+            origins: vec![WriteClass::TaskPath, WriteClass::SpecificationReference],
+            unit_key: None,
+            amendment_revision: None,
+        })
+        .collect();
+    let sensitive = mandate
+        .scope
+        .grants
+        .first()
+        .map(|grant| vec![grant.path.clone()])
+        .unwrap_or_default();
+    hvc_core::persistence_service::MandatePreview {
+        mandate_sha256: mandate.sha256().unwrap().as_str().to_owned(),
+        mandate,
+        sensitive_paths: sensitive,
+    }
+}
+
+/// ADR-035 M1: "What approving grants" leads the Specification brief, keeps
+/// every row inside the reader at both window sizes, summarizes what it does
+/// not draw, and a legacy pipeline draws no card.
+#[gpui::test]
+fn the_specification_brief_shows_what_approving_grants(cx: &mut TestAppContext) {
+    use hvc_core::orchestration::mandate::Enforcement;
+    let (model, visual) = open_specification_brief(cx);
+    model.update(visual, |m, cx| {
+        m.pulsations.update(cx, |state, _| {
+            let checkpoint = state.hitl.expected_checkpoint.clone().unwrap();
+            let generation = state.hitl.current_load_generation();
+            assert!(state.hitl.finish_grants(
+                generation,
+                &checkpoint,
+                Ok(Some(grants_preview(Enforcement::EnforcedV4, 70)))
+            ));
+        });
+    });
+    for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
+        visual.simulate_resize(size(px(width), px(height)));
+        select(&model, visual, AppView::Pulsations);
+        let reader = visual.debug_bounds("review-document-reader").unwrap();
+        let grants = visual
+            .debug_bounds("review-grants")
+            .unwrap_or_else(|| panic!("missing grants card at {width}"));
+        assert!(
+            grants.left() >= reader.left() && grants.right() <= reader.right() + px(1.0),
+            "the grants card overflows at {width}: {grants:?} vs {reader:?}"
+        );
+        for part in [
+            "review-grants-sensitive",
+            "review-grants-path-0",
+            "review-grants-path-63",
+            "review-grants-more",
+            "review-grants-digest",
+        ] {
+            let bounds = visual
+                .debug_bounds(part)
+                .unwrap_or_else(|| panic!("missing {part} at {width}"));
+            assert!(
+                bounds.right() <= reader.right() + px(1.0),
+                "{part} {bounds:?}"
+            );
+        }
+        assert!(
+            visual.debug_bounds("review-grants-path-64").is_none(),
+            "only the first 64 paths are drawn"
+        );
+        assert_readable(visual, "review-grants-summary", 200.0, 80.0);
+        assert_readable(visual, "review-grants-path-text-0", 120.0, 160.0);
+        assert_readable(visual, "review-grants-transport-0", 40.0, 40.0);
+    }
+    model.update(visual, |m, cx| {
+        m.pulsations.update(cx, |state, _| {
+            let checkpoint = state.hitl.expected_checkpoint.clone().unwrap();
+            let generation = state.hitl.current_load_generation();
+            assert!(state.hitl.finish_grants(
+                generation,
+                &checkpoint,
+                Ok(Some(grants_preview(Enforcement::NotAppliedLegacy, 0)))
+            ));
+            assert!(
+                state.hitl.grants.is_none(),
+                "a legacy approval has no envelope"
+            );
+        });
+    });
+}
+
+/// A legacy Specification approval has no envelope, so no grants card is
+/// drawn. A fresh window: absence is only reliable before the first frame
+/// that held the card.
+#[gpui::test]
+fn a_legacy_specification_review_draws_no_grants_card(cx: &mut TestAppContext) {
+    use hvc_core::orchestration::mandate::Enforcement;
+    let (model, visual) = open_specification_brief(cx);
+    model.update(visual, |m, cx| {
+        m.pulsations.update(cx, |state, _| {
+            let checkpoint = state.hitl.expected_checkpoint.clone().unwrap();
+            let generation = state.hitl.current_load_generation();
+            assert!(state.hitl.finish_grants(
+                generation,
+                &checkpoint,
+                Ok(Some(grants_preview(Enforcement::NotAppliedLegacy, 0)))
+            ));
+        });
+    });
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    select(&model, visual, AppView::Pulsations);
+    assert!(visual.debug_bounds("review-document-reader").is_some());
+    assert!(visual.debug_bounds("review-grants").is_none());
+}
+
+/// Layers with every row flagged or not: 70 sensitive grants (one a
+/// 260-character path, sorted first) and, when `flagged`, a model other than
+/// the one requested.
+fn layers_snapshot(flagged: bool) -> hvc_core::orchestration::layers::PulsationLayersSnapshot {
+    use hvc_core::orchestration::layers::*;
+    use hvc_core::orchestration::mandate::MandateCause;
+    let long = format!("src/a/{}deep.rs", "segment_".repeat(31));
+    derive_layers(&LayerInputs {
+        composed: true,
+        past_specification: true,
+        mandate: Some(MandateFact {
+            revision: 1,
+            cause: MandateCause::Issued,
+            granted: 70,
+            transport_fallback: false,
+        }),
+        sensitive_granted: if flagged {
+            std::iter::once(long)
+                .chain((0..69).map(|index| format!("src/auth_{index:02}.rs")))
+                .collect()
+        } else {
+            Vec::new()
+        },
+        runs: vec![RunFact {
+            actor: "code_implementer".into(),
+            transport: "api".into(),
+            provider: Some("openai".into()),
+            requested_model: Some("gpt-4.1-mini".into()),
+            observed_model: Some(if flagged { "gpt-4.1" } else { "gpt-4.1-mini" }.into()),
+            adapter_version: None,
+            completed: true,
+        }],
+        usage: UsageFact {
+            complete: 2,
+            ..UsageFact::default()
+        },
+        criteria: Some(CriteriaFact {
+            total: 1,
+            assigned: 1,
+            validated: 1,
+            without_check: Vec::new(),
+        }),
+        ..LayerInputs::default()
+    })
+}
+
+fn with_layers(
+    model: &Entity<AppModel>,
+    visual: &mut VisualTestContext,
+    stage: PulsationStage,
+    layers: hvc_core::orchestration::layers::PulsationLayersSnapshot,
+) {
+    model.update(visual, |m, cx| {
+        m.pulsations.update(cx, |state, _| {
+            state.pulsations[0].stage = stage;
+            let pulse = state.pulsations[0].clone();
+            let mut detail = composed_detail(&pulse);
+            detail.stage = stage;
+            detail.layers = Some(layers);
+            state.details = vec![detail];
+        });
+        cx.notify();
+    });
+}
+
+#[gpui::test]
+fn the_layers_panel_leads_the_overview_and_opens_a_layer(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    with_layers(&model, visual, PulsationStage::Code, layers_snapshot(true));
+    model.update(visual, |m, cx| {
+        m.pulsations.update(cx, |state, _| {
+            state.detail_section = PulsationDetailSection::Overview;
+        });
+        cx.notify();
+    });
+    for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
+        visual.simulate_resize(size(px(width), px(height)));
+        select(&model, visual, AppView::Pulsations);
+        let panel = visual
+            .debug_bounds("layers-panel")
+            .unwrap_or_else(|| panic!("missing layers panel at {width}"));
+        for row in [
+            "layers-row-identity",
+            "layers-row-scope",
+            "layers-row-guardrails",
+            "layers-row-intent",
+        ] {
+            let bounds = visual
+                .debug_bounds(row)
+                .unwrap_or_else(|| panic!("missing {row} at {width}"));
+            assert!(
+                bounds.left() >= panel.left() && bounds.right() <= panel.right() + px(1.0),
+                "{row} overflows at {width}: {bounds:?} vs {panel:?}"
+            );
+        }
+        let toggle = visual.debug_bounds("execution-details-toggle").unwrap();
+        assert!(
+            panel.bottom() <= toggle.top(),
+            "the layers lead the overview and the execution details follow"
+        );
+    }
+    click(visual, "layers-row-scope");
+    let panel = visual.debug_bounds("layers-panel").unwrap();
+    for part in [
+        "layers-items-scope",
+        "layers-item-scope-0",
+        "layers-item-scope-1",
+        "layers-item-scope-49",
+        "layers-more-scope",
+    ] {
+        let bounds = visual
+            .debug_bounds(part)
+            .unwrap_or_else(|| panic!("missing {part}"));
+        assert!(
+            bounds.right() <= panel.right() + px(1.0),
+            "{part} overflows: {bounds:?} vs {panel:?}"
+        );
+    }
+    assert!(
+        visual.debug_bounds("layers-item-scope-50").is_none(),
+        "fifty items, then the count"
+    );
+    assert_readable(visual, "layers-item-label-scope-0", 80.0, 60.0);
+    assert_readable(visual, "layers-item-value-scope-0", 80.0, 60.0);
+    click(visual, "layers-row-scope");
+    model.read_with(visual, |m, cx| {
+        assert!(
+            m.pulsations.read(cx).layers_expanded.is_empty(),
+            "a second click closes the layer"
+        );
+    });
+}
+
+#[gpui::test]
+fn the_header_marks_the_worst_layer_only_when_one_needs_a_look(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    with_layers(&model, visual, PulsationStage::Code, layers_snapshot(true));
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    select(&model, visual, AppView::Pulsations);
+    let pill = visual.debug_bounds("header-context").unwrap();
+    let dot = visual.debug_bounds("header-layers-dot").unwrap();
+    assert!(dot.left() >= pill.left() && dot.right() <= pill.right());
+    // The header is in every view; check absence on one without split panes,
+    // which `assert_absent`'s second window needs.
+    with_layers(&model, visual, PulsationStage::Code, layers_snapshot(false));
+    select(&model, visual, AppView::Home);
+    assert_absent(&model, visual, "header-layers-dot");
+}
+
+#[gpui::test]
+fn the_integrator_brief_shows_the_layers_card(cx: &mut TestAppContext) {
+    let (model, visual) = open_integrator_review(cx, recorded_review_inputs(), None, true);
+    with_layers(
+        &model,
+        visual,
+        PulsationStage::Integrator,
+        layers_snapshot(true),
+    );
+    for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
+        visual.simulate_resize(size(px(width), px(height)));
+        select(&model, visual, AppView::Pulsations);
+        let reader = visual.debug_bounds("review-document-reader").unwrap();
+        let card = visual
+            .debug_bounds("review-layers")
+            .unwrap_or_else(|| panic!("missing layers card at {width}"));
+        assert!(
+            card.left() >= reader.left() && card.right() <= reader.right() + px(1.0),
+            "the layers card overflows at {width}: {card:?} vs {reader:?}"
+        );
+        for row in [
+            "review-layers-row-identity",
+            "review-layers-row-scope",
+            "review-layers-row-guardrails",
+            "review-layers-row-intent",
+        ] {
+            assert!(
+                visual.debug_bounds(row).is_some(),
+                "missing {row} at {width}"
+            );
+        }
+        for headline in [
+            "review-layers-headline-identity",
+            "review-layers-headline-scope",
+            "review-layers-headline-guardrails",
+            "review-layers-headline-intent",
+        ] {
+            assert_readable(visual, headline, 120.0, 60.0);
+        }
+    }
+}
+
+/// The Specification's Scope is its grants card: no layers card there. A
+/// fresh window, as absence needs.
+#[gpui::test]
+fn a_specification_brief_draws_no_layers_card(cx: &mut TestAppContext) {
+    let (model, visual) = open_specification_brief(cx);
+    with_layers(
+        &model,
+        visual,
+        PulsationStage::Specification,
+        layers_snapshot(true),
+    );
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    select(&model, visual, AppView::Pulsations);
+    assert!(visual.debug_bounds("review-document-reader").is_some());
+    assert!(visual.debug_bounds("review-layers").is_none());
+}
+
 #[gpui::test]
 fn forge_triage_shows_the_conformance_card_and_holds_approval_on_a_blocking_conflict(
     cx: &mut TestAppContext,
@@ -6460,4 +6855,411 @@ fn documentation_drift_shows_the_indicator_the_list_and_the_comparison(cx: &mut 
         }
         assert!(visual.debug_bounds("doc-drift-propose").is_none());
     }
+}
+
+fn attestation(
+    state: hvc_core::attestation::AttestationState,
+) -> hvc_core::attestation::AttestationStatus {
+    use hvc_core::attestation::*;
+    let sealed = !matches!(
+        state,
+        AttestationState::NotSealed
+            | AttestationState::Pending
+            | AttestationState::Skipped
+            | AttestationState::Failed
+    );
+    AttestationStatus {
+        state,
+        key_id: (state == AttestationState::Signed)
+            .then(|| format!("hvc-ed25519:{}", "0f1e2d3c".repeat(8))),
+        statement_sha256: sealed.then(|| "ab".repeat(32)),
+        subject_count: if sealed { 12 } else { 0 },
+        outcome: sealed.then(|| "done".to_owned()),
+        sealed_at: sealed.then(|| "2026-10-26T12:00:00Z".to_owned()),
+        signed_at: None,
+        diagnostic: (state == AttestationState::Failed)
+            .then(|| "Runtime error: the coverage matrix could not be read.".to_owned()),
+        verification: None,
+    }
+}
+
+fn with_attestation(
+    model: &Entity<AppModel>,
+    visual: &mut VisualTestContext,
+    status: hvc_core::attestation::AttestationStatus,
+) {
+    model.update(visual, |m, cx| {
+        m.pulsations.update(cx, |state, _| {
+            state.pulsations[0].status = PulsationStatus::Done;
+            state.detail_section = PulsationDetailSection::Overview;
+            let pulse = state.pulsations[0].clone();
+            let mut detail = composed_detail(&pulse);
+            detail.attested = status.state == hvc_core::attestation::AttestationState::Signed;
+            detail.attestation = Some(status);
+            state.details = vec![detail];
+        });
+        cx.notify();
+    });
+}
+
+#[gpui::test]
+fn the_attestation_card_shows_a_signed_record_and_what_changed_since(cx: &mut TestAppContext) {
+    use hvc_core::attestation::*;
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    let mut status = attestation(AttestationState::Signed);
+    let long = format!("src/a/{}deep.rs", "segment_".repeat(31));
+    status.verification = Some(AttestationVerification {
+        checked_at: "2026-10-26T12:05:00Z".into(),
+        signature: SignatureCheck::Valid,
+        rederivation: RederivationCheck::Matches,
+        difference: None,
+        workspace: std::iter::once(long)
+            .chain((0..11).map(|index| format!("src/file_{index:02}.rs")))
+            .enumerate()
+            .map(|(index, path)| SubjectCheck {
+                path,
+                state: if index < 10 {
+                    WorkspaceCheck::Modified
+                } else {
+                    WorkspaceCheck::Unchanged
+                },
+            })
+            .collect(),
+    });
+    with_attestation(&model, visual, status);
+    model.update(visual, |m, cx| {
+        m.pulsations.update(cx, |state, _| {
+            if !state.group_expanded(PulsationStatus::Done) {
+                state.toggle_group(PulsationStatus::Done);
+            }
+        });
+        cx.notify();
+    });
+    for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
+        visual.simulate_resize(size(px(width), px(height)));
+        select(&model, visual, AppView::Pulsations);
+        let card = visual
+            .debug_bounds("pulsation-attestation")
+            .unwrap_or_else(|| panic!("missing the card at {width}"));
+        for part in [
+            "attestation-headline",
+            "attestation-digest",
+            "attestation-verification",
+            "attestation-workspace-0",
+            "attestation-workspace-7",
+            "attestation-verify",
+            "attestation-save",
+            "attestation-trailer",
+        ] {
+            let bounds = visual
+                .debug_bounds(part)
+                .unwrap_or_else(|| panic!("missing {part} at {width}"));
+            assert!(
+                bounds.left() >= card.left() && bounds.right() <= card.right() + px(1.0),
+                "{part} overflows at {width}: {bounds:?} vs {card:?}"
+            );
+        }
+        assert!(
+            visual.debug_bounds("attestation-workspace-8").is_none(),
+            "eight paths, then the count"
+        );
+        assert!(visual.debug_bounds("attestation-sign").is_none());
+        let report = visual.debug_bounds("pulsation-report").unwrap();
+        assert!(
+            card.bottom() <= report.top(),
+            "the record comes before the report"
+        );
+        assert!(
+            visual.debug_bounds("pulsation-attested").is_some(),
+            "the list marks the attested pulsation"
+        );
+    }
+    let pulse = model.read_with(visual, |m, cx| {
+        m.pulsations.read(cx).pulsations[0].id.clone()
+    });
+    click(visual, "attestation-trailer");
+    visual.update(|_, cx| {
+        assert_eq!(
+            cx.read_from_clipboard().unwrap().text(),
+            Some(format!(
+                "HVC-Pulsation: {pulse}\nHVC-Attestation: sha256:{}",
+                "ab".repeat(32)
+            ))
+        );
+    });
+    assert!(visual.debug_bounds("attestation-notice").is_some());
+}
+
+#[gpui::test]
+fn the_attestation_card_offers_what_each_state_allows(cx: &mut TestAppContext) {
+    use hvc_core::attestation::AttestationState;
+    let buttons = [
+        "attestation-verify",
+        "attestation-save",
+        "attestation-trailer",
+        "attestation-sign",
+        "attestation-retry",
+    ];
+    for (state, offered) in [
+        (
+            AttestationState::Unsigned,
+            vec!["attestation-verify", "attestation-sign"],
+        ),
+        (AttestationState::TooLarge, vec!["attestation-verify"]),
+        (AttestationState::Failed, vec!["attestation-retry"]),
+        (AttestationState::Pending, vec![]),
+        (AttestationState::Skipped, vec![]),
+    ] {
+        let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+        with_attestation(&model, visual, attestation(state));
+        visual.simulate_resize(size(px(1440.0), px(900.0)));
+        select(&model, visual, AppView::Pulsations);
+        assert!(
+            visual.debug_bounds("attestation-headline").is_some(),
+            "{state:?}"
+        );
+        for button in buttons {
+            assert_eq!(
+                visual.debug_bounds(button).is_some(),
+                offered.contains(&button),
+                "{state:?}: {button}"
+            );
+        }
+        assert!(
+            visual.debug_bounds("pulsation-attested").is_none(),
+            "only a signed record is marked: {state:?}"
+        );
+    }
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    with_attestation(&model, visual, attestation(AttestationState::NotSealed));
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    select(&model, visual, AppView::Pulsations);
+    assert!(
+        visual.debug_bounds("pulsation-attestation").is_none(),
+        "no card before the pulsation is sealed"
+    );
+}
+
+#[gpui::test]
+fn the_security_page_shows_the_key_and_asks_before_a_new_one(cx: &mut TestAppContext) {
+    use hvc_core::attestation::*;
+    let (model, visual) = cx.add_window_view(|_, cx| {
+        let mut model = fixture(cx);
+        model.settings.update(cx, |settings, _| {
+            settings.snapshot.as_mut().unwrap().attestation = Some(AttestationKeyStatus {
+                state: AttestationKeyState::KeyMissing,
+                keys: vec![
+                    AttestationKeyRecord {
+                        key_id: format!("hvc-ed25519:{}", "1".repeat(64)),
+                        state: "active".into(),
+                        created_at: "2026-10-26T12:00:00Z".into(),
+                        retired_at: None,
+                    },
+                    AttestationKeyRecord {
+                        key_id: format!("hvc-ed25519:{}", "2".repeat(64)),
+                        state: "retired".into(),
+                        created_at: "2026-10-01T12:00:00Z".into(),
+                        retired_at: Some("2026-10-26T12:00:00Z".into()),
+                    },
+                ],
+                sealing_enabled: true,
+            });
+            settings.attestation_file_check = Some(Ok(AttestationFileCheck {
+                signature: SignatureCheck::Valid,
+                key: FileKey::UnknownKey,
+                key_id: Some(format!("hvc-ed25519:{}", "3".repeat(64))),
+                pulsation_id: Some("pulse-a".into()),
+                statement_sha256: Some("cd".repeat(32)),
+                subject_count: 3,
+            }));
+        });
+        model.open_settings(Some(SettingsPage::Security), cx);
+        model
+    });
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    visual.run_until_parked();
+    for part in [
+        "attestation-key-state",
+        "attestation-key-0",
+        "attestation-key-1",
+        "attestation-create-key",
+        "attestation-sealing",
+        "attestation-verify-file",
+        "attestation-file-check",
+    ] {
+        assert!(visual.debug_bounds(part).is_some(), "missing {part}");
+    }
+    assert!(
+        visual
+            .debug_bounds("attestation-create-key-cancel")
+            .is_none()
+    );
+    click(visual, "attestation-create-key");
+    model.read_with(visual, |m, cx| {
+        assert!(
+            m.settings.read(cx).attestation_rotate_confirm,
+            "the first click only asks"
+        );
+    });
+    assert!(
+        visual
+            .debug_bounds("attestation-create-key-cancel")
+            .is_some()
+    );
+    click(visual, "attestation-create-key-cancel");
+    model.read_with(visual, |m, cx| {
+        assert!(!m.settings.read(cx).attestation_rotate_confirm);
+    });
+}
+
+fn scope_request(state: &str) -> hvc_core::persistence_service::ScopeRequestView {
+    use hvc_core::orchestration::composition::{Handle, Risk, SourceRole};
+    use hvc_core::orchestration::mandate::{ScopePathV1, ScopeRefusalCode, ScopeRefusalV1};
+    let long = format!("src/a/{}deep.rs", "segment_".repeat(31));
+    hvc_core::persistence_service::ScopeRequestView {
+        request_id: "scope-1".into(),
+        checkpoint_id: "layout-failure".into(),
+        stage: PulsationStage::Code,
+        unit_key: "implement_expiry".into(),
+        accepted: vec![
+            ScopePathV1 {
+                handle: Handle::new("src_2").unwrap(),
+                path: long,
+                role: SourceRole::Source,
+                sha256: "ab".repeat(32),
+                sensitive: false,
+            },
+            ScopePathV1 {
+                handle: Handle::new("src_3").unwrap(),
+                path: "src/auth/keys.rs".into(),
+                role: SourceRole::Source,
+                sha256: "cd".repeat(32),
+                sensitive: true,
+            },
+        ],
+        refused: vec![ScopeRefusalV1 {
+            handle: Handle::new("src_4").unwrap(),
+            path: Some("src/beta.rs".into()),
+            code: ScopeRefusalCode::ScopeOwnedByOtherUnit,
+        }],
+        risk_before: Risk::Medium,
+        risk_after: Risk::High,
+        agent_message: Some("The key loader this unit reads must change too.".into()),
+        derivation_sha256: "ef".repeat(32),
+        state: state.into(),
+        remaining_extra_invocations: 1,
+    }
+}
+
+fn parked_scope_window<'a>(
+    cx: &'a mut TestAppContext,
+    state: &str,
+    window: (f32, f32),
+) -> (Entity<AppModel>, &'a mut VisualTestContext) {
+    let (model, visual) = parked_failure_window(cx, "model_reported_failure", false, true, window);
+    let request = scope_request(state);
+    model.update(visual, |m, cx| {
+        m.pulsations.update(cx, |pulsations, _| {
+            let mut checkpoint = pulsations.failure.checkpoint.clone().unwrap();
+            checkpoint.stage = PulsationStage::Code;
+            checkpoint.scope_request = Some(request);
+            pulsations.failure.load_checkpoint(Some(checkpoint));
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    (model, visual)
+}
+
+#[gpui::test]
+fn a_scope_request_shows_its_files_and_leads_the_decisions_with_the_grant(cx: &mut TestAppContext) {
+    for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
+        let (_model, visual) = parked_scope_window(cx, "pending", (width, height));
+        let card = visual
+            .debug_bounds("scope-request")
+            .unwrap_or_else(|| panic!("missing the card at {width}"));
+        for part in [
+            "scope-request-path-0",
+            "scope-request-path-1",
+            "scope-request-refused",
+            "scope-request-message",
+            "scope-request-facts",
+        ] {
+            let bounds = visual
+                .debug_bounds(part)
+                .unwrap_or_else(|| panic!("missing {part} at {width}"));
+            assert!(
+                bounds.left() >= card.left() && bounds.right() <= card.right() + px(1.0),
+                "{part} overflows at {width}: {bounds:?} vs {card:?}"
+            );
+            assert!(
+                bounds.top() >= card.top() && bounds.bottom() <= card.bottom() + px(1.0),
+                "{part} spills out of the card at {width}: {bounds:?} vs {card:?}"
+            );
+        }
+        // Text squeezed by its row wraps one character per line.
+        let unit = visual.debug_bounds("scope-request-unit").unwrap();
+        assert!(
+            unit.size.width > px(120.0),
+            "unit label squeezed at {width}: {unit:?}"
+        );
+        let short = visual.debug_bounds("scope-request-path-text-1").unwrap();
+        assert!(
+            short.size.width > px(120.0),
+            "path squeezed at {width}: {short:?}"
+        );
+        assert!(
+            short.size.height < px(30.0),
+            "a short path wraps at {width}: {short:?}"
+        );
+        let long = visual.debug_bounds("scope-request-path-text-0").unwrap();
+        assert!(
+            long.size.width > px(300.0),
+            "long path squeezed at {width}: {long:?}"
+        );
+        assert!(visual.debug_bounds("scope-request-state").is_none());
+        let bar = visual.debug_bounds("failure-decision-bar").unwrap();
+        let grant = visual.debug_bounds("failure-grant-scope").unwrap();
+        assert!(grant.left() >= bar.left() && grant.right() <= bar.right());
+        assert!(bar.bottom() <= px(height), "bar off screen at {width}");
+        assert!(
+            visual.debug_bounds("failure-retry").is_none(),
+            "the host offered no plain retry"
+        );
+        visual.debug_bounds("failure-revision").unwrap();
+        visual.debug_bounds("failure-abort").unwrap();
+        let first = visual.debug_bounds("failure-choice-0").unwrap();
+        let choices = visual.debug_bounds("failure-choices").unwrap();
+        assert!(card.bottom() <= choices.top(), "the request comes first");
+        assert!(first.top() >= choices.top());
+    }
+}
+
+#[gpui::test]
+fn a_stale_scope_request_says_so_and_offers_no_grant(cx: &mut TestAppContext) {
+    let (_model, visual) = parked_scope_window(cx, "stale", (1440.0, 900.0));
+    visual.debug_bounds("scope-request").unwrap();
+    visual.debug_bounds("scope-request-state").unwrap();
+    assert!(visual.debug_bounds("failure-grant-scope").is_none());
+    visual.debug_bounds("failure-revision").unwrap();
+    visual.debug_bounds("failure-abort").unwrap();
+}
+
+#[gpui::test]
+fn granting_without_a_core_reports_why_and_keeps_the_checkpoint(cx: &mut TestAppContext) {
+    let (model, visual) = parked_scope_window(cx, "pending", (1440.0, 900.0));
+    click(visual, "failure-grant-scope");
+    model.read_with(visual, |m, cx| {
+        let failure = &m.pulsations.read(cx).failure;
+        assert!(failure.checkpoint.is_some());
+        assert!(!failure.busy);
+        assert!(
+            failure
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("Scope grant unavailable")),
+            "{:?}",
+            failure.error
+        );
+    });
 }

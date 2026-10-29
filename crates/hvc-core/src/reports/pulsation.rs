@@ -33,6 +33,61 @@ pub struct PulsationReport {
     /// Risk level and coverage of the latest review (ADR-034 M3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub risk: Option<ReportRisk>,
+    /// The trust layers when the report was rendered (ADR-035 M2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layers: Option<ReportLayers>,
+    /// The attestation and how it checked when the report was rendered
+    /// (ADR-036 M3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<ReportProvenance>,
+}
+
+/// The pulsation's attestation. It is the record; the report only repeats
+/// it and how it checks now.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReportProvenance {
+    pub state: String,
+    pub key_id: Option<String>,
+    pub statement_sha256: Option<String>,
+    pub sealed_at: Option<String>,
+    pub signature: Option<String>,
+    pub rederivation: Option<String>,
+    /// Why sealing failed, when it did.
+    pub diagnostic: Option<String>,
+    pub subjects: Vec<ReportSubject>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReportSubject {
+    pub path: String,
+    pub sha256: String,
+    /// The file now: unchanged, changed since the attestation, missing or
+    /// unreadable.
+    pub workspace: String,
+}
+
+/// The host's trust layers, as the pulsation detail shows them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReportLayers {
+    pub policy_version: u32,
+    pub layers: Vec<ReportLayer>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReportLayer {
+    pub name: String,
+    pub state: String,
+    pub headline: String,
+    pub reasons: Vec<String>,
+    pub items: Vec<ReportLayerItem>,
+    /// Items left out after the per-layer limit.
+    pub more: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReportLayerItem {
+    pub label: String,
+    pub value: String,
 }
 
 /// The risk the host assessed and what backed each criterion and check.
@@ -250,6 +305,12 @@ pub fn render_pulsation_report(report: &PulsationReport) -> String {
     if let Some(risk) = &report.risk {
         page.push(&risk_section(risk));
     }
+    if let Some(layers) = &report.layers {
+        page.push(&layers_section(layers));
+    }
+    if let Some(provenance) = &report.provenance {
+        page.push(&provenance_section(provenance));
+    }
     page.push(&run_context(&report.run));
     if !report.rejected_outputs.is_empty() {
         page.push(&rejected_outputs(&report.rejected_outputs));
@@ -334,6 +395,16 @@ fn observed_report(report: &PulsationReport) -> PulsationReport {
     }
     if let Some(convergence) = &mut report.convergence {
         strings(&mut convergence.decisions);
+    }
+    if let Some(layers) = &mut report.layers {
+        for layer in &mut layers.layers {
+            text(&mut layer.headline);
+            strings(&mut layer.reasons);
+            for item in &mut layer.items {
+                text(&mut item.label);
+                text(&mut item.value);
+            }
+        }
     }
     if let Some(risk) = &mut report.risk {
         strings(&mut risk.reasons);
@@ -641,6 +712,12 @@ fn navigation(report: &PulsationReport) -> SafeHtml {
     }
     if report.risk.is_some() {
         html.push_markup("<li><a href=\"#risk\">Risk and coverage</a></li>");
+    }
+    if report.layers.is_some() {
+        html.push_markup("<li><a href=\"#layers\">Layers</a></li>");
+    }
+    if report.provenance.is_some() {
+        html.push_markup("<li><a href=\"#provenance\">Provenance</a></li>");
     }
     html.push_markup("<li><a href=\"#run\">Run context</a></li>");
     if !report.rejected_outputs.is_empty() {
@@ -1538,6 +1615,96 @@ fn risk_section(risk: &ReportRisk) -> SafeHtml {
     html
 }
 
+fn layers_section(layers: &ReportLayers) -> SafeHtml {
+    let mut html = SafeHtml::markup(
+        "<section id=\"layers\" aria-labelledby=\"layers-h\"><div class=\"sec-head\"><h2 id=\"layers-h\">Layers</h2><p>Derived by the host from its own records when this report was rendered. Clear means no problem the host can detect, not that the change is safe; the layers decide nothing.</p></div><div class=\"table-wrap\"><table class=\"wide\"><thead><tr><th>Layer</th><th>State</th><th>Summary</th></tr></thead><tbody>",
+    );
+    for layer in &layers.layers {
+        html.push_markup("<tr><td>")
+            .push_text(&layer.name)
+            .push_markup("</td><td>")
+            .push_text(&layer.state)
+            .push_markup("</td><td class=\"wrap-text\">")
+            .push_text(&layer.headline)
+            .push_markup("</td></tr>");
+    }
+    html.push_markup("</tbody></table></div>");
+    for layer in &layers.layers {
+        if layer.reasons.is_empty() && layer.items.is_empty() {
+            continue;
+        }
+        html.push_markup("<div class=\"card\"><dl class=\"facts\"><dt>Layer</dt><dd>")
+            .push_text(&layer.name)
+            .push_markup("</dd>");
+        for reason in &layer.reasons {
+            html.push_markup("<dt>Why</dt><dd>")
+                .push_text(reason)
+                .push_markup("</dd>");
+        }
+        for item in &layer.items {
+            html.push_markup("<dt>")
+                .push_text(&item.label)
+                .push_markup("</dt><dd>")
+                .push_text(&item.value)
+                .push_markup("</dd>");
+        }
+        if layer.more > 0 {
+            html.push_markup("<dt>More</dt><dd>")
+                .push_text(&format!("{} more", layer.more))
+                .push_markup("</dd>");
+        }
+        html.push_markup("</dl></div>");
+    }
+    html.push_markup("</section>");
+    html
+}
+
+fn provenance_section(provenance: &ReportProvenance) -> SafeHtml {
+    let mut html = SafeHtml::markup(
+        "<section id=\"provenance\" aria-labelledby=\"provenance-h\"><div class=\"sec-head\"><h2 id=\"provenance-h\">Provenance</h2><p>The signed attestation is the record of what this pulsation applied; this report repeats it and how it checked when rendered. A file changed since the attestation differs now; that says nothing about who changed it.</p></div><div class=\"card\"><dl class=\"facts\"><dt>State</dt><dd>",
+    );
+    html.push_text(&provenance.state).push_markup("</dd>");
+    let facts = [
+        ("Key", provenance.key_id.as_deref()),
+        ("Statement", provenance.statement_sha256.as_deref()),
+        ("Sealed", provenance.sealed_at.as_deref()),
+        ("Signature", provenance.signature.as_deref()),
+        ("Re-derivation", provenance.rederivation.as_deref()),
+        ("Sealing error", provenance.diagnostic.as_deref()),
+    ];
+    for (label, value) in facts {
+        if let Some(value) = value {
+            html.push_markup("<dt>")
+                .push_text(label)
+                .push_markup("</dt><dd class=\"wrap-text\">")
+                .push_text(&if label == "Statement" {
+                    format!("sha256:{value}")
+                } else {
+                    value.to_owned()
+                })
+                .push_markup("</dd>");
+        }
+    }
+    html.push_markup("</dl></div>");
+    if !provenance.subjects.is_empty() {
+        html.push_markup(
+            "<div class=\"table-wrap\"><table class=\"wide\"><thead><tr><th>Subject</th><th>SHA-256</th><th>Workspace now</th></tr></thead><tbody>",
+        );
+        for subject in &provenance.subjects {
+            html.push_markup("<tr><td class=\"wrap-text\">")
+                .push_text(&subject.path)
+                .push_markup("</td><td class=\"wrap-text\">")
+                .push_text(&subject.sha256)
+                .push_markup("</td><td>")
+                .push_text(&subject.workspace)
+                .push_markup("</td></tr>");
+        }
+        html.push_markup("</tbody></table></div>");
+    }
+    html.push_markup("</section>");
+    html
+}
+
 fn footer() -> SafeHtml {
     SafeHtml::markup(
         "<footer><span>Rendered by the host from validated payloads, host receipts and usage records. Same inputs, same bytes. Not a document of record.</span><span>No scripts, no network requests, no external assets. Agent-written text is escaped and labelled.</span></footer>",
@@ -1692,7 +1859,146 @@ mod tests {
             review: None,
             convergence: None,
             risk: None,
+            layers: Some(ReportLayers {
+                policy_version: 1,
+                layers: vec![
+                    layer(
+                        "Identity",
+                        "attention",
+                        "8 run(s) on 2 model(s) · mandate revision 1",
+                        &["`code_implementer` ran `gpt-4.1`, not the requested `gpt-4.1-mini`."],
+                        &[(
+                            "code_implementer",
+                            "api · requested gpt-4.1-mini · observed gpt-4.1 · 2 run(s)",
+                        )],
+                        0,
+                    ),
+                    layer(
+                        "Scope",
+                        "issue",
+                        "4 granted · 1 written · 0 refused",
+                        &[
+                            "1 publication(s) in conflict: the workspace kept the developer's version.",
+                        ],
+                        &[("crates/hvc-ui/src/usage.rs", "conflict")],
+                        0,
+                    ),
+                    layer(
+                        "Guardrails",
+                        "clear",
+                        "1/1 required check(s) passed",
+                        &[],
+                        &[],
+                        0,
+                    ),
+                    layer(
+                        "Intent",
+                        "issue",
+                        "6 criteria · 6 with a validated unit · risk medium · 2 supported",
+                        &["The Integrator found 1 criterion(s) contradicted."],
+                        &[("AC-5", "contradicted")],
+                        3,
+                    ),
+                ],
+            }),
+            provenance: Some(ReportProvenance {
+                state: "signed".into(),
+                key_id: Some(format!("hvc-ed25519:{}", "0f1e2d3c".repeat(8))),
+                statement_sha256: Some("ab".repeat(32)),
+                sealed_at: Some("2026-10-26T12:45:05Z".into()),
+                signature: Some("valid".into()),
+                rederivation: Some("matches".into()),
+                diagnostic: None,
+                subjects: vec![
+                    ReportSubject {
+                        path: "crates/hvc-core/src/usage/export.rs".into(),
+                        sha256: "cd".repeat(32),
+                        workspace: "unchanged".into(),
+                    },
+                    ReportSubject {
+                        path: "crates/hvc-ui/src/usage.rs".into(),
+                        sha256: "ef".repeat(32),
+                        workspace: "changed since the attestation".into(),
+                    },
+                ],
+            }),
         }
+    }
+
+    /// ADR-036 M3: the provenance section repeats the attestation and how
+    /// it checks; reports written before it still parse.
+    #[test]
+    fn the_provenance_section_repeats_the_attestation_and_older_reports_still_parse() {
+        let report = sample();
+        let html = render_pulsation_report(&report);
+        assert!(html.contains("<a href=\"#provenance\">Provenance</a>"));
+        assert!(html.contains("id=\"provenance\""));
+        assert!(html.contains(&format!("sha256:{}", "ab".repeat(32))));
+        assert!(html.contains("changed since the attestation"));
+        assert!(html.contains("says nothing about who changed it"));
+        let mut earlier = serde_json::to_value(&report).unwrap();
+        earlier.as_object_mut().unwrap().remove("provenance");
+        assert_eq!(
+            serde_json::from_value::<PulsationReport>(earlier).unwrap(),
+            PulsationReport {
+                provenance: None,
+                ..report
+            }
+        );
+        let mut without = sample();
+        without.provenance = None;
+        assert!(!render_pulsation_report(&without).contains("id=\"provenance\""));
+    }
+
+    fn layer(
+        name: &str,
+        state: &str,
+        headline: &str,
+        reasons: &[&str],
+        items: &[(&str, &str)],
+        more: usize,
+    ) -> ReportLayer {
+        ReportLayer {
+            name: name.into(),
+            state: state.into(),
+            headline: headline.into(),
+            reasons: reasons.iter().map(|reason| (*reason).into()).collect(),
+            items: items
+                .iter()
+                .map(|(label, value)| ReportLayerItem {
+                    label: (*label).into(),
+                    value: (*value).into(),
+                })
+                .collect(),
+            more,
+        }
+    }
+
+    /// ADR-035 M2: the layers section lists every layer with its state and
+    /// says what clear means; reports written before it still parse.
+    #[test]
+    fn the_layers_section_lists_each_layer_and_older_reports_still_parse() {
+        let report = sample();
+        let html = render_pulsation_report(&report);
+        assert!(html.contains("<a href=\"#layers\">Layers</a>"));
+        assert!(html.contains("id=\"layers\""));
+        assert!(html.contains("not that the change is safe"));
+        for name in ["Identity", "Scope", "Guardrails", "Intent"] {
+            assert!(html.contains(&format!("<tr><td>{name}</td>")), "{name}");
+        }
+        assert!(html.contains("<dt>More</dt><dd>3 more</dd>"));
+        let mut earlier = serde_json::to_value(&report).unwrap();
+        earlier.as_object_mut().unwrap().remove("layers");
+        assert_eq!(
+            serde_json::from_value::<PulsationReport>(earlier).unwrap(),
+            PulsationReport {
+                layers: None,
+                ..report
+            }
+        );
+        let mut without = sample();
+        without.layers = None;
+        assert!(!render_pulsation_report(&without).contains("id=\"layers\""));
     }
 
     /// ADR-032: the review section appears only when recorded, says what the

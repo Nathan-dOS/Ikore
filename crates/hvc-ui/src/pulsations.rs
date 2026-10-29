@@ -76,6 +76,14 @@ pub(crate) trait PulsationsBackend: Send + Sync {
     ) -> PulsationsFuture<Option<hvc_core::persistence_service::CheckpointRiskStatus>> {
         Box::pin(async { Ok(None) })
     }
+    /// What approving a waiting Specification review would grant (ADR-035
+    /// M1). Backends without one report `None`, and no grants card is drawn.
+    fn mandate_preview(
+        &self,
+        _checkpoint_id: String,
+    ) -> PulsationsFuture<Option<hvc_core::persistence_service::MandatePreview>> {
+        Box::pin(async { Ok(None) })
+    }
     fn stage_failure_detail(
         &self,
         checkpoint_id: String,
@@ -124,6 +132,43 @@ pub(crate) trait PulsationsBackend: Send + Sync {
     ) -> PulsationsFuture<PathBuf> {
         Box::pin(async { Err("The pulsation report is not available here.".to_owned()) })
     }
+    /// Runs one Attestation card action (ADR-036 M3) and returns the files
+    /// it wrote. Backends without attestations say so.
+    fn attestation(
+        &self,
+        _pulsation_id: String,
+        _action: AttestationAction,
+    ) -> PulsationsFuture<Vec<PathBuf>> {
+        Box::pin(async { Err("Attestations are not available here.".to_owned()) })
+    }
+}
+
+/// What the Attestation card asks the host to do (ADR-036 M3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AttestationAction {
+    VerifyAgain,
+    SignNow,
+    SealAgain,
+    /// Writes the bundle there and the public key next to it.
+    Save(PathBuf),
+}
+
+/// The Attestation card: one request at a time, and what the last one did
+/// for the active pulsation.
+#[derive(Debug, Default)]
+pub(crate) struct AttestationCardState {
+    pub busy: bool,
+    pub notice: Option<AttestationNotice>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AttestationNotice {
+    Verified,
+    Signed,
+    Requeued,
+    Saved(Vec<PathBuf>),
+    TrailerCopied,
+    Failed(String),
 }
 
 #[derive(Debug, Clone)]
@@ -448,6 +493,20 @@ impl PulsationsBackend for CorePulsationsBackend {
                 .map_err(|e| e.to_string())
         })
     }
+    fn mandate_preview(
+        &self,
+        checkpoint_id: String,
+    ) -> PulsationsFuture<Option<hvc_core::persistence_service::MandatePreview>> {
+        let core = self.core.clone();
+        let runtime = core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn_blocking(move || core.persistence().mandate_preview(&checkpoint_id))
+                .await
+                .map_err(|e| Self::worker_error("approval grants", e))?
+                .map_err(|e| e.to_string())
+        })
+    }
     fn stage_failure_detail(
         &self,
         checkpoint_id: String,
@@ -696,6 +755,51 @@ impl PulsationsBackend for CorePulsationsBackend {
                 .map_err(|error| Self::worker_error("pulsation report", error))?
         })
     }
+    fn attestation(
+        &self,
+        pulsation_id: String,
+        action: AttestationAction,
+    ) -> PulsationsFuture<Vec<PathBuf>> {
+        let core = Arc::clone(&self.core);
+        let runtime = core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn_blocking(move || {
+                    let persistence = core.persistence();
+                    let host = |error: hvc_core::persistence_service::PersistenceServiceError| {
+                        error.to_string()
+                    };
+                    let disk = |error: std::io::Error| {
+                        format!("The attestation could not be saved: {error}")
+                    };
+                    match action {
+                        AttestationAction::VerifyAgain => persistence
+                            .verify_attestation(&pulsation_id)
+                            .map(|_| Vec::new())
+                            .map_err(host),
+                        AttestationAction::SignNow => persistence
+                            .sign_attestation(&pulsation_id)
+                            .map(|_| Vec::new())
+                            .map_err(host),
+                        AttestationAction::SealAgain => persistence
+                            .retry_attestation_seal(&pulsation_id)
+                            .map(|_| Vec::new())
+                            .map_err(host),
+                        AttestationAction::Save(bundle) => {
+                            let export = persistence
+                                .export_attestation(&pulsation_id)
+                                .map_err(host)?;
+                            let key = bundle.with_file_name(&export.key_file_name);
+                            std::fs::write(&bundle, &export.bundle).map_err(disk)?;
+                            std::fs::write(&key, &export.public_key_pem).map_err(disk)?;
+                            Ok(vec![bundle, key])
+                        }
+                    }
+                })
+                .await
+                .map_err(|error| Self::worker_error("attestation", error))?
+        })
+    }
 }
 
 /// The "Leftover files" card of a failed pulsation: the preview the operator
@@ -793,6 +897,12 @@ pub struct PulsationsModel {
     pub diff_expanded: bool,
     /// Receipt currently inspected in the composed-stage panel.
     pub(crate) expanded_validation_receipt: Option<String>,
+    /// Layers the developer opened in the Layers panel (ADR-035 M2).
+    pub(crate) layers_expanded:
+        std::collections::HashSet<hvc_core::orchestration::layers::LayerKind>,
+    /// The composed execution under "Execution details", collapsed by
+    /// default below the Layers panel.
+    pub(crate) execution_details_open: bool,
     pub(crate) hitl: HitlReviewState,
     pub(crate) failure: FailureCheckpointState,
     /// The backend the active pulsation's current stage silently failed
@@ -803,6 +913,7 @@ pub struct PulsationsModel {
     pub backend_override_busy: bool,
     pub(crate) cleanup: CleanupState,
     pub(crate) report: ReportState,
+    pub(crate) attestation: AttestationCardState,
 }
 
 impl PulsationsModel {
@@ -891,6 +1002,7 @@ impl PulsationsModel {
             self.backend_override = None;
             self.cleanup = CleanupState::default();
             self.report = ReportState::default();
+            self.attestation = AttestationCardState::default();
         }
         let had_checkpoint = self.hitl.pulsation_id.is_some() || self.failure.checkpoint.is_some();
         self.project_id = Some(project_id.into());
@@ -954,6 +1066,7 @@ impl PulsationsModel {
             self.detail_section = PulsationDetailSection::Overview;
             self.cleanup = CleanupState::default();
             self.report = ReportState::default();
+            self.attestation = AttestationCardState::default();
         }
         self.active_pulsation_id = Some(pulsation_id.to_owned().into());
         self.artifacts.clear();

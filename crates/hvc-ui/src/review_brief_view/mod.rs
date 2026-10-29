@@ -9,11 +9,15 @@
 //! Contract, Test and Integrator checkpoints draw their own stage visual, and a stage
 //! failure lists what each permitted decision does (M4, `stages`).
 
+mod grants;
+mod layers;
 mod review_inputs;
 mod risk;
 mod stages;
 mod visualizer;
 
+pub(crate) use grants::grants_panel;
+pub(crate) use layers::layers_card;
 pub(crate) use review_inputs::review_inputs_panel;
 pub(crate) use risk::risk_panel;
 pub(crate) use stages::failure_choices_card;

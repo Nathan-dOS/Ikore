@@ -51,6 +51,18 @@ impl PersistenceService {
         &self,
         shutdown: &CancellationToken,
     ) -> Result<bool, PersistenceServiceError> {
+        // ADR-036: a seal is a few local reads and one signature; it goes
+        // first so a long knowledge job never delays it, and a busy database
+        // only postpones it without holding the rest of the lane.
+        let service = self.clone();
+        match tokio::task::spawn_blocking(move || service.seal_next_attestation())
+            .await
+            .map_err(|e| coordination::invalid(e.to_string()))?
+        {
+            Ok(true) => return Ok(true),
+            Ok(false) => {}
+            Err(error) => eprintln!("attestation sealing postponed: {error}"),
+        }
         if self.process_anticipation(shutdown).await? {
             return Ok(true);
         }

@@ -65,9 +65,20 @@ pub(crate) struct SettingsSnapshot {
     pub(crate) bindings: Vec<ProviderRouteBinding>,
     pub(crate) key_statuses: Vec<ProviderKeyStatus>,
     pub(crate) resilience: LlmResilienceSnapshot,
+    /// The attestation key and sealing switch (ADR-036 M3); global.
+    pub(crate) attestation: Option<hvc_core::attestation::AttestationKeyStatus>,
 }
 
 pub(crate) trait SettingsBackend: Send + Sync {
+    /// A new active attestation key; the previous one is retired and keeps
+    /// verifying what it signed (ADR-036 M3).
+    fn create_attestation_key(&self) -> SettingsFuture<()>;
+    fn set_attestation_sealing(&self, enabled: bool) -> SettingsFuture<()>;
+    fn verify_attestation_file(
+        &self,
+        bundle: String,
+        public_key_pem: Option<String>,
+    ) -> SettingsFuture<hvc_core::attestation::AttestationFileCheck>;
     fn preview_sanitization_file(
         &self,
         project_id: String,
@@ -221,6 +232,21 @@ impl CoreSettingsBackend {
 }
 
 impl SettingsBackend for CoreSettingsBackend {
+    fn create_attestation_key(&self) -> SettingsFuture<()> {
+        self.blocking(|persistence| persistence.create_attestation_key().map(|_| ()))
+    }
+    fn set_attestation_sealing(&self, enabled: bool) -> SettingsFuture<()> {
+        self.blocking(move |persistence| persistence.set_attestation_sealing_enabled(enabled))
+    }
+    fn verify_attestation_file(
+        &self,
+        bundle: String,
+        public_key_pem: Option<String>,
+    ) -> SettingsFuture<hvc_core::attestation::AttestationFileCheck> {
+        self.blocking(move |persistence| {
+            persistence.verify_attestation_file(&bundle, public_key_pem.as_deref())
+        })
+    }
     fn preview_sanitization_file(
         &self,
         project_id: String,
@@ -483,6 +509,7 @@ impl SettingsBackend for CoreSettingsBackend {
                         bindings: persistence.list_provider_route_bindings()?.bindings,
                         key_statuses: persistence.get_provider_key_statuses()?.providers,
                         resilience: persistence.get_llm_resilience_snapshot()?.snapshot,
+                        attestation: Some(persistence.attestation_key_status()?),
                     })
                 })
                 .await
@@ -726,6 +753,7 @@ pub(crate) enum SettingsPage {
     Composition,
     Timeouts,
     Labs,
+    Security,
     About,
 }
 
@@ -750,7 +778,7 @@ impl SettingsGroup {
 }
 
 impl SettingsPage {
-    pub(crate) const ALL: [Self; 14] = [
+    pub(crate) const ALL: [Self; 15] = [
         Self::General,
         Self::Usage,
         Self::Projects,
@@ -764,6 +792,7 @@ impl SettingsPage {
         Self::Composition,
         Self::Timeouts,
         Self::Labs,
+        Self::Security,
         Self::About,
     ];
 
@@ -782,6 +811,7 @@ impl SettingsPage {
             Self::Composition => "composition",
             Self::Timeouts => "timeouts",
             Self::Labs => "labs",
+            Self::Security => "security",
             Self::About => "about",
         }
     }
@@ -801,6 +831,7 @@ impl SettingsPage {
             Self::Composition => "Stage composition",
             Self::Timeouts => "Agent timeouts",
             Self::Labs => "Labs",
+            Self::Security => "Security",
             Self::About => "About",
         }
     }
@@ -824,6 +855,7 @@ impl SettingsPage {
             Self::Composition => "Host-coordinated units, checks and overrides for this project.",
             Self::Timeouts => "Deadlines that stop hung or runaway agent runs.",
             Self::Labs => "Experimental switches. Each one says what it changes and can be reset.",
+            Self::Security => "The local key that signs each finished pulsation's attestation.",
             Self::About => "Version, where your data lives and a snapshot of the runtime.",
         }
     }
@@ -844,6 +876,7 @@ impl SettingsPage {
             Self::Composition => Icon::Workflow,
             Self::Timeouts => Icon::Clock,
             Self::Labs => Icon::FlaskConical,
+            Self::Security => Icon::ShieldCheck,
             Self::About => Icon::Info,
         }
     }
@@ -859,7 +892,7 @@ impl SettingsPage {
             | Self::Voice
             | Self::SecondBrain => SettingsGroup::AiModels,
             Self::Preparation | Self::Composition | Self::Timeouts => SettingsGroup::Pipeline,
-            Self::Labs | Self::About => SettingsGroup::System,
+            Self::Labs | Self::Security | Self::About => SettingsGroup::System,
         }
     }
 
@@ -881,6 +914,9 @@ impl SettingsPage {
             Self::Composition => "v4 composed batches units validation checks overrides",
             Self::Timeouts => "deadline inactivity ceiling streaming",
             Self::Labs => "experimental preview flags beta",
+            Self::Security => {
+                "attestation signing key ed25519 provenance in-toto dsse rotate verify keyring"
+            }
             Self::About => "version build data directory database diagnostics",
         }
     }
@@ -1089,6 +1125,11 @@ pub(crate) struct SettingsModel {
     pub(crate) composition_override_thinking: SharedString,
     /// Project/check whose Cargo policy is open in the local form.
     pub(crate) cargo_policy_scope: Option<(String, String)>,
+    /// The last "Verify a file…" check on the Security page (ADR-036 M3).
+    pub(crate) attestation_file_check:
+        Option<Result<hvc_core::attestation::AttestationFileCheck, String>>,
+    /// "Create a new key" waits for its confirmation.
+    pub(crate) attestation_rotate_confirm: bool,
 }
 
 impl Default for SettingsModel {
@@ -1137,6 +1178,8 @@ impl Default for SettingsModel {
             composition_override_backend: "codex".into(),
             composition_override_thinking: "default".into(),
             cargo_policy_scope: None,
+            attestation_file_check: None,
+            attestation_rotate_confirm: false,
         }
     }
 }
@@ -1371,6 +1414,7 @@ mod tests {
                     generated_at: "now".into(),
                     states: Vec::new(),
                 },
+                attestation: None,
             },
         );
 

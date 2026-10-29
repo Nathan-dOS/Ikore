@@ -482,6 +482,11 @@ pub(crate) fn failure_choices_card(checkpoint: &StageFailureCheckpoint) -> AnyEl
         ))
         .children(choices.iter().enumerate().map(|(index, choice)| {
             let (glyph, ink, word) = match choice.decision {
+                FailureDecisionKind::GrantScope => (
+                    Icon::ShieldCheck,
+                    theme::accent(),
+                    "Grant and retry".to_owned(),
+                ),
                 FailureDecisionKind::Retry => (Icon::RotateCw, theme::accent(), "Retry".to_owned()),
                 FailureDecisionKind::Revision => (
                     Icon::Pencil,

@@ -1736,6 +1736,7 @@ impl PersistenceService {
             )?;
             Self::close_budget_accounts(db, pulsation_id, stage)?;
         }
+        Self::supersede_scope_requests(db, pulsation_id, from_stage)?;
         Ok(())
     }
 

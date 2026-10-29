@@ -6,6 +6,7 @@ mod agents;
 mod agents_view;
 mod app_model;
 mod assets;
+mod attestation_view;
 mod canvas;
 mod canvas_authoring_ui;
 #[cfg(test)]
@@ -32,6 +33,7 @@ mod home_charts;
 mod home_stats;
 mod home_view;
 mod icons;
+mod layers_view;
 #[cfg(test)]
 mod layout_tests;
 mod lifecycle;
@@ -51,6 +53,7 @@ mod resolution;
 mod resolution_view;
 mod review_brief_view;
 mod review_view;
+mod scope_request_view;
 mod select_menu;
 mod selectable_message;
 mod session;

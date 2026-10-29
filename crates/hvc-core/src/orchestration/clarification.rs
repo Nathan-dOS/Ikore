@@ -210,6 +210,25 @@ impl PersistenceService {
             "UPDATE checkpoints SET status='approved',updated_at=?2 WHERE id=?1",
             params![pending.checkpoint_id, Self::now_iso()],
         )?;
+        let state_version: u64 = tx.query_row(
+            "SELECT state_version FROM pulsations WHERE id=?1",
+            [&current.id],
+            |r| r.get(0),
+        )?;
+        Self::record_approval_receipt(
+            &tx,
+            super::mandate_persistence::ReceiptInput {
+                checkpoint_id: &pending.checkpoint_id,
+                pulsation_id: &current.id,
+                purpose: "clarification",
+                stage: current.stage.as_db_value(),
+                decision: "answered",
+                state_version,
+                reviewed: Vec::new(),
+                confirmed_paths: Vec::new(),
+                feedback: Some(&answers_json),
+            },
+        )?;
         let text = format!(
             "Answers to set {}:\n\n{}",
             pending.id,

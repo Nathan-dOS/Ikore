@@ -365,7 +365,7 @@ mod tests {
         assert_eq!(reading.windows[1].label(), "Weekly");
         assert_eq!(
             reading.windows[1].resets_at,
-            DateTime::from_timestamp(1_793_220_000, 0)
+            DateTime::from_timestamp(4_102_963_200, 0)
         );
         // Other frames are not rate-limit events.
         assert!(claude_rate_limit_frame(br#"{"type":"assistant","message":{}}"#).is_none());

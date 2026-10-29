@@ -30,6 +30,13 @@
 //!
 //! `--report` writes the pulsation report (ADR-027 M6) and prints its path;
 //! it needs `--stage integrator`, where the report becomes available.
+//!
+//! `--scope-request` makes the code unit read `src/util.rs` without owning it
+//! and ask for it with `scope_insufficient` (ADR-035 M4); the fixture grants
+//! the request at the failure checkpoint and goes on. `--stage scope` parks at
+//! that checkpoint instead, with the request pending. `--stage done` approves
+//! every checkpoint and waits for the signed record of the finished pulsation
+//! (ADR-036), so the GUI only reads it.
 use hvc_core::{
     AppCoreDependencies,
     feature_forge::{
@@ -41,11 +48,13 @@ use hvc_core::{
         PreparationSettings, SchemaV1,
         composition::settings::CompositionSettings,
         composition::{CheckKind, Handle, Uuid, ValidationCommandProfileV1},
+        mandate::{SCOPE_GRANT_COMMAND_VERSION, ScopeGrantCommandV1},
         review_brief::failure_choices,
     },
     persistence_service::{
         ApplyHitlDecisionRequest, EnsureProjectForWorkspaceRequest,
         GetPulsationRuntimeSnapshotRequest, HitlDecision, PersistenceService,
+        StageFailureCheckpoint,
     },
     workspace_service::bootstrap_greenfield_workspace,
 };
@@ -69,6 +78,8 @@ use tokio_util::sync::CancellationToken;
 // assignment to the secret redactor (ADR-030), whose edit guard then refuses
 // the scripted whole-file replacement and parks Code.
 const SOURCE: &str = "pub struct Token {\n    pub expires_at: u64,\n}\n\npub fn validate_token(candidate: &Token, now: u64) -> bool {\n    let _ = (candidate, now);\n    true\n}\n";
+const UTIL_SOURCE: &str = "pub fn now() -> u64 {\n    0\n}\n";
+const UTIL_IMPLEMENTED: &str = "pub fn now() -> u64 {\n    std::time::SystemTime::now()\n        .duration_since(std::time::UNIX_EPOCH)\n        .map_or(0, |elapsed| elapsed.as_secs())\n}\n";
 
 struct Quiet;
 impl LlmEventSink for Quiet {
@@ -82,12 +93,17 @@ fn criterion(id: &str, description: &str) -> AcceptanceCriterion {
     }
 }
 
-fn tasks() -> Vec<TaskDraft> {
+fn tasks(scope_request: bool) -> Vec<TaskDraft> {
+    let description = if scope_request {
+        "validate_token in src/auth.rs accepts every token; compare against the clock in src/util.rs and add a unit test in tests/auth_test.rs"
+    } else {
+        "validate_token in src/auth.rs accepts every token; add the expiry check and a unit test in tests/auth_test.rs"
+    };
     vec![
         TaskDraft {
             title: "Reject expired tokens".into(),
             kind: TaskKind::Bug,
-            description: "validate_token in src/auth.rs accepts every token; add the expiry check and a unit test in tests/auth_test.rs".into(),
+            description: description.into(),
             criteria: vec![
                 criterion("AC-1", "An expired token is rejected by validate_token"),
                 criterion("AC-2", "A token that expires exactly now is rejected"),
@@ -98,7 +114,9 @@ fn tasks() -> Vec<TaskDraft> {
         TaskDraft {
             title: "Keep valid tokens working".into(),
             kind: TaskKind::Adjustment,
-            description: "validate_token in src/auth.rs must keep accepting tokens that are still valid".into(),
+            description:
+                "validate_token in src/auth.rs must keep accepting tokens that are still valid"
+                    .into(),
             criteria: vec![criterion(
                 "AC-3",
                 "A token that expires in the future is still accepted",
@@ -145,7 +163,7 @@ fn visualizer_reply(user_prompt: &str) -> Value {
     json!({"headline": headline, "notes": notes, "emphasis": emphasis})
 }
 
-fn reply(facts: &PromptFacts, fail_code: bool) -> Value {
+fn reply(facts: &PromptFacts, fail_code: bool, scope_request: bool) -> Value {
     if facts.executor == VISUALIZER {
         return visualizer_reply(&facts.user_prompt);
     }
@@ -154,6 +172,27 @@ fn reply(facts: &PromptFacts, fail_code: bool) -> Value {
             "schemaVersion": 1, "outcome": "failed", "code": "contract_conflict",
             "message": "The approved signature cannot express the expiry input.", "relatedRefs": []
         });
+    }
+    // Until the grant, the code unit reads the clock helper it must change.
+    if scope_request
+        && facts.executor == "code_implementer"
+        && facts
+            .references
+            .values()
+            .any(|row| row.path == "src/util.rs" && !row.owned && !row.candidate && !row.planned)
+    {
+        return json!({
+            "schemaVersion": 1, "outcome": "failed", "code": "scope_insufficient",
+            "message": "now() in src/util.rs always returns 0, so validate_token cannot compare against the clock.",
+            "relatedRefs": [facts.handle_for_path("src/util.rs")]
+        });
+    }
+    if scope_request && facts.executor == "code_implementer" {
+        let mut options = ReplyOptions::default();
+        options
+            .contents
+            .insert("src/util.rs".into(), UTIL_IMPLEMENTED.into());
+        return unit_response_with(facts, &options);
     }
     if facts.executor == "integration_reviewer" {
         // One verdict short of supported, so the Integrator brief has an item.
@@ -179,12 +218,16 @@ fn reply(facts: &PromptFacts, fail_code: bool) -> Value {
         .iter()
         .map(|(_, criterion)| criterion.as_str())
         .collect();
+    let mut code_inputs = vec![source];
+    if scope_request {
+        code_inputs.push(facts.handle_for_path("src/util.rs"));
+    }
     let options = ReplyOptions {
         proposals: Some(json!([
             {
                 "unitKey": "implement_expiry", "kind": "code", "taskRefs": facts.tasks,
                 "criterionRefs": criteria,
-                "inputRefs": [source], "destinationRefs": [source], "dependsOn": [],
+                "inputRefs": code_inputs, "destinationRefs": [source], "dependsOn": [],
                 "objective": "Implement the expiry comparison in validate_token."
             },
             {
@@ -288,6 +331,52 @@ fn approve(service: &PersistenceService, pulse: &str) {
         .unwrap();
 }
 
+/// The waiting stage failure of the fixture's project.
+fn waiting_failure(service: &PersistenceService, project: &str) -> StageFailureCheckpoint {
+    service
+        .get_pulsation_runtime_snapshot(GetPulsationRuntimeSnapshotRequest {
+            project_id: project.into(),
+        })
+        .unwrap()
+        .snapshot
+        .failure_checkpoints
+        .into_iter()
+        .next()
+        .expect("a waiting stage failure")
+}
+
+/// Grants the pending scope request with what the card shows.
+fn grant_scope(service: &PersistenceService, project: &str) {
+    let failure = waiting_failure(service, project);
+    let request = failure
+        .scope_request
+        .as_ref()
+        .expect("the failure carries a scope request");
+    service
+        .grant_scope_and_retry(ScopeGrantCommandV1 {
+            schema_version: SCOPE_GRANT_COMMAND_VERSION,
+            project_id: failure.project_id.clone(),
+            pulsation_id: failure.pulsation_id.clone(),
+            checkpoint_id: failure.checkpoint_id.clone(),
+            request_id: request.request_id.clone(),
+            expected_state_version: failure.state_version,
+            expected_derivation_sha256: request.derivation_sha256.clone(),
+        })
+        .unwrap();
+}
+
+/// Waits until `query` on the pulsation returns true.
+fn wait_for(database: &rusqlite::Connection, pulse: &str, what: &str, query: &str) {
+    let deadline = Instant::now() + Duration::from_secs(180);
+    while !database
+        .query_row(query, [pulse], |row| row.get::<_, bool>(0))
+        .unwrap()
+    {
+        assert!(Instant::now() < deadline, "{what} did not happen");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// A required compile check run by the `check_fixture` stand-in, when it was
 /// built next to the examples folder (`cargo build -p hvc-test-support --bins`).
 fn passing_check() -> Option<ValidationCommandProfileV1> {
@@ -313,7 +402,7 @@ fn passing_check() -> Option<ValidationCommandProfileV1> {
     })
 }
 
-const USAGE: &str = "usage: review_brief_fixture NEW_DIRECTORY [--revised] [--visualizer] [--report] [--review-policy] [--stage contract|test|integrator|failure]";
+const USAGE: &str = "usage: review_brief_fixture NEW_DIRECTORY [--revised] [--visualizer] [--report] [--review-policy] [--scope-request] [--stage contract|test|integrator|failure|scope|done]";
 
 fn main() {
     let root = PathBuf::from(std::env::args_os().nth(1).expect(USAGE));
@@ -321,6 +410,7 @@ fn main() {
     let mut visualizer = false;
     let mut report = false;
     let mut review_policy = false;
+    let mut scope_request = false;
     let mut target = "specification".to_owned();
     let mut options = std::env::args().skip(2);
     while let Some(option) = options.next() {
@@ -329,6 +419,7 @@ fn main() {
             "--visualizer" => visualizer = true,
             "--report" => report = true,
             "--review-policy" => review_policy = true,
+            "--scope-request" => scope_request = true,
             "--stage" => target = options.next().expect(USAGE),
             other => panic!("unknown option {other}; {USAGE}"),
         }
@@ -338,10 +429,15 @@ fn main() {
         "contract" => &["Contract"],
         "test" => &["Contract", "Test"],
         "integrator" => &["Contract", "Test", "Integrator"],
-        "failure" => &["Contract"],
+        "failure" | "scope" => &["Contract"],
+        "done" => &["Contract", "Test", "Integrator"],
         other => panic!("unknown stage {other}; {USAGE}"),
     };
     let fail_code = target == "failure";
+    let park_at_scope = target == "scope";
+    let scope_request = scope_request || park_at_scope;
+    let parks_at_failure = fail_code || park_at_scope;
+    let done = target == "done";
     assert!(!root.exists(), "refuse to reuse or overwrite {root:?}");
     fs::create_dir_all(&root).unwrap();
     // The GUI registers projects by their canonical root (`\\?\` form on
@@ -353,6 +449,9 @@ fn main() {
     bootstrap_greenfield_workspace(&workspace).unwrap();
     fs::create_dir_all(workspace.join("src")).unwrap();
     fs::write(workspace.join("src/auth.rs"), SOURCE).unwrap();
+    if scope_request {
+        fs::write(workspace.join("src/util.rs"), UTIL_SOURCE).unwrap();
+    }
     if review_policy {
         fs::write(
             workspace.join("REVIEW.md"),
@@ -369,7 +468,7 @@ fn main() {
         let model = body["model"]
             .as_str()
             .expect("provider request model identity");
-        let content = reply(&parse_prompt(request), fail_code);
+        let content = reply(&parse_prompt(request), fail_code, scope_request);
         ScriptedResponse::json(
             200,
             json!({"model":model,"choices":[{"message":{"content":content.to_string()},"finish_reason":"stop"}],"usage":{"prompt_tokens":120,"completion_tokens":60}}).to_string(),
@@ -433,7 +532,7 @@ fn main() {
         .create(CreateTasksRequest {
             project_id: project.clone(),
             request_id: "review-brief-fixture-tasks".into(),
-            tasks: tasks(),
+            tasks: tasks(scope_request),
         })
         .unwrap();
     let pulse = service
@@ -486,13 +585,33 @@ fn main() {
     }
     for stage in later {
         approve(&service, &pulse);
+        if scope_request && *stage == "Test" {
+            // Code asked for the clock helper; grant it and let the retry run.
+            wait_for_checkpoint(&database, &pulse, "stage_failure", "", None);
+            grant_scope(&service, &project);
+        }
         wait_for_checkpoint(&database, &pulse, "artifact_review", stage, None);
     }
-    if fail_code {
+    if parks_at_failure {
         approve(&service, &pulse);
         wait_for_checkpoint(&database, &pulse, "stage_failure", "", None);
     }
-    if visualizer && !fail_code {
+    if done {
+        approve(&service, &pulse);
+        wait_for(
+            &database,
+            &pulse,
+            "the pulsation's end",
+            "SELECT status='done' FROM pulsations WHERE id=?1",
+        );
+        wait_for(
+            &database,
+            &pulse,
+            "the seal",
+            "SELECT EXISTS(SELECT 1 FROM attestation_seal_intents WHERE pulsation_id=?1 AND state<>'pending')",
+        );
+    }
+    if visualizer && !parks_at_failure && !done {
         // Let the note of the parked checkpoint be written before the worker
         // stops; the GUI only reads it.
         let deadline = Instant::now() + Duration::from_secs(60);
@@ -529,22 +648,31 @@ fn main() {
             .unwrap(),
         )
         .unwrap();
-    if fail_code {
-        let snapshot = service
-            .get_pulsation_runtime_snapshot(GetPulsationRuntimeSnapshotRequest {
-                project_id: project.clone(),
-            })
-            .unwrap()
-            .snapshot;
-        let failure = snapshot
-            .failure_checkpoints
-            .first()
-            .expect("a waiting stage failure");
+    if parks_at_failure {
+        let failure = waiting_failure(&service, &project);
         println!(
             "Failure: {} at {:?}, {} choices",
             failure.failure_class,
             failure.stage,
-            failure_choices(failure).len()
+            failure_choices(&failure).len()
+        );
+        if let Some(request) = &failure.scope_request {
+            println!(
+                "Scope request: unit {}, {} file(s) accepted, {} refused, risk {:?} -> {:?}",
+                request.unit_key,
+                request.accepted.len(),
+                request.refused.len(),
+                request.risk_before,
+                request.risk_after
+            );
+        }
+    } else if done {
+        let attestation = service.attestation_status(&pulse).unwrap();
+        println!(
+            "Attestation: {:?}, outcome {}, {} subject(s)",
+            attestation.state,
+            attestation.outcome.as_deref().unwrap_or("-"),
+            attestation.subject_count
         );
     } else {
         let checkpoint = service.get_hitl_checkpoint(&pulse).unwrap();

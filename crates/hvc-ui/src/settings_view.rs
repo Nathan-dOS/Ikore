@@ -71,6 +71,7 @@ pub(crate) fn projects_page(model: &AppModel, cx: &mut Context<AppModel>) -> Pag
                 ]))
                 .section("Permanent deletion",section("Permanent deletion",None,vec![
                     warning_note("This removes the repository folder and project data. Provider usage remains attributed to this project in separate local history. The operation cannot be undone."),
+                    note("The pulsations' attestations are deleted with them; save any you want to keep from each pulsation's Attestation card first. Attestation keys stay."),
                     stacked_row("project-deletion",None,div().flex().flex_col().gap_2().child(note(format!("Type {} to confirm:",project.name))).child(sized_input(model.settings_project_delete_input.clone(), INPUT_MEDIUM))),
                     action_with("settings-delete-project","Delete repository permanently",ButtonVariant::Danger,confirmed && !busy && !loading,cx,|model,cx|model.confirm_project_deletion(cx)).into_any_element(),
                 ]));

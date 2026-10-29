@@ -679,6 +679,31 @@ pub(crate) static ENTRIES: &[SettingsEntry] = &[
         "The next 20 automatic Pulsation and Learning CLI runs have no wall-clock timeout; cancel, shutdown and output limits still apply.",
         "trial observation timeout experimental",
     ),
+    // Security
+    entry(
+        "attestation-key",
+        P::Security,
+        "Attestation key",
+        "Attestation key",
+        "Signs the attestation of each pulsation that ends. The private key stays in the operating system's credential store; a retired key still verifies what it signed.",
+        "attestation signing key ed25519 rotate keyring credential manager",
+    ),
+    entry(
+        "attestation-sealing",
+        P::Security,
+        "Attestation key",
+        "Seal pulsations that end",
+        "Records a signed attestation when a pulsation ends. Turning it off affects pulsations that end from now on.",
+        "attestation seal provenance in-toto",
+    ),
+    entry(
+        "attestation-verify-file",
+        P::Security,
+        "Verify a file",
+        "Verify an attestation file",
+        "Checks a saved .intoto.jsonl bundle against this machine's keys or the public key file saved with it.",
+        "attestation verify bundle dsse pem import",
+    ),
     // About
     entry(
         "about-version",

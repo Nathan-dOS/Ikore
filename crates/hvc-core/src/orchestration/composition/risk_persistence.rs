@@ -536,7 +536,7 @@ impl PersistenceService {
 
     /// The coverage of the accepted Integrator execution of the pulsation's
     /// current input revision.
-    fn current_coverage(
+    pub(super) fn current_coverage(
         db: &Connection,
         pulsation_id: &str,
         input_revision: u64,

@@ -17,6 +17,10 @@ hvc-contracts.workspace = true
 hvc-terminal = { workspace = true, default-features = false }
 hvc-voice.workspace = true
 anyhow.workspace = true
+# ADR-036: Ed25519 signing of pulsation attestations with `ring`, `base64` for the
+# DSSE envelope and `zeroize` for the decoded key. All three were already in the
+# graph through rustls; none adds a package.
+base64 = "0.22"
 chrono.workspace = true
 fs2 = "0.4"
 futures.workspace = true
@@ -31,6 +35,7 @@ notify = "8"
 refinery = { version = "0.8", features = ["rusqlite"] }
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+ring = "0.17"
 rusqlite = { version = "0.33", features = ["bundled"] }
 serde.workspace = true
 serde_json.workspace = true
@@ -46,6 +51,7 @@ tree-sitter-rust = "=0.24.2"
 tree-sitter-typescript = "=0.23.2"
 uuid = { version = "1", features = ["v4"] }
 walkdir = "2"
+zeroize = "1"
 
 [dev-dependencies]
 tempfile = "3"

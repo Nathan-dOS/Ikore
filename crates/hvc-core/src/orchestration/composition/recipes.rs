@@ -128,6 +128,9 @@ pub struct StageInputs {
     /// Recipes the project promoted to plan several units (settings
     /// `qualifiedRecipes`); an unqualified Code/Test keeps one unit.
     pub qualified_recipes: Vec<String>,
+    /// Delivered files granted to a unit of this stage at a failure
+    /// checkpoint (ADR-035 M4), by logical unit key.
+    pub scope_amendments: Vec<(String, RelPath)>,
 }
 
 impl StageInputs {
@@ -740,8 +743,30 @@ pub fn prepare(stage: Stage, inputs: &StageInputs) -> Result<StagePreparation, C
             }]
         }
     };
-    let table = builder.build();
     let mut drafts = drafts;
+    // ADR-035 M4: a granted file is one more destination of the unit that
+    // asked for it, with the anchors its edits need.
+    if matches!(stage, Stage::Code | Stage::Test) {
+        let mut granted = Vec::new();
+        for (unit_key, path) in &inputs.scope_amendments {
+            let Some(handle) = builder.handle_for_path(path).cloned() else {
+                continue;
+            };
+            if let Some(draft) = drafts
+                .iter_mut()
+                .find(|draft| draft.logical_unit_key.as_str() == unit_key)
+                && !draft.owned_destination_refs.contains(&handle)
+            {
+                draft.owned_destination_refs.push(handle.clone());
+                if !draft.input_refs.contains(&handle) {
+                    draft.input_refs.push(handle.clone());
+                }
+                granted.push(handle);
+            }
+        }
+        add_partition_anchors(&mut builder, &granted, &delivered)?;
+    }
+    let table = builder.build();
     for draft in &mut drafts {
         // A review policy is never a destination of any stage (ADR-032).
         draft.owned_destination_refs.retain(|handle| {
@@ -2053,6 +2078,7 @@ mod tests {
             revision_feedback: None,
             clarification_answers: vec![],
             qualified_recipes: vec!["code".into(), "test".into()],
+            scope_amendments: Vec::new(),
         }
     }
 

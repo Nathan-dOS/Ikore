@@ -53,6 +53,7 @@ pub(crate) fn page_content(
         SettingsPage::Composition => crate::composition_ui::composition_page(model, hl, cx),
         SettingsPage::Timeouts => crate::settings_view::timeouts_page(hl),
         SettingsPage::Labs => crate::composition_ui::labs_page(model, hl, cx),
+        SettingsPage::Security => crate::attestation_view::security_page(model, hl, cx),
         SettingsPage::About => about_page(model, hl, cx),
     }
 }
@@ -213,6 +214,12 @@ pub(crate) fn shortcut_catalog() -> Vec<Shortcut> {
         shortcut(REVIEW, "enter", "Retry a failed stage", true),
         shortcut(REVIEW, "r", "Revise a failed stage", true),
         shortcut(REVIEW, "d", "Abort a failed stage", true),
+        shortcut(
+            REVIEW,
+            "g",
+            "Grant a failed stage's scope request and retry",
+            true,
+        ),
         shortcut(EDIT, "ctrl-z", "Undo in the editor", true),
         shortcut(EDIT, "ctrl-y", "Redo in the editor", true),
         shortcut(EDIT, "ctrl-a", "Select all", true),

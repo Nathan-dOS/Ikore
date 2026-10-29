@@ -24,6 +24,15 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
         .as_ref()
         .map(|s| s.queue.clone())
         .unwrap_or_default();
+    // ADR-036 M3: the pulsations with a signed attestation.
+    let attested_ids = model
+        .pulsations
+        .read(cx)
+        .details
+        .iter()
+        .filter(|detail| detail.attested)
+        .map(|detail| detail.pulsation_id.clone())
+        .collect::<std::collections::HashSet<_>>();
     let (
         pulsations,
         active_id,
@@ -218,7 +227,14 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
                                                     blocking_label(p.blocking_reason.as_deref())
                                                 )
                                             });
-                                            pulsation_card(pulse, active_id.as_deref(), label, cx)
+                                            let attested = attested_ids.contains(&pulse.id);
+                                            pulsation_card(
+                                                pulse,
+                                                active_id.as_deref(),
+                                                label,
+                                                attested,
+                                                cx,
+                                            )
                                         }))
                                         .when(more > 0, |list| {
                                             let id = gpui::SharedString::from(format!(
@@ -430,6 +446,10 @@ fn detail_overview(
     cx: &mut Context<AppModel>,
 ) -> AnyElement {
     div()
+        // ADR-035 M2: where the pulsation stands against what was approved.
+        .child(crate::layers_view::layers_panel(model, cx))
+        // ADR-036 M3: the signed record of what this pulsation did.
+        .child(crate::attestation_view::attestation_panel(model, cx))
         .when_some(coverage, |panel, coverage| {
             panel.child(brownfield_progress_panel(coverage))
         })
@@ -439,7 +459,7 @@ fn detail_overview(
         })
         .child(report_panel(model, active, cx))
         .child(coordination_panel(model, cx))
-        .child(composition_panel(model, cx))
+        .child(execution_details(model, cx))
         .child(crate::usage::pulsation_usage_panel(model, cx))
         .child(
             div()
@@ -542,6 +562,7 @@ fn pulsation_card(
     pulsation: Pulsation,
     active_id: Option<&str>,
     queue_label: Option<String>,
+    attested: bool,
     cx: &mut Context<AppModel>,
 ) -> AnyElement {
     let selected = active_id == Some(pulsation.id.as_str());
@@ -599,13 +620,23 @@ fn pulsation_card(
         .child(
             div()
                 .mt_1()
-                .text_xs()
-                .text_color(theme::text_muted())
-                .child(format!(
-                    "{} · {}",
-                    stage_label(pulsation.stage),
-                    status_label(pulsation.status, pulsation.terminal_reason.as_deref())
-                )),
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .min_w_0()
+                        .text_xs()
+                        .text_color(theme::text_muted())
+                        .child(format!(
+                            "{} · {}",
+                            stage_label(pulsation.stage),
+                            status_label(pulsation.status, pulsation.terminal_reason.as_deref())
+                        )),
+                )
+                .when(attested, |line| {
+                    line.child(crate::attestation_view::attested_badge())
+                }),
         )
         .when_some(queue_label, |card, label| {
             card.child(
@@ -1603,6 +1634,55 @@ fn report_panel(model: &AppModel, active: &Pulsation, cx: &mut Context<AppModel>
         .into_any_element()
 }
 
+/// "Execution details": the composed execution below the Layers panel,
+/// collapsed until the developer opens it.
+fn execution_details(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
+    let state = model.pulsations.read(cx);
+    if state
+        .detail()
+        .and_then(|detail| detail.stage_execution.as_ref())
+        .is_none()
+    {
+        return div().into_any_element();
+    }
+    let open = state.execution_details_open;
+    div()
+        .mb_3()
+        .child(
+            div()
+                .id("execution-details-toggle")
+                .debug_selector(|| "execution-details-toggle".into())
+                .flex()
+                .items_center()
+                .gap_2()
+                .py_1()
+                .cursor_pointer()
+                .on_click(cx.listener(|model, _, _, cx| {
+                    model.pulsations.update(cx, |state, _| {
+                        state.execution_details_open = !state.execution_details_open;
+                    });
+                    cx.notify();
+                }))
+                .child(crate::widgets::icon(
+                    if open {
+                        crate::icons::Icon::ChevronDown
+                    } else {
+                        crate::icons::Icon::ChevronRight
+                    },
+                    px(12.0),
+                    theme::text_muted(),
+                ))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_muted())
+                        .child("EXECUTION DETAILS"),
+                ),
+        )
+        .when(open, |panel| panel.child(composition_panel(model, cx)))
+        .into_any_element()
+}
+
 /// The composed execution of the active pulsation's current stage (pipeline
 /// v4, ADR-022): units with their real states, attempts, effective model and
 /// real versus reserved usage, host checks apart from authored coverage, and
@@ -2266,6 +2346,9 @@ mod tests {
                             }),
                             artifact_ids: vec![],
                             stage_execution: None,
+                            layers: None,
+                            attestation: None,
+                            attested: false,
                         }];
                     });
                 });

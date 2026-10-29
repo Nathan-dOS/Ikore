@@ -650,6 +650,17 @@ mod tests {
         db.execute("INSERT INTO companion_agent_output_documents(project_id,stable_reference,source_kind,source_id,status,title,content,created_at,updated_at) VALUES(?1,'old-output','artifact','source','completed','Private title','private FTS text','2026-09-26','2026-09-26')",[&deleted.id]).unwrap();
         db.execute("INSERT INTO runtime_settings(key,value,updated_at) VALUES(?1,'private setting','2026-09-26')",[format!("companion.target.{}",deleted.id)]).unwrap();
         db.execute("INSERT INTO runtime_settings(key,value,updated_at) VALUES('runtime.provider','openai','2026-09-26') ON CONFLICT(key) DO UPDATE SET value=excluded.value",[]).unwrap();
+        // Mandates and receipts are append-only, yet still go with the project.
+        let digest = "0".repeat(64);
+        db.execute("INSERT INTO execution_mandates(id,pulsation_id,revision,cause,enforcement,mandate_json,mandate_sha256,checkpoint_id,created_at) VALUES('deleted-mandate',?1,1,'issued','enforced_v4','{}',?2,'deleted-checkpoint','2026-10-26')",params![pulse.id,digest]).unwrap();
+        db.execute("INSERT INTO checkpoint_approval_receipts(checkpoint_id,pulsation_id,purpose,decision,receipt_json,receipt_sha256,mandate_revision,created_at) VALUES('deleted-checkpoint',?1,'artifact_review','approved','{}',?2,1,'2026-10-26')",params![pulse.id,digest]).unwrap();
+        db.execute("INSERT INTO mandate_enforcement_events(id,pulsation_id,stage,rule,relative_path,detail,mandate_revision,created_at,updated_at) VALUES('deleted-event',?1,'Code','scope_violation','src/private.rs','refused',1,'2026-10-26','2026-10-26')",[&pulse.id]).unwrap();
+        // Attestations go with the project; keys are global and stay.
+        let key_id = format!("hvc-ed25519:{}", "b".repeat(64));
+        db.execute("INSERT INTO attestation_keys(key_id,algorithm,public_key,state,created_at) VALUES(?1,'ed25519','AAAA','active','2026-10-26')",[&key_id]).unwrap();
+        db.execute("INSERT INTO attestation_seal_intents(pulsation_id,state,created_at,updated_at) VALUES(?1,'sealed','2026-10-26','2026-10-26')",[&pulse.id]).unwrap();
+        db.execute("INSERT INTO pulsation_attestations(pulsation_id,schema_version,predicate_type,deriver_version,statement_json,statement_sha256,envelope_json,key_id,signature_state,outcome,subject_count,sealed_at,signed_at) VALUES(?1,1,'urn:hvc:pulsation-attestation:v1',1,'{}',?2,'{}',?3,'signed','failed',0,'2026-10-26','2026-10-26')",params![pulse.id,digest,key_id]).unwrap();
+        db.execute("INSERT INTO attestation_verifications(pulsation_id,checked_at,signature,rederivation,workspace_json) VALUES(?1,'2026-10-26','valid','matches','[]')",[&pulse.id]).unwrap();
         let global_connections: i64 = db
             .query_row("SELECT count(*) FROM provider_connections", [], |r| {
                 r.get(0)
@@ -745,6 +756,32 @@ mod tests {
             0
         );
         assert_eq!(db.query_row("SELECT count(*) FROM companion_agent_output_fts WHERE companion_agent_output_fts MATCH 'private'",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+        for table in [
+            "execution_mandates",
+            "checkpoint_approval_receipts",
+            "mandate_enforcement_events",
+            "attestation_seal_intents",
+            "pulsation_attestations",
+            "attestation_verifications",
+        ] {
+            assert_eq!(
+                db.query_row(
+                    &format!("SELECT count(*) FROM {table} WHERE pulsation_id=?1"),
+                    [&pulse.id],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+                0,
+                "{table}"
+            );
+        }
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM attestation_keys", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1,
+            "attestation keys are global"
+        );
         assert_eq!(
             db.query_row(
                 "SELECT count(*) FROM runtime_settings WHERE key=?1",

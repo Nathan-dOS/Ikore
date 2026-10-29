@@ -2578,3 +2578,359 @@ fn v55_to_v57_adds_canvas_tables_without_rewriting_legacy_data() {
         0
     );
 }
+
+/// V59 adds execution mandates and approval receipts (ADR-035 M1). Purely
+/// additive: every earlier table keeps its definition, a pulsation that was
+/// already running gets no mandate, revisions and receipts refuse updates,
+/// causes, enforcements and decisions are closed sets, and every row goes
+/// with its pulsation.
+#[test]
+fn v58_to_v59_adds_mandates_and_receipts_without_touching_running_pulsations() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("hard-vibe-code.db");
+    let mut db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    cli_migrations::migrations::runner()
+        .set_target(refinery::Target::Version(58))
+        .run(&mut db)
+        .unwrap();
+    db.execute("INSERT INTO projects(id,name,workspace_path,created_at,updated_at) VALUES('p','V58 fixture','C:/fixture','now','now')",[]).unwrap();
+    db.execute("INSERT INTO pulsations(id,project_id,feature_name,stage,status,created_at,updated_at,pipeline_version) VALUES('pulse','p','Work','Code','running','now','now',4)",[]).unwrap();
+    db.execute("INSERT INTO checkpoints(id,pulsation_id,stage,status,created_at,updated_at) VALUES('cp','pulse','SPECIFICATION','approved','now','now')",[]).unwrap();
+    let tables = |db: &Connection| -> Vec<String> {
+        db.prepare(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND sql IS NOT NULL ORDER BY name",
+        )
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+    };
+    let before = tables(&db);
+    drop(db);
+
+    PersistenceService::initialize(root.path()).unwrap();
+    let db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    let after = tables(&db);
+    for table in &before {
+        assert!(after.contains(table), "V59 rebuilds nothing: {table}");
+    }
+    assert_eq!(
+        db.query_row("SELECT COUNT(*) FROM execution_mandates", [], |r| r
+            .get::<_, u32>(0))
+            .unwrap(),
+        0,
+        "a pulsation past its Specification gets no retroactive mandate"
+    );
+    let sha = "a".repeat(64);
+    let mandate = |id: &str,
+                   revision: u32,
+                   cause: &str,
+                   enforcement: &str,
+                   previous: Option<&str>| {
+        db.execute(
+            "INSERT INTO execution_mandates(id,pulsation_id,revision,cause,enforcement,mandate_json,mandate_sha256,previous_sha256,checkpoint_id,created_at) VALUES(?1,'pulse',?2,?3,?4,'{}',?5,?6,'cp','now')",
+            params![id, revision, cause, enforcement, sha, previous],
+        )
+    };
+    mandate("m1", 1, "issued", "enforced_v4", None).expect("a first revision");
+    mandate("m1b", 1, "issued", "enforced_v4", None).expect_err("one row per revision");
+    mandate("m2", 2, "scope_grant", "enforced_v4", None)
+        .expect_err("a later revision names its predecessor");
+    mandate("m2", 2, "guessed", "enforced_v4", Some(&sha)).expect_err("causes are a closed set");
+    mandate("m2", 2, "reissued", "sometimes", Some(&sha))
+        .expect_err("enforcements are a closed set");
+    mandate("m2", 2, "transport_fallback", "enforced_v4", Some(&sha)).expect("a chained revision");
+    db.execute(
+        "UPDATE execution_mandates SET cause='reissued' WHERE id='m1'",
+        [],
+    )
+    .expect_err("revisions are append-only");
+    let receipt = |checkpoint: &str, purpose: &str, decision: &str| {
+        db.execute(
+            "INSERT INTO checkpoint_approval_receipts(checkpoint_id,pulsation_id,purpose,decision,receipt_json,receipt_sha256,mandate_revision,created_at) VALUES(?1,'pulse',?2,?3,'{}',?4,1,'now')",
+            params![checkpoint, purpose, decision, sha],
+        )
+    };
+    receipt("cp", "artifact_review", "approved").expect("a receipt");
+    receipt("cp", "artifact_review", "approved").expect_err("one receipt per checkpoint");
+    receipt("cp2", "artifact_review", "maybe").expect_err("decisions are a closed set");
+    receipt("cp3", "stage_failure", "grant_scope").expect("the M4 decision is admitted already");
+    db.execute(
+        "UPDATE checkpoint_approval_receipts SET decision='rejected'",
+        [],
+    )
+    .expect_err("receipts are append-only");
+    db.execute("INSERT INTO mandate_enforcement_events(id,pulsation_id,stage,rule,relative_path,detail,mandate_revision,created_at,updated_at) VALUES('e','pulse','Code','scope_violation','x.rs','refused',1,'now','now')",[])
+        .expect("an event");
+    db.execute("INSERT INTO mandate_enforcement_events(id,pulsation_id,stage,rule,relative_path,detail,mandate_revision,created_at,updated_at) VALUES('e2','pulse','Code','guessed',NULL,'refused',1,'now','now')",[])
+        .expect_err("rules are a closed set");
+
+    db.execute("DELETE FROM projects WHERE id='p'", []).unwrap();
+    for table in [
+        "execution_mandates",
+        "checkpoint_approval_receipts",
+        "mandate_enforcement_events",
+    ] {
+        assert_eq!(
+            db.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r
+                .get::<_, u32>(0))
+                .unwrap(),
+            0,
+            "{table} goes with its pulsation"
+        );
+    }
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, u32>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+}
+
+/// V60 adds signed local attestations (ADR-036 M3). Purely additive: every
+/// earlier table keeps its definition, a pulsation that ended before the
+/// upgrade is never sealed retroactively, keys are global and can never be
+/// deleted while an attestation names them, an attestation changes only from
+/// unsigned to signed, and intents, attestations and checks go with their
+/// pulsation.
+#[test]
+fn v59_to_v60_adds_attestations_without_sealing_pulsations_that_already_ended() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("hard-vibe-code.db");
+    let mut db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    cli_migrations::migrations::runner()
+        .set_target(refinery::Target::Version(59))
+        .run(&mut db)
+        .unwrap();
+    db.execute("INSERT INTO projects(id,name,workspace_path,created_at,updated_at) VALUES('p','V59 fixture','C:/fixture','now','now')",[]).unwrap();
+    db.execute("INSERT INTO pulsations(id,project_id,feature_name,stage,status,created_at,updated_at,pipeline_version) VALUES('pulse','p','Work','Integrator','done','now','now',4)",[]).unwrap();
+    let tables = |db: &Connection| -> Vec<String> {
+        db.prepare(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND sql IS NOT NULL ORDER BY name",
+        )
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+    };
+    let before = tables(&db);
+    drop(db);
+
+    // Read-only: this service's credential store is the real keyring.
+    let service = PersistenceService::initialize(root.path()).unwrap();
+    assert_eq!(
+        service.attestation_status("pulse").unwrap().state,
+        hvc_core::persistence_service::AttestationState::NotSealed,
+        "a pulsation that ended before V60 is not sealed"
+    );
+    let db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    let after = tables(&db);
+    for table in &before {
+        assert!(after.contains(table), "V60 rebuilds nothing: {table}");
+    }
+    for table in ["attestation_seal_intents", "pulsation_attestations"] {
+        assert_eq!(
+            db.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r
+                .get::<_, u32>(0))
+                .unwrap(),
+            0,
+            "{table}: nothing retroactive"
+        );
+    }
+
+    let key = |id: &str, state: &str, retired: Option<&str>| {
+        db.execute(
+            "INSERT INTO attestation_keys(key_id,algorithm,public_key,state,created_at,retired_at) VALUES(?1,'ed25519','AAAA',?2,'now',?3)",
+            params![id, state, retired],
+        )
+    };
+    let id = |c: char| format!("hvc-ed25519:{}", c.to_string().repeat(64));
+    key(&id('a'), "active", None).expect("a key");
+    key(&id('b'), "active", None).expect_err("one active key at most");
+    key(&id('b'), "retired", None).expect_err("a retired key says when");
+    key(&id('b'), "retired", Some("now")).expect("a retired key");
+    key("rsa:abc", "retired", Some("now")).expect_err("key ids are Ed25519 ones");
+
+    let intent = |state: &str, diagnostic: Option<&str>| {
+        db.execute(
+            "INSERT OR REPLACE INTO attestation_seal_intents(pulsation_id,state,diagnostic,created_at,updated_at) VALUES('pulse',?1,?2,'now','now')",
+            params![state, diagnostic],
+        )
+    };
+    intent("failed", None).expect_err("a failed seal keeps its diagnostic");
+    intent("guessed", None).expect_err("intent states are a closed set");
+    intent("sealed", None).expect("a sealed intent");
+
+    let sha = "c".repeat(64);
+    let attestation = |state: &str, envelope: Option<&str>, key: Option<&str>| {
+        db.execute(
+            "INSERT INTO pulsation_attestations(pulsation_id,schema_version,predicate_type,deriver_version,statement_json,statement_sha256,envelope_json,key_id,signature_state,outcome,subject_count,sealed_at,signed_at)
+             VALUES('pulse',1,'urn:hvc:pulsation-attestation:v1',1,'{}',?1,?2,?3,?4,'done',0,'now',CASE WHEN ?2 IS NULL THEN NULL ELSE 'now' END)",
+            params![sha, envelope, key, state],
+        )
+    };
+    attestation("signed", None, None).expect_err("a signed attestation has its envelope");
+    attestation("signed", Some("{}"), Some(&id('z'))).expect_err("the key must be known");
+    attestation("unsigned", None, None).expect("an unsigned attestation");
+    db.execute("UPDATE pulsation_attestations SET outcome='failed'", [])
+        .expect_err("attestations are immutable");
+    db.execute(
+        "UPDATE pulsation_attestations SET signature_state='signed',envelope_json='{}',key_id=?1,signed_at='now'",
+        [id('a')],
+    )
+    .expect("an unsigned attestation can be signed");
+    db.execute(
+        "UPDATE pulsation_attestations SET signature_state='unsigned',envelope_json=NULL,key_id=NULL,signed_at=NULL",
+        [],
+    )
+    .expect_err("a signature is never removed");
+    db.execute("DELETE FROM attestation_keys WHERE key_id=?1", [id('a')])
+        .expect_err("a key an attestation names stays");
+    db.execute("INSERT INTO attestation_verifications(pulsation_id,checked_at,signature,rederivation,workspace_json) VALUES('pulse','now','valid','matches','[]')",[])
+        .expect("a check");
+
+    db.execute("DELETE FROM projects WHERE id='p'", []).unwrap();
+    for table in [
+        "attestation_seal_intents",
+        "pulsation_attestations",
+        "attestation_verifications",
+    ] {
+        assert_eq!(
+            db.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r
+                .get::<_, u32>(0))
+                .unwrap(),
+            0,
+            "{table} goes with its pulsation"
+        );
+    }
+    assert_eq!(
+        db.query_row("SELECT COUNT(*) FROM attestation_keys", [], |r| r
+            .get::<_, u32>(0))
+            .unwrap(),
+        2,
+        "keys are global"
+    );
+}
+
+/// V61 adds just-in-time scope requests (ADR-035 M4). Purely additive: every
+/// earlier table keeps its definition (the failure rows included), a failure
+/// parked before the upgrade has no request, a request is decided once (only
+/// a granted one may later be superseded), its states and decisions are
+/// closed sets, and it goes with its pulsation.
+#[test]
+fn v60_to_v61_adds_scope_requests_without_touching_parked_failures() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("hard-vibe-code.db");
+    let mut db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    cli_migrations::migrations::runner()
+        .set_target(refinery::Target::Version(60))
+        .run(&mut db)
+        .unwrap();
+    db.execute_batch(
+        "INSERT INTO projects(id,name,workspace_path,created_at,updated_at) VALUES('p','V60 fixture','C:/fixture','now','now');
+         INSERT INTO pulsations(id,project_id,feature_name,stage,status,created_at,updated_at,pipeline_version,state_version) VALUES('pulse','p','Work','Code','checkpoint','now','now',4,3);
+         INSERT INTO jobs(id,pulsation_id,kind,status,created_at,updated_at,project_id,input_revision,generation,state_version,idempotency_key) VALUES('job','pulse','run_stage::Code','interrupted','now','now','p',1,1,3,'job');
+         INSERT INTO checkpoints(id,pulsation_id,stage,status,created_at,updated_at,kind,input_revision,state_version,producer_job_id,generation,purpose) VALUES('cp','pulse','Code','waiting','now','now','stage_failure',1,3,'job',1,'stage_failure');
+         INSERT INTO stage_failure_requests(checkpoint_id,pulsation_id,job_id,stage,failure_class,allow_retry,allow_revision,revision_stage,error_code,diagnostic,created_at,updated_at) VALUES('cp','pulse','job','Code','model_reported_failure',0,1,'Contract','scope_insufficient','boom','now','now');
+         INSERT INTO composition_policy_snapshots(id,kind,project_id,sha256,snapshot_json,created_at) VALUES('policy','recipe','p','aaaa','{}','now');
+         INSERT INTO stage_budget_accounts(id,pulsation_id,stage,logical_stage_key,policy_sha256,initial_invocation_limit,extra_invocation_limit,initial_output_token_limit,extra_output_token_limit,initial_prompt_char_limit,extra_prompt_char_limit,created_at,updated_at) VALUES('account','pulse','Code','pulse:Code:1','aaaa',1,2,100,100,100,100,'now','now');
+         INSERT INTO stage_executions(id,pulsation_id,job_id,parent_generation,parent_input_revision,parent_state_version,stage,budget_account_id,recipe_version,policy_snapshot_id,plan_json,plan_sha256,status,created_at,updated_at) VALUES('exec','pulse','job',1,1,3,'Code','account',1,'policy','{}','bbbb','parked','now','now');",
+    )
+    .unwrap();
+    let tables = |db: &Connection| -> Vec<String> {
+        db.prepare(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND sql IS NOT NULL ORDER BY name",
+        )
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+    };
+    let before = tables(&db);
+    drop(db);
+
+    PersistenceService::initialize(root.path()).unwrap();
+    let db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    let after = tables(&db);
+    for table in &before {
+        assert!(after.contains(table), "V61 rebuilds nothing: {table}");
+    }
+    assert_eq!(
+        db.query_row("SELECT COUNT(*) FROM mandate_scope_requests", [], |r| r
+            .get::<_, u32>(0))
+            .unwrap(),
+        0,
+        "a failure parked before V61 has no request"
+    );
+
+    let sha = "c".repeat(64);
+    let request = |id: &str, checkpoint: &str, stage: &str, state: &str, decided: Option<&str>| {
+        db.execute(
+            "INSERT INTO mandate_scope_requests(id,pulsation_id,stage_execution_id,budget_account_id,unit_id,unit_key,checkpoint_id,stage,related_refs_json,accepted_json,refused_json,derivation_json,derivation_sha256,risk_before,risk_after,state,decided_at,created_at)
+             VALUES(?1,'pulse','exec','account','unit','implement',?2,?3,'[]','[]','[]','{}',?4,'low','high',?5,?6,'now')",
+            params![id, checkpoint, stage, sha, state, decided],
+        )
+    };
+    request("r1", "cp", "Code", "pending", None).expect("a pending request");
+    request("r2", "cp", "Code", "pending", None).expect_err("one request per checkpoint");
+    request("r2", "cp-other", "Code", "pending", None).expect_err("the checkpoint must exist");
+    request("r2", "cp", "Integrator", "pending", None).expect_err("only Code and Test ask");
+    request("r2", "cp", "Code", "guessed", Some("now")).expect_err("states are a closed set");
+    db.execute(
+        "UPDATE mandate_scope_requests SET state='granted',decision='grant_scope',decided_at='now' WHERE id='r1'",
+        [],
+    )
+    .expect_err("a grant names the mandate revision it issued");
+    db.execute(
+        "UPDATE mandate_scope_requests SET state='declined',decision='grant_scope',mandate_revision=2,decided_at='now' WHERE id='r1'",
+        [],
+    )
+    .expect_err("a decline names another action");
+    db.execute(
+        "UPDATE mandate_scope_requests SET accepted_json='[1]',state='granted',decision='grant_scope',mandate_revision=2,decided_at='now' WHERE id='r1'",
+        [],
+    )
+    .expect_err("what was requested never changes");
+    db.execute(
+        "UPDATE mandate_scope_requests SET state='granted',decision='grant_scope',mandate_revision=2,decided_at='now' WHERE id='r1'",
+        [],
+    )
+    .expect("a grant");
+    db.execute(
+        "UPDATE mandate_scope_requests SET state='declined',decision='abort' WHERE id='r1'",
+        [],
+    )
+    .expect_err("a request is decided once");
+    db.execute(
+        "UPDATE mandate_scope_requests SET state='superseded' WHERE id='r1'",
+        [],
+    )
+    .expect("a revision supersedes a grant");
+    db.execute("DELETE FROM projects WHERE id='p'", []).unwrap();
+    assert_eq!(
+        db.query_row("SELECT COUNT(*) FROM mandate_scope_requests", [], |r| r
+            .get::<_, u32>(0))
+            .unwrap(),
+        0,
+        "requests go with their pulsation"
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, u32>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+}
