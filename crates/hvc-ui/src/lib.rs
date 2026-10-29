@@ -48,6 +48,7 @@ mod resolution;
 mod resolution_view;
 mod review_brief_view;
 mod review_view;
+mod scope_request_view;
 mod select_menu;
 mod selectable_message;
 mod session;

@@ -210,8 +210,12 @@ receipt with the reviewed digests. M2 is implemented too: a read-only Layers
 panel on top of the pulsation detail derives Identity, Scope, Guardrails and
 Intent from the host's records, the Contract, Test and Integrator briefs show
 the four states, the header marks a layer that needs a look, and the report
-gains a Layers section. Not implemented yet: the "Grant and retry" scope
-request on the failure checkpoint (M4). See the
+gains a Layers section. M4 is implemented too (V57): a Code or Test unit
+that must change a delivered file it does not own fails with
+`scope_insufficient` and names it; the host derives which files it may be
+granted, and the failure checkpoint shows a "Scope request" card with
+"Grant and retry", which issues a `scope_grant` mandate revision and runs the
+existing Retry on the shared budget. See the
 [decision](035-execution-mandates.md).
 
 ## ADR-036: signed local pulsation attestation

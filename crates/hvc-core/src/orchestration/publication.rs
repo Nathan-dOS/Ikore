@@ -33,6 +33,30 @@ fn reject_link(path: &Path) -> Result<(), Error> {
     Ok(())
 }
 
+/// A path segment the host never publishes to: repository and tool state,
+/// secrets and key files, and Windows device names.
+fn is_protected_segment(segment: &str) -> bool {
+    let lower = segment.to_ascii_lowercase();
+    let stem = lower.split('.').next().unwrap_or("");
+    matches!(
+        lower.as_str(),
+        ".git" | ".codex" | ".agents" | "node_modules" | "target" | "credentials" | "secrets"
+    ) || lower.starts_with(".env")
+        || matches!(stem, "con" | "prn" | "aux" | "nul")
+        || (stem.len() == 4
+            && (stem.starts_with("com") || stem.starts_with("lpt"))
+            && stem.as_bytes()[3].is_ascii_digit())
+        || lower.ends_with(".pem")
+        || lower.ends_with(".key")
+        || lower.starts_with("id_rsa")
+        || lower.starts_with("id_ed25519")
+}
+
+/// Whether publication would refuse `relative` for its name alone.
+pub(crate) fn has_protected_name(relative: &str) -> bool {
+    relative.split(['/', '\\']).any(is_protected_segment)
+}
+
 pub(crate) fn safe_target(
     root: &Path,
     relative: &str,
@@ -52,21 +76,7 @@ pub(crate) fn safe_target(
     let segments: Vec<_> = relative.as_str().split('/').collect();
     let mut target = root.clone();
     for (index, segment) in segments.iter().enumerate() {
-        let lower = segment.to_ascii_lowercase();
-        let stem = lower.split('.').next().unwrap_or("");
-        if matches!(
-            lower.as_str(),
-            ".git" | ".codex" | ".agents" | "node_modules" | "target" | "credentials" | "secrets"
-        ) || lower.starts_with(".env")
-            || matches!(stem, "con" | "prn" | "aux" | "nul")
-            || (stem.len() == 4
-                && (stem.starts_with("com") || stem.starts_with("lpt"))
-                && stem.as_bytes()[3].is_ascii_digit())
-            || lower.ends_with(".pem")
-            || lower.ends_with(".key")
-            || lower.starts_with("id_rsa")
-            || lower.starts_with("id_ed25519")
-        {
+        if is_protected_segment(segment) {
             return Err(forbidden("Protected publication target."));
         }
         target.push(segment);

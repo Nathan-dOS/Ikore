@@ -321,7 +321,7 @@ fn render_unit_scope(
             let _ = writeln!(user, "- unit {key}: {}", paths.join(", "));
         }
     }
-    user.push_str("Task titles, decisions, interfaces, clarifications and the stage guidance describe the whole batch and are shared by every unit. A file they mention that another unit delivers is not missing scope: do not create, edit or request it, and do not fail with `scope_insufficient` because of it. Use `scope_insufficient` only when this unit's own objective and criteria cannot be met with the files it owns and the readable inputs listed.\n\n");
+    user.push_str("Task titles, decisions, interfaces, clarifications and the stage guidance describe the whole batch and are shared by every unit. A file they mention that another unit delivers is not missing scope: do not create, edit or request it, and do not fail with `scope_insufficient` because of it. Use `scope_insufficient` only when this unit's own objective and criteria cannot be met with the files it owns and the readable inputs listed. If you must change a delivered file you do not own, do not edit it: return `failed` with code `scope_insufficient` and list those files' refs in `relatedRefs`.\n\n");
 }
 
 /// Renders the complete prompt for `unit`. Only handles the unit may cite are
@@ -1182,6 +1182,10 @@ mod tests {
         assert!(user.contains("This unit delivers only: `src/lib.rs` (`src_1`)."));
         assert!(user.contains("- unit author_value_test: `tests/value_test.rs`"));
         assert!(user.contains("do not fail with `scope_insufficient` because of it"));
+        assert!(
+            user.contains("list those files' refs in `relatedRefs`"),
+            "a unit asks for a delivered file it does not own (ADR-035 M4)"
+        );
         assert!(user.contains("## Stage guidance (whole batch, shared by every unit)"));
         // The boundary comes before any batch-wide context, and the sibling's
         // handle never reaches this unit's References table.

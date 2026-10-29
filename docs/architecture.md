@@ -115,8 +115,12 @@ digests it covered. A pure function then derives four trust layers from those
 records (who ran, what could be and was written, which limits held, how the
 approved criteria stand), each `clear`, `attention`, `issue`, `not_applicable`
 or `unknown`; the detail reads them in the same transaction as the composed
-execution, and they never decide anything. See
-[ADR-035](adr/035-execution-mandates.md).
+execution, and they never decide anything. A Code or Test unit that must
+change a delivered file it does not own reports `scope_insufficient` with the
+file's ref; the host decides from the frozen plan and the mandate which files
+it may be granted, and "Grant and retry" at the failure checkpoint issues a
+`scope_grant` revision and runs the stage again, giving the unit those files
+in its next plan. See [ADR-035](adr/035-execution-mandates.md).
 
 When a pulsation ends, its terminal transition records a seal intent, and the
 background lane later seals it: the host derives an in-toto statement from its

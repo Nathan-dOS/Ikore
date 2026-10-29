@@ -119,6 +119,9 @@ mod pulsation_report;
 mod reconciliation;
 #[path = "orchestration/resolution.rs"]
 mod resolution;
+#[path = "orchestration/scope_persistence.rs"]
+mod scope_persistence;
+pub use scope_persistence::ScopeRequestView;
 #[path = "orchestration/serial.rs"]
 mod serial;
 #[path = "orchestration/supervisor.rs"]
@@ -992,6 +995,10 @@ pub struct StageFailureCheckpoint {
     pub remaining_extra_invocations: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stage_execution_id: Option<String>,
+    /// The scope request a `scope_insufficient` kept with this checkpoint
+    /// (ADR-035 M4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_request: Option<ScopeRequestView>,
 }
 
 /// The model output that was rejected on the last attempt, so the operator can see
@@ -1011,6 +1018,20 @@ pub struct ResolveStageFailureRequest {
     pub expected_state_version: u64,
     pub decision: StageFailureDecision,
     pub feedback: Option<String>,
+}
+
+/// A waiting failure checkpoint, as the decision that settles it finds it.
+struct WaitingFailure {
+    pulsation_id: String,
+    stage_raw: String,
+    producer_job_id: String,
+    class_raw: String,
+    allow_retry: bool,
+    allow_revision: bool,
+    revision_stage_raw: Option<String>,
+    error_code: String,
+    stage_execution_id: Option<String>,
+    allowed_targets_json: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -3362,10 +3383,15 @@ impl PersistenceService {
                 allowed_revision_targets,
                 remaining_extra_invocations,
                 stage_execution_id: row.get(16)?,
+                scope_request: None,
             })
         })?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(PersistenceServiceError::from)
+        let mut checkpoints = rows.collect::<Result<Vec<_>, _>>()?;
+        for checkpoint in &mut checkpoints {
+            checkpoint.scope_request =
+                Self::scope_request_view(connection, &checkpoint.checkpoint_id)?;
+        }
+        Ok(checkpoints)
     }
 
     pub fn read_stage_failure_detail(
@@ -3457,38 +3483,7 @@ impl PersistenceService {
         let mut connection = self.connection()?;
         let transaction =
             connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        // `Specification` stringifies as SPECIFICATION but legacy rows say Specification.
-        let found = transaction
-            .query_row(
-                "SELECT c.pulsation_id,f.stage,f.job_id,f.failure_class,f.allow_retry,
-                        f.allow_revision,f.revision_stage,f.error_code,f.stage_execution_id,
-                        f.allowed_revision_targets_json
-                 FROM stage_failure_requests f
-                 JOIN checkpoints c ON c.id=f.checkpoint_id
-                 JOIN pulsations p ON p.id=f.pulsation_id
-                 WHERE c.id=?1 AND c.purpose='stage_failure' AND c.status='waiting'
-                   AND f.decision IS NULL AND p.status='checkpoint'
-                   AND c.state_version=?2 AND p.state_version=?2
-                   AND c.input_revision=p.input_revision
-                   AND (c.stage=p.stage OR (c.stage='Specification' AND p.stage='SPECIFICATION'))",
-                params![checkpoint_id, request.expected_state_version],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, i64>(4)? != 0,
-                        row.get::<_, i64>(5)? != 0,
-                        row.get::<_, Option<String>>(6)?,
-                        row.get::<_, String>(7)?,
-                        row.get::<_, Option<String>>(8)?,
-                        row.get::<_, Option<String>>(9)?,
-                    ))
-                },
-            )
-            .optional()?;
-        let Some((
+        let WaitingFailure {
             pulsation_id,
             stage_raw,
             producer_job_id,
@@ -3499,22 +3494,11 @@ impl PersistenceService {
             error_code,
             stage_execution_id,
             allowed_targets_json,
-        )) = found
-        else {
-            return Err(PersistenceServiceError::Validation(
-                "The failure checkpoint is missing or stale. Refresh before deciding.".to_string(),
-            ));
-        };
-        let waiting: i64 = transaction.query_row(
-            "SELECT COUNT(*) FROM checkpoints WHERE pulsation_id=?1 AND status='waiting'",
-            [&pulsation_id],
-            |row| row.get(0),
+        } = Self::waiting_stage_failure(
+            &transaction,
+            checkpoint_id,
+            request.expected_state_version,
         )?;
-        if waiting != 1 {
-            return Err(PersistenceServiceError::Validation(
-                "The failure checkpoint is ambiguous. Refresh before deciding.".to_string(),
-            ));
-        }
         // The UI hides unavailable buttons; the host must not rely on that.
         let permitted = match request.decision {
             StageFailureDecision::RetryStage => allow_retry,
@@ -3571,6 +3555,13 @@ impl PersistenceService {
              WHERE checkpoint_id=?1",
             params![checkpoint_id, request.decision.as_db_value(), now],
         )?;
+        // ADR-035 M4: any other action declines the checkpoint's scope request.
+        Self::decline_scope_request(
+            &transaction,
+            checkpoint_id,
+            request.decision.as_db_value(),
+            &now,
+        )?;
 
         let mut cancellation_ids = Vec::new();
         let result = match request.decision {
@@ -3626,38 +3617,7 @@ impl PersistenceService {
                 updated
             }
             StageFailureDecision::RetryStage => {
-                // Transition first: the claim requires j.state_version=p.state_version,
-                // and the resume UPDATE below reads the post-transition value.
-                let updated = Self::transition_pulsation(
-                    &transaction,
-                    &current,
-                    PulsationStatus::Planning,
-                    stage,
-                    "stage_failure_retry",
-                    Some("Stage retry requested by the user."),
-                )?;
-                // `attempts` is intentionally NOT reset: the automatic budget stays
-                // spent, so one click buys exactly one agent call and a fresh failure
-                // reopens this checkpoint instead of looping.
-                let changed = transaction.execute(
-                    "UPDATE jobs SET status='pending',last_error=NULL,started_at=NULL,finished_at=NULL,
-                       cancel_requested_at=NULL,cancellation_reason=NULL,available_at=?2,updated_at=?2,
-                       state_version=(SELECT state_version FROM pulsations WHERE id=?3),
-                       generation=generation+1
-                     WHERE id=?1 AND pulsation_id=?3 AND status='interrupted'",
-                    params![producer_job_id, now, pulsation_id],
-                )?;
-                if changed != 1 {
-                    return Err(PersistenceServiceError::Validation(
-                        "The failed job is no longer available to resume.".to_string(),
-                    ));
-                }
-                transaction.execute(
-                    "UPDATE agent_runs SET status='failed',updated_at=?2
-                     WHERE job_id=?1 AND status='awaiting_decision'",
-                    params![producer_job_id, now],
-                )?;
-                updated
+                Self::resume_failed_stage(&transaction, &current, stage, &producer_job_id, &now)?
             }
             StageFailureDecision::RequestRevision => {
                 let target_raw = revision_stage_raw.ok_or_else(|| {
@@ -3765,6 +3725,105 @@ impl PersistenceService {
         }
         self.wake_scheduler();
         Ok(ResolveStageFailureResponse { pulsation: result })
+    }
+
+    /// The waiting failure checkpoint a decision settles, fresh against the
+    /// state version the developer saw and the only open checkpoint.
+    fn waiting_stage_failure(
+        transaction: &Connection,
+        checkpoint_id: &str,
+        expected_state_version: u64,
+    ) -> Result<WaitingFailure, PersistenceServiceError> {
+        // `Specification` stringifies as SPECIFICATION but legacy rows say Specification.
+        let found = transaction
+            .query_row(
+                "SELECT c.pulsation_id,f.stage,f.job_id,f.failure_class,f.allow_retry,
+                        f.allow_revision,f.revision_stage,f.error_code,f.stage_execution_id,
+                        f.allowed_revision_targets_json
+                 FROM stage_failure_requests f
+                 JOIN checkpoints c ON c.id=f.checkpoint_id
+                 JOIN pulsations p ON p.id=f.pulsation_id
+                 WHERE c.id=?1 AND c.purpose='stage_failure' AND c.status='waiting'
+                   AND f.decision IS NULL AND p.status='checkpoint'
+                   AND c.state_version=?2 AND p.state_version=?2
+                   AND c.input_revision=p.input_revision
+                   AND (c.stage=p.stage OR (c.stage='Specification' AND p.stage='SPECIFICATION'))",
+                params![checkpoint_id, expected_state_version],
+                |row| {
+                    Ok(WaitingFailure {
+                        pulsation_id: row.get(0)?,
+                        stage_raw: row.get(1)?,
+                        producer_job_id: row.get(2)?,
+                        class_raw: row.get(3)?,
+                        allow_retry: row.get::<_, i64>(4)? != 0,
+                        allow_revision: row.get::<_, i64>(5)? != 0,
+                        revision_stage_raw: row.get(6)?,
+                        error_code: row.get(7)?,
+                        stage_execution_id: row.get(8)?,
+                        allowed_targets_json: row.get(9)?,
+                    })
+                },
+            )
+            .optional()?;
+        let Some(found) = found else {
+            return Err(PersistenceServiceError::Validation(
+                "The failure checkpoint is missing or stale. Refresh before deciding.".to_string(),
+            ));
+        };
+        let waiting: i64 = transaction.query_row(
+            "SELECT COUNT(*) FROM checkpoints WHERE pulsation_id=?1 AND status='waiting'",
+            [&found.pulsation_id],
+            |row| row.get(0),
+        )?;
+        if waiting != 1 {
+            return Err(PersistenceServiceError::Validation(
+                "The failure checkpoint is ambiguous. Refresh before deciding.".to_string(),
+            ));
+        }
+        Ok(found)
+    }
+
+    /// The Retry of a parked stage: the interrupted job runs again under a new
+    /// generation, on the same shared budget.
+    fn resume_failed_stage(
+        transaction: &rusqlite::Transaction<'_>,
+        current: &Pulsation,
+        stage: PulsationStage,
+        producer_job_id: &str,
+        now: &str,
+    ) -> Result<Pulsation, PersistenceServiceError> {
+        // Transition first: the claim requires j.state_version=p.state_version,
+        // and the resume UPDATE below reads the post-transition value.
+        let updated = Self::transition_pulsation(
+            transaction,
+            current,
+            PulsationStatus::Planning,
+            stage,
+            "stage_failure_retry",
+            Some("Stage retry requested by the user."),
+        )?;
+        // `attempts` is intentionally NOT reset: the automatic budget stays
+        // spent, so one click buys exactly one agent call and a fresh failure
+        // reopens this checkpoint instead of looping.
+        let changed = transaction.execute(
+            "UPDATE jobs SET status='pending',last_error=NULL,started_at=NULL,finished_at=NULL,
+               cancel_requested_at=NULL,cancellation_reason=NULL,available_at=?2,updated_at=?2,
+               state_version=(SELECT state_version FROM pulsations WHERE id=?3),
+               generation=generation+1
+             WHERE id=?1 AND pulsation_id=?3 AND status='interrupted'",
+            params![producer_job_id, now, current.id],
+        )?;
+        if changed != 1 {
+            return Err(PersistenceServiceError::Validation(
+                "The failed job is no longer available to resume.".to_string(),
+            ));
+        }
+        transaction.execute(
+            "UPDATE agent_runs SET status='failed',updated_at=?2
+             WHERE job_id=?1 AND status='awaiting_decision'",
+            params![producer_job_id, now],
+        )?;
+        Ok(updated)
     }
 
     /// The agent sees the operator's guidance first, then the machine diagnostic that

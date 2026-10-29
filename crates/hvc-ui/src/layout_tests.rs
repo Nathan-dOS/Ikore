@@ -1267,6 +1267,7 @@ fn parked_failure_window<'a>(
                 allowed_revision_targets: Vec::new(),
                 remaining_extra_invocations: None,
                 stage_execution_id: None,
+                scope_request: None,
             }));
             state.detail_section = PulsationDetailSection::Review;
         });
@@ -7007,5 +7008,133 @@ fn the_security_page_shows_the_key_and_asks_before_a_new_one(cx: &mut TestAppCon
     click(visual, "attestation-create-key-cancel");
     model.read_with(visual, |m, cx| {
         assert!(!m.settings.read(cx).attestation_rotate_confirm);
+    });
+}
+
+fn scope_request(state: &str) -> hvc_core::persistence_service::ScopeRequestView {
+    use hvc_core::orchestration::composition::{Handle, Risk, SourceRole};
+    use hvc_core::orchestration::mandate::{ScopePathV1, ScopeRefusalCode, ScopeRefusalV1};
+    let long = format!("src/a/{}deep.rs", "segment_".repeat(31));
+    hvc_core::persistence_service::ScopeRequestView {
+        request_id: "scope-1".into(),
+        checkpoint_id: "layout-failure".into(),
+        stage: PulsationStage::Code,
+        unit_key: "implement_expiry".into(),
+        accepted: vec![
+            ScopePathV1 {
+                handle: Handle::new("src_2").unwrap(),
+                path: long,
+                role: SourceRole::Source,
+                sha256: "ab".repeat(32),
+                sensitive: false,
+            },
+            ScopePathV1 {
+                handle: Handle::new("src_3").unwrap(),
+                path: "src/auth/keys.rs".into(),
+                role: SourceRole::Source,
+                sha256: "cd".repeat(32),
+                sensitive: true,
+            },
+        ],
+        refused: vec![ScopeRefusalV1 {
+            handle: Handle::new("src_4").unwrap(),
+            path: Some("src/beta.rs".into()),
+            code: ScopeRefusalCode::ScopeOwnedByOtherUnit,
+        }],
+        risk_before: Risk::Medium,
+        risk_after: Risk::High,
+        agent_message: Some("The key loader this unit reads must change too.".into()),
+        derivation_sha256: "ef".repeat(32),
+        state: state.into(),
+        remaining_extra_invocations: 1,
+    }
+}
+
+fn parked_scope_window<'a>(
+    cx: &'a mut TestAppContext,
+    state: &str,
+    window: (f32, f32),
+) -> (Entity<AppModel>, &'a mut VisualTestContext) {
+    let (model, visual) = parked_failure_window(cx, "model_reported_failure", false, true, window);
+    let request = scope_request(state);
+    model.update(visual, |m, cx| {
+        m.pulsations.update(cx, |pulsations, _| {
+            let mut checkpoint = pulsations.failure.checkpoint.clone().unwrap();
+            checkpoint.stage = PulsationStage::Code;
+            checkpoint.scope_request = Some(request);
+            pulsations.failure.load_checkpoint(Some(checkpoint));
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    (model, visual)
+}
+
+#[gpui::test]
+fn a_scope_request_shows_its_files_and_leads_the_decisions_with_the_grant(cx: &mut TestAppContext) {
+    for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
+        let (_model, visual) = parked_scope_window(cx, "pending", (width, height));
+        let card = visual
+            .debug_bounds("scope-request")
+            .unwrap_or_else(|| panic!("missing the card at {width}"));
+        for part in [
+            "scope-request-path-0",
+            "scope-request-path-1",
+            "scope-request-refused",
+            "scope-request-message",
+            "scope-request-facts",
+        ] {
+            let bounds = visual
+                .debug_bounds(part)
+                .unwrap_or_else(|| panic!("missing {part} at {width}"));
+            assert!(
+                bounds.left() >= card.left() && bounds.right() <= card.right() + px(1.0),
+                "{part} overflows at {width}: {bounds:?} vs {card:?}"
+            );
+        }
+        assert!(visual.debug_bounds("scope-request-state").is_none());
+        let bar = visual.debug_bounds("failure-decision-bar").unwrap();
+        let grant = visual.debug_bounds("failure-grant-scope").unwrap();
+        assert!(grant.left() >= bar.left() && grant.right() <= bar.right());
+        assert!(bar.bottom() <= px(height), "bar off screen at {width}");
+        assert!(
+            visual.debug_bounds("failure-retry").is_none(),
+            "the host offered no plain retry"
+        );
+        visual.debug_bounds("failure-revision").unwrap();
+        visual.debug_bounds("failure-abort").unwrap();
+        let first = visual.debug_bounds("failure-choice-0").unwrap();
+        let choices = visual.debug_bounds("failure-choices").unwrap();
+        assert!(card.bottom() <= choices.top(), "the request comes first");
+        assert!(first.top() >= choices.top());
+    }
+}
+
+#[gpui::test]
+fn a_stale_scope_request_says_so_and_offers_no_grant(cx: &mut TestAppContext) {
+    let (_model, visual) = parked_scope_window(cx, "stale", (1440.0, 900.0));
+    visual.debug_bounds("scope-request").unwrap();
+    visual.debug_bounds("scope-request-state").unwrap();
+    assert!(visual.debug_bounds("failure-grant-scope").is_none());
+    visual.debug_bounds("failure-revision").unwrap();
+    visual.debug_bounds("failure-abort").unwrap();
+}
+
+#[gpui::test]
+fn granting_without_a_core_reports_why_and_keeps_the_checkpoint(cx: &mut TestAppContext) {
+    let (model, visual) = parked_scope_window(cx, "pending", (1440.0, 900.0));
+    click(visual, "failure-grant-scope");
+    model.read_with(visual, |m, cx| {
+        let failure = &m.pulsations.read(cx).failure;
+        assert!(failure.checkpoint.is_some());
+        assert!(!failure.busy);
+        assert!(
+            failure
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("Scope grant unavailable")),
+            "{:?}",
+            failure.error
+        );
     });
 }

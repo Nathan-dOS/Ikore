@@ -2,10 +2,12 @@
 
 Date: 2026-10-26
 
-Status: accepted. M1 (mandates and approval receipts, migration V55) and M2
-(trust layers, no migration) are implemented; scope grants (M4, migration V57)
-are not yet. Validation: `quality/mandates-attestation-m1-validation-2026-10-26.md`
-and `quality/mandates-attestation-m2-validation-2026-10-26.md`.
+Status: accepted and implemented. M1 (mandates and approval receipts,
+migration V55), M2 (trust layers, no migration) and M4 (just-in-time scope
+grants, migration V57) are implemented. Validation:
+`quality/mandates-attestation-m1-validation-2026-10-26.md`,
+`quality/mandates-attestation-m2-validation-2026-10-26.md` and
+`quality/mandates-attestation-m4-validation-2026-10-29.md`.
 
 Implementation notes from M1: the mandate governs only the stages after the
 Specification, so a revision back to the Specification runs it on the live
@@ -18,6 +20,15 @@ criteria). The 25% budget rule watches the extra (repair) pools of a stage
 still running, because the initial pool is sized to the plan's units and
 always reaches zero. A mandate whose digest no longer matches shows as a Scope
 issue instead of failing the detail.
+
+Implementation notes from M4: the limit of two requests counts per logical
+stage execution, the shared budget account a Retry keeps, because every Retry
+is a new execution. A request needs a retry the budget can still reserve.
+The request names its failure checkpoint, so V57 adds one table and changes no
+existing one. The next plan reads the granted requests: a revision of the
+stage supersedes them, so its plans no longer give the unit those files, while
+the mandate keeps the grant as history until the next approval of the
+Specification re-issues it.
 
 ## Context
 

@@ -142,6 +142,50 @@ pub fn amend_transport(
     next
 }
 
+/// The next revision after a granted scope request: each path becomes an
+/// amendment of `unit_key`, added by this revision. A path already in the
+/// envelope keeps its origins and gains the amendment. Everything else is
+/// carried over unchanged.
+pub fn amend_scope(
+    previous: &ExecutionMandateV1,
+    previous_sha256: &str,
+    unit_key: &str,
+    paths: &[String],
+    issued_by: IssuedBy,
+) -> ExecutionMandateV1 {
+    let mut next = previous.clone();
+    next.revision = previous.revision + 1;
+    next.previous_sha256 = Some(previous_sha256.to_owned());
+    next.cause = MandateCause::ScopeGrant;
+    next.issued_by = issued_by;
+    for path in paths {
+        let key = path_key(path);
+        match next
+            .scope
+            .grants
+            .iter_mut()
+            .find(|grant| path_key(&grant.path) == key)
+        {
+            Some(grant) => {
+                if !grant.origins.contains(&WriteClass::Amendment) {
+                    grant.origins.push(WriteClass::Amendment);
+                    grant.origins.sort();
+                }
+                grant.unit_key = Some(unit_key.to_owned());
+                grant.amendment_revision = Some(next.revision);
+            }
+            None => next.scope.grants.push(WriteGrant {
+                path: path.clone(),
+                origins: vec![WriteClass::Amendment],
+                unit_key: Some(unit_key.to_owned()),
+                amendment_revision: Some(next.revision),
+            }),
+        }
+    }
+    next.scope.grants.sort_by_key(|grant| path_key(&grant.path));
+    next
+}
+
 /// The capability every executor kind has under the current host policies.
 pub fn executor_capabilities() -> Vec<ExecutorCapability> {
     let mut executors = ExecutorKind::ALL

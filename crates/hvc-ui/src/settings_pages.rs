@@ -214,6 +214,12 @@ pub(crate) fn shortcut_catalog() -> Vec<Shortcut> {
         shortcut(REVIEW, "enter", "Retry a failed stage", true),
         shortcut(REVIEW, "r", "Revise a failed stage", true),
         shortcut(REVIEW, "d", "Abort a failed stage", true),
+        shortcut(
+            REVIEW,
+            "g",
+            "Grant a failed stage's scope request and retry",
+            true,
+        ),
         shortcut(EDIT, "ctrl-z", "Undo in the editor", true),
         shortcut(EDIT, "ctrl-y", "Redo in the editor", true),
         shortcut(EDIT, "ctrl-a", "Select all", true),

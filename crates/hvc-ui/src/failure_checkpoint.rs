@@ -9,13 +9,20 @@
 //! the host said it would accept.
 
 use gpui::{App, KeyBinding, actions};
+use hvc_core::orchestration::mandate::{SCOPE_GRANT_COMMAND_VERSION, ScopeGrantCommandV1};
 use hvc_core::persistence_service::{
-    ResolveStageFailureRequest, StageFailureCheckpoint, StageFailureDecision, StageFailureDetail,
+    ResolveStageFailureRequest, ScopeRequestView, StageFailureCheckpoint, StageFailureDecision,
+    StageFailureDetail,
 };
 
 actions!(
     failure,
-    [RetryFailedStage, ReviseFailedStage, AbortFailedStage]
+    [
+        RetryFailedStage,
+        ReviseFailedStage,
+        AbortFailedStage,
+        GrantScopeAndRetry
+    ]
 );
 
 pub(crate) fn register_failure_keybindings(cx: &mut App) {
@@ -33,6 +40,11 @@ pub(crate) fn register_failure_keybindings(cx: &mut App) {
         KeyBinding::new(
             "d",
             AbortFailedStage,
+            Some("FailureCheckpoint && !NativeTextInput"),
+        ),
+        KeyBinding::new(
+            "g",
+            GrantScopeAndRetry,
             Some("FailureCheckpoint && !NativeTextInput"),
         ),
     ]);
@@ -150,9 +162,46 @@ impl FailureCheckpointState {
             .map(|c| format!("{:?} failed — {}", c.stage, c.feature_name))
     }
 
+    /// The scope request the host kept with this checkpoint, while it can
+    /// still be granted (ADR-035 M4).
+    pub(crate) fn pending_scope_request(&self) -> Option<&ScopeRequestView> {
+        self.checkpoint
+            .as_ref()?
+            .scope_request
+            .as_ref()
+            .filter(|request| request.state == "pending")
+    }
+
+    /// "Grant and retry", stamped with the state version and the derivation
+    /// the developer saw.
+    pub(crate) fn begin_grant(&mut self) -> Option<ScopeGrantCommandV1> {
+        if self.busy {
+            return None;
+        }
+        let request = self.pending_scope_request()?;
+        let checkpoint = self.checkpoint.as_ref()?;
+        let command = ScopeGrantCommandV1 {
+            schema_version: SCOPE_GRANT_COMMAND_VERSION,
+            project_id: checkpoint.project_id.clone(),
+            pulsation_id: checkpoint.pulsation_id.clone(),
+            checkpoint_id: checkpoint.checkpoint_id.clone(),
+            request_id: request.request_id.clone(),
+            expected_state_version: checkpoint.state_version,
+            expected_derivation_sha256: request.derivation_sha256.clone(),
+        };
+        self.busy = true;
+        self.error = None;
+        Some(command)
+    }
+
     /// A one-line explanation of why these particular buttons are the ones offered.
     pub(crate) fn rationale(&self) -> Option<&'static str> {
         let checkpoint = self.checkpoint.as_ref()?;
+        if self.pending_scope_request().is_some() {
+            return Some(
+                "The unit needs to change files it was not given. Grant and retry gives it exactly those files and runs it again; any other decision declines the request.",
+            );
+        }
         Some(match checkpoint.failure_class.as_str() {
             "retry_budget_exhausted" => {
                 "The automatic attempts ran out. Retrying hands the agent its own rejected output."
@@ -293,6 +342,7 @@ mod tests {
             allowed_revision_targets: Vec::new(),
             remaining_extra_invocations: None,
             stage_execution_id: None,
+            scope_request: None,
         }
     }
 
@@ -423,6 +473,68 @@ mod tests {
         assert!(state.begin_detail().is_some());
         // Losing the model output must not strand the operator: deciding still works.
         assert!(state.begin(StageFailureDecision::Abort).is_some());
+    }
+
+    fn scope_request(state: &str) -> ScopeRequestView {
+        use hvc_core::orchestration::composition::{Handle, Risk, SourceRole};
+        use hvc_core::orchestration::mandate::ScopePathV1;
+        ScopeRequestView {
+            request_id: "scope-1".into(),
+            checkpoint_id: "checkpoint-pulse-1".into(),
+            stage: PulsationStage::Code,
+            unit_key: "implement_expiry".into(),
+            accepted: vec![ScopePathV1 {
+                handle: Handle::new("src_2").unwrap(),
+                path: "src/util.rs".into(),
+                role: SourceRole::Source,
+                sha256: "ab".repeat(32),
+                sensitive: false,
+            }],
+            refused: vec![],
+            risk_before: Risk::Low,
+            risk_after: Risk::Low,
+            agent_message: None,
+            derivation_sha256: "cd".repeat(32),
+            state: state.into(),
+            remaining_extra_invocations: 1,
+        }
+    }
+
+    #[test]
+    fn a_pending_scope_request_is_granted_with_what_the_developer_saw() {
+        let mut state = FailureCheckpointState::default();
+        let mut parked = checkpoint("pulse-1", false, true);
+        parked.failure_class = "model_reported_failure".into();
+        parked.scope_request = Some(scope_request("pending"));
+        state.load_checkpoint(Some(parked));
+        assert!(state.pending_scope_request().is_some());
+        assert!(state.rationale().unwrap().contains("Grant and retry"));
+        assert!(!state.allows(StageFailureDecision::RetryStage));
+        let command = state.begin_grant().unwrap();
+        assert_eq!(command.request_id, "scope-1");
+        assert_eq!(command.checkpoint_id, "checkpoint-pulse-1");
+        assert_eq!(command.pulsation_id, "pulse-1");
+        assert_eq!(command.project_id, "project-1");
+        assert_eq!(command.expected_state_version, 7);
+        assert_eq!(command.expected_derivation_sha256, "cd".repeat(32));
+        assert!(state.busy);
+        assert!(state.begin_grant().is_none(), "single flight");
+        assert!(state.begin(StageFailureDecision::Abort).is_none());
+    }
+
+    #[test]
+    fn a_request_that_is_not_pending_is_never_granted() {
+        for settled in ["stale", "granted", "declined", "superseded"] {
+            let mut state = FailureCheckpointState::default();
+            let mut parked = checkpoint("pulse-1", false, true);
+            parked.scope_request = Some(scope_request(settled));
+            state.load_checkpoint(Some(parked));
+            assert!(state.pending_scope_request().is_none(), "{settled}");
+            assert!(state.begin_grant().is_none(), "{settled}");
+        }
+        let mut state = FailureCheckpointState::default();
+        state.load_checkpoint(Some(checkpoint("pulse-1", true, true)));
+        assert!(state.begin_grant().is_none(), "no request at all");
     }
 
     #[test]

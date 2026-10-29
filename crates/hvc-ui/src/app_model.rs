@@ -1957,7 +1957,7 @@ impl AppModel {
         previously_awaiting_failure: usize,
         cx: &mut Context<Self>,
     ) {
-        let (awaiting, failure_pulsation_id) = {
+        let (awaiting, failure_pulsation_id, scope_notice) = {
             let pulsations = self.pulsations.read(cx);
             let id = pulsations
                 .active()
@@ -1969,7 +1969,17 @@ impl AppModel {
                             .any(|c| c.pulsation_id == pulsation.id)
                 })
                 .map(|pulsation| pulsation.id.clone());
-            (pulsations.awaiting_failure, id)
+            // ADR-035 M4: a scope request says what it needs.
+            let scope_notice = id.as_ref().and_then(|id| {
+                pulsations
+                    .failure_checkpoints
+                    .iter()
+                    .find(|c| &c.pulsation_id == id)
+                    .and_then(|c| c.scope_request.as_ref())
+                    .filter(|request| request.state == "pending")
+                    .map(crate::scope_request_view::scope_request_notice)
+            });
+            (pulsations.awaiting_failure, id, scope_notice)
         };
         if previously_awaiting_failure != 0 || awaiting == 0 {
             return;
@@ -1977,10 +1987,10 @@ impl AppModel {
         let Some(pulsation_id) = failure_pulsation_id else {
             return;
         };
-        let message = if awaiting == 1 {
-            "1 stage failure waiting on a decision".to_string()
-        } else {
-            format!("{awaiting} stage failures waiting on a decision")
+        let message = match scope_notice {
+            Some(notice) if awaiting == 1 => notice,
+            _ if awaiting == 1 => "1 stage failure waiting on a decision".to_string(),
+            _ => format!("{awaiting} stage failures waiting on a decision"),
         };
         self.push_actionable_notice(
             HeaderNoticeKind::Error,
@@ -2704,6 +2714,78 @@ impl AppModel {
                         model.push_header_notice(HeaderNoticeKind::Error, error, cx);
                     }
                 }
+                cx.notify();
+            });
+        }));
+    }
+
+    /// "Grant and retry" on a failure checkpoint's scope request (ADR-035
+    /// M4). A request the host finds out of date is refused with nothing
+    /// granted; the snapshot is read again either way, so the card shows the
+    /// request's state.
+    pub(crate) fn grant_scope_and_retry(&mut self, cx: &mut Context<Self>) {
+        self.confirm_failure_abort = false;
+        let command = self
+            .pulsations
+            .update(cx, |pulsations, _| pulsations.failure.begin_grant());
+        let Some(command) = command else {
+            return;
+        };
+        let Some(core) = self.core.clone() else {
+            self.pulsations.update(cx, |pulsations, _| {
+                pulsations
+                    .failure
+                    .finish(Err("Scope grant unavailable in test environment".into()));
+            });
+            cx.notify();
+            return;
+        };
+        self.status = "Granting the scope request…".into();
+        cx.notify();
+        let runtime = core.runtime_handle().clone();
+        let decision_scope = (
+            command.checkpoint_id.clone(),
+            command.expected_state_version,
+        );
+        self.failure_task = Some(cx.spawn(async move |this, cx| {
+            let result = runtime
+                .spawn_blocking(move || {
+                    core.persistence()
+                        .grant_scope_and_retry(command)
+                        .map(|_| ())
+                        .map_err(|error| error.to_string())
+                })
+                .await
+                .map_err(|error| format!("Scope grant worker interrupted: {error}"))
+                .and_then(|result| result);
+            let _ = this.update(cx, |model, cx| {
+                if model.lifecycle.is_disposed() {
+                    return;
+                }
+                model.pulsations.update(cx, |pulsations, _| {
+                    let same_checkpoint = pulsations.failure.checkpoint.as_ref().is_some_and(|c| {
+                        c.checkpoint_id == decision_scope.0 && c.state_version == decision_scope.1
+                    });
+                    if same_checkpoint {
+                        pulsations.failure.finish(result.clone());
+                        if result.is_ok() {
+                            pulsations.awaiting_failure =
+                                pulsations.awaiting_failure.saturating_sub(1);
+                            pulsations.diff_expanded = false;
+                        }
+                    }
+                });
+                match result {
+                    Ok(()) => {
+                        model.status = "Scope granted; the stage runs again".into();
+                        model.schedule_session_persistence(cx);
+                    }
+                    Err(error) => {
+                        model.status = "The scope request was not granted".into();
+                        model.push_header_notice(HeaderNoticeKind::Error, error, cx);
+                    }
+                }
+                model.refresh_pulsations(cx);
                 cx.notify();
             });
         }));

@@ -107,6 +107,16 @@ struct UnitFailure {
     /// The model's own answer was rejected (parse, validation, truncation):
     /// Test and the Integrator then revise themselves, not the Code.
     rejected_answer: bool,
+    /// What a worker that reported `scope_insufficient` named, for a scope
+    /// request (ADR-035 M4).
+    scope_ask: Option<ScopeAsk>,
+}
+
+/// The refs and the short reason of a worker-reported `scope_insufficient`.
+#[derive(Debug, Clone)]
+struct ScopeAsk {
+    related_refs: Vec<comp::Handle>,
+    message: String,
 }
 
 /// A rejection of the worker's own response (parse or `validate_child`).
@@ -185,6 +195,7 @@ fn classify_composition_error(error: &CompositionError) -> UnitFailure {
         repairable,
         correction: repairable.then(|| correction_for(error)),
         rejected_answer: false,
+        scope_ask: None,
     }
 }
 
@@ -238,6 +249,7 @@ fn classify_transport_error(error: &PersistenceServiceError) -> Option<UnitFailu
             repairable: false,
             correction: None,
             rejected_answer: false,
+            scope_ask: None,
         });
     }
     if matches!(
@@ -251,6 +263,7 @@ fn classify_transport_error(error: &PersistenceServiceError) -> Option<UnitFailu
             repairable: false,
             correction: None,
             rejected_answer: true,
+            scope_ask: None,
         });
     }
     // The host stopped a run that kept producing past its ceiling. Like a
@@ -267,6 +280,7 @@ fn classify_transport_error(error: &PersistenceServiceError) -> Option<UnitFailu
             repairable: false,
             correction: None,
             rejected_answer: true,
+            scope_ask: None,
         });
     }
     let class = match error {
@@ -284,6 +298,7 @@ fn classify_transport_error(error: &PersistenceServiceError) -> Option<UnitFailu
         ),
         correction: None,
         rejected_answer: false,
+        scope_ask: None,
     })
 }
 
@@ -509,6 +524,7 @@ impl PersistenceService {
             .map(|profile| profile.check_ref.clone())
             .collect();
         inputs.qualified_recipes = settings.qualified_recipes.clone();
+        inputs.scope_amendments = Self::granted_scope_amendments(&connection, &current.id, stage)?;
         drop(connection);
 
         let comp_stage = comp::Stage::from_pulsation(stage);
@@ -703,7 +719,27 @@ impl PersistenceService {
                 UnitOutcome::Failed(failed) => Some((&failed.0, &failed.1)),
                 _ => None,
             }) {
-                self.park_execution(job, parent_run_id, &execution, Some(unit), failure)?;
+                // ADR-035 M4: a unit that must change a delivered file it does
+                // not own may ask for it at the failure checkpoint.
+                let scope = match &failure.scope_ask {
+                    Some(ask) => self.scope_request_draft(
+                        &execution,
+                        &unit.id,
+                        &unit.logical_unit_key,
+                        &ask.related_refs,
+                        &ask.message,
+                        &inputs,
+                    )?,
+                    None => None,
+                };
+                self.park_execution_with_scope(
+                    job,
+                    parent_run_id,
+                    &execution,
+                    Some(unit),
+                    failure,
+                    scope,
+                )?;
                 return Ok(());
             }
         }
@@ -1042,6 +1078,7 @@ impl PersistenceService {
                 repairable: false,
                 correction: None,
                 rejected_answer: false,
+                scope_ask: None,
             },
         ))
     }
@@ -1420,6 +1457,7 @@ impl PersistenceService {
                     repairable: false,
                     correction: None,
                     rejected_answer: false,
+                    scope_ask: None,
                 };
                 self.park_execution(job, parent_run_id, execution, None, &failure)?;
                 return Ok(None);
@@ -1511,6 +1549,7 @@ impl PersistenceService {
                 repairable: false,
                 correction: None,
                 rejected_answer: false,
+                scope_ask: None,
             };
             self.park_execution(job, parent_run_id, execution, owner.as_ref(), &failure)?;
             return Ok(None);
@@ -1619,6 +1658,7 @@ impl PersistenceService {
                 repairable: false,
                 correction: None,
                 rejected_answer: false,
+                scope_ask: None,
             }),
             Ok(AttemptResult::Failed(mut failure)) => {
                 failure.repairable = false;
@@ -2048,6 +2088,7 @@ impl PersistenceService {
                 revision_feedback: handoff.revision_feedback.clone(),
                 clarification_answers: answers,
                 qualified_recipes: Vec::new(),
+                scope_amendments: Vec::new(),
             },
             reads,
         ))
@@ -2385,6 +2426,7 @@ impl PersistenceService {
                 repairable: false,
                 correction: None,
                 rejected_answer: false,
+                scope_ask: None,
             };
             Self::park_in_tx_without_execution(&tx, job, parent_run_id, stage, current, &failure)?;
             tx.commit()?;
@@ -2684,6 +2726,21 @@ impl PersistenceService {
         unit: Option<&UnitRow>,
         failure: &UnitFailure,
     ) -> Result<(), PersistenceServiceError> {
+        self.park_execution_with_scope(job, parent_run_id, execution, unit, failure, None)
+    }
+
+    /// `park_execution`, keeping a grantable scope request with the
+    /// checkpoint. A request the stage may not take says why in the
+    /// diagnostic, and the failure parks as it would without one.
+    fn park_execution_with_scope(
+        &self,
+        job: &Job,
+        parent_run_id: &str,
+        execution: &ExecutionRow,
+        unit: Option<&UnitRow>,
+        failure: &UnitFailure,
+        scope: Option<super::scope_persistence::ScopeRequestDraft>,
+    ) -> Result<(), PersistenceServiceError> {
         let mut db = self.connection()?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let current = Self::find_pulsation_by_id(&tx, &execution.pulsation_id)?
@@ -2696,10 +2753,19 @@ impl PersistenceService {
             remaining.extra_invocations =
                 remaining.extra_invocations.min(1u32.saturating_sub(used));
         }
-        let diagnostic = match unit {
+        let mut diagnostic = match unit {
             Some(unit) => format!("Unit `{}`: {}", unit.logical_unit_key, failure.diagnostic),
             None => failure.diagnostic.clone(),
         };
+        if let Some(reason) = scope
+            .as_ref()
+            .and_then(|draft| draft.derivation.request_refusal)
+        {
+            diagnostic.push_str(&format!(
+                " The scope request is not offered: {}.",
+                reason.describe()
+            ));
+        }
         let offered = offered_decisions_v4(
             failure.class,
             execution.stage,
@@ -2721,6 +2787,14 @@ impl PersistenceService {
             )?,
             None => false,
         };
+        if parked && let Some(draft) = scope.filter(|draft| draft.derivation.grantable()) {
+            let checkpoint: String = tx.query_row(
+                "SELECT checkpoint_id FROM stage_failure_requests WHERE stage_execution_id=?1 AND decision IS NULL ORDER BY created_at DESC,rowid DESC LIMIT 1",
+                [&execution.id],
+                |row| row.get(0),
+            )?;
+            Self::record_scope_request(&tx, &checkpoint, &execution.pulsation_id, &draft)?;
+        }
         let next = if parked {
             ExecutionStatus::Parked
         } else {
@@ -2746,6 +2820,7 @@ impl PersistenceService {
                 repairable: false,
                 correction: None,
                 rejected_answer: failure.rejected_answer,
+                scope_ask: None,
             };
             Self::finalize_composed_failure(&tx, job, parent_run_id, &current, &terminal)?;
         }
@@ -2827,6 +2902,7 @@ impl PersistenceService {
             repairable: false,
             correction: None,
             rejected_answer: false,
+            scope_ask: None,
         }))
     }
 
@@ -3108,6 +3184,7 @@ impl PersistenceService {
                         repairable: false,
                         correction: None,
                         rejected_answer: false,
+                        scope_ask: None,
                     }));
                 }
                 Err(error) => return Err(error),
@@ -3376,6 +3453,7 @@ impl PersistenceService {
                     repairable: false,
                     correction: None,
                     rejected_answer: false,
+                    scope_ask: None,
                 });
                 // Release the budget reservation for provider-configuration
                 // errors (MissingApiKey, Authentication, Billing, Permission,
@@ -3494,6 +3572,12 @@ impl PersistenceService {
                     // answer: it is never "repaired" by asking again.
                     failure.repairable = false;
                     failure.correction = None;
+                    if *code == WorkerFailureCode::ScopeInsufficient && !related_refs.is_empty() {
+                        failure.scope_ask = Some(ScopeAsk {
+                            related_refs: related_refs.clone(),
+                            message: message.clone(),
+                        });
+                    }
                     Self::finish_attempt(
                         &db,
                         &attempt,

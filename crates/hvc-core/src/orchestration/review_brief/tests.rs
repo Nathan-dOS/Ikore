@@ -934,6 +934,7 @@ fn failure(
         },
         remaining_extra_invocations: permits,
         stage_execution_id: permits.map(|_| "execution".into()),
+        scope_request: None,
     }
 }
 

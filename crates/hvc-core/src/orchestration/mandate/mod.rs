@@ -15,14 +15,22 @@
 pub mod contract;
 pub mod derive;
 pub mod guard;
+pub mod scope;
+#[cfg(test)]
+mod scope_tests;
 #[cfg(test)]
 mod tests;
 
 pub use contract::*;
 pub use derive::{
-    IssueInputs, amend_transport, derive_issued, digest_of_set, executor_capabilities,
+    IssueInputs, amend_scope, amend_transport, derive_issued, digest_of_set, executor_capabilities,
     task_revisions,
 };
 pub use guard::{
     WriteSource, WriteVerdict, check_checks, check_executor, check_transport, check_write,
+};
+pub use scope::{
+    MAX_SCOPE_PATHS, MAX_SCOPE_REQUESTS, SCOPE_GRANT_COMMAND_VERSION, ScopeFacts,
+    ScopeGrantCommandV1, ScopePathV1, ScopeRefusalCode, ScopeRefusalV1, ScopeRequestDerivationV1,
+    derive_scope_request,
 };

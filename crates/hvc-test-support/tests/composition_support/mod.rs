@@ -160,6 +160,85 @@ pub struct Harness {
     _stop: tokio_util::sync::DropGuard,
 }
 
+/// A harness whose application was closed: its service still reads and
+/// decides on the same data directory, and `restart` opens it again.
+pub struct StoppedHarness {
+    pub env: IsolatedTestEnvironment,
+    pub service: PersistenceService,
+    pub project: String,
+    pub task_ids: Vec<String>,
+    pub pulse: String,
+    pub observed: Arc<Mutex<Vec<String>>>,
+}
+
+impl StoppedHarness {
+    /// A new service, scripted provider and worker on the same data
+    /// directory, after the startup recovery the application runs.
+    pub fn restart(
+        self,
+        responder: impl Fn(&PromptFacts, usize, &RecordedRequest) -> ScriptedResponse
+        + Send
+        + Sync
+        + 'static,
+    ) -> Harness {
+        let Self {
+            env,
+            service,
+            project,
+            task_ids,
+            pulse,
+            observed,
+        } = self;
+        drop(service);
+        let seen = observed.clone();
+        let server = ScriptedHttpServer::respond_with(move |request| {
+            if request.body.trim().is_empty() {
+                return ScriptedResponse::json(400, r#"{"error":"empty request"}"#);
+            }
+            let facts = parse_prompt(request);
+            let ordinal = {
+                let mut seen = seen.lock().unwrap();
+                seen.push(facts.executor.clone());
+                seen.len()
+            };
+            responder(&facts, ordinal, request)
+        });
+        let deps = AppCoreDependencies::default();
+        let service = PersistenceService::initialize_with_dependencies(
+            env.data_dir(),
+            Arc::new(SilentEvents),
+            Arc::new(MemoryCredentialStore::default()),
+            Arc::new(FixedEmbeddingGateway::default()),
+            deps.clock,
+            deps.jitter,
+            deps.http_client,
+        )
+        .unwrap();
+        configure_loopback(&service, &server);
+        service.recover_interrupted_jobs().unwrap();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let stop = CancellationToken::new();
+        let guard = stop.clone().drop_guard();
+        let worker_service = service.clone();
+        runtime.spawn(async move { worker_service.run_job_worker_until(stop).await });
+        Harness {
+            env,
+            service,
+            project,
+            task_ids,
+            pulse,
+            observed,
+            _server: server,
+            _runtime: runtime,
+            _stop: guard,
+        }
+    }
+}
+
 pub fn completed_reply(facts: &PromptFacts) -> ScriptedResponse {
     if facts.executor == VISUALIZER {
         return provider_reply(visualizer_response(&facts.user_prompt));
@@ -339,6 +418,33 @@ impl Harness {
             ._runtime
             .spawn(async move { worker_service.run_job_worker_until(stop).await });
         harness
+    }
+
+    /// Stops the worker and the scripted provider, as a closed application
+    /// would; the data directory and the workspace stay.
+    pub fn stop(self) -> StoppedHarness {
+        let Self {
+            env,
+            service,
+            project,
+            task_ids,
+            pulse,
+            observed,
+            _server,
+            _runtime,
+            _stop,
+        } = self;
+        drop(_stop);
+        _runtime.shutdown_timeout(Duration::from_secs(10));
+        drop(_server);
+        StoppedHarness {
+            env,
+            service,
+            project,
+            task_ids,
+            pulse,
+            observed,
+        }
     }
 
     pub fn db(&self) -> Connection {

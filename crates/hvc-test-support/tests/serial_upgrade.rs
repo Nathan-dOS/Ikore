@@ -140,7 +140,7 @@ fn v20_to_v24_backfills_slots_and_preserves_terminal_and_chat_history() {
             |row| row.get::<_, u32>(0)
         )
         .unwrap(),
-        56
+        57
     );
     for table in ["terminal_model_observations", "llm_model_observations"] {
         assert_eq!(
@@ -303,7 +303,7 @@ fn v9_upgrade_preserves_outputs_checkpoints_and_restorable_wal_backup() {
             |r| r.get::<_, i64>(0)
         )
         .unwrap(),
-        56
+        57
     );
     assert_eq!(
         db.query_row(
@@ -844,7 +844,7 @@ fn v31_to_v32_admits_pipeline_v4_and_keeps_legacy_rows_and_constraints() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        56
+        57
     );
     assert_eq!(
         db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
@@ -1000,7 +1000,7 @@ fn v34_to_v36_admits_path_confirmation_and_keeps_legacy_checkpoints_and_question
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        56
+        57
     );
     assert_eq!(
         db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
@@ -1097,7 +1097,7 @@ fn v44_to_v45_keeps_forge_turns_and_adds_failure_columns() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        56
+        57
     );
     let (error, failure, notices): (String, Option<String>, Option<String>) = db
         .query_row(
@@ -1166,7 +1166,7 @@ fn v45_to_v46_keeps_backend_rows_and_admits_antigravity() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        56
+        57
     );
     let (backend, version): (String, u32) = db
         .query_row(
@@ -1241,7 +1241,7 @@ fn v46_to_v47_keeps_terminal_rows_and_admits_the_visualizer() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        56
+        57
     );
     let (backend, version): (String, u32) = db
         .query_row(
@@ -1336,7 +1336,7 @@ fn v47_to_v48_adds_quota_history_with_validated_columns() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        56
+        57
     );
     let insert = |values: &str| {
         db.execute(
@@ -1390,7 +1390,7 @@ fn v48_to_v49_preserves_history_and_requires_new_sanitization_evidence() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        56
+        57
     );
     for table in [
         "project_secret_redaction_exceptions",
@@ -1508,7 +1508,7 @@ fn v49_to_v50_admits_the_notes_scribe_and_adds_companion_notes() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        56
+        57
     );
     let (backend, version): (String, u32) = db
         .query_row(
@@ -1683,7 +1683,7 @@ fn v50_to_v51_adds_the_review_boundary_tables_without_rebuilding_existing_ones()
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        56
+        57
     );
     // Later migrations add their own tables; every table V50 had keeps its
     // exact definition.
@@ -2363,5 +2363,120 @@ fn v55_to_v56_adds_attestations_without_sealing_pulsations_that_already_ended() 
             .unwrap(),
         2,
         "keys are global"
+    );
+}
+
+/// V57 adds just-in-time scope requests (ADR-035 M4). Purely additive: every
+/// earlier table keeps its definition (the failure rows included), a failure
+/// parked before the upgrade has no request, a request is decided once (only
+/// a granted one may later be superseded), its states and decisions are
+/// closed sets, and it goes with its pulsation.
+#[test]
+fn v56_to_v57_adds_scope_requests_without_touching_parked_failures() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("hard-vibe-code.db");
+    let mut db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    cli_migrations::migrations::runner()
+        .set_target(refinery::Target::Version(56))
+        .run(&mut db)
+        .unwrap();
+    db.execute_batch(
+        "INSERT INTO projects(id,name,workspace_path,created_at,updated_at) VALUES('p','V56 fixture','C:/fixture','now','now');
+         INSERT INTO pulsations(id,project_id,feature_name,stage,status,created_at,updated_at,pipeline_version,state_version) VALUES('pulse','p','Work','Code','checkpoint','now','now',4,3);
+         INSERT INTO jobs(id,pulsation_id,kind,status,created_at,updated_at,project_id,input_revision,generation,state_version,idempotency_key) VALUES('job','pulse','run_stage::Code','interrupted','now','now','p',1,1,3,'job');
+         INSERT INTO checkpoints(id,pulsation_id,stage,status,created_at,updated_at,kind,input_revision,state_version,producer_job_id,generation,purpose) VALUES('cp','pulse','Code','waiting','now','now','stage_failure',1,3,'job',1,'stage_failure');
+         INSERT INTO stage_failure_requests(checkpoint_id,pulsation_id,job_id,stage,failure_class,allow_retry,allow_revision,revision_stage,error_code,diagnostic,created_at,updated_at) VALUES('cp','pulse','job','Code','model_reported_failure',0,1,'Contract','scope_insufficient','boom','now','now');
+         INSERT INTO composition_policy_snapshots(id,kind,project_id,sha256,snapshot_json,created_at) VALUES('policy','recipe','p','aaaa','{}','now');
+         INSERT INTO stage_budget_accounts(id,pulsation_id,stage,logical_stage_key,policy_sha256,initial_invocation_limit,extra_invocation_limit,initial_output_token_limit,extra_output_token_limit,initial_prompt_char_limit,extra_prompt_char_limit,created_at,updated_at) VALUES('account','pulse','Code','pulse:Code:1','aaaa',1,2,100,100,100,100,'now','now');
+         INSERT INTO stage_executions(id,pulsation_id,job_id,parent_generation,parent_input_revision,parent_state_version,stage,budget_account_id,recipe_version,policy_snapshot_id,plan_json,plan_sha256,status,created_at,updated_at) VALUES('exec','pulse','job',1,1,3,'Code','account',1,'policy','{}','bbbb','parked','now','now');",
+    )
+    .unwrap();
+    let tables = |db: &Connection| -> Vec<String> {
+        db.prepare(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND sql IS NOT NULL ORDER BY name",
+        )
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+    };
+    let before = tables(&db);
+    drop(db);
+
+    PersistenceService::initialize(root.path()).unwrap();
+    let db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    let after = tables(&db);
+    for table in &before {
+        assert!(after.contains(table), "V57 rebuilds nothing: {table}");
+    }
+    assert_eq!(
+        db.query_row("SELECT COUNT(*) FROM mandate_scope_requests", [], |r| r
+            .get::<_, u32>(0))
+            .unwrap(),
+        0,
+        "a failure parked before V57 has no request"
+    );
+
+    let sha = "c".repeat(64);
+    let request = |id: &str, checkpoint: &str, stage: &str, state: &str, decided: Option<&str>| {
+        db.execute(
+            "INSERT INTO mandate_scope_requests(id,pulsation_id,stage_execution_id,budget_account_id,unit_id,unit_key,checkpoint_id,stage,related_refs_json,accepted_json,refused_json,derivation_json,derivation_sha256,risk_before,risk_after,state,decided_at,created_at)
+             VALUES(?1,'pulse','exec','account','unit','implement',?2,?3,'[]','[]','[]','{}',?4,'low','high',?5,?6,'now')",
+            params![id, checkpoint, stage, sha, state, decided],
+        )
+    };
+    request("r1", "cp", "Code", "pending", None).expect("a pending request");
+    request("r2", "cp", "Code", "pending", None).expect_err("one request per checkpoint");
+    request("r2", "cp-other", "Code", "pending", None).expect_err("the checkpoint must exist");
+    request("r2", "cp", "Integrator", "pending", None).expect_err("only Code and Test ask");
+    request("r2", "cp", "Code", "guessed", Some("now")).expect_err("states are a closed set");
+    db.execute(
+        "UPDATE mandate_scope_requests SET state='granted',decision='grant_scope',decided_at='now' WHERE id='r1'",
+        [],
+    )
+    .expect_err("a grant names the mandate revision it issued");
+    db.execute(
+        "UPDATE mandate_scope_requests SET state='declined',decision='grant_scope',mandate_revision=2,decided_at='now' WHERE id='r1'",
+        [],
+    )
+    .expect_err("a decline names another action");
+    db.execute(
+        "UPDATE mandate_scope_requests SET accepted_json='[1]',state='granted',decision='grant_scope',mandate_revision=2,decided_at='now' WHERE id='r1'",
+        [],
+    )
+    .expect_err("what was requested never changes");
+    db.execute(
+        "UPDATE mandate_scope_requests SET state='granted',decision='grant_scope',mandate_revision=2,decided_at='now' WHERE id='r1'",
+        [],
+    )
+    .expect("a grant");
+    db.execute(
+        "UPDATE mandate_scope_requests SET state='declined',decision='abort' WHERE id='r1'",
+        [],
+    )
+    .expect_err("a request is decided once");
+    db.execute(
+        "UPDATE mandate_scope_requests SET state='superseded' WHERE id='r1'",
+        [],
+    )
+    .expect("a revision supersedes a grant");
+    db.execute("DELETE FROM projects WHERE id='p'", []).unwrap();
+    assert_eq!(
+        db.query_row("SELECT COUNT(*) FROM mandate_scope_requests", [], |r| r
+            .get::<_, u32>(0))
+            .unwrap(),
+        0,
+        "requests go with their pulsation"
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, u32>(
+            0
+        ))
+        .unwrap(),
+        0
     );
 }

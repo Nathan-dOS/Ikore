@@ -202,6 +202,25 @@ cargo test --locked -p hvc-test-support --test trust_layers -- --test-threads=2
 cargo run --locked --release -p hvc-core --example layers_benchmark
 ```
 
+## Scope requests
+
+ADR-035 M4 keeps the derivation in `orchestration::mandate::scope` (one table
+test per refusal rule, a mixed request, the path, request and budget limits,
+the risk with the granted files, a Test unit's roles, the amendment of the
+mandate) and the host in `persistence_service::scope_persistence`.
+`hvc-test-support/tests/scope_escalation.rs` runs a v4 pulsation whose Code
+unit asks for a file it only reads: the grant, the new mandate revision and
+receipt, the shared budget and the publication; a file changed after the
+request; another decision declining it; a Test unit asking for a production
+file; a restart between the grant and the dispatch; and a revision that
+supersedes the grant. V57 is in `serial_upgrade`; the card, the stale message
+and the button are in the layout tests:
+
+```powershell
+cargo test --locked -p hvc-core --lib scope -- --test-threads=2
+cargo test --locked -p hvc-test-support --test scope_escalation -- --test-threads=2
+```
+
 ## Attestations
 
 ADR-036 M3 keeps the pure parts in `attestation` (the DSSE pre-authentication

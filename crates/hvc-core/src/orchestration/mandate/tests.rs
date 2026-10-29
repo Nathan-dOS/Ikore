@@ -134,7 +134,7 @@ fn specification() -> StagePayloadRecord {
     }
 }
 
-fn issued_by(checkpoint: &str) -> IssuedBy {
+pub(super) fn issued_by(checkpoint: &str) -> IssuedBy {
     IssuedBy {
         checkpoint_id: checkpoint.into(),
         stage: "SPECIFICATION".into(),
@@ -216,11 +216,11 @@ fn issue_with(
     .unwrap()
 }
 
-fn issue() -> ExecutionMandateV1 {
+pub(super) fn issue() -> ExecutionMandateV1 {
     issue_with(Enforcement::EnforcedV4, None)
 }
 
-fn grant<'a>(mandate: &'a ExecutionMandateV1, path: &str) -> &'a WriteGrant {
+pub(super) fn grant<'a>(mandate: &'a ExecutionMandateV1, path: &str) -> &'a WriteGrant {
     mandate
         .scope
         .grants

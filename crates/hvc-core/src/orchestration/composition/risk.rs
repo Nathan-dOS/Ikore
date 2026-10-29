@@ -261,6 +261,13 @@ pub fn note_risk(content: &str) -> Option<Risk> {
 /// existing files plus `candidates`, and the interfaces marked as changed.
 pub fn inputs_from_stage(inputs: &StageInputs, candidates: &[String]) -> RiskInputs {
     let mut facts = RiskInputs::default();
+    // Files granted at a failure checkpoint are written like planned ones.
+    facts.paths.extend(
+        inputs
+            .scope_amendments
+            .iter()
+            .map(|(_, path)| path.as_str().to_owned()),
+    );
     if let Some(intake) = inputs.prior.get(&Stage::Intake).and_then(intake_of) {
         facts.intake = intake
             .tasks

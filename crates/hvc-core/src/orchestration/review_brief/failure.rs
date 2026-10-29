@@ -9,6 +9,8 @@ use crate::persistence_service::{PulsationStage, StageFailureCheckpoint};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FailureDecisionKind {
+    /// Grant a pending scope request and retry (ADR-035 M4).
+    GrantScope,
     Retry,
     Revision,
     Abort,
@@ -39,6 +41,21 @@ fn stage_name(stage: PulsationStage) -> &'static str {
 pub fn failure_choices(checkpoint: &StageFailureCheckpoint) -> Vec<FailureChoice> {
     let stage = stage_name(checkpoint.stage);
     let mut choices = Vec::new();
+    if let Some(request) = checkpoint
+        .scope_request
+        .as_ref()
+        .filter(|request| request.state == "pending")
+    {
+        choices.push(FailureChoice {
+            decision: FailureDecisionKind::GrantScope,
+            target: None,
+            effect: format!(
+                "Gives unit `{}` write access to the {} file(s) it asked for, under a new mandate revision, and runs the failed {stage} job once more. The stage budget is not renewed; units already validated are reused without a call. Nothing is granted if a file changed since the request.",
+                request.unit_key,
+                request.accepted.len()
+            ),
+        });
+    }
     if checkpoint.allow_retry {
         let mut effect = format!(
             "Runs the failed {stage} job once more. The automatic attempts stay spent, so another failure reopens this checkpoint."
