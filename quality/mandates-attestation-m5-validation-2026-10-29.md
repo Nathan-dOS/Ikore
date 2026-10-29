@@ -156,5 +156,12 @@ On 2026-10-29 the branch merged into `main`. `main` already had V55
 (`canvas_authoring_jobs`), so the Feature 19 migrations were renumbered:
 V55 → V59 (`execution_mandates`), V56 → V60 (`pulsation_attestations`) and
 V57 → V61 (`mandate_scope_requests`), and their upgrade tests now start from
-V58. The reports of M1 to M5 keep the branch numbers. The integration's own
-validation is in the merge's follow-up commits.
+V58. The reports of M1 to M5 keep the branch numbers.
+
+`libz-sys` then moved to 1.1.31 in `Cargo.lock` (lockfile-only, nothing else
+re-resolved), which clears RUSTSEC-2026-0418. The Stage 7 gate on the
+integrated tree (`d87736f`, 2026-10-29 13:03–13:43 local time, 2,362 s)
+**passed every step**: structure, boundaries, fmt, Clippy, 59 test targets
+with **1,896 passed, 0 failed, 17 ignored** (main's canvas and Cargo tests
+included), release build, smoke, licences and advisories (0 vulnerabilities,
+RustSec `ee1a49a`).
