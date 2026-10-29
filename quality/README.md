@@ -27,6 +27,7 @@ historical check applies to the source and environment identified in that report
 | Signed local attestation (ADR-036 M3) | [2026-10-26 implementation and validation](mandates-attestation-m3-validation-2026-10-26.md) |
 | Just-in-time scope grants (ADR-035 M4) | [2026-10-29 implementation and validation](mandates-attestation-m4-validation-2026-10-29.md) |
 | Feature 19 closing: threat model, governance metrics, visual pass (ADR-035, ADR-036 M5) | [2026-10-29 closing validation](mandates-attestation-m5-validation-2026-10-29.md) |
+| Agent exchange baseline before ADR-037 M1 | [2026-10-29 gate and measurements](agent-exchange-baseline-2026-10-29.md), [fixture benchmark](stage-composition-benchmark-2026-10-29.md) |
 | Repository hygiene | [2026-10-17 change record](repository-hygiene-2026-10-17.md) |
 | Canvas AI consent, publication and semantic editing | [2026-10-29 source publication and selected-tree qualification](canvas-ai-publication-2026-10-29.md), [earlier combined-checkout workflow](canvas-ai-workflow-validation-2026-10-28.md) |
 
