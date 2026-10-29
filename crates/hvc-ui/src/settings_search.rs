@@ -391,16 +391,16 @@ pub(crate) static ENTRIES: &[SettingsEntry] = &[
         P::Voice,
         "Speech model",
         "Speech model",
-        "The local model that turns your voice into note text. The system chooses it; it runs on your computer and nothing is sent anywhere.",
-        "voice speech recognition transcription nemotron nvidia stt dictation download",
+        "Choose Nemotron or Whisper large-v3-turbo Q5_0 for Portuguese. Both turn your voice into note text locally on your CPU.",
+        "voice speech recognition transcription nemotron nvidia openai whisper large v3 turbo q5 portuguese pt stt dictation download cpu",
     ),
     entry(
         "voice-setup",
         P::Voice,
         "Speech model",
         "Download",
-        "Installs the speech runtime and downloads the model once. Both are checked against fixed checksums before use.",
-        "install download setup runtime nemo speech",
+        "Installs the selected native speech runtime and downloads its verified model once. Whisper uses whisper.cpp and runs locally on the CPU.",
+        "install download setup runtime nemo speech whisper cpp cpu",
     ),
     entry(
         "voice-push-to-talk",
@@ -894,6 +894,24 @@ mod tests {
             .find(|hit| hit.page == SettingsPage::Timeouts)
             .expect("timeouts page");
         assert_eq!(timeouts.entries[0].id, "agent-timeouts");
+    }
+
+    #[test]
+    fn turbo_and_quantization_queries_find_the_voice_model_setting() {
+        for query in ["large-v3-turbo", "q5_0", "whisper.cpp"] {
+            let hits = search(query).unwrap();
+            let voice = hits
+                .iter()
+                .find(|hit| hit.page == SettingsPage::Voice)
+                .unwrap_or_else(|| panic!("voice page missing for {query}"));
+            assert!(
+                voice
+                    .entries
+                    .iter()
+                    .any(|entry| matches!(entry.id, "voice-model" | "voice-setup")),
+                "voice model or setup missing for {query}"
+            );
+        }
     }
 
     #[test]

@@ -908,7 +908,9 @@ impl SettingsPage {
             }
             Self::Routes => "routing fallback failover binding resilience cooldown",
             Self::Embeddings => "rag vectors ollama semantic search index",
-            Self::Voice => "speech microphone push to talk hotkey dictation transcription nemotron",
+            Self::Voice => {
+                "speech microphone push to talk hotkey dictation transcription nemotron whisper large v3 turbo q5 portuguese cpu"
+            }
             Self::SecondBrain => "adaptive navigation vault notes graph wikilinks",
             Self::Preparation => "taskrefine prespec vagueness budget learning brownfield",
             Self::Composition => "v4 composed batches units validation checks overrides",

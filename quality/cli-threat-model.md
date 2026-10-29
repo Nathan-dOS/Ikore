@@ -151,21 +151,53 @@ Decision: [ADR-029 public summary](../docs/adr/README.md#adr-029-companion-notes
 
 Residual risk: the note text follows the developer's language, so the host's English guard does not apply to it (ADR-029 decision 5). The language check is advisory and a mismatch is accepted with a notice. Severity: low; a note feeds no agent.
 
-## Voice dictation — 2026-10-23
+## Voice dictation — 2026-10-23, amended 2026-10-29
 
-Decision: [ADR-029 public summary](../docs/adr/README.md#adr-029-companion-notes). HVC downloads and runs a third-party speech runtime (NVIDIA NeMo-Speech.cpp 0.2.0) and model (Nemotron 3.5 ASR 0.6B), records the microphone while a global shortcut is held, and turns the transcript into a voice note. It is not an agent: the runtime gets one WAV file and a model path, and its output is only text for the Notes capture path.
+Decision: [ADR-029 public summary](../docs/adr/README.md#adr-029-companion-notes).
+HVC downloads and runs the selected native CPU speech runtime and model:
+NVIDIA NeMo-Speech.cpp 0.2.0 with Nemotron 3.5 ASR 0.6B Q8_0, or whisper.cpp
+1.9.5 (build `b5454`, commit `d1be6fde11ac6e0407606b4e42fe72d34add8037`) with
+Whisper large-v3-turbo Q5_0. The latter replaces Python Whisper medium and
+requires no Python, PyTorch, CUDA or FFmpeg. HVC records the microphone while
+the global shortcut is held and turns the transcript into a voice note. The
+recognizer is not an agent: it receives one WAV, a model path and host-owned
+arguments, with no tools or repository. The resulting text enters the Notes
+capture path; no resident speech service runs.
+
+Both Windows x64 CPU archives are source-pinned in
+[`hvc-voice` runtime definitions](../crates/hvc-voice/src/runtime.rs):
+
+| Runtime archive | Bytes | SHA-256 |
+|---|---:|---|
+| [NeMo-Speech.cpp 0.2.0](https://github.com/NVIDIA/NeMo-Speech.cpp/releases/download/v0.2.0/nemo-speech-0.2.0-windows-x86_64-cpu.zip) | 5,528,418 | `82c80451086e86194aba9af19f800da77cd66d1c28d993d0efceffd6cdb49bb8` |
+| [whisper.cpp 1.9.5 / b5454](https://github.com/ggml-org/whisper.cpp/releases/download/b5454/whisper-bin-x64.zip) | 8,928,640 | `6ba69e3482d7826214f90a6a9c84ca07782aec1e1d0c6a7c30c994fd5d816ccb` |
+
+Model URLs, revisions, sizes and SHA-256 values are likewise pinned. The
+[native Whisper qualification record](whisper-cpp-validation-2026-10-29.md)
+lists its model pin and executed evidence; the
+[2026-10-26 report](whisper-medium-validation-2026-10-26.md) is historical
+Python/CUDA evidence and does not qualify native CPU inference.
 
 | Threat | Impact | Control | Automated evidence |
 |---|---|---|---|
-| A tampered or substituted runtime archive or model | arbitrary code runs as the user | URL, byte size and SHA-256 are pinned in the source; the download streams through the digest with a size cap and a mismatch deletes the file before anything is unpacked; the archive is unpacked into a staging folder by `%SystemRoot%\System32\tar.exe` (absolute path), and the binary must report the pinned version and pass `doctor` before it is moved into place | `a_runtime_archive_with_another_digest_is_never_unpacked`, `a_digest_mismatch_leaves_nothing_behind`, `a_size_mismatch_is_refused`, `the_pinned_releases_are_https_and_complete` |
+| A tampered or substituted runtime archive or model | arbitrary code runs as the user | URL, byte size and SHA-256 are pinned in the source; the download streams through the digest with a size cap and a mismatch deletes the file before anything is unpacked; the archive is unpacked into a staging folder by `%SystemRoot%\System32\tar.exe` (absolute path), and either binary must report its pinned version before installation; NeMo additionally passes `--json doctor` | `a_runtime_archive_with_another_digest_is_never_unpacked`, `a_digest_mismatch_leaves_nothing_behind`, `a_size_mismatch_is_refused`, `the_pinned_releases_are_https_and_complete`, `native_whisper_artifacts_are_pinned_to_verified_native_sources` |
 | A half-written or swapped model is used | wrong or failing transcription | a model counts as ready only with its digest marker and the exact pinned size; partial `.part` files are removed on failure or cancel | `a_model_without_its_marker_or_with_another_size_is_not_ready`, `a_verified_model_download_lands_with_its_marker_and_progress` |
-| Recorded audio leaks or persists | private speech kept on disk | samples stay in memory while recording (120 s cap); the WAV exists in `voice\tmp` only for the transcription call and is always deleted; audio is never stored in SQLite or sent to a network service | `hvc_installs_the_runtime_downloads_the_model_and_transcribes` (asserts an empty scratch folder) |
+| Recorded audio or temporary transcription persists | private speech or transcript kept on disk | samples stay in memory while recording (120 s cap); WAV and native Whisper JSON use host-owned UUID names in `voice\tmp`; drop guards attempt removal on success, failure, timeout, cancel and dropped futures; the next startup retries only matching 32-character lowercase hexadecimal UUID `.wav`/`.json` files, leaving unrelated files untouched; audio is never stored in SQLite or sent to a network service | `scratch_audio_is_removed_however_the_transcription_ends`, `transcript_output_is_removed_on_success_error_and_dropped_future`, `a_crash_left_transcript_is_swept_without_touching_other_json`, `the_startup_sweep_removes_only_leftover_scratch_recordings` |
 | The microphone records without the developer knowing | unintended capture | recording happens only while the shortcut is physically held, push-to-talk is off by default and registers only after setup, a start earcon plays at key-down, and taps under 0.5 s are discarded with a visible message | `settings_default_off_and_round_trip`, `taps_silence_and_a_missing_project_store_nothing_and_say_so` |
 | A spoken secret is transcribed | secret stored or sent to the Notes Scribe | the transcript enters the same capture path as typed text, so the secret redactor runs before storage and before any prompt | `a_dictation_becomes_a_voice_note_in_the_open_project`, `secrets_are_redacted_before_storage_and_before_the_prompt` |
-| The runtime hangs or opens windows | stuck dictation, console flashes | one process per utterance with `CREATE_NO_WINDOW`, stdin closed, a two-minute timeout and kill on drop; cancellation kills the process | `transcription_output_and_errors_are_read_from_the_runtime_json` |
+| The runtime hangs or opens windows | stuck dictation, console flashes | one process per utterance with `CREATE_NO_WINDOW`, stdin closed and kill on drop; Nemotron has a two-minute transcription timeout, native Whisper ten minutes; cancellation drops the command future and kills the process | `transcription_output_and_errors_are_read_from_the_runtime_json`, `cancellation_and_timeout_stop_a_running_native_check` |
+| Native output is missing, malformed or excessive | invalid text accepted or memory growth | native Whisper requires its JSON file, caps it at 2 MiB, validates segment offsets and language, and derives duration from the input PCM rather than padded model output; no shell string is composed and Whisper CPU, Portuguese and transcription are fixed by the host | `a_success_exit_without_json_and_an_oversized_output_are_rejected`, `silence_is_valid_but_wrong_or_malformed_cli_output_is_rejected`, `pcm_duration_accepts_ancillary_chunks_but_rejects_truncated_and_wrong_formats`, `cli_arguments_keep_paths_as_separate_values_and_force_local_portuguese_cpu` |
 | The global shortcut collides with another application | shortcut stolen or silently missing | `RegisterHotKey` fails visibly and the Settings page shows the error; the developer can choose another of 40 combinations | `every_combination_round_trips_through_its_stored_form`; manual `push_to_talk_reports_the_press_and_the_release` (ignored: sends global keystrokes) |
 
-Residual risk: the installed runtime is trusted at each run through its install marker, not re-hashed, so a process already running as the user could replace `nemo-speech.exe` under `%LOCALAPPDATA%`. Such a process already has the user's privileges. Severity: low. The model card's licence (OpenMDW 1.1) and NVIDIA's terms apply to the downloaded files, which HVC does not redistribute.
+Residual risk: installed runtimes are trusted at each run through their install
+markers, not re-hashed, so a process already running as the user could replace
+`nemo-speech.exe`, `whisper-cli.exe` or an adjacent native library under
+`%LOCALAPPDATA%`. Such a process already has the user's privileges. Severity:
+low. A crash or filesystem error can defer scratch deletion until a later
+startup; repeated failures are not proof of secure erasure. Recognition errors
+also remain possible; the developer can review the resulting note. The
+downloaded runtime/model licenses still apply, and these checks do not change
+the project's existing binary-distribution disposition.
 
 ## Execution mandates, scope grants and attestation — 2026-10-29
 

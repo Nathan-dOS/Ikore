@@ -5941,6 +5941,7 @@ fn voice_status(
         settings: VoiceSettings {
             push_to_talk,
             hotkey: Hotkey::default(),
+            ..VoiceSettings::default()
         },
         listening: push_to_talk && model_ready,
         hotkey_error: None,
@@ -5962,6 +5963,7 @@ fn the_voice_page_downloads_the_model_then_offers_push_to_talk(cx: &mut TestAppC
         let content = visual.debug_bounds("settings-content-scroll").unwrap();
         for selector in [
             "settings-row:voice-model",
+            "voice-backend",
             "settings-row:voice-setup",
             "settings-voice-download",
             "settings-row:voice-push-to-talk",
@@ -6033,6 +6035,50 @@ fn the_shortcut_menus_offer_every_modifier_set_and_f1_to_f10(cx: &mut TestAppCon
         );
         assert!(m.voice_choices("settings-context-strategy").is_none());
     });
+}
+
+#[gpui::test]
+fn the_voice_model_menu_offers_both_backends_and_tracks_the_selection(cx: &mut TestAppContext) {
+    use hvc_core::voice::VoiceBackend;
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    for backend in VoiceBackend::ALL {
+        model.update(visual, |m, cx| {
+            let mut status = voice_status(true, None, true);
+            status.settings.backend = backend;
+            if backend == VoiceBackend::WhisperLargeV3Turbo {
+                status.model_name = "Whisper large-v3-turbo Q5_0 · Portuguese (pt)".into();
+                status.model_bytes = 574_041_195;
+                status.runtime_version = "1.9.5".into();
+            }
+            m.voice_status = Some(status);
+            let choices = m.voice_choices("voice-backend").unwrap();
+            assert_eq!(
+                choices.iter().map(|c| c.value.as_str()).collect::<Vec<_>>(),
+                ["nemotron", "whisper-large-v3-turbo"]
+            );
+            assert_eq!(choices[1].label, "Whisper large-v3-turbo Q5_0 · Portuguese");
+            assert_eq!(
+                choices
+                    .iter()
+                    .filter(|c| c.selected)
+                    .map(|c| c.value.as_str())
+                    .collect::<Vec<_>>(),
+                [backend.id()]
+            );
+            m.open_settings(Some(SettingsPage::Voice), cx);
+        });
+        for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
+            visual.simulate_resize(size(px(width), px(height)));
+            visual.run_until_parked();
+            let content = visual.debug_bounds("settings-content-scroll").unwrap();
+            let selector = visual.debug_bounds("voice-backend").unwrap();
+            assert!(
+                selector.left() >= content.left() && selector.right() <= content.right() + px(1.0),
+                "{backend:?} model selector escaped the settings pane at {width}: {selector:?}"
+            );
+            assert!(visual.debug_bounds("settings-voice-download").is_none());
+        }
+    }
 }
 
 /// Parks the Integrator brief on the Review tab with the reviewer's recorded

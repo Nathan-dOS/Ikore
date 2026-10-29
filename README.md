@@ -235,15 +235,37 @@ records the test inventory, build measurements and remaining validation limits.
 
 ## Voice dictation
 
-Settings → Voice dictation downloads NVIDIA's NeMo-Speech.cpp runtime (about
-5 MB) and the Nemotron 3.5 ASR 0.6B model (about 710 MB) into
-`%LOCALAPPDATA%\com.hardvibecode.desktop\voice`. Both are pinned by URL, size
-and SHA-256 and are refused on any mismatch. Holding the push-to-talk shortcut
+Settings → Voice dictation offers two local recognizers. Nemotron 3.5 ASR 0.6B
+keeps the existing NeMo-Speech.cpp CPU runtime with automatic language detection.
+Whisper large-v3-turbo Q5_0 uses the native whisper.cpp 1.9.5 CPU runtime, with
+Portuguese (`pt`) and the transcription task fixed. This replaces the earlier
+Python Whisper medium installation. The choice persists across restarts;
+switching preserves both installations and is disabled during setup or dictation.
+
+The selected model downloads into `%LOCALAPPDATA%\com.hardvibecode.desktop\voice`.
+Nemotron's model is 742 MB; Whisper's quantized model is 574 MB. Runtime archives
+and model downloads are pinned by URL, version or revision, size and SHA-256.
+The Whisper backend uses a native executable and quantized model without Python,
+PyTorch or FFmpeg. Each dictation starts one process and releases it when the
+attempt ends; no speech service remains loaded. The system Python is untouched.
+
+Holding the push-to-talk shortcut
 (default `Ctrl+Shift+F9`, any two or three of Ctrl/Alt/Shift with F1–F10)
 records from the microphone anywhere in Windows; releasing it transcribes the
-recording on the CPU, in whatever language was spoken, and saves it as a voice
+recording with the selected recognizer and saves it as a voice
 note in the open project. No audio is kept. Windows only. See
 [ADR-029](docs/adr/README.md#adr-029-companion-notes).
+
+For an installation or WAV smoke test without the microphone:
+
+```powershell
+cargo run --locked -p hvc-voice --example voice_probe -- "$env:LOCALAPPDATA\com.hardvibecode.desktop\voice" whisper-large-v3-turbo
+# Append a mono, 16-bit, 16 kHz WAV path to transcribe it. Use `nemotron` to test the other backend.
+```
+
+The legacy `whisper-medium` setting is read as the native Whisper backend. See
+the [2026-10-29 qualification record](quality/whisper-cpp-validation-2026-10-29.md)
+for executed checks, measured memory and the limits of the Portuguese samples.
 
 ```powershell
 cargo test-contracts

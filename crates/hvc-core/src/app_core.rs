@@ -85,7 +85,7 @@ impl AppPaths {
     }
 
     /// The voice runtime and model (ADR-029): `%LOCALAPPDATA%` on Windows,
-    /// so ~700 MB never travels with a roaming profile; the data directory
+    /// so downloaded models and runtimes never travel with a roaming profile; the data directory
     /// when `HVC_DATA_DIR` isolates a run. Kept short for Windows' 260-character
     /// path limit.
     pub fn voice_dir(&self) -> PathBuf {

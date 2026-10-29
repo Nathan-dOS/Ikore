@@ -9,7 +9,7 @@ use futures::future::BoxFuture;
 use hvc_voice::{
     Earcon, PushToTalk, PushToTalkEvent, Recorder, Transcript, VoiceError, VoiceRuntime,
 };
-pub use hvc_voice::{Hotkey, Modifiers, RuntimeStatus, SetupProgress, SetupStage};
+pub use hvc_voice::{Hotkey, Modifiers, RuntimeStatus, SetupProgress, SetupStage, VoiceBackend};
 use rusqlite::{OptionalExtension, params};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
@@ -17,6 +17,7 @@ use tokio_util::sync::CancellationToken;
 
 const PUSH_TO_TALK_KEY: &str = "voice.push_to_talk";
 const HOTKEY_KEY: &str = "voice.hotkey";
+const BACKEND_KEY: &str = "voice.backend";
 /// Holds shorter than this are taps, not speech, and are discarded.
 pub const MIN_UTTERANCE: Duration = Duration::from_millis(500);
 
@@ -27,6 +28,7 @@ pub struct VoiceEvent;
 /// Push-to-talk starts off; the shortcut defaults to Ctrl+Shift+F9.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct VoiceSettings {
+    pub backend: VoiceBackend,
     pub push_to_talk: bool,
     pub hotkey: Hotkey,
 }
@@ -190,12 +192,13 @@ impl VoiceService {
 
     pub fn status(&self) -> VoiceStatus {
         let settings = self.settings().unwrap_or_default();
+        let runtime = self.runtime.with_backend(settings.backend);
         let state = self.state();
         VoiceStatus {
-            runtime: self.runtime.status(),
-            runtime_version: self.runtime.release().version.clone(),
-            model_name: self.runtime.model().name.clone(),
-            model_bytes: self.runtime.model().artifact.bytes,
+            runtime: runtime.status(),
+            runtime_version: runtime.version().into(),
+            model_name: runtime.model().name.clone(),
+            model_bytes: runtime.model().artifact.bytes,
             setup: state.setup_progress,
             setup_error: state.setup_error.clone(),
             settings,
@@ -217,6 +220,10 @@ impl VoiceService {
                 .optional()?)
         };
         Ok(VoiceSettings {
+            backend: read(BACKEND_KEY)?
+                .as_deref()
+                .and_then(VoiceBackend::parse)
+                .unwrap_or_default(),
             push_to_talk: read(PUSH_TO_TALK_KEY)?.as_deref() == Some("true"),
             hotkey: read(HOTKEY_KEY)?
                 .and_then(|id| Hotkey::parse(&id).ok())
@@ -229,19 +236,41 @@ impl VoiceService {
         &self,
         settings: VoiceSettings,
     ) -> Result<VoiceStatus, PersistenceServiceError> {
+        let previous = self.settings()?;
+        let state = self.state();
+        if previous.backend != settings.backend
+            && (state.setup.is_some()
+                || state.recorder.is_some()
+                || matches!(
+                    state.dictation,
+                    Dictation::Recording | Dictation::Transcribing
+                ))
+        {
+            return Err(PersistenceServiceError::Validation(
+                "Wait for the voice download or dictation to finish before changing the model."
+                    .into(),
+            ));
+        }
         let db = self.persistence.connection()?;
+        let transaction = db.unchecked_transaction()?;
         let now = chrono::Utc::now().to_rfc3339();
         for (key, value) in [
+            (BACKEND_KEY, settings.backend.id().to_string()),
             (PUSH_TO_TALK_KEY, settings.push_to_talk.to_string()),
             (HOTKEY_KEY, settings.hotkey.id()),
         ] {
-            db.execute(
+            transaction.execute(
                 "INSERT INTO runtime_settings(key,value,updated_at) VALUES(?1,?2,?3)
                  ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",
                 params![key, value, now],
             )?;
         }
+        transaction.commit()?;
         drop(db);
+        drop(state);
+        if previous.backend != settings.backend {
+            self.state().setup_error = None;
+        }
         self.apply();
         Ok(self.status())
     }
@@ -256,7 +285,8 @@ impl VoiceService {
     /// and whenever the settings change.
     pub fn apply(&self) {
         let settings = self.settings().unwrap_or_default();
-        let wanted = settings.push_to_talk && self.runtime.status().ready();
+        let wanted =
+            settings.push_to_talk && self.runtime.with_backend(settings.backend).status().ready();
         let previous = {
             let mut state = self.state();
             state.hotkey_error = None;
@@ -284,6 +314,8 @@ impl VoiceService {
     /// Installs the runtime, then downloads the model, reporting progress.
     /// Returns at once; a second call while one runs does nothing.
     pub fn start_setup(&self) {
+        let backend = self.settings().unwrap_or_default().backend;
+        let runtime = self.runtime.with_backend(backend);
         let token = CancellationToken::new();
         {
             let mut state = self.state();
@@ -292,7 +324,11 @@ impl VoiceService {
             }
             state.setup = Some(token.clone());
             state.setup_error = None;
-            state.setup_progress = None;
+            state.setup_progress = Some(SetupProgress {
+                stage: SetupStage::Runtime,
+                received: 0,
+                total: 0,
+            });
         }
         self.changed();
         let me = self.me.clone();
@@ -307,8 +343,8 @@ impl VoiceService {
                     }
                 }
             };
-            let outcome = match service.runtime.install_runtime(&report, &token).await {
-                Ok(()) => service.runtime.download_model(&report, &token).await,
+            let outcome = match runtime.install_runtime(&report, &token).await {
+                Ok(()) => runtime.download_model(&report, &token).await,
                 Err(error) => Err(error),
             };
             {
@@ -403,7 +439,11 @@ impl VoiceService {
         let cancellation = CancellationToken::new();
         let transcribed = match &self.transcriber_override {
             Some(transcriber) => transcriber.transcribe(wav, &cancellation).await,
-            None => Transcriber::transcribe(&self.runtime, wav, &cancellation).await,
+            None => {
+                let backend = self.settings().unwrap_or_default().backend;
+                let runtime = self.runtime.with_backend(backend);
+                Transcriber::transcribe(&runtime, wav, &cancellation).await
+            }
         };
         let text = match transcribed {
             Ok(transcript) if transcript.text.is_empty() => {
@@ -532,6 +572,7 @@ mod tests {
             .save_settings(VoiceSettings {
                 push_to_talk: true,
                 hotkey,
+                ..VoiceSettings::default()
             })
             .unwrap();
         assert_eq!(status.settings.hotkey, hotkey);
@@ -542,6 +583,128 @@ mod tests {
         );
         assert!(!status.runtime.ready());
         assert_eq!(status.model_name, "Nemotron 3.5 ASR Streaming 0.6B");
+    }
+
+    #[tokio::test]
+    async fn model_selection_survives_restart_and_keeps_installs_independent() {
+        let f = Fixture::new();
+        let (service, _) = f.service("unused");
+        let runtime = &service.runtime;
+        let executable = runtime.executable();
+        std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        std::fs::write(&executable, b"fixture").unwrap();
+        std::fs::write(
+            executable
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join(".hvc-install"),
+            format!(
+                "{} {}",
+                runtime.release().version,
+                runtime.release().archive.sha256
+            ),
+        )
+        .unwrap();
+        assert!(service.status().runtime.runtime_ready);
+
+        let whisper = VoiceSettings {
+            backend: VoiceBackend::WhisperLargeV3Turbo,
+            ..VoiceSettings::default()
+        };
+        let status = service.save_settings(whisper).unwrap();
+        assert_eq!(
+            status.model_name,
+            "Whisper large-v3-turbo Q5_0 · Portuguese (pt)"
+        );
+        assert_eq!(status.runtime_version, hvc_voice::whisper::VERSION);
+        assert_eq!(status.model_bytes, 574_041_195);
+        assert!(
+            !status.runtime.runtime_ready,
+            "Nemotron's installation cannot satisfy Whisper"
+        );
+        assert!(!status.runtime.model_ready);
+        let (restarted, _) = f.service("unused");
+        assert_eq!(restarted.settings().unwrap(), whisper);
+        assert_eq!(restarted.status().model_name, status.model_name);
+
+        let status = restarted.save_settings(VoiceSettings::default()).unwrap();
+        assert!(
+            status.runtime.runtime_ready,
+            "switching preserves the previous runtime"
+        );
+        assert_eq!(status.model_name, "Nemotron 3.5 ASR Streaming 0.6B");
+    }
+
+    #[tokio::test]
+    async fn legacy_whisper_selection_loads_turbo_and_saves_the_canonical_id() {
+        let f = Fixture::new();
+        let (service, _) = f.service("unused");
+        f.persistence
+            .connection()
+            .unwrap()
+            .execute(
+                "INSERT INTO runtime_settings(key,value,updated_at) VALUES(?1,'whisper-medium','now')",
+                [BACKEND_KEY],
+            )
+            .unwrap();
+        let settings = service.settings().unwrap();
+        assert_eq!(settings.backend, VoiceBackend::WhisperLargeV3Turbo);
+        assert!(!settings.push_to_talk);
+        let status = service.save_settings(settings).unwrap();
+        assert_eq!(
+            status.model_name,
+            "Whisper large-v3-turbo Q5_0 · Portuguese (pt)"
+        );
+        assert!(!status.runtime.ready());
+        assert!(!status.listening);
+        let persisted: String = f
+            .persistence
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT value FROM runtime_settings WHERE key=?1",
+                [BACKEND_KEY],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(persisted, "whisper-large-v3-turbo");
+    }
+
+    #[tokio::test]
+    async fn model_switch_is_rejected_during_setup_recording_or_transcription() {
+        let f = Fixture::new();
+        let (service, _) = f.service("unused");
+        let selected = VoiceSettings {
+            backend: VoiceBackend::WhisperLargeV3Turbo,
+            ..VoiceSettings::default()
+        };
+        service.state().setup = Some(CancellationToken::new());
+        assert!(service.save_settings(selected).is_err());
+        service.state().setup = None;
+        for dictation in [Dictation::Recording, Dictation::Transcribing] {
+            service.state().dictation = dictation;
+            assert!(service.save_settings(selected).is_err());
+        }
+        assert_eq!(service.settings().unwrap().backend, VoiceBackend::Nemotron);
+        service.state().dictation = Dictation::Idle;
+        assert!(service.save_settings(selected).is_ok());
+    }
+
+    #[tokio::test]
+    async fn unknown_persisted_model_keeps_the_existing_backend() {
+        let f = Fixture::new();
+        let (service, _) = f.service("unused");
+        f.persistence
+            .connection()
+            .unwrap()
+            .execute(
+                "INSERT INTO runtime_settings(key,value,updated_at) VALUES(?1,'unknown','now')",
+                [BACKEND_KEY],
+            )
+            .unwrap();
+        assert_eq!(service.settings().unwrap().backend, VoiceBackend::Nemotron);
     }
 
     #[tokio::test]

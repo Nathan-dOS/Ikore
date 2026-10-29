@@ -1,8 +1,9 @@
-//! The speech-to-text runtime HVC installs and drives (ADR-029 V1–V3):
-//! NVIDIA NeMo-Speech.cpp and the Nemotron 3.5 ASR model, both pinned here by
+//! The speech-to-text runtimes HVC installs and drives (ADR-029 V1–V3):
+//! NVIDIA NeMo-Speech.cpp with Nemotron, or native whisper.cpp with Whisper
+//! large-v3-turbo `Q5_0`. Runtime and model artifacts are pinned here by
 //! version, URL, size and SHA-256. One process transcribes one utterance;
 //! nothing stays resident.
-use crate::VoiceError;
+use crate::{VoiceBackend, VoiceError, whisper};
 use futures::StreamExt;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -19,7 +20,7 @@ pub struct Artifact {
     pub bytes: u64,
 }
 
-/// The runtime release: a zip whose single top-level folder holds `bin/`.
+/// The runtime release: a zip with one top-level folder and backend-specific executable layout.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeRelease {
     pub version: String,
@@ -27,7 +28,7 @@ pub struct RuntimeRelease {
     pub archive_root: String,
 }
 
-/// The one model the system uses; the developer does not choose it.
+/// A downloadable local recognition model.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelRelease {
     pub name: String,
@@ -36,6 +37,19 @@ pub struct ModelRelease {
 }
 
 impl RuntimeRelease {
+    /// Official Windows x64 CPU binaries built from whisper.cpp 1.9.5.
+    pub fn whisper_cpp() -> Self {
+        Self {
+            version: whisper::VERSION.into(),
+            archive: Artifact {
+                url: "https://github.com/ggml-org/whisper.cpp/releases/download/b5454/whisper-bin-x64.zip".into(),
+                sha256: "6ba69e3482d7826214f90a6a9c84ca07782aec1e1d0c6a7c30c994fd5d816ccb".into(),
+                bytes: 8_928_640,
+            },
+            archive_root: "Release".into(),
+        }
+    }
+
     /// NeMo-Speech.cpp 0.2.0, Windows x64, CPU backend (checked 2026-10-23).
     pub fn pinned() -> Self {
         Self {
@@ -51,6 +65,18 @@ impl RuntimeRelease {
 }
 
 impl ModelRelease {
+    pub fn whisper_large_v3_turbo() -> Self {
+        Self {
+            name: "Whisper large-v3-turbo Q5_0 · Portuguese (pt)".into(),
+            file_name: "ggml-large-v3-turbo-q5_0.bin".into(),
+            artifact: Artifact {
+                url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-large-v3-turbo-q5_0.bin".into(),
+                sha256: "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2".into(),
+                bytes: 574_041_195,
+            },
+        }
+    }
+
     /// Nemotron 3.5 ASR Streaming 0.6B, `q8_0` GGUF, at revision `1c8deaec`.
     /// The digest is the Hugging Face LFS object id and matched the file the
     /// runtime verified on 2026-10-23.
@@ -136,6 +162,7 @@ pub struct VoiceRuntime {
     root: PathBuf,
     release: RuntimeRelease,
     model: ModelRelease,
+    backend: VoiceBackend,
 }
 
 impl VoiceRuntime {
@@ -153,6 +180,30 @@ impl VoiceRuntime {
             root: root.into(),
             release,
             model,
+            backend: VoiceBackend::Nemotron,
+        }
+    }
+
+    pub fn with_backend(&self, backend: VoiceBackend) -> Self {
+        let mut runtime = self.clone();
+        runtime.backend = backend;
+        if backend != self.backend {
+            runtime.release = match backend {
+                VoiceBackend::Nemotron => RuntimeRelease::pinned(),
+                VoiceBackend::WhisperLargeV3Turbo => RuntimeRelease::whisper_cpp(),
+            };
+            runtime.model = match backend {
+                VoiceBackend::Nemotron => ModelRelease::pinned(),
+                VoiceBackend::WhisperLargeV3Turbo => ModelRelease::whisper_large_v3_turbo(),
+            };
+        }
+        runtime
+    }
+
+    pub fn version(&self) -> &str {
+        match self.backend {
+            VoiceBackend::Nemotron => &self.release.version,
+            VoiceBackend::WhisperLargeV3Turbo => whisper::VERSION,
         }
     }
 
@@ -165,11 +216,25 @@ impl VoiceRuntime {
     }
 
     fn runtime_dir(&self) -> PathBuf {
-        self.root.join("runtime").join(&self.release.version)
+        match self.backend {
+            VoiceBackend::Nemotron => self.root.join("runtime").join(&self.release.version),
+            VoiceBackend::WhisperLargeV3Turbo => self.root.join("whisper").join(whisper::DIRECTORY),
+        }
     }
 
     pub fn executable(&self) -> PathBuf {
-        self.runtime_dir().join("bin").join(executable_name())
+        self.runtime_dir().join(self.executable_relative_path())
+    }
+
+    fn executable_relative_path(&self) -> PathBuf {
+        match self.backend {
+            VoiceBackend::Nemotron => PathBuf::from("bin").join(executable_name()),
+            VoiceBackend::WhisperLargeV3Turbo => PathBuf::from(if cfg!(windows) {
+                "whisper-cli.exe"
+            } else {
+                "whisper-cli"
+            }),
+        }
     }
 
     fn runtime_marker(&self) -> PathBuf {
@@ -194,8 +259,8 @@ impl VoiceRuntime {
         self.root.join("tmp")
     }
 
-    /// Removes dictated audio that a process left behind by ending before its transcription
-    /// did. Only files named like this runtime's scratch WAVs are touched. Run it before the
+    /// Removes dictated audio and transcript output left by an interrupted process.
+    /// Only files named like this runtime's UUID scratch files are touched. Run it before the
     /// first transcription: a file that cannot be removed now is retried on the next start.
     pub fn sweep_scratch(&self) -> ScratchSweep {
         let mut sweep = ScratchSweep::default();
@@ -205,7 +270,7 @@ impl VoiceRuntime {
         for entry in entries.flatten() {
             let name = entry.file_name();
             if !entry.file_type().is_ok_and(|kind| kind.is_file())
-                || !name.to_str().is_some_and(is_scratch_audio_name)
+                || !name.to_str().is_some_and(is_scratch_file_name)
             {
                 continue;
             }
@@ -287,6 +352,7 @@ impl VoiceRuntime {
             .arg("-C")
             .arg(staging)
             .kill_on_drop(true);
+        hide_console(&mut command);
         let output = cancellable(cancellation, command.output())
             .await?
             .map_err(|error| {
@@ -299,11 +365,12 @@ impl VoiceRuntime {
             )));
         }
         let unpacked = staging.join(&self.release.archive_root);
-        let executable = unpacked.join("bin").join(executable_name());
+        let executable = unpacked.join(self.executable_relative_path());
         if !executable.is_file() {
-            return Err(VoiceError::Runtime(
-                "the runtime archive does not contain bin/nemo-speech.exe".into(),
-            ));
+            return Err(VoiceError::Runtime(format!(
+                "the runtime archive does not contain {}",
+                self.executable_relative_path().display()
+            )));
         }
         let version = run_checked(&executable, &["--version"], cancellation).await?;
         if !version.contains(&self.release.version) {
@@ -313,13 +380,18 @@ impl VoiceRuntime {
                 self.release.version
             )));
         }
-        run_checked(&executable, &["--json", "doctor"], cancellation).await?;
+        if self.backend == VoiceBackend::Nemotron {
+            run_checked(&executable, &["--json", "doctor"], cancellation).await?;
+        }
         // Past this point the install replaces the previous runtime: never after a cancel.
         if cancellation.is_cancelled() {
             return Err(VoiceError::Cancelled);
         }
         tokio::fs::write(unpacked.join(".hvc-install"), self.runtime_identity()).await?;
         let target = self.runtime_dir();
+        if let Some(parent) = target.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
         if tokio::fs::metadata(&target).await.is_ok() {
             tokio::fs::remove_dir_all(&target).await?;
         }
@@ -351,8 +423,8 @@ impl VoiceRuntime {
         Ok(())
     }
 
-    /// Transcribes a WAV image with automatic language detection. The audio
-    /// exists on disk only for the length of the call.
+    /// Transcribes a WAV image with the selected recognizer. Nemotron detects
+    /// the language; Whisper uses Portuguese. Audio exists on disk only for the call.
     pub async fn transcribe(
         &self,
         wav: &[u8],
@@ -366,6 +438,17 @@ impl VoiceRuntime {
             return Err(VoiceError::NotInstalled);
         }
         let audio = ScratchAudio::write(&self.scratch_dir(), wav).await?;
+        if self.backend == VoiceBackend::WhisperLargeV3Turbo {
+            let duration_secs = whisper::pcm_duration(wav)?;
+            return whisper::transcribe(
+                &self.executable(),
+                &self.model_path(),
+                audio.path(),
+                duration_secs,
+                cancellation,
+            )
+            .await;
+        }
         self.run_transcription(audio.path(), cancellation).await
     }
 
@@ -429,7 +512,7 @@ fn executable_name() -> &'static str {
 
 /// The operating system's own `tar`, by absolute path on Windows so a binary
 /// earlier on the PATH cannot stand in for it.
-fn system_tar() -> PathBuf {
+pub(crate) fn system_tar() -> PathBuf {
     if cfg!(windows) {
         let system_root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
         PathBuf::from(system_root).join("System32").join("tar.exe")
@@ -438,7 +521,7 @@ fn system_tar() -> PathBuf {
     }
 }
 
-fn hide_console(command: &mut tokio::process::Command) {
+pub(crate) fn hide_console(command: &mut tokio::process::Command) {
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
     #[cfg(not(windows))]
@@ -465,7 +548,7 @@ async fn run_checked(
     .map_err(|error| VoiceError::Runtime(format!("could not run the runtime: {error}")))?;
     if !output.status.success() {
         return Err(VoiceError::Runtime(format!(
-            "`nemo-speech {}` failed: {}",
+            "`voice runtime {}` failed: {}",
             args.join(" "),
             String::from_utf8_lossy(&output.stderr).trim()
         )));
@@ -519,19 +602,21 @@ impl Drop for ScratchAudio {
     }
 }
 
-/// The name [`ScratchAudio`] gives its files: a simple UUID and `.wav`.
-fn is_scratch_audio_name(name: &str) -> bool {
-    name.strip_suffix(".wav").is_some_and(|stem| {
-        stem.len() == 32
-            && stem
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    })
+/// UUID names owned by the recorder or by its native transcription output guard.
+fn is_scratch_file_name(name: &str) -> bool {
+    name.strip_suffix(".wav")
+        .or_else(|| name.strip_suffix(".json"))
+        .is_some_and(|stem| {
+            stem.len() == 32
+                && stem
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
 }
 
 /// Streams `artifact` into `target`, hashing as it goes. The file appears at
 /// `target` only after its size and digest match; a partial file is removed.
-async fn download(
+pub(crate) async fn download(
     artifact: &Artifact,
     target: &Path,
     stage: SetupStage,
@@ -847,7 +932,7 @@ mod tests {
 
         let audio = ScratchAudio::write(&scratch, b"RIFF").await.unwrap();
         let path = audio.path().to_path_buf();
-        assert!(is_scratch_audio_name(
+        assert!(is_scratch_file_name(
             path.file_name().unwrap().to_str().unwrap()
         ));
         assert_eq!(std::fs::read(&path).unwrap(), b"RIFF");
@@ -971,5 +1056,72 @@ mod tests {
         }
         assert!(runtime.archive.url.contains(&runtime.archive_root));
         assert!(model.artifact.url.ends_with(&model.file_name));
+    }
+
+    #[test]
+    fn native_whisper_requires_its_own_runtime_and_migrated_model() {
+        let root = tempfile::tempdir().unwrap();
+        let nemotron = VoiceRuntime::new(root.path());
+        let whisper = nemotron.with_backend(VoiceBackend::WhisperLargeV3Turbo);
+        assert_eq!(whisper.version(), "1.9.5");
+        assert_eq!(whisper.model().file_name, "ggml-large-v3-turbo-q5_0.bin");
+        assert_eq!(whisper.model().artifact.bytes, 574_041_195);
+        assert_ne!(nemotron.executable(), whisper.executable());
+        assert!(!whisper.status().runtime_ready);
+
+        std::fs::create_dir_all(whisper.executable().parent().unwrap()).unwrap();
+        std::fs::write(whisper.executable(), b"fixture executable").unwrap();
+        std::fs::write(whisper.runtime_marker(), "old Python runtime").unwrap();
+        assert!(!whisper.status().runtime_ready);
+        std::fs::write(whisper.runtime_marker(), whisper.runtime_identity()).unwrap();
+        assert!(whisper.status().runtime_ready);
+        assert!(
+            !whisper.status().model_ready,
+            "medium.pt cannot satisfy turbo readiness"
+        );
+        assert!(!nemotron.status().runtime_ready);
+    }
+
+    #[test]
+    fn native_whisper_artifacts_are_pinned_to_verified_native_sources() {
+        let runtime = RuntimeRelease::whisper_cpp();
+        let model = ModelRelease::whisper_large_v3_turbo();
+        assert_eq!(runtime.version, whisper::VERSION);
+        assert_eq!(runtime.archive_root, "Release");
+        assert!(runtime.archive.url.ends_with("/b5454/whisper-bin-x64.zip"));
+        assert_eq!(runtime.archive.bytes, 8_928_640);
+        assert_eq!(model.artifact.bytes, 574_041_195);
+        for artifact in [&runtime.archive, &model.artifact] {
+            assert!(artifact.url.starts_with("https://"));
+            assert_eq!(artifact.sha256.len(), 64);
+            assert!(
+                artifact
+                    .sha256
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            );
+        }
+        assert!(
+            model
+                .artifact
+                .url
+                .contains("/5359861c739e955e79d9a303bcbc70fb988958b1/")
+        );
+        assert!(model.artifact.url.ends_with(&model.file_name));
+    }
+
+    #[test]
+    fn a_crash_left_transcript_is_swept_without_touching_other_json() {
+        let root = tempfile::tempdir().unwrap();
+        let runtime = VoiceRuntime::new(root.path());
+        let scratch = root.path().join("tmp");
+        std::fs::create_dir_all(&scratch).unwrap();
+        let transcript = scratch.join("0123456789abcdef0123456789abcdef.json");
+        std::fs::write(&transcript, b"private transcript").unwrap();
+        let kept = scratch.join("settings.json");
+        std::fs::write(&kept, b"keep").unwrap();
+        assert_eq!(runtime.sweep_scratch().removed, 1);
+        assert!(!transcript.exists());
+        assert!(kept.exists());
     }
 }

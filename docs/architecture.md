@@ -94,10 +94,21 @@ the physical/live-provider limits and unexposed optional document resolver.
 Voice dictation feeds the same capture path. The core
 [voice service](../crates/hvc-core/src/voice.rs) owns the settings, installs the
 pinned runtime and model on request and registers the global push-to-talk only
-once both are ready. A held shortcut records 16 kHz mono audio in memory; on
-release the WAV is written to a scratch file, transcribed by one short-lived
-`nemo-speech` process and deleted, and the text is captured as a `voice` note in
-the open project. No resident speech server runs.
+once both are ready. Settings retains Nemotron 3.5 ASR Streaming 0.6B with
+NeMo-Speech.cpp 0.2.0 CPU and offers Whisper large-v3-turbo Q5_0 with
+whisper.cpp 1.9.5 CPU. The maintainer's 2026-10-29 decision replaces the Python
+Whisper medium backend with the native Whisper executable; Whisper dictation
+requires no Python, PyTorch or resident service. Runtime archives and model
+files are pinned by version or revision, size and SHA-256.
+
+A held shortcut records 16 kHz mono audio in memory; on release the WAV is
+written to a scratch file and transcribed by one short-lived process for the
+selected backend. Whisper fixes Portuguese (`pt`) and transcription; Nemotron
+retains automatic language detection. The scratch WAV is deleted after the
+attempt, and a successful transcript is captured as a `voice` note in the open
+project. The backend choice and push-to-talk preferences persist across
+restarts. No resident speech server runs. Current qualification is recorded in
+the [2026-10-29 Whisper report](../quality/whisper-cpp-validation-2026-10-29.md).
 
 ## Storage and context
 

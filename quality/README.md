@@ -14,6 +14,7 @@ historical check applies to the source and environment identified in that report
 | Cargo candidate validation, integrated with risk and reconciliation | [2026-10-26 implementation and qualification](cargo-validation-2026-10-26.md) |
 | Contracts and terminal boundaries | [2026-10-23 implementation and validation](rust-boundaries-validation-2026-10-23.md), [test inventory](rust-boundaries-tests-2026-10-23.json) |
 | Test workflow | [2026-10-15 validation](test-workflow-validation-2026-10-15.md) |
+| Selectable local voice recognition | [2026-10-29 native Whisper replacement and qualification](whisper-cpp-validation-2026-10-29.md); [2026-10-26 historical Python medium validation](whisper-medium-validation-2026-10-26.md) |
 | CLI process boundary | [Threat model](cli-threat-model.md) |
 | Synchronization and human recovery | [Synchronization report](cerebro-sync-validation-2026-09-09.md) |
 | Context telemetry and Learning | [Validation](learning-context-optimization.md) |

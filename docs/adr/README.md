@@ -154,15 +154,25 @@ gets one corrective call. Notes follow the developer's language, a narrow
 exception to ADR-013: they are working memos that no agent consumes. The Scribe
 never creates or changes tasks, features or pulsations.
 
-Voice dictation (phases 2–3) is local. Ollama has no speech-to-text, so HVC
-installs NVIDIA NeMo-Speech.cpp 0.2.0 (Apache-2.0) and the Nemotron 3.5 ASR
-Streaming 0.6B model (OpenMDW 1.1) itself, from Settings, each pinned by URL,
-size and SHA-256. There is one fixed model; users do not pick or add models. A
-global push-to-talk shortcut (default `Ctrl+Shift+F9`) records while held, with
-a start earcon; on release one CPU process transcribes the recording with
-automatic language detection and the text becomes a voice note in the open
-project, through the same capture path as typed text. Audio never outlives the
-transcription, and holds shorter than half a second are discarded. Windows only.
+Voice dictation (phases 2–3) is local. The maintainer's 2026-10-29 amendment
+keeps Nemotron 3.5 ASR Streaming 0.6B with NeMo-Speech.cpp 0.2.0 CPU and
+replaces Python Whisper medium with Whisper large-v3-turbo Q5_0 through
+whisper.cpp 1.9.5 CPU. Whisper fixes Portuguese (`pt`) and transcription;
+Nemotron retains automatic language detection. Neither backend requires a
+resident speech service, and the Whisper path requires no Python or PyTorch.
+
+The selected backend persists across restarts; both supported installations
+coexist and model changes wait for setup or dictation to finish. Runtime
+archives and model files are pinned by URL, version or revision, size and
+SHA-256. A global push-to-talk shortcut (default `Ctrl+Shift+F9`) records while
+held, with a start earcon; on release one short-lived process transcribes the
+recording and the text becomes a voice note in the open project, through the
+same capture path as typed text. Audio never outlives the transcription, and
+holds shorter than half a second are discarded. Windows only. The
+[2026-10-29 native Whisper report](../../quality/whisper-cpp-validation-2026-10-29.md)
+records current qualification; the
+[2026-10-26 medium report](../../quality/whisper-medium-validation-2026-10-26.md)
+remains historical evidence for the replaced Python backend.
 
 See the [notes module](../../crates/hvc-core/src/companion_notes/mod.rs), the
 [voice service](../../crates/hvc-core/src/voice.rs) and the

@@ -10,7 +10,9 @@ use crate::settings_ui::{PageContent, note, readout, row, section, select, stack
 use crate::settings_view::action;
 use crate::{AppModel, AppView, theme};
 use gpui::{Context, div, prelude::*};
-use hvc_core::voice::{Dictation, Hotkey, Modifiers, SetupStage, VoiceSettings, VoiceStatus};
+use hvc_core::voice::{
+    Dictation, Hotkey, Modifiers, SetupStage, VoiceBackend, VoiceSettings, VoiceStatus,
+};
 
 impl AppModel {
     /// Reads the voice status off the UI thread (it touches `SQLite` and the disk).
@@ -133,10 +135,22 @@ impl AppModel {
         self.save_voice_settings(settings, cx);
     }
 
-    /// The options of the two shortcut menus, or `None` for any other menu.
+    /// Options for the model selector and shortcut menus.
     pub(crate) fn voice_choices(&self, id: &str) -> Option<Vec<crate::select_menu::Choice>> {
         let hotkey = self.voice_settings().hotkey;
         match id {
+            "voice-backend" => Some(
+                VoiceBackend::ALL
+                    .into_iter()
+                    .map(|backend| {
+                        crate::select_menu::Choice::new(
+                            backend.id(),
+                            backend.label(),
+                            backend == self.voice_settings().backend,
+                        )
+                    })
+                    .collect(),
+            ),
             "voice-modifiers" => Some(
                 Modifiers::ALL
                     .into_iter()
@@ -166,6 +180,13 @@ impl AppModel {
 
     pub(crate) fn apply_voice_choice(&mut self, id: &str, value: &str, cx: &mut Context<Self>) {
         let mut settings = self.voice_settings();
+        if id == "voice-backend" {
+            if let Some(backend) = VoiceBackend::parse(value) {
+                settings.backend = backend;
+                self.save_voice_settings(settings, cx);
+            }
+            return;
+        }
         let current = settings.hotkey;
         let hotkey = match id {
             "voice-modifiers" => Modifiers::parse(value)
@@ -254,7 +275,11 @@ pub(crate) fn voice_page(
         }
     );
     let runtime_line = format!(
-        "NeMo-Speech.cpp {} · {}",
+        "{} {} · {}",
+        match status.settings.backend {
+            VoiceBackend::Nemotron => "NeMo-Speech.cpp",
+            VoiceBackend::WhisperLargeV3Turbo => "whisper.cpp",
+        },
         status.runtime_version,
         if status.runtime.runtime_ready {
             "installed"
@@ -263,6 +288,10 @@ pub(crate) fn voice_page(
         }
     );
     let progress = match (&status.setup, &status.setup_error) {
+        (Some(progress), _) if progress.total == 0 => Some((
+            theme::accent(),
+            "Preparing the local speech runtime…".into(),
+        )),
         (Some(progress), _) => Some((
             theme::accent(),
             format!(
@@ -315,7 +344,26 @@ pub(crate) fn voice_page(
             "Speech model",
             None,
             vec![
-                row("voice-model", hl, readout(model_line)),
+                stacked_row(
+                    "voice-model",
+                    hl,
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(select(
+                            "voice-backend",
+                            status.settings.backend.label(),
+                            !checking
+                                && !running
+                                && !matches!(
+                                    status.dictation,
+                                    Dictation::Recording | Dictation::Transcribing
+                                ),
+                            cx,
+                        ))
+                        .child(readout(model_line)),
+                ),
                 stacked_row(
                     "voice-setup",
                     hl,
