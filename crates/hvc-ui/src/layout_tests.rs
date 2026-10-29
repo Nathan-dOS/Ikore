@@ -1760,6 +1760,24 @@ fn click(visual: &mut VisualTestContext, selector: &'static str) {
     visual.run_until_parked();
 }
 
+/// A text sharing a flex row keeps a usable width. Squeezed, GPUI lays it
+/// out at zero width and wraps one character per line (found by the ADR-035
+/// M5 visual pass).
+fn assert_readable(
+    visual: &mut VisualTestContext,
+    selector: &'static str,
+    min_width: f32,
+    max_height: f32,
+) {
+    let bounds = visual
+        .debug_bounds(selector)
+        .unwrap_or_else(|| panic!("missing {selector}"));
+    assert!(
+        bounds.size.width > px(min_width) && bounds.size.height < px(max_height),
+        "{selector} squeezed: {bounds:?}"
+    );
+}
+
 fn select(model: &Entity<AppModel>, visual: &mut VisualTestContext, view: AppView) {
     model.update(visual, |model, cx| model.select_view(view, cx));
     visual.run_until_parked();
@@ -6368,6 +6386,9 @@ fn the_specification_brief_shows_what_approving_grants(cx: &mut TestAppContext) 
             visual.debug_bounds("review-grants-path-64").is_none(),
             "only the first 64 paths are drawn"
         );
+        assert_readable(visual, "review-grants-summary", 200.0, 80.0);
+        assert_readable(visual, "review-grants-path-text-0", 120.0, 160.0);
+        assert_readable(visual, "review-grants-transport-0", 40.0, 40.0);
     }
     model.update(visual, |m, cx| {
         m.pulsations.update(cx, |state, _| {
@@ -6532,6 +6553,8 @@ fn the_layers_panel_leads_the_overview_and_opens_a_layer(cx: &mut TestAppContext
         visual.debug_bounds("layers-item-scope-50").is_none(),
         "fifty items, then the count"
     );
+    assert_readable(visual, "layers-item-label-scope-0", 80.0, 60.0);
+    assert_readable(visual, "layers-item-value-scope-0", 80.0, 60.0);
     click(visual, "layers-row-scope");
     model.read_with(visual, |m, cx| {
         assert!(
@@ -6587,6 +6610,14 @@ fn the_integrator_brief_shows_the_layers_card(cx: &mut TestAppContext) {
                 visual.debug_bounds(row).is_some(),
                 "missing {row} at {width}"
             );
+        }
+        for headline in [
+            "review-layers-headline-identity",
+            "review-layers-headline-scope",
+            "review-layers-headline-guardrails",
+            "review-layers-headline-intent",
+        ] {
+            assert_readable(visual, headline, 120.0, 60.0);
         }
     }
 }
@@ -7091,7 +7122,31 @@ fn a_scope_request_shows_its_files_and_leads_the_decisions_with_the_grant(cx: &m
                 bounds.left() >= card.left() && bounds.right() <= card.right() + px(1.0),
                 "{part} overflows at {width}: {bounds:?} vs {card:?}"
             );
+            assert!(
+                bounds.top() >= card.top() && bounds.bottom() <= card.bottom() + px(1.0),
+                "{part} spills out of the card at {width}: {bounds:?} vs {card:?}"
+            );
         }
+        // Text squeezed by its row wraps one character per line.
+        let unit = visual.debug_bounds("scope-request-unit").unwrap();
+        assert!(
+            unit.size.width > px(120.0),
+            "unit label squeezed at {width}: {unit:?}"
+        );
+        let short = visual.debug_bounds("scope-request-path-text-1").unwrap();
+        assert!(
+            short.size.width > px(120.0),
+            "path squeezed at {width}: {short:?}"
+        );
+        assert!(
+            short.size.height < px(30.0),
+            "a short path wraps at {width}: {short:?}"
+        );
+        let long = visual.debug_bounds("scope-request-path-text-0").unwrap();
+        assert!(
+            long.size.width > px(300.0),
+            "long path squeezed at {width}: {long:?}"
+        );
         assert!(visual.debug_bounds("scope-request-state").is_none());
         let bar = visual.debug_bounds("failure-decision-bar").unwrap();
         let grant = visual.debug_bounds("failure-grant-scope").unwrap();

@@ -182,15 +182,18 @@ fn item_row(kind: LayerKind, index: usize, item: &LayerItemV1) -> AnyElement {
     } else {
         theme::text_muted()
     };
+    // Either side can be long (a path, a reason): each takes half the row and
+    // wraps inside it. A text with only `min_w_0` in a row collapses to zero.
     div()
         .debug_selector(move || format!("layers-item-{}-{index}", kind.as_str()))
         .min_w_0()
         .flex()
-        .flex_wrap()
-        .items_center()
+        .items_start()
         .gap_2()
         .child(
             div()
+                .debug_selector(move || format!("layers-item-label-{}-{index}", kind.as_str()))
+                .flex_1()
                 .min_w_0()
                 .font_family(theme::FONT_MONO)
                 .text_xs()
@@ -198,6 +201,8 @@ fn item_row(kind: LayerKind, index: usize, item: &LayerItemV1) -> AnyElement {
         )
         .child(
             div()
+                .debug_selector(move || format!("layers-item-value-{}-{index}", kind.as_str()))
+                .flex_1()
                 .min_w_0()
                 .text_xs()
                 .text_color(color)

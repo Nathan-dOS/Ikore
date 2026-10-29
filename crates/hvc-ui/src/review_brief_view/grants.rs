@@ -44,23 +44,37 @@ fn is_sensitive(preview: &MandatePreview, grant: &WriteGrant) -> bool {
         .any(|sensitive| sensitive.eq_ignore_ascii_case(&path))
 }
 
+/// A text that takes what its row leaves and wraps inside it. A text with only
+/// `min_w_0` beside other elements collapses to zero width in GPUI.
+fn stretch(selector: String, child: AnyElement) -> AnyElement {
+    div()
+        .debug_selector(move || selector.clone())
+        .flex_1()
+        .min_w_0()
+        .child(child)
+        .into_any_element()
+}
+
 fn transports_line(mandate: &ExecutionMandateV1) -> Vec<AnyElement> {
     mandate
         .capabilities
         .transports
         .iter()
-        .map(|transport| {
+        .enumerate()
+        .map(|(index, transport)| {
             let target = match &transport.backend {
                 Some(backend) => format!("{} · {backend}", transport.transport),
                 None => transport.transport.clone(),
             };
             div()
                 .flex()
-                .flex_wrap()
-                .items_center()
+                .items_start()
                 .gap_2()
-                .child(mono(transport.role.clone()))
-                .child(detail(target))
+                .child(div().flex_shrink_0().child(mono(transport.role.clone())))
+                .child(stretch(
+                    format!("review-grants-transport-{index}"),
+                    detail(target),
+                ))
                 .into_any_element()
         })
         .collect()
@@ -105,18 +119,21 @@ pub(crate) fn grants_panel(preview: &MandatePreview) -> Option<AnyElement> {
             .child(
                 div()
                     .flex()
-                    .flex_wrap()
-                    .items_center()
+                    .items_start()
                     .gap_2()
-                    .child(detail(format!(
-                        "Approving issues mandate revision {}: stages after this one may write only these {} path(s).",
-                        mandate.revision,
-                        grants.len()
-                    )))
+                    .child(stretch(
+                        "review-grants-summary".into(),
+                        detail(format!(
+                            "Approving issues mandate revision {}: stages after this one may write only these {} path(s).",
+                            mandate.revision,
+                            grants.len()
+                        )),
+                    ))
                     .when(sensitive > 0, |row| {
                         row.child(
                             div()
                                 .debug_selector(|| "review-grants-sensitive".into())
+                                .flex_shrink_0()
                                 .child(badge(
                                     Icon::TriangleAlert,
                                     theme::warning(),
@@ -133,10 +150,12 @@ pub(crate) fn grants_panel(preview: &MandatePreview) -> Option<AnyElement> {
                     .debug_selector(move || selector.clone())
                     .min_w_0()
                     .flex()
-                    .flex_wrap()
-                    .items_center()
+                    .items_start()
                     .gap_2()
-                    .child(mono(grant.path.clone()))
+                    .child(stretch(
+                        format!("review-grants-path-text-{index}"),
+                        mono(grant.path.clone()),
+                    ))
                     .children(grant.origins.iter().map(|origin| pill(origin_word(*origin))))
                     .when(is_sensitive(preview, grant), |row| {
                         row.child(badge(Icon::TriangleAlert, theme::warning(), "sensitive"))
@@ -157,19 +176,21 @@ pub(crate) fn grants_panel(preview: &MandatePreview) -> Option<AnyElement> {
                     "No validation profile is enabled; no host check will run.",
                 ))
             })
-            .children(checks.iter().map(|check| {
+            .children(checks.iter().enumerate().map(|(index, check)| {
                 div()
                     .flex()
-                    .flex_wrap()
-                    .items_center()
+                    .items_start()
                     .gap_2()
-                    .child(mono(check.check_ref.clone()))
+                    .child(stretch(
+                        format!("review-grants-check-{index}"),
+                        mono(check.check_ref.clone()),
+                    ))
                     .child(pill(format!("{:?}", check.kind).to_lowercase()))
-                    .child(detail(if check.required {
+                    .child(div().flex_shrink_0().child(detail(if check.required {
                         "required"
                     } else {
                         "optional"
-                    }))
+                    })))
                     .into_any_element()
             }))
             .child(heading("Budget"))

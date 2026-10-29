@@ -75,11 +75,14 @@ pub(crate) fn scope_request_card(request: &ScopeRequestView) -> AnyElement {
                 .child(icon(Icon::ShieldCheck, px(14.0), theme::accent()))
                 .child(
                     div()
+                        .flex_shrink_0()
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .child("Scope request"),
                 )
                 .child(
                     div()
+                        .debug_selector(|| "scope-request-unit".into())
+                        .flex_1()
                         .min_w_0()
                         .text_xs()
                         .text_color(theme::text_muted())
@@ -100,15 +103,17 @@ pub(crate) fn scope_request_card(request: &ScopeRequestView) -> AnyElement {
             )
         })
         .children(request.accepted.iter().enumerate().map(|(index, path)| {
+            // The path takes what the marks leave and wraps inside it.
             div()
                 .debug_selector(move || format!("scope-request-path-{index}"))
                 .min_w_0()
                 .flex()
-                .flex_wrap()
-                .items_center()
+                .items_start()
                 .gap_2()
                 .child(
                     div()
+                        .debug_selector(move || format!("scope-request-path-text-{index}"))
+                        .flex_1()
                         .min_w_0()
                         .font_family(theme::FONT_MONO)
                         .text_sm()
@@ -117,6 +122,7 @@ pub(crate) fn scope_request_card(request: &ScopeRequestView) -> AnyElement {
                 .when(path.sensitive, |row| {
                     row.child(
                         div()
+                            .flex_shrink_0()
                             .text_xs()
                             .text_color(theme::warning())
                             .child("sensitive"),
@@ -124,6 +130,7 @@ pub(crate) fn scope_request_card(request: &ScopeRequestView) -> AnyElement {
                 })
                 .child(
                     div()
+                        .flex_shrink_0()
                         .font_family(theme::FONT_MONO)
                         .text_xs()
                         .text_color(theme::text_muted())

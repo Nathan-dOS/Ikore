@@ -1987,13 +1987,20 @@ impl AppModel {
         let Some(pulsation_id) = failure_pulsation_id else {
             return;
         };
-        let message = match scope_notice {
-            Some(notice) if awaiting == 1 => notice,
-            _ if awaiting == 1 => "1 stage failure waiting on a decision".to_string(),
-            _ => format!("{awaiting} stage failures waiting on a decision"),
+        // A scope request asks for a decision, like a review; it is not an error.
+        let (kind, message) = match scope_notice {
+            Some(notice) if awaiting == 1 => (HeaderNoticeKind::Warning, notice),
+            _ if awaiting == 1 => (
+                HeaderNoticeKind::Error,
+                "1 stage failure waiting on a decision".to_string(),
+            ),
+            _ => (
+                HeaderNoticeKind::Error,
+                format!("{awaiting} stage failures waiting on a decision"),
+            ),
         };
         self.push_actionable_notice(
-            HeaderNoticeKind::Error,
+            kind,
             message,
             Some(HeaderNoticeAction {
                 label: "Decide now".into(),

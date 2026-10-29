@@ -41,12 +41,12 @@ pub(crate) fn layers_card(
                     } else {
                         layer.headline.clone()
                     };
+                let headline_selector = format!("review-layers-headline-{}", layer.kind.as_str());
                 div()
                     .debug_selector(move || selector.clone())
                     .min_w_0()
                     .flex()
-                    .flex_wrap()
-                    .items_center()
+                    .items_start()
                     .gap_2()
                     .child(
                         div()
@@ -56,7 +56,13 @@ pub(crate) fn layers_card(
                             .child(layer.kind.title()),
                     )
                     .child(state_badge(layer.state))
-                    .child(detail(headline))
+                    .child(
+                        div()
+                            .debug_selector(move || headline_selector.clone())
+                            .flex_1()
+                            .min_w_0()
+                            .child(detail(headline)),
+                    )
             }))
             .child(detail(CLEAR_MEANING))
             .into_any_element(),
