@@ -336,8 +336,21 @@ pub struct Observation {
     /// Sum of the provider-reported cost, when any attempt reported one.
     pub estimated_cost_micro_usd: Option<u64>,
     pub prompt_chars: u64,
+    /// One entry per provider call, in call order (fixture mode only).
+    #[serde(default)]
+    pub prompt_calls: Vec<PromptCall>,
     pub wall_ms: u64,
     pub diagnostics: Vec<String>,
+}
+
+/// The size of one rendered prompt, kept per call so ADR-037 M1 can compare
+/// its prompt growth call by call against the Etapa 0 baseline.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PromptCall {
+    pub executor: String,
+    pub chars: u64,
+    /// Content items M1 labels with a provenance line (see `provenance_items`).
+    pub items: u32,
 }
 
 /// What the scripted provider sees across one pulsation.
@@ -347,6 +360,47 @@ struct ProviderLog {
     prompt_chars: u64,
     fault_injected: bool,
     executors: Vec<String>,
+    prompt_calls: Vec<PromptCall>,
+}
+
+/// Counts the content items ADR-037 M1 gives a provenance line: every `### `
+/// title outside `## Interfaces`, the sections authored by agents and the
+/// blocks the stage guidance embeds. An estimate for the growth ceiling, not a
+/// parser of the prompt grammar.
+fn provenance_items(user: &str) -> u32 {
+    const SECTIONS: [&str; 9] = [
+        "## Tasks and criteria",
+        "## Decisions",
+        "## Interfaces",
+        "## Changes (base → candidate)",
+        "## Author claims (narrative, not evidence)",
+        "## Review policy (read-only)",
+        "## Task batch - authoritative scope",
+        "## Approved handoff",
+        "## Exact code context (derived - not citable)",
+    ];
+    const EMBEDDED: [&str; 6] = [
+        "Feature `",
+        "Revision feedback from the developer:",
+        "Clarification - Q:",
+        "Issues reported by Intake:",
+        "Approved interface intent:",
+        "Approved unit proposals",
+    ];
+    let mut items = 0;
+    let mut in_interfaces = false;
+    for line in user.lines() {
+        if line.starts_with("## ") {
+            in_interfaces = line == "## Interfaces";
+        }
+        if SECTIONS.contains(&line)
+            || EMBEDDED.iter().any(|marker| line.starts_with(marker))
+            || (line.starts_with("### ") && !in_interfaces)
+        {
+            items += 1;
+        }
+    }
+    items
 }
 
 fn legacy_stage(prompt: &str) -> Option<&str> {
@@ -531,6 +585,11 @@ fn scripted_reply(
         (stage.clone(), format!("legacy:{stage}"))
     };
     log.executors.push(executor.clone());
+    log.prompt_calls.push(PromptCall {
+        executor: executor.clone(),
+        chars: prompt_chars as u64,
+        items: provenance_items(user),
+    });
     let fault = fixture
         .fault
         .as_ref()
@@ -1003,10 +1062,10 @@ pub fn run_observation(arm: Arm, fixture: &Fixture, mode: &Mode) -> Observation 
             |r| r.get(0),
         )
         .unwrap();
-    let (provider_calls, prompt_chars) = match mode {
+    let (provider_calls, prompt_chars, prompt_calls) = match mode {
         Mode::Fixture => {
             let log = log.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            (log.calls, log.prompt_chars)
+            (log.calls, log.prompt_chars, log.prompt_calls.clone())
         }
         Mode::Pilot(_) => (
             db.query_row(
@@ -1016,6 +1075,7 @@ pub fn run_observation(arm: Arm, fixture: &Fixture, mode: &Mode) -> Observation 
             )
             .unwrap_or(0),
             0,
+            Vec::new(),
         ),
     };
     Observation {
@@ -1041,6 +1101,7 @@ pub fn run_observation(arm: Arm, fixture: &Fixture, mode: &Mode) -> Observation 
         usage_unavailable_records: usage.6,
         estimated_cost_micro_usd: cost.map(|usd| (usd * 1_000_000.0).round() as u64),
         prompt_chars,
+        prompt_calls,
         wall_ms,
         diagnostics,
     }
