@@ -2,11 +2,9 @@
 
 Date: 2026-10-29
 
-Status: accepted; being implemented. M1 (provenance envelopes) is done, see the
-[M1 validation](../../quality/agent-exchange-m1-validation-2026-10-30.md).
-Planned migrations: V62 to V64, and V65 only if the ACP transport needs a
-setting column. Numbers are the next free ones when each milestone is
-integrated.
+Status: accepted; implemented on 2026-10-30, except the ACP transport. M5 ended
+in a spike report because its parity gate was not run. Migrations: V62 to V64;
+V65 was not needed. See [Implementation](#implementation).
 
 ## Context
 
@@ -102,3 +100,37 @@ supply-chain review. All new tables are additive and are deleted with their
 project. Notices and digests pass through secret sanitization (ADR-030) before
 reaching a model or the UI. Exchange items are not part of the pulsation
 attestation predicate (ADR-036).
+
+## Implementation
+
+| Milestone | Commits | Validation |
+|---|---|---|
+| M1, provenance envelopes | `99cc886`, `bfb02d2` | [M1](../../quality/agent-exchange-m1-validation-2026-10-30.md) |
+| M2, exchange log and doorbell (V62) | `3d7ab74`, `2ddcb7c` | [M2](../../quality/agent-exchange-m2-validation-2026-10-30.md) |
+| M3, external changes on resume (V63) | `ab648fc` | [M3 and M4](../../quality/agent-exchange-m3-m4-validation-2026-10-30.md) |
+| M4, pulsation digests and two Companion tools (V64) | `d230cda` | [M3 and M4](../../quality/agent-exchange-m3-m4-validation-2026-10-30.md) |
+| M5, ACP | none | Spike only; see below |
+| M6, reviewer contract and closing | `9526c77` | [Closing](../../quality/agent-exchange-closing-2026-10-30.md) |
+
+Where the implementation differs from the decision:
+
+- The doorbell reads the log every 250 ms instead of being published by each
+  writer, so no writer needs the event bus and no doorbell announces an
+  uncommitted item.
+- Only manual CLI runs, the ones an explicit resume uses, record a manifest.
+  The resume state has a table of its own, so V63 changes no existing table.
+- Digests have no job of their own: the background lane derives them after
+  sealing, and the first search of a project derives the newest 200. A new
+  digest version replaces the stored one; the exchange log records each.
+- **ACP was not enabled.** The parity gate needs adapters that the user
+  installs, and none was installed or run. Reading the adapters' published
+  source showed two blockers to resolve first: the Claude adapter loads the
+  user's, the project's and local settings (hooks, MCP servers, permission
+  rules and the initial mode), so the host's refusals are not the only
+  control; and token counts comparable to ADR-020 exist only in each
+  adapter's own metadata. No ACP code or dependency was added.
+- **Transition latency.** Each pulsation transition gains 0.4 to 0.9 ms at
+  p95 in the debug test profile, 12% to 26% over the code before M1 in
+  alternating runs on one machine. That is under the 15 ms cap but over the
+  10% relative ceiling, which is one of this decision's review criteria; the
+  developer decides whether to accept it.

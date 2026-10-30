@@ -230,3 +230,31 @@ Residual risks:
 - The same process can edit the SQLite file, drop the trigger and seal a fabricated history with the key. Verification then reports a valid record. The record does not defend against the account that owns it.
 - Timestamps are self-asserted by the local clock. Severity: low; verification never checks a time against a trusted clock, so a reader should treat the times as claims.
 - A grant only widens a unit's write set to files it was already delivered, so a file the workspace sanitization keeps out of the workspace cannot be asked for, and protected names are refused by rule. Within those files, the developer's reading of the card is the control. Severity: low.
+
+## Agent exchange — 2026-10-30
+
+Decision: [ADR-037 public summary](../docs/adr/037-agent-exchange.md). Every piece of content the host did not write reaches a model under a provenance line; the host keeps a durable exchange log; an explicit CLI session resume works after workspace edits and tells the agent what changed; the Companion can search and read digests of finished pulsations. No new process, network access or write permission is added. The ACP transport was not enabled: its gate was not run, and no ACP code or dependency was added.
+
+Trust boundaries added:
+
+- The provenance line and the legend are host text. The line says who wrote an item; it grants nothing. Agent output, tool output and repository content stay data, even when the developer approved them.
+- The exchange log stores references to domain rows (`payload_table`, `payload_id`), never content. The UI doorbell carries ids and sequence numbers only.
+- A resume notice is host text built from sanitized snapshot content. A pulsation digest is host-derived from SQLite rows, sanitized with a receipt, and labelled per section.
+
+| Threat | Impact | Control | Automated evidence |
+|---|---|---|---|
+| Text planted in a file, a check's output or another agent's output poses as an instruction | an agent follows an injected instruction | every item the host did not write carries a `> provenance:` line outside its fence; the legend says only host and human items may instruct and that an approved item still cannot change the rules; every prompt section is classified by an executable inventory | `prompt_input_inventory_classifies_every_prompt_the_pipelines_render`, `an_unclassified_section_fails_the_inventory`, `a_labelled_section_or_item_without_its_line_fails_the_inventory`, `the_legend_is_the_specified_text` |
+| Content forges a host provenance line or closes its own fence | data poses as host text | the fence is longer than any backtick run in the content, so a forged line stays inside it | `the_fence_outlasts_every_backtick_run`, `a_forged_host_line_stays_inside_the_fence` |
+| A stale writer records after its execution moved on, or a write is replayed | the log contradicts the domain state | an append with a moved fence writes nothing and aborts the domain write; a repeated idempotency key writes nothing; items are append-only; a stream out of step with its items fails closed | `a_moved_fence_writes_nothing_and_aborts_the_domain_write`, `a_repeated_key_is_a_duplicate_that_writes_nothing`, `items_are_append_only`, `a_stream_out_of_step_with_its_items_fails_closed` |
+| A resume notice carries a secret from a changed file | a secret reaches the CLI provider | snapshot blobs keep the sanitized projection (text files up to 32 KiB, 1 MiB per run); hunks compare sanitized content; the notice goes through the prompt's sanitization; more than 40 changed files or 8,000 characters refuse the resume | `a_resume_notice_carries_only_sanitized_hunks`, `a_manual_run_keeps_its_manifest_and_small_sanitized_blobs`, `the_budget_drops_the_largest_hunks_then_refuses`, `more_than_forty_changes_refuse_the_resume_with_the_count` |
+| The workspace changes between the resume preview and the launch | the agent is told about changes that are not the ones it sees | the child run stores the digest of the change list; the launch re-compares the parent's manifest with the real snapshot and refuses when the list differs | `a_resume_starts_only_on_the_snapshot_its_notice_described`, `the_canonical_list_ignores_content` |
+| A stale-read notice in the Companion leaks file content | content reaches the provider without a read | the notice lists paths only, at most 50, and only files read in earlier turns of the same conversation | `a_turn_warns_when_a_file_read_earlier_changed` |
+| A pulsation digest carries a secret or injected text into Companion answers | a secret reaches the provider; injected text gains weight | digests are derived by the host from rows, redacted with a receipt, labelled per section, and returned as `agent_output`; the tools write nothing on a model's request | `a_stored_digest_is_sanitized_receipted_announced_and_idempotent`, `a_digest_is_deterministic_with_each_sections_provenance`, `a_question_about_a_past_choice_reaches_its_approved_decision` |
+| A Companion conversation reads another project's pulsation | cross-project disclosure | a reference must belong to the conversation's project; otherwise the answer is "Unknown pulsation reference." | `pulsation_search_and_read_find_an_approved_decision` |
+| Reserved reviewer kinds are emitted before their contract exists | content enters prompts with an unreviewed trust meaning | `review_finding` and `claim_under_verification` exist in the contract and no crate produces them | `kinds_are_listed_once_and_two_are_reserved`, `reserved_review_kinds_exist_and_nothing_produces_them` |
+
+Residual risks:
+
+- **A provenance line reduces the chance that a model obeys injected text; it does not prevent it.** The controls that bound the damage are unchanged: the read-only snapshot, host-owned publication, and no Companion tool that writes. Severity: medium, as before.
+- A digest quotes agent output the developer approved. An injection that passed that approval stays in later Companion answers, labelled `agent_output`. Severity: low.
+- Hunks in a resume notice show sanitized content of files the agent already had in its session's snapshot; the redaction coverage is that of workspace sanitization. Severity: low.

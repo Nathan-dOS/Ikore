@@ -162,6 +162,47 @@ the statement from the current rows and hashes each subject in the workspace;
 only the first two can disagree with the record. See
 [ADR-036](adr/036-pulsation-attestation.md) and [attestations](attestation.md).
 
+## Agent exchange
+
+The host is the only router between agents, and it labels what it routes.
+Every content item the host did not write reaches a model under one
+`> provenance:` line outside its fence: the trust class (`host`, `human`,
+`agent_output`, `tool_output` or `repository`), the producer, the unit and
+attempt, the approval gates it passed and a digest of the body. The fence is
+always longer than any backtick run in the body, so a forged line stays inside
+it. One legend in each system prompt says that only host and human items may
+instruct. The line reduces the weight of injected text; the snapshot, host
+publication and read-only tools remain the controls that bound it.
+
+Domain writes that other surfaces follow also append one item to a durable
+exchange log in the same transaction: pulsation transitions and checkpoints,
+stage executions and unit attempts, publications, CLI run states, finished
+Companion answers, notes and drawings. Forge turns, documentation
+reconciliation and canvas requests span several transactions, so they record
+right after their last commit. Items reference their domain rows and never
+copy content; an append with a stale execution fence writes nothing and
+aborts the domain write. The UI follows the log by a
+cursor: a doorbell checks the log every 250 ms and applies new items in order,
+a gap or a lagged broadcast triggers a ranged re-read, and only a cursor too far
+behind triggers a full reload. A gap in a terminal run's events re-reads just
+the missing range.
+
+A resumable manual CLI run keeps a per-file manifest of its snapshot and, for
+small text files, the sanitized content it saw. An explicit session resume
+after workspace edits starts a new snapshot, compares it with the parent's
+manifest and tells the agent what changed, with sanitized hunks, before its
+message; too many changes refuse the resume, and the launch refuses a snapshot
+other than the one the notice described. The Companion records the digest of
+each repository file it reads and warns, with paths only, when one changed
+before a later turn.
+
+When a pulsation ends, the background lane derives a digest of it from its
+rows, without a model: intent, approved decisions, criteria, checkpoints,
+stages, files, risk and attestation, each section with its provenance line.
+The Companion's `search_pulsations` and `read_pulsation` tools search and read
+those digests, scoped to the conversation's project.
+See [ADR-037](adr/037-agent-exchange.md).
+
 Start with the [design summaries](adr/README.md), [test guide](testing.md) and
 [dated validation reports](../quality/README.md). The reports distinguish
 implemented behavior, executed checks and remaining work.
