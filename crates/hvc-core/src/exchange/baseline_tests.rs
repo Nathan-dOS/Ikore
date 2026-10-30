@@ -16,8 +16,8 @@ use serde_json::json;
 use super::*;
 use crate::llm::AgentRole;
 use crate::terminals::{
-    AgentExecutionMode, CliBackend, CreateTerminalRunRequest, ExecutionOrigin, TerminalEventKind,
-    TerminalRepository, TerminalRun, TerminalRunStatus,
+    AgentExecutionMode, CliBackend, CreateTerminalRunRequest, ExecutionOrigin, TerminalEvent,
+    TerminalEventKind, TerminalRepository, TerminalRun, TerminalRunStatus,
 };
 
 fn micros(duration: Duration) -> u64 {
@@ -98,6 +98,43 @@ fn record_launch_receipt(service: &PersistenceService, project_id: &str, run: &T
             params![run.id, project_id, policy.identity(), Utc::now().to_rfc3339()],
         )
         .expect("launch receipt");
+}
+
+/// Writes stdout events `from..=to` of a run in one transaction. The M2
+/// measurements read and follow events; they do not need the per-append
+/// commit `exchange_baseline_terminal_events` measures.
+fn bulk_events(service: &PersistenceService, run_id: &str, from: u64, to: u64) -> Vec<TerminalEvent> {
+    let line = "   Compiling hvc-core v0.1.0 (C:/workspace/crates/hvc-core) build step";
+    let mut connection = service.connection().expect("connection");
+    let transaction = connection.transaction().expect("transaction");
+    let mut events = Vec::with_capacity((to + 1 - from) as usize);
+    {
+        let mut statement = transaction
+            .prepare(
+                "INSERT INTO terminal_events(id,run_id,sequence,kind,stream,content,created_at,redaction_count,redaction_categories_json)
+                 VALUES(?1,?2,?3,'stdout','stdout',?4,?5,0,'[]')",
+            )
+            .expect("statement");
+        for sequence in from..=to {
+            let event = TerminalEvent {
+                id: Uuid::new_v4().to_string(),
+                run_id: run_id.to_owned(),
+                sequence,
+                kind: TerminalEventKind::Stdout,
+                stream: Some("stdout".into()),
+                content: format!("{line} {sequence}"),
+                redaction_count: 0,
+                redaction_categories: Vec::new(),
+                created_at: Utc::now().to_rfc3339(),
+            };
+            statement
+                .execute(params![event.id, run_id, sequence, event.content, event.created_at])
+                .expect("event");
+            events.push(event);
+        }
+    }
+    transaction.commit().expect("commit");
+    events
 }
 
 /// One committed transition, the unit the M2 append will join.
@@ -334,18 +371,7 @@ fn exchange_m2_terminal_reread() {
     let repository = TerminalRepository::new(service.database_path());
     let run = running_cli_run(&repository, &project_id);
     record_launch_receipt(&service, &project_id, &run);
-    let line = "   Compiling hvc-core v0.1.0 (C:/workspace/crates/hvc-core) build step";
-    for sequence in 1..=events {
-        repository
-            .append_event(
-                &run.id,
-                sequence,
-                TerminalEventKind::Stdout,
-                Some("stdout"),
-                &format!("{line} {sequence}"),
-            )
-            .expect("append");
-    }
+    bulk_events(&service, &run.id, 1, events);
     // A fixed, spread set of cursors (no RNG dependency), each read twice.
     let mut samples = Vec::new();
     for step in 0..50u64 {
@@ -455,7 +481,7 @@ fn exchange_m2_load_slow_subscriber() {
     .expect("notifier");
     let mut receiver = bus.subscribe();
 
-    // The subscriber is slow on purpose: it sleeps every 200 events.
+    // The subscriber is slow on purpose: it sleeps every 50 events.
     let subscriber_service = service.clone();
     let subscriber_project = project_id.clone();
     let subscriber_run = run.id.clone();
@@ -538,7 +564,7 @@ fn exchange_m2_load_slow_subscriber() {
                 }
             }
             handled += 1;
-            if handled.is_multiple_of(200) {
+            if handled.is_multiple_of(50) {
                 std::thread::sleep(Duration::from_millis(1));
             }
         }
@@ -546,30 +572,29 @@ fn exchange_m2_load_slow_subscriber() {
         tally
     });
 
-    // The producer: the run's events, with a pulsation transition every 100.
-    let line = "   Compiling hvc-core v0.1.0 (C:/workspace/crates/hvc-core) build step";
+    // The producer: batches of 2,000 events published in one burst, twice
+    // the bus capacity, then 20 pulsation transitions per batch.
     let mut produced_transitions = 0u64;
     let wall = Instant::now();
-    for sequence in 1..=events {
-        let event = repository
-            .append_event(
-                &run.id,
-                sequence,
-                TerminalEventKind::Stdout,
-                Some("stdout"),
-                &format!("{line} {sequence}"),
-            )
-            .expect("append");
-        bus.publish(AppEvent::Terminal(Box::new(TerminalEventEnvelope {
-            protocol_version: 2,
-            project_id: project_id.clone(),
-            agent_role: run.agent_role,
-            run_id: run.id.clone(),
-            sequence,
-            run: run.clone(),
-            event,
-        })));
-        if sequence % 100 == 0 && produced_transitions < 1_000 {
+    let batch = 2_000u64;
+    let mut start = 1u64;
+    while start <= events {
+        let end = (start + batch - 1).min(events);
+        for event in bulk_events(&service, &run.id, start, end) {
+            bus.publish(AppEvent::Terminal(Box::new(TerminalEventEnvelope {
+                protocol_version: 2,
+                project_id: project_id.clone(),
+                agent_role: run.agent_role,
+                run_id: run.id.clone(),
+                sequence: event.sequence,
+                run: run.clone(),
+                event,
+            })));
+        }
+        for _ in 0..((end + 1 - start) / 100) {
+            if produced_transitions == 1_000 {
+                break;
+            }
             let next = if current.status == PulsationStatus::Running {
                 PulsationStatus::Checkpoint
             } else {
@@ -578,6 +603,7 @@ fn exchange_m2_load_slow_subscriber() {
             current = timed_transition(&mut connection, &current, next).0;
             produced_transitions += 1;
         }
+        start = end + 1;
     }
     repository
         .set_run_status(&run.id, TerminalRunStatus::Completed, Some(0), None, None)
@@ -603,6 +629,7 @@ fn exchange_m2_load_slow_subscriber() {
             "transitions_seen": tally.transitions,
         }),
     );
+    assert!(tally.lagged > 0 && tally.gaps > 0, "the rehearsal lagged");
     assert_eq!(tally.resets, 0, "no full reload");
     assert_eq!(
         tally.last_terminal, events,
