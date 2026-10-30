@@ -1,9 +1,9 @@
-//! ADR-037 Etapa 0 baseline measurements for the Agent Exchange milestones.
+//! ADR-037 baseline measurements for the Agent Exchange milestones.
 //!
 //! Ignored by default. Run them explicitly, one at a time:
 //! `cargo test --locked -p hvc-core --lib exchange_baseline -- --ignored --nocapture --test-threads=1`
 //! Each test prints one `AGENT_EXCHANGE_BASELINE` JSON line. M1 to M3 rerun the
-//! same harness and compare against the numbers recorded in the Etapa 0
+//! same harness and compare against the numbers recorded in the baseline
 //! report; nothing here asserts a threshold.
 
 use std::path::{Path, PathBuf};
@@ -185,7 +185,7 @@ fn to_running(connection: &mut Connection, mut pulsation: Pulsation) -> Pulsatio
 }
 
 #[test]
-#[ignore = "ADR-037 Etapa 0 baseline; run explicitly with --ignored --nocapture"]
+#[ignore = "ADR-037 baseline; run explicitly with --ignored --nocapture"]
 fn exchange_baseline_pulsation_transitions() {
     let data = tempfile::tempdir().expect("data dir");
     let workspace = tempfile::tempdir().expect("workspace");
@@ -235,7 +235,7 @@ fn exchange_baseline_pulsation_transitions() {
 }
 
 #[test]
-#[ignore = "ADR-037 Etapa 0 baseline; run explicitly with --ignored --nocapture"]
+#[ignore = "ADR-037 baseline; run explicitly with --ignored --nocapture"]
 fn exchange_baseline_terminal_events() {
     let events: u64 = std::env::var("HVC_EXCHANGE_BASELINE_EVENTS")
         .ok()
@@ -293,7 +293,7 @@ fn exchange_baseline_terminal_events() {
 }
 
 #[test]
-#[ignore = "ADR-037 Etapa 0 baseline; set HVC_EXCHANGE_BASELINE_WORKSPACE and run explicitly"]
+#[ignore = "ADR-037 baseline; set HVC_EXCHANGE_BASELINE_WORKSPACE and run explicitly"]
 fn exchange_baseline_snapshot_manifest() {
     let Some(workspace) = std::env::var_os("HVC_EXCHANGE_BASELINE_WORKSPACE") else {
         eprintln!("HVC_EXCHANGE_BASELINE_WORKSPACE is not set; nothing was measured.");

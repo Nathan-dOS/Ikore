@@ -348,7 +348,7 @@ pub struct Observation {
 }
 
 /// The size of one rendered prompt, kept per call so ADR-037 M1 can compare
-/// its prompt growth call by call against the Etapa 0 baseline.
+/// its prompt growth call by call against the baseline before M1.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PromptCall {
     pub executor: String,

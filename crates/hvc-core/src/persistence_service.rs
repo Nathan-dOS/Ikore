@@ -130,7 +130,7 @@ mod serial;
 mod supervisor;
 #[path = "orchestration/visualizer.rs"]
 mod visualizer;
-// ADR-037 Etapa 0: ignored baseline measurements, rerun by M1 to M3.
+// ADR-037 baseline: ignored measurements, rerun at each milestone.
 #[cfg(test)]
 #[path = "exchange/baseline_tests.rs"]
 mod exchange_baseline_tests;
