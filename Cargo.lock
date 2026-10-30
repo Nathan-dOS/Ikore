@@ -2798,6 +2798,7 @@ name = "hvc-test-support"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "hvc-contracts",
  "hvc-core",
  "hvc-voice",
  "keyring",

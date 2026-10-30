@@ -13,6 +13,10 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
+use hvc_contracts::exchange::{
+    AgentProducer, ApprovalGate, ExchangeItemV1, ExchangeKind, HumanSource, Producer,
+};
+use hvc_contracts::stages::PulsationStage;
 use serde::{Deserialize, Serialize};
 
 pub use super::aggregate::ReconstructedArtifact;
@@ -35,10 +39,55 @@ use super::{
     UnavailableReason, UnitModelResponseV1, UnitProposalV1, VerificationMode, WorkUnitSpecV1,
     scalar_len,
 };
+use crate::exchange::render::single_line;
 use crate::feature_forge::BatchManifest;
 use crate::orchestration::{SchemaV1, SpecificationQuestion, StageArtifactDraft};
 
 pub const STAGE_PAYLOAD_KIND: &str = "stage_payload_v1";
+
+/// Keys of the units a recipe defines itself; every other unit was planned
+/// from an approved proposal.
+const RECIPE_UNIT_KEYS: [&str; 6] = [
+    "classify_batch",
+    "specify_batch",
+    "contract_batch",
+    "implement_batch",
+    "test_batch",
+    "review_batch",
+];
+
+/// Whether a unit's objective is the text of an approved proposal rather
+/// than the recipe's own (ADR-037: it is then agent output).
+pub fn objective_from_proposal(unit: &WorkUnitSpecV1) -> bool {
+    !RECIPE_UNIT_KEYS.contains(&unit.logical_unit_key.as_str())
+}
+
+/// The provenance line of a block the stage guidance embeds.
+fn guidance_line(kind: ExchangeKind, producer: Producer, gates: &[ApprovalGate]) -> String {
+    ExchangeItemV1::new(kind, producer)
+        .approved(gates.iter().copied())
+        .provenance_line()
+}
+
+/// Who wrote a delivered file, from where the host found it: a published
+/// artifact of an earlier stage is agent output, approved at the first
+/// checkpoint it passed before `reader`; anything else is the workspace.
+pub fn source_provenance(origin: Option<&SourceOrigin>, reader: Stage) -> ExchangeItemV1 {
+    match origin {
+        Some(SourceOrigin::StageArtifact { stage, .. }) => {
+            let produced = stage.to_pulsation();
+            ExchangeItemV1::new(
+                ExchangeKind::DeliveredFile,
+                Producer::agent(AgentProducer::StageUnits(produced)),
+            )
+            .approved(ApprovalGate::first_checkpoint(
+                produced,
+                reader.to_pulsation(),
+            ))
+        }
+        _ => ExchangeItemV1::new(ExchangeKind::DeliveredFile, Producer::Repository),
+    }
+}
 
 /// The durable record of a stage's typed payload, persisted as a host
 /// artifact so later stages resolve its handles through its own reference
@@ -148,6 +197,8 @@ pub struct StagePreparation {
     pub drafts: Vec<UnitDraft>,
     pub approved: ApprovedContext,
     pub delivered: BTreeMap<Handle, String>,
+    /// Where the host found each delivered file, for its provenance (ADR-037).
+    pub origins: BTreeMap<Handle, SourceOrigin>,
     /// Model-facing derivatives. `delivered` remains the immutable edit base.
     pub source_redactions: BTreeMap<Handle, crate::secret_redactor::ContextRedaction>,
     pub sanitization_policy_identity: String,
@@ -303,45 +354,67 @@ fn add_sources(
     Ok(handles)
 }
 
+/// The batch, the developer's feedback and the clarifications, each block
+/// under its provenance line (ADR-037) and every entry on one line.
 fn batch_guidance(manifest: &BatchManifest, inputs: &StageInputs) -> String {
-    let mut text = String::new();
+    let mut text = guidance_line(
+        ExchangeKind::FeatureBrief,
+        Producer::agent(AgentProducer::ForgeBatch),
+        &[ApprovalGate::ForgeBatch],
+    );
+    text.push('\n');
     for (position, task) in manifest.tasks.iter().enumerate() {
         text.push_str(&format!(
             "task_{}: {} ({:?}) - {}\n",
             position + 1,
-            task.draft.title,
+            single_line(&task.draft.title),
             task.draft.kind,
-            task.draft.description.trim()
+            single_line(task.draft.description.trim())
         ));
     }
     for feature in &manifest.features {
         let brief = &feature.brief;
         text.push_str(&format!(
             "\nFeature `{}`: objective: {} behavior: {} scope: {} exclusions: {}\n",
-            feature.title,
-            brief.objective.trim(),
-            brief.behavior.trim(),
-            brief.scope.trim(),
-            brief.exclusions.trim()
+            single_line(&feature.title),
+            single_line(brief.objective.trim()),
+            single_line(brief.behavior.trim()),
+            single_line(brief.scope.trim()),
+            single_line(brief.exclusions.trim())
         ));
         for decision in &brief.decisions {
-            text.push_str(&format!("- decision: {decision}\n"));
+            text.push_str(&format!("- decision: {}\n", single_line(decision)));
         }
         for pending in &brief.pending_decisions {
-            text.push_str(&format!("- pending decision: {pending}\n"));
+            text.push_str(&format!("- pending decision: {}\n", single_line(pending)));
         }
     }
     if let Some(feedback) = &inputs.revision_feedback {
         text.push_str(&format!(
-            "\nRevision feedback from the developer: {}\n",
-            feedback.trim()
+            "\n{}\nRevision feedback from the developer: {}\n",
+            guidance_line(
+                ExchangeKind::RevisionFeedback,
+                Producer::Human(HumanSource::CheckpointFeedback),
+                &[]
+            ),
+            single_line(feedback.trim())
         ));
     }
     for (question, answer) in &inputs.clarification_answers {
         text.push_str(&format!(
-            "\nClarification - Q: {} A: {}\n",
-            question.trim(),
-            answer.trim()
+            "\n{}\nClarification question: {}\n{}\nClarification answer: {}\n",
+            guidance_line(
+                ExchangeKind::ClarificationQuestion,
+                Producer::agent(AgentProducer::SpecificationAuthor),
+                &[]
+            ),
+            single_line(question.trim()),
+            guidance_line(
+                ExchangeKind::ClarificationAnswer,
+                Producer::Human(HumanSource::ClarificationAnswer),
+                &[]
+            ),
+            single_line(answer.trim())
         ));
     }
     text
@@ -464,9 +537,16 @@ pub fn prepare(stage: Stage, inputs: &StageInputs) -> Result<StagePreparation, C
             {
                 let mut text = batch_guidance(manifest, inputs);
                 if !intake.issues.is_empty() {
-                    text.push_str("\nIssues reported by Intake:\n");
+                    text.push_str(&format!(
+                        "\n{}\nIssues reported by Intake:\n",
+                        guidance_line(
+                            ExchangeKind::IntakeIssue,
+                            Producer::agent(AgentProducer::IntakeClassifier),
+                            &[]
+                        )
+                    ));
                     for issue in &intake.issues {
-                        text.push_str(&format!("- {issue}\n"));
+                        text.push_str(&format!("- {}\n", single_line(issue)));
                     }
                 }
                 extra = Some(text);
@@ -515,18 +595,37 @@ pub fn prepare(stage: Stage, inputs: &StageInputs) -> Result<StagePreparation, C
                 ));
             }
             let mut text = batch_guidance(manifest, inputs);
-            text.push_str("\nApproved interface intent:\n");
+            let specification = [ApprovalGate::Checkpoint(PulsationStage::Specification)];
+            text.push_str(&format!(
+                "\n{}\nApproved interface intent:\n",
+                guidance_line(
+                    ExchangeKind::InterfaceIntent,
+                    Producer::agent(AgentProducer::SpecificationAuthor),
+                    &specification
+                )
+            ));
             for intent in &spec.interface_intent {
-                text.push_str(&format!("- {:?}: {}\n", intent.intent, intent.description));
+                text.push_str(&format!(
+                    "- {:?}: {}\n",
+                    intent.intent,
+                    single_line(&intent.description)
+                ));
             }
             if !spec.unit_proposals.is_empty() {
-                text.push_str(
-                    "\nApproved unit proposals (bind each `unitKey` in `unitBindings`):\n",
-                );
+                text.push_str(&format!(
+                    "\n{}\nApproved unit proposals (bind each `unitKey` in `unitBindings`):\n",
+                    guidance_line(
+                        ExchangeKind::UnitProposal,
+                        Producer::agent(AgentProducer::SpecificationAuthor),
+                        &specification
+                    )
+                ));
                 for proposal in &spec.unit_proposals {
                     text.push_str(&format!(
                         "- `{}` ({:?}): {}\n",
-                        proposal.unit_key, proposal.kind, proposal.objective
+                        proposal.unit_key,
+                        proposal.kind,
+                        single_line(&proposal.objective)
                     ));
                 }
             }
@@ -766,6 +865,16 @@ pub fn prepare(stage: Stage, inputs: &StageInputs) -> Result<StagePreparation, C
         }
         add_partition_anchors(&mut builder, &granted, &delivered)?;
     }
+    let origins = inputs
+        .sources
+        .iter()
+        .filter_map(|source| {
+            let handle = builder.handle_for_path(&source.path)?;
+            delivered
+                .contains_key(handle)
+                .then(|| (handle.clone(), source.origin.clone()))
+        })
+        .collect::<BTreeMap<_, _>>();
     let table = builder.build();
     for draft in &mut drafts {
         // A review policy is never a destination of any stage (ADR-032).
@@ -800,6 +909,7 @@ pub fn prepare(stage: Stage, inputs: &StageInputs) -> Result<StagePreparation, C
         drafts,
         approved,
         delivered,
+        origins,
         source_redactions,
         sanitization_policy_identity: crate::secret_redactor::SANITIZATION_POLICY_VERSION
             .to_owned(),
@@ -1129,6 +1239,7 @@ pub fn prompt_inputs<'a>(
                         .source_redactions
                         .get(handle)
                         .is_some_and(|view| view.spans.is_empty()),
+                provenance: source_provenance(preparation.origins.get(handle), unit.stage),
             })
         })
         .collect();

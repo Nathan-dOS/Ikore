@@ -339,6 +339,10 @@ pub struct Observation {
     /// One entry per provider call, in call order (fixture mode only).
     #[serde(default)]
     pub prompt_calls: Vec<PromptCall>,
+    /// What the prompt input inventory (ADR-037) rejected in the prompts
+    /// this observation served (fixture mode only).
+    #[serde(default)]
+    pub inventory_violations: Vec<String>,
     pub wall_ms: u64,
     pub diagnostics: Vec<String>,
 }
@@ -361,6 +365,7 @@ struct ProviderLog {
     fault_injected: bool,
     executors: Vec<String>,
     prompt_calls: Vec<PromptCall>,
+    inventory_violations: Vec<String>,
 }
 
 /// Counts the content items ADR-037 M1 gives a provenance line: every `### `
@@ -590,6 +595,14 @@ fn scripted_reply(
         chars: prompt_chars as u64,
         items: provenance_items(user),
     });
+    if let Err(errors) = crate::prompt_inventory::check_prompt(system, user) {
+        let call = log.calls;
+        log.inventory_violations.extend(
+            errors
+                .into_iter()
+                .map(|error| format!("call {call}: {error}")),
+        );
+    }
     let fault = fixture
         .fault
         .as_ref()
@@ -1062,10 +1075,15 @@ pub fn run_observation(arm: Arm, fixture: &Fixture, mode: &Mode) -> Observation 
             |r| r.get(0),
         )
         .unwrap();
-    let (provider_calls, prompt_chars, prompt_calls) = match mode {
+    let (provider_calls, prompt_chars, prompt_calls, inventory_violations) = match mode {
         Mode::Fixture => {
             let log = log.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            (log.calls, log.prompt_chars, log.prompt_calls.clone())
+            (
+                log.calls,
+                log.prompt_chars,
+                log.prompt_calls.clone(),
+                log.inventory_violations.clone(),
+            )
         }
         Mode::Pilot(_) => (
             db.query_row(
@@ -1075,6 +1093,7 @@ pub fn run_observation(arm: Arm, fixture: &Fixture, mode: &Mode) -> Observation 
             )
             .unwrap_or(0),
             0,
+            Vec::new(),
             Vec::new(),
         ),
     };
@@ -1102,6 +1121,7 @@ pub fn run_observation(arm: Arm, fixture: &Fixture, mode: &Mode) -> Observation 
         estimated_cost_micro_usd: cost.map(|usd| (usd * 1_000_000.0).round() as u64),
         prompt_chars,
         prompt_calls,
+        inventory_violations,
         wall_ms,
         diagnostics,
     }

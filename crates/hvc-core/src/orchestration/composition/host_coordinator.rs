@@ -24,7 +24,7 @@ use crate::orchestration::composition::budget::{Pool, derive_budget};
 use crate::orchestration::composition::plan::{PlanInputs, freeze_plan, repair_kind};
 use crate::orchestration::composition::policy::{all_policies, common_rules, policy_for};
 use crate::orchestration::composition::projection::{
-    CorrectionContext, DeliveredSource, render_unit_prompt,
+    CorrectionContext, DeliveredSource, agent_producer, render_unit_prompt,
 };
 use crate::orchestration::composition::recipes::{self, SourceFile, StageInputs, StagePreparation};
 use crate::orchestration::composition::references::ReferenceTable;
@@ -58,6 +58,7 @@ use crate::orchestration::{
 };
 use crate::repository_context::RepositoryContext;
 use crate::usage::{UnitAttribution, attribute_execution_on};
+use hvc_contracts::exchange::{ExchangeItemV1, ExchangeKind, Producer, ToolProducer};
 use rusqlite::TransactionBehavior;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -159,6 +160,7 @@ fn correction_for(error: &CompositionError) -> CorrectionContext {
             .filter(|handle| comp::references::Namespace::of(handle).is_none())
             .cloned()
             .collect(),
+        tool_diagnostics: None,
     }
 }
 
@@ -1789,9 +1791,13 @@ impl PersistenceService {
             Self::reopen_unit_for_repair(&db, unit)?
         };
         let kind = repair_kind(reopened.executor_kind).unwrap_or(reopened.executor_kind);
+        // ADR-037: the checks' own messages are tool output, never host text.
         let correction = CorrectionContext {
-            diagnostics,
+            diagnostics: vec![
+                "The host's checks failed on this unit's output; their diagnostics follow.".into(),
+            ],
             rejected_artifact_keys: Vec::new(),
+            tool_diagnostics: Some((ToolProducer::HostChecks, diagnostics)),
         };
         let result = self
             .attempt_unit(
@@ -2069,7 +2075,7 @@ impl PersistenceService {
         index: &PlanIndex<'_>,
         preparation: &StagePreparation,
         spec: &comp::WorkUnitSpecV1,
-    ) -> Result<Vec<(comp::Handle, String)>, PersistenceServiceError> {
+    ) -> Result<Vec<(comp::Handle, String, ExchangeItemV1)>, PersistenceServiceError> {
         let mut delivered = Vec::new();
         let mut units: Option<Vec<UnitRow>> = None;
         for handle in &spec.input_refs {
@@ -2120,7 +2126,16 @@ impl PersistenceService {
                         "SC-004: the producer of `{handle}` did not write `{relative_path}`."
                     ))
                 })?;
-            delivered.push((handle.clone(), content));
+            // ADR-037: a predecessor's validated output, never approved yet.
+            let provenance = ExchangeItemV1::new(
+                ExchangeKind::DependencyOutput,
+                Producer::Agent {
+                    agent: agent_producer(producer.executor_kind),
+                    unit: Some(producer.logical_unit_key.clone()),
+                    attempt: Some(u32::try_from(producer.generation).unwrap_or(u32::MAX)),
+                },
+            );
+            delivered.push((handle.clone(), content, provenance));
         }
         Ok(delivered)
     }
@@ -3182,6 +3197,7 @@ impl PersistenceService {
         Ok(diagnostic.map(|diagnostic| CorrectionContext {
             diagnostics: vec![diagnostic],
             rejected_artifact_keys: Vec::new(),
+            tool_diagnostics: None,
         }))
     }
 
@@ -3283,11 +3299,15 @@ impl PersistenceService {
                     };
                     correction = attempt.correction.clone().or_else(|| {
                         Some(CorrectionContext {
-                            diagnostics: vec![format!(
-                                "The previous invocation failed at the transport: {}",
-                                attempt.diagnostic
-                            )],
+                            diagnostics: vec![
+                                "The previous invocation failed at the transport; its diagnostic follows."
+                                    .into(),
+                            ],
                             rejected_artifact_keys: Vec::new(),
+                            tool_diagnostics: Some((
+                                ToolProducer::Transport,
+                                vec![attempt.diagnostic.clone()],
+                            )),
                         })
                     });
                     continue;
@@ -3330,7 +3350,7 @@ impl PersistenceService {
         let candidates = self.candidate_inputs(execution, index, preparation, &unit.spec)?;
         let candidate_redactions = candidates
             .iter()
-            .map(|(handle, content)| {
+            .map(|(handle, content, _)| {
                 let path = preparation
                     .table
                     .entry(handle)
@@ -3354,11 +3374,12 @@ impl PersistenceService {
         prompt_inputs.dependency_outputs = candidates
             .iter()
             .zip(&candidate_redactions)
-            .map(|((handle, content), view)| DeliveredSource {
+            .map(|((handle, content, provenance), view)| DeliveredSource {
                 handle,
                 content,
                 redaction: Some(view),
                 replaceable: false,
+                provenance: provenance.clone(),
             })
             .collect();
         let profile_binding = execution
@@ -3539,7 +3560,7 @@ impl PersistenceService {
                 "dispatch": dispatch_sha,
                 "candidates": candidates
                     .iter()
-                    .map(|(handle, content)| (handle.as_str(), comp::Sha256Hex::of(content.as_bytes())))
+                    .map(|(handle, content, _)| (handle.as_str(), comp::Sha256Hex::of(content.as_bytes())))
                     .collect::<Vec<_>>(),
             }),
             &[],
@@ -3570,7 +3591,7 @@ impl PersistenceService {
                 .iter()
                 .filter_map(|handle| preparation.delivered.get(handle))
                 .map(String::len)
-                .chain(candidates.iter().map(|(_, content)| content.len()))
+                .chain(candidates.iter().map(|(_, content, _)| content.len()))
                 .sum::<usize>();
             sanitization
                 .record_input(
@@ -3630,7 +3651,7 @@ impl PersistenceService {
                     record(handle, original, view)?;
                 }
             }
-            for ((handle, original), view) in candidates.iter().zip(&candidate_redactions) {
+            for ((handle, original, _), view) in candidates.iter().zip(&candidate_redactions) {
                 record(handle, original, view)?;
             }
             Self::mark_attempt_started(

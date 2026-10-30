@@ -27,6 +27,7 @@ use super::{
     AnchorBindingV1, CompletedPayloadV1, CoverageKind, EditOperationV1, Handle, Stage,
     UnitModelResponseV1, Verdict,
 };
+use crate::exchange::render::{fence_for, single_line};
 
 /// Version 2 (ADR-034 M3) adds the risk assessment, the checks the level
 /// requires and the digest of the `REVIEW.md` captured at Intake. Version 3
@@ -660,16 +661,6 @@ fn base_label(base: &BaseFact) -> &'static str {
     }
 }
 
-fn fence_for(content: &str) -> &'static str {
-    if content.contains("````") {
-        "`````"
-    } else if content.contains("```") {
-        "````"
-    } else {
-        "```"
-    }
-}
-
 /// Builds the boundary. `sanitize(path, content)` returns the model-facing
 /// view under the frozen policy, or `None` when sanitization fails.
 pub fn build(
@@ -1246,7 +1237,8 @@ fn render_claims(claims: &[AuthorClaim]) -> Option<String> {
             } else {
                 format!("; {}", claim.paths.join(", "))
             },
-            claim.explanation
+            // One line per claim, so no claim can start a forged line (ADR-037).
+            single_line(&claim.explanation)
         );
         let chars = line.chars().count();
         if used + chars > MAX_CLAIMS_CHARS_TOTAL {
