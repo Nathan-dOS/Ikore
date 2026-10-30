@@ -688,7 +688,16 @@ fn prompt_handoff_compacts_only_context_and_preserves_normative_content() {
     let prompt_json = value.prompt_json().unwrap();
     let prompt: serde_json::Value = serde_json::from_str(&prompt_json).unwrap();
 
-    assert_eq!(prompt["artifacts"], persisted["artifacts"]);
+    // ADR-037 M1: the projection labels each artifact (`trust`, and
+    // `approved` once a checkpoint accepted it); everything else is the
+    // persisted artifact, unchanged.
+    let mut artifacts = prompt["artifacts"].clone();
+    for artifact in artifacts.as_array_mut().unwrap() {
+        let artifact = artifact.as_object_mut().unwrap();
+        assert_eq!(artifact.remove("trust"), Some("agent_output".into()));
+        artifact.remove("approved");
+    }
+    assert_eq!(artifacts, persisted["artifacts"]);
     assert_eq!(prompt["answers"], persisted["answers"]);
     assert_eq!(prompt["clarifications"], persisted["clarifications"]);
     assert!(prompt["context"]["facts"].is_null());
