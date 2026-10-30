@@ -263,9 +263,9 @@ personal identity. See the [decision](036-pulsation-attestation.md) and
 
 ## ADR-037: host-mediated agent exchange
 
-Accepted on 2026-10-29; not implemented yet. Every content item the host did
-not write will carry a provenance line with one of five trust classes, and
-only host and human items may instruct a model. A durable exchange log,
+Accepted on 2026-10-29; being implemented. Every content item the host did not
+write carries a provenance line with one of five trust classes, and only host
+and human items may instruct a model (M1, done). A durable exchange log,
 written in the same transaction as each domain change, will let a lagging
 event subscriber reread from its cursor instead of reloading everything. An
 explicit CLI resume after workspace edits will be allowed with a notice of what

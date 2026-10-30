@@ -2,9 +2,11 @@
 
 Date: 2026-10-29
 
-Status: accepted, not implemented yet. Planned migrations: V62 to V64, and V65
-only if the ACP transport needs a setting column. Numbers are the next free
-ones when each milestone is integrated.
+Status: accepted; being implemented. M1 (provenance envelopes) is done, see the
+[M1 validation](../../quality/agent-exchange-m1-validation-2026-10-30.md).
+Planned migrations: V62 to V64, and V65 only if the ACP transport needs a
+setting column. Numbers are the next free ones when each milestone is
+integrated.
 
 ## Context
 
@@ -51,6 +53,11 @@ aborts the domain write. The event bus carries a doorbell with a global
 sequence, a lagging subscriber rereads from its cursor, and a full reload
 becomes an explicit `stream_reset`. Terminal output events keep their own
 sequence and are not copied. Polling stays as a slower fallback.
+
+The legend that shipped in M1 has 348 characters; per prompt, the fixture
+benchmark measured +915 characters at the median on v4 and at most +497 on the
+legacy pipeline, within the absolute ceiling (+1,000 median and +1,700 max on
+v4, +600 on legacy).
 
 **External changes on resume (M3).** A content change in the workspace no
 longer refuses an explicit resume on its own. New sessions record a per-file
