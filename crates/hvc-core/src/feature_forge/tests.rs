@@ -899,6 +899,21 @@ async fn feature_conversation_is_durable_idempotent_and_separate_from_execution(
             .contains("Qual formato")
     );
     assert_eq!(gateway.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    // ADR-037 M2: the finished turn is one item of the feature's stream.
+    let keys: Vec<String> = f
+        .service
+        .connection()
+        .unwrap()
+        .prepare(
+            "SELECT i.idempotency_key FROM exchange_items i JOIN exchange_streams s ON s.id=i.stream_id
+             WHERE s.kind='forge' AND s.subject_id=?1",
+        )
+        .unwrap()
+        .query_map([&feature.id], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(keys, vec![format!("forge:{}:turn:{turn}", feature.id)]);
     assert!(f.tasks().list(&f.project).unwrap().is_empty());
     let updated = f.forge().get(&f.project, &feature.id).unwrap();
     assert_eq!(updated.revision, feature.revision + 1);

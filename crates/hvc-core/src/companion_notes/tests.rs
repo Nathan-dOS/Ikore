@@ -75,6 +75,22 @@ impl Fixture {
     fn turns(&self, id: &str) -> Vec<NoteTurn> {
         self.notes().history(&self.project, id).unwrap()
     }
+
+    /// The note's exchange log keys, in order (ADR-037 M2).
+    fn exchange_keys(&self, id: &str) -> Vec<String> {
+        self.persistence
+            .connection()
+            .unwrap()
+            .prepare(
+                "SELECT i.idempotency_key FROM exchange_items i JOIN exchange_streams s ON s.id=i.stream_id
+                 WHERE s.kind='notes' AND s.subject_id=?1 ORDER BY i.seq",
+            )
+            .unwrap()
+            .query_map([id], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
 }
 
 fn reply(language: &str, title: &str, tags: &[&str]) -> String {
@@ -325,7 +341,17 @@ async fn a_provider_failure_keeps_the_capture_for_a_retry() {
     working.wait_for_idle().await;
     let note = f.note(&captured.id);
     assert_eq!(note.status, NoteStatus::Ready);
-    assert_eq!(f.turns(&captured.id).len(), 2);
+    let turns = f.turns(&captured.id);
+    assert_eq!(turns.len(), 2);
+    // ADR-037 M2: each finished turn is one item of the note's stream.
+    let mut outcomes: Vec<String> = turns
+        .iter()
+        .map(|turn| format!("note:{}:turn:{}:{}", captured.id, turn.id, turn.status))
+        .collect();
+    outcomes.sort();
+    let mut keys = f.exchange_keys(&captured.id);
+    keys.sort();
+    assert_eq!(keys, outcomes);
     let refused = working
         .retry_structure(&f.project, &captured.id, note.revision, "retry-2")
         .unwrap_err();

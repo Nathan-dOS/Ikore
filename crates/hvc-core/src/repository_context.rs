@@ -291,6 +291,18 @@ impl RepositoryContext {
         })
     }
 
+    /// The canonical relative path of `relative` and the SHA-256 of its
+    /// current content: what a Companion read saw (ADR-037 M3).
+    pub(crate) fn file_digest(&self, relative: &str) -> Result<(String, String), RepositoryError> {
+        use sha2::Digest as _;
+        let path = self.resolve_relative(relative, false)?;
+        let content = self.read_safe_text(&path)?;
+        Ok((
+            self.relative_display(&path)?,
+            crate::lower_hex(&sha2::Sha256::digest(content.as_bytes())),
+        ))
+    }
+
     pub(crate) fn read_file_with_sanitizer(
         &self,
         args: ReadRepositoryFileArgs,

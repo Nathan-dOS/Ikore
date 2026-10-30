@@ -32,6 +32,8 @@ mod model_catalog;
 pub mod model_identity;
 mod observation_report;
 mod plan_usage;
+mod resume_changes;
+pub use resume_changes::{MAX_RUN_BLOB_BYTES, ResumePreview};
 
 pub use model_catalog::{
     CliModelCatalogEntry, CliModelCatalogService, CliModelCatalogSnapshot, CliModelCatalogSource,
@@ -1657,6 +1659,7 @@ impl TerminalRepository {
             "DELETE FROM terminal_runs WHERE project_id=?1 AND slot_id=?2",
             params![project_id, slot_id],
         )?;
+        resume_changes::delete_orphan_blobs(&transaction, project_id)?;
         let changed = transaction.execute(
             "DELETE FROM terminal_slots
              WHERE id=?1 AND project_id=?2 AND kind='free_form' AND version=?3",
@@ -2030,6 +2033,9 @@ impl TerminalRepository {
                 current.status.as_str()
             ],
         )?;
+        if changed > 0 {
+            host.record_run_status(&transaction, &current.project_id, run_id, status)?;
+        }
         if changed > 0 && terminal && status != TerminalRunStatus::Completed {
             transaction.execute(
                 "UPDATE token_usage_records SET quality='partial',updated_at=?1
@@ -2529,17 +2535,41 @@ impl TerminalRepository {
             .map_err(TerminalError::from)
     }
 
+    /// One page of a run's events after `after_sequence`, sanitized.
+    ///
+    /// ADR-037 M2: a run recorded under a known sanitization policy is read
+    /// by indexed range, with up to [`RANGE_CONTEXT_EVENTS`] earlier events
+    /// as redaction context, so a missed range costs one page whatever the
+    /// run's length. A legacy run still reads its whole history, which its
+    /// fragmented-redaction check needs.
     pub fn list_events(
         &self,
         run_id: &str,
         after_sequence: u64,
         limit: usize,
     ) -> Result<Vec<TerminalEvent>, TerminalError> {
-        Ok(self
-            .redacted_run_events(run_id)?
+        let limit = limit.clamp(1, 500);
+        let connection = self.connection()?;
+        if !run_has_known_policy(&connection, run_id)? {
+            return Ok(self
+                .redacted_run_events(run_id)?
+                .into_iter()
+                .filter(|event| event.sequence > after_sequence)
+                .take(limit)
+                .collect());
+        }
+        let start = after_sequence.saturating_sub(RANGE_CONTEXT_EVENTS);
+        let mut events = read_run_events_range(
+            &connection,
+            run_id,
+            start,
+            limit + (after_sequence - start) as usize,
+        )?;
+        sanitize_history_events(self.host.as_ref(), &mut events, true)?;
+        Ok(events
             .into_iter()
             .filter(|event| event.sequence > after_sequence)
-            .take(limit.clamp(1, 500))
+            .take(limit)
             .collect())
     }
 
@@ -2547,13 +2577,7 @@ impl TerminalRepository {
         let host = self.host.as_ref();
         let connection = self.connection()?;
         let mut events = read_run_history_events(&connection, run_id)?;
-        let known_policy: bool = connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM secret_sanitization_receipts receipt
-             JOIN terminal_runs run ON run.id=?1 AND receipt.project_id=run.project_id
-             WHERE receipt.call_id=run.id OR receipt.call_id=run.llm_execution_id)",
-            [run_id],
-            |row| row.get(0),
-        )?;
+        let known_policy = run_has_known_policy(&connection, run_id)?;
         sanitize_history_events(host, &mut events, known_policy)?;
         Ok(events)
     }
@@ -2617,6 +2641,7 @@ impl TerminalRepository {
                 [required(project_id, "projectId")?],
             )?
         };
+        resume_changes::delete_orphan_blobs(&transaction, project_id)?;
         transaction.commit()?;
         Ok(affected)
     }
@@ -2650,12 +2675,14 @@ impl TerminalRepository {
                 "the history cannot be cleared while the free-form agent is active".into(),
             ));
         }
-        connection
-            .execute(
-                "DELETE FROM terminal_runs WHERE project_id=?1 AND slot_id=?2",
-                params![project_id, slot_id],
-            )
-            .map_err(TerminalError::from)
+        let transaction = connection.unchecked_transaction()?;
+        let deleted = transaction.execute(
+            "DELETE FROM terminal_runs WHERE project_id=?1 AND slot_id=?2",
+            params![project_id, slot_id],
+        )?;
+        resume_changes::delete_orphan_blobs(&transaction, project_id)?;
+        transaction.commit()?;
+        Ok(deleted)
     }
 
     pub fn recover_interrupted_runs(&self) -> Result<usize, TerminalError> {
@@ -2668,12 +2695,26 @@ impl TerminalRepository {
              (SELECT id FROM terminal_runs WHERE status IN ('queued','starting','running'))",
             [&now],
         )?;
+        let interrupted = transaction
+            .prepare(
+                "SELECT id,project_id FROM terminal_runs WHERE status IN ('queued','starting','running')",
+            )?
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
         let changed = transaction.execute(
             "UPDATE terminal_runs SET status='interrupted',error_code='app_restart',
                error_message='Run interrupted because the app closed.',finished_at=?1,updated_at=?1
              WHERE status IN ('queued','starting','running')",
             [now],
         )?;
+        for (run_id, project_id) in &interrupted {
+            self.host.record_run_status(
+                &transaction,
+                project_id,
+                run_id,
+                TerminalRunStatus::Interrupted,
+            )?;
+        }
         transaction.commit()?;
         Ok(changed)
     }
@@ -4508,6 +4549,8 @@ struct CliDiscoveryCache {
 pub struct SafeCliWorkspace {
     directory: tempfile::TempDir,
     manifest_hash: String,
+    /// Path and original digest of every file (ADR-037 M3).
+    manifest: Vec<hvc_contracts::external_changes::ManifestEntry>,
 }
 
 #[derive(Debug)]
@@ -4521,7 +4564,16 @@ impl SafeCliWorkspace {
         Self {
             directory,
             manifest_hash,
+            manifest: Vec::new(),
         }
+    }
+
+    pub fn with_manifest(
+        mut self,
+        manifest: Vec<hvc_contracts::external_changes::ManifestEntry>,
+    ) -> Self {
+        self.manifest = manifest;
+        self
     }
     fn path(&self) -> &Path {
         self.directory.path()
@@ -5536,8 +5588,7 @@ impl TerminalService {
         request: ResumeManualRunRequest,
     ) -> Result<TerminalRun, TerminalError> {
         let host = self.host.as_ref();
-        let prepared_prompt = host.prepare_input("", required(&request.prompt, "prompt")?, None)?;
-        let prompt = prepared_prompt.user_prompt().to_owned();
+        let user_prompt = required(&request.prompt, "prompt")?.to_owned();
         if cli_mode_disabled() {
             return Err(TerminalError::Validation(
                 "CLI Mode is disabled by the local kill switch".into(),
@@ -5632,6 +5683,18 @@ impl TerminalService {
             )));
         }
         let workspace = self.repository.project_workspace(&request.project_id)?;
+        // ADR-037 M3: the notice goes before the developer's message, so the
+        // sanitization below covers it like the rest of the prompt.
+        let (notice, changes_digest) = self.resume_notice(&source, &workspace).await?;
+        let prepared_prompt = host.prepare_input(
+            "",
+            &match notice {
+                Some(notice) => format!("{notice}\n{user_prompt}"),
+                None => user_prompt,
+            },
+            None,
+        )?;
+        let prompt = prepared_prompt.user_prompt().to_owned();
         let spec = build_process_spec(
             host,
             CliInvocationRequest {
@@ -5665,6 +5728,10 @@ impl TerminalService {
                 continuation_reason: Some("explicit_resume".into()),
                 observation_trial_id: None,
             })?;
+        if let Some(digest) = &changes_digest {
+            self.repository
+                .set_external_changes_digest(&run.id, digest)?;
+        }
         let run = self
             .repository
             .set_run_deadline(&run.id, &deadline_timestamp(deadline))?;
@@ -6283,13 +6350,21 @@ impl TerminalService {
         if run.origin != ExecutionOrigin::Manual {
             validate_cli_launch_model(backend, run.model.as_deref(), &spec)?;
         }
-        let session_fingerprint = session_fingerprint(run, &safe_workspace.manifest_hash);
+        // ADR-037 M3: a manual run records a manifest, so its fingerprint
+        // (v2) leaves the workspace out; other runs keep the strict v1.
+        let resumable = run.origin == ExecutionOrigin::Manual;
+        let session_fingerprint = if resumable {
+            resume_changes::session_fingerprint_v2(run)
+        } else {
+            session_fingerprint(run, &safe_workspace.manifest_hash)
+        };
         if let Some(parent_run_id) = run.parent_run_id.as_deref() {
             let parent = self.repository.get_run(parent_run_id)?;
             validate_resume_parent(
+                &self.repository,
                 run,
                 &parent,
-                &safe_workspace.manifest_hash,
+                &safe_workspace,
                 spec.resume_session_id.as_deref(),
             )?;
         }
@@ -6297,6 +6372,10 @@ impl TerminalService {
             .set_workspace_snapshot_hash(&run.id, &safe_workspace.manifest_hash)?;
         self.repository
             .set_session_fingerprint(&run.id, &session_fingerprint)?;
+        if resumable {
+            self.repository
+                .set_session_fingerprint_version(&run.id, 2)?;
+        }
         self.repository
             .set_launch_identity(&run.id, &launch_identity_sha256)?;
         let starting = self.repository.set_run_status(
@@ -7737,6 +7816,41 @@ fn redact_continuous_segments(
         .collect()
 }
 
+/// Earlier events a ranged read sanitizes along with its page, so a secret
+/// split across the page boundary is still redacted.
+pub const RANGE_CONTEXT_EVENTS: u64 = 64;
+
+/// Whether the run was recorded under a known sanitization policy.
+fn run_has_known_policy(connection: &Connection, run_id: &str) -> Result<bool, TerminalError> {
+    Ok(connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM secret_sanitization_receipts receipt
+         JOIN terminal_runs run ON run.id=?1 AND receipt.project_id=run.project_id
+         WHERE receipt.call_id=run.id OR receipt.call_id=run.llm_execution_id)",
+        [run_id],
+        |row| row.get(0),
+    )?)
+}
+
+/// Events after `after_sequence`, in order, through the run/sequence index.
+fn read_run_events_range(
+    connection: &Connection,
+    run_id: &str,
+    after_sequence: u64,
+    limit: usize,
+) -> Result<Vec<TerminalEvent>, TerminalError> {
+    let mut statement = connection.prepare_cached(
+        "SELECT id,run_id,sequence,kind,stream,content,created_at,
+                redaction_count,redaction_categories_json FROM terminal_events
+         WHERE run_id=?1 AND sequence>?2 ORDER BY sequence LIMIT ?3",
+    )?;
+    let rows = statement.query_map(
+        params![required(run_id, "runId")?, after_sequence, limit as i64],
+        map_terminal_event,
+    )?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(TerminalError::from)
+}
+
 fn read_run_history_events(
     connection: &Connection,
     run_id: &str,
@@ -7748,33 +7862,35 @@ fn read_run_history_events(
     )?;
     let rows = statement.query_map(
         params![required(run_id, "runId")?, MAX_RUN_EVENTS + 1],
-        |row| {
-            let kind: String = row.get(3)?;
-            let categories: String = row.get(8)?;
-            Ok(TerminalEvent {
-                id: row.get(0)?,
-                run_id: row.get(1)?,
-                sequence: row.get(2)?,
-                kind: TerminalEventKind::parse(&kind).ok_or_else(|| invalid_column(3, kind))?,
-                stream: row.get(4)?,
-                content: row.get(5)?,
-                redaction_count: row.get(7)?,
-                redaction_categories: serde_json::from_str(&categories).map_err(|error| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        8,
-                        rusqlite::types::Type::Text,
-                        Box::new(error),
-                    )
-                })?,
-                created_at: row.get(6)?,
-            })
-        },
+        map_terminal_event,
     )?;
     let events = rows.collect::<Result<Vec<_>, _>>()?;
     if events.len() > MAX_RUN_EVENTS {
         return Err(TerminalError::OutputLimit);
     }
     Ok(events)
+}
+
+fn map_terminal_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<TerminalEvent> {
+    let kind: String = row.get(3)?;
+    let categories: String = row.get(8)?;
+    Ok(TerminalEvent {
+        id: row.get(0)?,
+        run_id: row.get(1)?,
+        sequence: row.get(2)?,
+        kind: TerminalEventKind::parse(&kind).ok_or_else(|| invalid_column(3, kind))?,
+        stream: row.get(4)?,
+        content: row.get(5)?,
+        redaction_count: row.get(7)?,
+        redaction_categories: serde_json::from_str(&categories).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                8,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?,
+        created_at: row.get(6)?,
+    })
 }
 
 /// Both export digests cover the full v1 envelope without the `sanitization`
@@ -8815,11 +8931,13 @@ fn session_fingerprint(run: &TerminalRun, workspace_snapshot_hash: &str) -> Stri
 }
 
 fn validate_resume_parent(
+    repository: &TerminalRepository,
     run: &TerminalRun,
     parent: &TerminalRun,
-    workspace_snapshot_hash: &str,
+    workspace: &SafeCliWorkspace,
     requested_session_id: Option<&str>,
 ) -> Result<(), TerminalError> {
+    let workspace_snapshot_hash = workspace.manifest_hash.as_str();
     if parent.project_id != run.project_id
         || parent.slot_id != run.slot_id
         || parent.backend != run.backend
@@ -8834,11 +8952,6 @@ fn validate_resume_parent(
             "a session whose run is still active cannot be resumed".into(),
         ));
     }
-    if parent.workspace_snapshot_hash.as_deref() != Some(workspace_snapshot_hash) {
-        return Err(TerminalError::Validation(
-            "the workspace changed since the chosen session; start a new session".into(),
-        ));
-    }
     let native_session_id = parent.native_session_id.as_deref().ok_or_else(|| {
         TerminalError::Validation("the chosen run has no native session ID".into())
     })?;
@@ -8847,10 +8960,41 @@ fn validate_resume_parent(
             "the resume ID does not match the chosen session".into(),
         ));
     }
-    let expected = session_fingerprint(run, workspace_snapshot_hash);
+    if repository.session_fingerprint_version(&parent.id)? < 2 {
+        // A session recorded before V63 has no manifest: any change refuses.
+        if parent.workspace_snapshot_hash.as_deref() != Some(workspace_snapshot_hash) {
+            return Err(TerminalError::Validation(
+                "the workspace changed since the chosen session; start a new session".into(),
+            ));
+        }
+        let expected = session_fingerprint(run, workspace_snapshot_hash);
+        if parent.session_fingerprint.as_deref() != Some(expected.as_str()) {
+            return Err(TerminalError::Validation(
+                "the session fingerprint is not compatible with this run".into(),
+            ));
+        }
+        return Ok(());
+    }
+    let expected = resume_changes::session_fingerprint_v2(run);
     if parent.session_fingerprint.as_deref() != Some(expected.as_str()) {
         return Err(TerminalError::Validation(
             "the session fingerprint is not compatible with this run".into(),
+        ));
+    }
+    // ADR-037 M3: the session starts on the snapshot its notice described.
+    let parent_manifest: Vec<_> = repository
+        .snapshot_manifest(&parent.id)?
+        .into_iter()
+        .map(|(entry, _)| entry)
+        .collect();
+    let changes =
+        hvc_contracts::external_changes::diff_manifests(&parent_manifest, &workspace.manifest);
+    let digest = lower_hex(&Sha256::digest(
+        hvc_contracts::external_changes::canonical_change_list(&changes).as_bytes(),
+    ));
+    if repository.external_changes_digest(&run.id)?.as_deref() != Some(digest.as_str()) {
+        return Err(TerminalError::Validation(
+            "the workspace changed again while the session was starting; resume it again".into(),
         ));
     }
     Ok(())
@@ -9182,13 +9326,19 @@ pub(crate) fn materialize_safe_workspace<H: TerminalHost + ?Sized>(
         permissions.set_readonly(true);
         fs::set_permissions(entry.path(), permissions)?;
     }
-    let safe_workspace = SafeCliWorkspace::from_directory(directory, manifest_hash);
+    let safe_workspace = SafeCliWorkspace::from_directory(directory, manifest_hash)
+        .with_manifest(resume_changes::manifest_of(&snapshot));
     host.record_snapshot(
         db_path,
         run,
         &snapshot,
         started.elapsed().as_millis().min(u64::MAX as u128) as u64,
     )?;
+    // ADR-037 M3: a session the developer started can be resumed later, so
+    // its run keeps what it saw.
+    if run.origin == ExecutionOrigin::Manual {
+        resume_changes::record_snapshot_manifest(db_path, run, &snapshot)?;
+    }
     Ok(safe_workspace)
 }
 

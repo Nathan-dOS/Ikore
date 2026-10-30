@@ -2861,15 +2861,25 @@ fn explicit_resume_fencing_rejects_workspace_backend_model_and_session_changes()
         parent_run_id: Some(parent.id.clone()),
         ..parent.clone()
     };
-    validate_resume_parent(&child, &parent, "workspace-a", Some("session-a")).unwrap();
-    assert!(validate_resume_parent(&child, &parent, "workspace-b", Some("session-a")).is_err());
-    assert!(validate_resume_parent(&child, &parent, "workspace-a", Some("session-b")).is_err());
+    // A session recorded before V63 (fingerprint v1) refuses any change.
+    assert_eq!(
+        repository.session_fingerprint_version(&parent.id).unwrap(),
+        1
+    );
+    let workspace =
+        |hash: &str| SafeCliWorkspace::from_directory(tempfile::tempdir().unwrap(), hash.into());
+    let validate = |run: &TerminalRun, hash: &str, session: &str| {
+        validate_resume_parent(&repository, run, &parent, &workspace(hash), Some(session))
+    };
+    validate(&child, "workspace-a", "session-a").unwrap();
+    assert!(validate(&child, "workspace-b", "session-a").is_err());
+    assert!(validate(&child, "workspace-a", "session-b").is_err());
     let mut changed = child.clone();
     changed.model = Some("other-model".into());
-    assert!(validate_resume_parent(&changed, &parent, "workspace-a", Some("session-a")).is_err());
+    assert!(validate(&changed, "workspace-a", "session-a").is_err());
     changed = child;
     changed.backend = Some(CliBackend::Claude);
-    assert!(validate_resume_parent(&changed, &parent, "workspace-a", Some("session-a")).is_err());
+    assert!(validate(&changed, "workspace-a", "session-a").is_err());
 }
 
 fn claude_frame(value: Value) -> ProcessStreamItem {

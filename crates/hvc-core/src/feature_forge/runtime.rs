@@ -317,6 +317,18 @@ impl FeatureAgentRuntime {
                 );
             }
             this.active.lock().unwrap_or_else(|e|e.into_inner()).remove(&turn_id);
+            // ADR-037 M2: the turn committed; its item precedes the broadcast.
+            if let Ok(db) = this.persistence.connection() {
+                use crate::exchange::log::{LogRecordKind, PayloadRef, StreamKind, StreamRef};
+                crate::exchange::log::record_after_commit(
+                    &db,
+                    StreamRef::new(&project, StreamKind::Forge, &f.id),
+                    LogRecordKind::ForgeChanged,
+                    hvc_contracts::exchange::HostComponent::ForgeState,
+                    Some(PayloadRef { table: "forge_turns", id: turn_id.clone() }),
+                    format!("forge:{}:turn:{turn_id}", f.id),
+                );
+            }
             this.events.publish(AppEvent::Forge(ForgeEvent{project_id:project,feature_id:Some(f.id)}));
         });
         Ok(turn)

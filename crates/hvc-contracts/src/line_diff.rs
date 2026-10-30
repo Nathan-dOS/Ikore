@@ -1,4 +1,5 @@
-//! Bounded line diff for the Integrator's base → candidate section (ADR-032).
+//! Bounded line diff: the Integrator's base → candidate section (ADR-032), the
+//! documentation reconciliation and the resume notice (ADR-037 M3).
 //!
 //! Myers' O((N+M)·D) shortest edit script over lines, after trimming the
 //! common prefix and suffix. Lines keep their terminator while comparing, so a

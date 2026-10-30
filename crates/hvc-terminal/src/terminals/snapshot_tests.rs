@@ -113,6 +113,12 @@ fn host_with_file(path: &str, original: &str, policy: &str) -> SnapshotHost {
     }
 }
 
+/// The fixture database inside a `run()` directory; a manual run records its
+/// snapshot manifest there (ADR-037 M3).
+fn database(directory: &tempfile::TempDir) -> PathBuf {
+    directory.path().join("native-terminal-test.db")
+}
+
 fn run() -> Result<(tempfile::TempDir, TerminalRun), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let database = TestDatabase::initialize(directory.path())?;
@@ -139,7 +145,7 @@ fn materializer_preserves_safe_content_manifest_readonly_and_receipt()
 -> Result<(), Box<dyn std::error::Error>> {
     let (directory, run) = run()?;
     let host = host_with_file("src/main.rs", "private original", "policy-1");
-    let safe = materialize_safe_workspace(&host, directory.path(), directory.path(), &run)?;
+    let safe = materialize_safe_workspace(&host, &database(&directory), directory.path(), &run)?;
     let source = safe.path().join("src/main.rs");
     assert_eq!(fs::read_to_string(&source)?, "safe projection");
     assert!(fs::metadata(source)?.permissions().readonly());
@@ -157,19 +163,19 @@ fn original_and_policy_remain_bound_when_safe_content_is_identical()
     let (directory, run) = run()?;
     let a = materialize_safe_workspace(
         &host_with_file("main.rs", "original A", "policy-1"),
-        directory.path(),
+        &database(&directory),
         directory.path(),
         &run,
     )?;
     let b = materialize_safe_workspace(
         &host_with_file("main.rs", "original B", "policy-1"),
-        directory.path(),
+        &database(&directory),
         directory.path(),
         &run,
     )?;
     let c = materialize_safe_workspace(
         &host_with_file("main.rs", "original A", "policy-2"),
-        directory.path(),
+        &database(&directory),
         directory.path(),
         &run,
     )?;
@@ -183,7 +189,7 @@ fn traversal_fails_before_receipt_or_outside_file_can_be_created()
 -> Result<(), Box<dyn std::error::Error>> {
     let (directory, run) = run()?;
     let host = host_with_file("../outside.rs", "original", "policy-1");
-    let result = materialize_safe_workspace(&host, directory.path(), directory.path(), &run);
+    let result = materialize_safe_workspace(&host, &database(&directory), directory.path(), &run);
     assert!(matches!(result, Err(TerminalError::Security(_))));
     assert_eq!(host.recorded.load(Ordering::SeqCst), 0);
     Ok(())

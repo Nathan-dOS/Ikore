@@ -255,6 +255,28 @@ impl ChatService {
     }
 
     fn emit_canvas_request(&self, row: &CanvasAuthoringRequestV1) {
+        // ADR-037 M2: the request committed; its item precedes the broadcast.
+        if let Ok(db) = self.connection() {
+            use crate::exchange::log::{LogRecordKind, PayloadRef, StreamKind, StreamRef};
+            crate::exchange::log::record_after_commit(
+                &db,
+                StreamRef::new(
+                    &row.project_id,
+                    StreamKind::ChatConversation,
+                    &row.conversation_id,
+                ),
+                LogRecordKind::CanvasRequestChanged,
+                hvc_contracts::exchange::HostComponent::CompanionState,
+                Some(PayloadRef {
+                    table: "companion_canvas_requests",
+                    id: row.request_id.clone(),
+                }),
+                format!(
+                    "canvas_request:{}:rev:{}",
+                    row.request_id, row.request_revision
+                ),
+            );
+        }
         self.event_sink.emit_canvas(&CanvasAuthoringChangedV1 {
             project_id: row.project_id.clone(),
             conversation_id: row.conversation_id.clone(),
@@ -1167,6 +1189,7 @@ impl ChatService {
                     assistant_message_id: admission.request.assistant_message_id.clone(),
                     workspace_root: PathBuf::new(),
                     cancellation: cancellation.clone(),
+                    host_notice: None,
                 };
                 let usage = UsageRecorder::new(
                     &self.db_path,

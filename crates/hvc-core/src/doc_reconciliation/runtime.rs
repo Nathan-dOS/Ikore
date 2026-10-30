@@ -151,6 +151,18 @@ impl DocReconcilerRuntime {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .remove(&key);
+            // ADR-037 M2: the run committed; its item precedes the broadcast.
+            if let Ok(db) = this.persistence.connection() {
+                use crate::exchange::log::{LogRecordKind, PROJECT_SUBJECT, StreamKind, StreamRef};
+                crate::exchange::log::record_after_commit(
+                    &db,
+                    StreamRef::new(&key.0, StreamKind::Docs, PROJECT_SUBJECT),
+                    LogRecordKind::DocProposalChanged,
+                    hvc_contracts::exchange::HostComponent::DocsState,
+                    None,
+                    format!("doc_proposal:run:{}", uuid::Uuid::new_v4()),
+                );
+            }
             this.events.publish(AppEvent::DocDrift(DocDriftEvent {
                 project_id: key.0.clone(),
             }));

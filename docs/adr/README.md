@@ -260,3 +260,15 @@ Security rotates the key, switches sealing and verifies a saved file, and the
 report gains a Provenance section. It claims no SLSA level, trusted time or
 personal identity. See the [decision](036-pulsation-attestation.md) and
 [attestations](../attestation.md).
+
+## ADR-037: host-mediated agent exchange
+
+Accepted on 2026-10-29 and implemented on 2026-10-30, except the Agent Client
+Protocol transport: its parity gate was not run, so M5 ended in a spike
+report. Every content item the host did not write carries a provenance line
+with one of five trust classes, and only host and human items may instruct a
+model. A durable exchange log, written in the same transaction as each domain
+change, lets a lagging UI reread from its cursor instead of reloading
+everything. An explicit CLI resume after workspace edits tells the agent what
+changed, within a budget. The Companion has two more read-only tools, over
+deterministic pulsation digests. See the [decision](037-agent-exchange.md).

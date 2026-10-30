@@ -13,6 +13,7 @@ mod core_harness;
 mod doubles;
 mod http_fixture;
 mod parity;
+pub mod prompt_inventory;
 pub mod pulsation_benchmark;
 mod pulsation_fixture;
 

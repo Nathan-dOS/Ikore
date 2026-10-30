@@ -2934,3 +2934,341 @@ fn v60_to_v61_adds_scope_requests_without_touching_parked_failures() {
         0
     );
 }
+
+/// V62 adds the durable exchange log (ADR-037 M2). Purely additive: every
+/// earlier table keeps its definition, history from before the upgrade has
+/// no item, items are append-only with one sequence per stream and one key
+/// per stream, a stream kind is a closed set, and the log goes with its
+/// project.
+#[test]
+fn v61_to_v62_adds_the_exchange_log_without_backfilling_history() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("hard-vibe-code.db");
+    let mut db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    cli_migrations::migrations::runner()
+        .set_target(refinery::Target::Version(61))
+        .run(&mut db)
+        .unwrap();
+    db.execute_batch(
+        "INSERT INTO projects(id,name,workspace_path,created_at,updated_at) VALUES('p','V61 fixture','C:/fixture','now','now');
+         INSERT INTO pulsations(id,project_id,feature_name,stage,status,created_at,updated_at,pipeline_version,state_version) VALUES('pulse','p','Work','Code','running','now','now',4,3);
+         INSERT INTO pulse_events(id,pulsation_id,event_type,from_status,to_status,message,created_at) VALUES('event','pulse','stage_started','planning','running','Started','now');",
+    )
+    .unwrap();
+    let tables = |db: &Connection| -> Vec<String> {
+        db.prepare(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND sql IS NOT NULL ORDER BY name",
+        )
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+    };
+    let before = tables(&db);
+    drop(db);
+
+    PersistenceService::initialize(root.path()).unwrap();
+    let db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    let after = tables(&db);
+    for table in &before {
+        assert!(after.contains(table), "V62 rebuilds nothing: {table}");
+    }
+    let count = |table: &str| -> u32 {
+        db.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap()
+    };
+    assert_eq!(
+        (count("exchange_streams"), count("exchange_items")),
+        (0, 0),
+        "history from before V62 is not backfilled"
+    );
+
+    db.execute(
+        "INSERT INTO exchange_streams(id,project_id,kind,subject_id,next_seq,created_at) VALUES('s','p','pulsation','pulse',1,'now')",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO exchange_streams(id,project_id,kind,subject_id,next_seq,created_at) VALUES('s2','p','guessed','pulse',1,'now')",
+        [],
+    )
+    .expect_err("stream kinds are a closed set");
+    let item = |seq: i64, key: &str| {
+        db.execute(
+            "INSERT INTO exchange_items(project_id,stream_id,seq,kind,producer_kind,producer_ref,trust,payload_table,payload_id,idempotency_key,created_at)
+             VALUES('p','s',?1,'pulsation_transition','host','pipeline/state','host','pulse_events','event',?2,'now')",
+            params![seq, key],
+        )
+    };
+    item(1, "pulsation:pulse:state:3").expect("an item");
+    item(1, "pulsation:pulse:state:4").expect_err("one item per sequence");
+    item(2, "pulsation:pulse:state:3").expect_err("one item per key");
+    db.execute(
+        "INSERT INTO exchange_items(project_id,stream_id,seq,kind,producer_kind,trust,payload_table,idempotency_key,created_at)
+         VALUES('p','s',2,'pulsation_transition','host','host','pulse_events','k','now')",
+        [],
+    )
+    .expect_err("a payload names both its table and its row");
+    db.execute(
+        "INSERT INTO exchange_items(project_id,stream_id,seq,kind,producer_kind,trust,idempotency_key,created_at)
+         VALUES('p','s',2,'pulsation_transition','host','trusted','k','now')",
+        [],
+    )
+    .expect_err("trust classes are a closed set");
+    db.execute("UPDATE exchange_items SET kind='forged'", [])
+        .expect_err("items are append-only");
+    db.execute("DELETE FROM pulse_events", []).unwrap();
+    db.execute("DELETE FROM pulsations", []).unwrap();
+    db.execute("DELETE FROM projects WHERE id='p'", []).unwrap();
+    assert_eq!(
+        (count("exchange_streams"), count("exchange_items")),
+        (0, 0),
+        "the log goes with its project"
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, u32>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+}
+
+/// V63 adds the manifest a resumable CLI run keeps, its resume state and the
+/// Companion's read observations (ADR-037 M3). Purely additive: every
+/// earlier table keeps its definition, and a run from before the upgrade has
+/// no resume state, so its sessions keep the strict rule. Manifests and
+/// resume state go with their run, blobs with their project, observations
+/// with their tool call.
+#[test]
+fn v62_to_v63_keeps_earlier_runs_strict_and_adds_the_resume_manifest() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("hard-vibe-code.db");
+    let mut db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    cli_migrations::migrations::runner()
+        .set_target(refinery::Target::Version(62))
+        .run(&mut db)
+        .unwrap();
+    db.execute_batch(
+        "INSERT INTO projects(id,name,workspace_path,created_at,updated_at) VALUES('p','V62 fixture','C:/fixture','now','now');
+         INSERT INTO terminal_runs(id,project_id,agent_role,origin,execution_mode,status,created_at,updated_at) VALUES('run','p','backend_agent','manual','cli_process','completed','now','now');",
+    )
+    .unwrap();
+    let tables = |db: &Connection| -> Vec<String> {
+        db.prepare(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND sql IS NOT NULL ORDER BY name",
+        )
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+    };
+    let before = tables(&db);
+    drop(db);
+
+    PersistenceService::initialize(root.path()).unwrap();
+    let db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    let after = tables(&db);
+    for table in &before {
+        assert!(after.contains(table), "V63 rebuilds nothing: {table}");
+    }
+    let count = |table: &str| -> u32 {
+        db.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap()
+    };
+    assert_eq!(
+        count("terminal_run_resume_state"),
+        0,
+        "an earlier run keeps the strict rule"
+    );
+    db.execute(
+        "INSERT INTO terminal_run_resume_state(run_id,session_fingerprint_version) VALUES('run',3)",
+        [],
+    )
+    .expect_err("versions are 1 or 2");
+    db.execute(
+        "INSERT INTO terminal_run_resume_state(run_id,session_fingerprint_version,external_changes_sha256) VALUES('run',2,'short')",
+        [],
+    )
+    .expect_err("a change digest is a full SHA-256");
+    db.execute(
+        "INSERT INTO terminal_run_resume_state(run_id,session_fingerprint_version) VALUES('run',2)",
+        [],
+    )
+    .unwrap();
+
+    let sha = "d".repeat(64);
+    db.execute(
+        "INSERT INTO terminal_snapshot_blobs(project_id,sha256,content,byte_len,created_at) VALUES('p',?1,'fn a() {}',9,'now')",
+        [&sha],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO terminal_snapshot_blobs(project_id,sha256,content,byte_len,created_at) VALUES('p',?1,'big',40000,'now')",
+        [&"e".repeat(64)],
+    )
+    .expect_err("a blob is at most 32 KiB");
+    db.execute(
+        "INSERT INTO terminal_run_snapshot_files(run_id,relative_path,original_sha256,projected_sha256,byte_len,blob_sha256) VALUES('run','src/a.rs',?1,?1,9,?1)",
+        [&sha],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO terminal_run_snapshot_files(run_id,relative_path,original_sha256,projected_sha256,byte_len) VALUES('run','src/b.rs','short',?1,1)",
+        [&sha],
+    )
+    .expect_err("digests are full SHA-256");
+    db.execute("DELETE FROM terminal_runs WHERE id='run'", [])
+        .unwrap();
+    assert_eq!(
+        (
+            count("terminal_run_snapshot_files"),
+            count("terminal_run_resume_state")
+        ),
+        (0, 0),
+        "a manifest and its resume state go with their run"
+    );
+    let blob_parent: String = db
+        .query_row(
+            "SELECT \"table\" || ':' || on_delete FROM pragma_foreign_key_list('terminal_snapshot_blobs')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        blob_parent, "projects:CASCADE",
+        "blobs go with their project"
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, u32>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+}
+
+/// V64 adds the Companion's pulsation digests (ADR-037 M4). Purely additive:
+/// every earlier table keeps its definition and no digest is backfilled by
+/// the migration (the host derives them later). A digest is one per
+/// pulsation and at most 64 KiB, its index follows it, and digests and
+/// paths go with their pulsation.
+#[test]
+fn v63_to_v64_adds_pulsation_digests_without_backfilling_them() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("hard-vibe-code.db");
+    let mut db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    cli_migrations::migrations::runner()
+        .set_target(refinery::Target::Version(63))
+        .run(&mut db)
+        .unwrap();
+    db.execute_batch(
+        "INSERT INTO projects(id,name,workspace_path,created_at,updated_at) VALUES('p','V63 fixture','C:/fixture','now','now');
+         INSERT INTO pulsations(id,project_id,feature_name,stage,status,created_at,updated_at,pipeline_version,state_version) VALUES('pulse','p','Work','Integrator','done','now','now',4,9);",
+    )
+    .unwrap();
+    let tables = |db: &Connection| -> Vec<String> {
+        db.prepare(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND sql IS NOT NULL ORDER BY name",
+        )
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+    };
+    let before = tables(&db);
+    drop(db);
+
+    PersistenceService::initialize(root.path()).unwrap();
+    let db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    let after = tables(&db);
+    for table in &before {
+        assert!(after.contains(table), "V64 rebuilds nothing: {table}");
+    }
+    let count = |table: &str| -> u32 {
+        db.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap()
+    };
+    assert_eq!(
+        count("companion_pulsation_digests"),
+        0,
+        "the migration derives nothing"
+    );
+
+    let sha = "f".repeat(64);
+    let digest = |pulsation: &str, content: &str| {
+        db.execute(
+            "INSERT INTO companion_pulsation_digests(project_id,pulsation_id,digest_version,title,content,outcome,ended_at,content_sha256,created_at,updated_at)
+             VALUES('p',?1,1,'Work',?2,'done','now',?3,'now','now')",
+            params![pulsation, content, sha],
+        )
+    };
+    digest("pulse", "## Decisions\nUse a sliding window.").expect("a digest");
+    digest("pulse", "again").expect_err("one digest per pulsation");
+    digest("other", "x").expect_err("the pulsation must exist");
+    db.execute(
+        "UPDATE companion_pulsation_digests SET content=?1 WHERE pulsation_id='pulse'",
+        ["x".repeat(65_537)],
+    )
+    .expect_err("a digest is at most 64 KiB");
+    db.execute(
+        "UPDATE companion_pulsation_digests SET outcome='running' WHERE pulsation_id='pulse'",
+        [],
+    )
+    .expect_err("only finished pulsations have digests");
+    let indexed: u32 = db
+        .query_row(
+            "SELECT COUNT(*) FROM companion_pulsation_digest_fts WHERE companion_pulsation_digest_fts MATCH 'sliding'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(indexed, 1, "the index follows the digest");
+    db.execute(
+        "INSERT INTO companion_pulsation_paths(pulsation_id,relative_path,effect) VALUES('pulse','src/a.rs','modified')",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO companion_pulsation_paths(pulsation_id,relative_path,effect) VALUES('pulse','src/b.rs','renamed')",
+        [],
+    )
+    .expect_err("effects are modified, created or deleted");
+    db.execute("DELETE FROM pulsations WHERE id='pulse'", [])
+        .unwrap();
+    assert_eq!(
+        (
+            count("companion_pulsation_digests"),
+            count("companion_pulsation_paths")
+        ),
+        (0, 0),
+        "digests and paths go with their pulsation"
+    );
+    let still_indexed: u32 = db
+        .query_row(
+            "SELECT COUNT(*) FROM companion_pulsation_digest_fts WHERE companion_pulsation_digest_fts MATCH 'sliding'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(still_indexed, 0, "the index forgets a deleted digest");
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, u32>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+}

@@ -63,6 +63,17 @@ impl PersistenceService {
             Ok(false) => {}
             Err(error) => eprintln!("attestation sealing postponed: {error}"),
         }
+        // ADR-037 M4: a finished pulsation's digest, once its seal settled,
+        // so the digest records the seal's outcome.
+        let service = self.clone();
+        match tokio::task::spawn_blocking(move || service.digest_next_pulsation())
+            .await
+            .map_err(|e| coordination::invalid(e.to_string()))?
+        {
+            Ok(true) => return Ok(true),
+            Ok(false) => {}
+            Err(error) => eprintln!("pulsation digest postponed: {error}"),
+        }
         if self.process_anticipation(shutdown).await? {
             return Ok(true);
         }

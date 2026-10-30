@@ -548,6 +548,7 @@ impl PersistenceService {
                 now
             ],
         )?;
+        Self::record_execution_status(db, plan.stage_execution_id.as_str())?;
         for (ordinal, unit) in plan.units.iter().enumerate() {
             let spec_json = serde_json::to_string(unit)
                 .map_err(|e| PersistenceServiceError::Runtime(e.to_string()))?;
@@ -822,21 +823,83 @@ impl PersistenceService {
             .map(|status| format!("'{}'", execution_status_str(*status)))
             .collect::<Vec<_>>()
             .join(",");
-        let changed = db.execute(
-            &format!(
-                "UPDATE stage_executions SET status=?2,execution_version=execution_version+1,blocked_code=?3,blocked_reason=?4,updated_at=?5 WHERE id=?1 AND status IN ({expected})"
-            ),
-            params![
-                execution_id,
-                execution_status_str(next),
-                blocked.map(|b| b.0),
-                blocked_reason,
-                Self::now_iso()
-            ],
+        crate::exchange::log::atomically(db, || {
+            let changed = db.execute(
+                &format!(
+                    "UPDATE stage_executions SET status=?2,execution_version=execution_version+1,blocked_code=?3,blocked_reason=?4,updated_at=?5 WHERE id=?1 AND status IN ({expected})"
+                ),
+                params![
+                    execution_id,
+                    execution_status_str(next),
+                    blocked.map(|b| b.0),
+                    blocked_reason,
+                    Self::now_iso()
+                ],
+            )?;
+            if changed != 1 {
+                return Err(stale("stage execution status"));
+            }
+            Self::record_execution_status(db, execution_id)
+        })
+    }
+
+    /// ADR-037 M2: the exchange log item of a stage execution status
+    /// change, keyed by the execution version the change produced.
+    pub(crate) fn record_execution_status(
+        db: &Connection,
+        execution_id: &str,
+    ) -> Result<(), PersistenceServiceError> {
+        use crate::exchange::log::{
+            AppendRequest, LogRecordKind, PayloadRef, StreamKind, StreamRef,
+        };
+        let (project_id, status, version): (String, String, u64) = db.query_row(
+            "SELECT p.project_id,e.status,e.execution_version FROM stage_executions e JOIN pulsations p ON p.id=e.pulsation_id WHERE e.id=?1",
+            [execution_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )?;
-        if changed != 1 {
-            return Err(stale("stage execution status"));
-        }
+        crate::exchange::log::record(
+            db,
+            &AppendRequest::host(
+                StreamRef::new(project_id, StreamKind::StageExecution, execution_id),
+                LogRecordKind::StageExecutionTransition,
+                hvc_contracts::exchange::HostComponent::PipelineState,
+                Some(PayloadRef {
+                    table: "stage_executions",
+                    id: execution_id.to_owned(),
+                }),
+                format!("stage_execution:{execution_id}:{status}:{version}"),
+            ),
+        )?;
+        Ok(())
+    }
+
+    /// ADR-037 M2: the exchange log item of a unit attempt state change, in
+    /// its execution's stream. Attempt states only move forward.
+    pub(crate) fn record_attempt_state(
+        db: &Connection,
+        attempt_id: &str,
+    ) -> Result<(), PersistenceServiceError> {
+        use crate::exchange::log::{
+            AppendRequest, LogRecordKind, PayloadRef, StreamKind, StreamRef,
+        };
+        let (project_id, execution_id, state): (String, String, String) = db.query_row(
+            "SELECT p.project_id,a.execution_id,a.state FROM stage_work_unit_attempts a JOIN stage_executions e ON e.id=a.execution_id JOIN pulsations p ON p.id=e.pulsation_id WHERE a.id=?1",
+            [attempt_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        crate::exchange::log::record(
+            db,
+            &AppendRequest::host(
+                StreamRef::new(project_id, StreamKind::StageExecution, execution_id),
+                LogRecordKind::UnitAttempt,
+                hvc_contracts::exchange::HostComponent::PipelineState,
+                Some(PayloadRef {
+                    table: "stage_work_unit_attempts",
+                    id: attempt_id.to_owned(),
+                }),
+                format!("unit_attempt:{attempt_id}:{state}"),
+            ),
+        )?;
         Ok(())
     }
 
@@ -846,14 +909,29 @@ impl PersistenceService {
         aggregate_sha256: &str,
         acceptance_id: &str,
     ) -> Result<(), PersistenceServiceError> {
-        let changed = db.execute(
-            "UPDATE stage_executions SET status='accepted',execution_version=execution_version+1,accepted_aggregate_sha256=?2,acceptance_id=?3,updated_at=?4 WHERE id=?1 AND status='ready' AND acceptance_id IS NULL",
-            params![execution_id, aggregate_sha256, acceptance_id, Self::now_iso()],
-        )?;
-        if changed != 1 {
-            return Err(stale("stage execution acceptance"));
-        }
-        Ok(())
+        crate::exchange::log::atomically(db, || {
+            let changed = db.execute(
+                "UPDATE stage_executions SET status='accepted',execution_version=execution_version+1,accepted_aggregate_sha256=?2,acceptance_id=?3,updated_at=?4 WHERE id=?1 AND status='ready' AND acceptance_id IS NULL",
+                params![execution_id, aggregate_sha256, acceptance_id, Self::now_iso()],
+            )?;
+            if changed != 1 {
+                return Err(stale("stage execution acceptance"));
+            }
+            Self::record_execution_status(db, execution_id)
+        })
+    }
+
+    /// The ids a bulk status change is about to touch, so each gets its
+    /// exchange log item.
+    fn execution_ids(
+        db: &Connection,
+        sql: &str,
+        params: impl rusqlite::Params,
+    ) -> Result<Vec<String>, PersistenceServiceError> {
+        Ok(db
+            .prepare(sql)?
+            .query_map(params, |row| row.get(0))?
+            .collect::<Result<Vec<String>, _>>()?)
     }
 
     // -------------------------------------------------------------------- units
@@ -1035,6 +1113,7 @@ impl PersistenceService {
                 now
             ],
         )?;
+        Self::record_attempt_state(db, &id)?;
         Ok(AttemptRow {
             id,
             reservation_id: reservation_id.to_owned(),
@@ -1052,15 +1131,20 @@ impl PersistenceService {
         input_sha256: &str,
     ) -> Result<(), PersistenceServiceError> {
         let now = Self::now_iso();
-        db.execute(
-            "UPDATE stage_work_unit_attempts SET state='running',llm_execution_id=?2,dispatch_sha256=?3,input_sha256=?4,started_at=?5,updated_at=?5 WHERE id=?1 AND state='reserved'",
-            params![attempt.id, llm_execution_id, dispatch_sha256, input_sha256, now],
-        )?;
-        db.execute(
-            "UPDATE stage_invocation_reservations SET state='started',llm_execution_id=?2,updated_at=?3 WHERE id=?1 AND state='reserved'",
-            params![attempt.reservation_id, llm_execution_id, now],
-        )?;
-        Ok(())
+        crate::exchange::log::atomically(db, || {
+            let changed = db.execute(
+                "UPDATE stage_work_unit_attempts SET state='running',llm_execution_id=?2,dispatch_sha256=?3,input_sha256=?4,started_at=?5,updated_at=?5 WHERE id=?1 AND state='reserved'",
+                params![attempt.id, llm_execution_id, dispatch_sha256, input_sha256, now],
+            )?;
+            db.execute(
+                "UPDATE stage_invocation_reservations SET state='started',llm_execution_id=?2,updated_at=?3 WHERE id=?1 AND state='reserved'",
+                params![attempt.reservation_id, llm_execution_id, now],
+            )?;
+            if changed == 1 {
+                Self::record_attempt_state(db, &attempt.id)?;
+            }
+            Ok(())
+        })
     }
 
     pub(crate) fn finish_attempt(
@@ -1075,25 +1159,30 @@ impl PersistenceService {
         let diagnostic = diagnostic.map(protected_diagnostic);
         let observed_model = observed_model.map(protected_diagnostic);
         let now = Self::now_iso();
-        db.execute(
+        crate::exchange::log::atomically(db, || {
+            let changed = db.execute(
             "UPDATE stage_work_unit_attempts SET state=?2,error_code=?3,diagnostic=?4,observed_model=COALESCE(?5,observed_model),result_sha256=?6,finished_at=?7,updated_at=?7 WHERE id=?1 AND state IN ('reserved','running')",
             params![attempt.id, attempt_state_str(state), error_code, diagnostic, observed_model, result_sha256, now],
         )?;
-        db.execute(
+            if changed == 1 {
+                Self::record_attempt_state(db, &attempt.id)?;
+            }
+            db.execute(
             "UPDATE stage_invocation_reservations SET state='settled',updated_at=?2 WHERE id=?1 AND state IN ('reserved','started')",
             params![attempt.reservation_id, now],
         )?;
-        let run_status = match state {
-            AttemptState::Succeeded => "done",
-            AttemptState::Rejected => "failed",
-            AttemptState::Interrupted | AttemptState::Cancelled => "interrupted",
-            AttemptState::Reserved | AttemptState::Running => "running",
-        };
-        db.execute(
+            let run_status = match state {
+                AttemptState::Succeeded => "done",
+                AttemptState::Rejected => "failed",
+                AttemptState::Interrupted | AttemptState::Cancelled => "interrupted",
+                AttemptState::Reserved | AttemptState::Running => "running",
+            };
+            db.execute(
             "UPDATE agent_runs SET status=?2,model=COALESCE(?3,model),updated_at=?4 WHERE id=?1",
             params![attempt.agent_run_id, run_status, observed_model, now],
         )?;
-        Ok(())
+            Ok(())
+        })
     }
 
     // ---------------------------------------------------------------- snapshot
@@ -1730,10 +1819,18 @@ impl PersistenceService {
             if stage < from_stage {
                 continue;
             }
+            let affected = Self::execution_ids(
+                db,
+                "SELECT id FROM stage_executions WHERE pulsation_id=?1 AND stage=?2 AND status NOT IN ('failed','cancelled','superseded')",
+                params![pulsation_id, stage.as_db_value()],
+            )?;
             db.execute(
                 "UPDATE stage_executions SET status='superseded',execution_version=execution_version+1,updated_at=?3 WHERE pulsation_id=?1 AND stage=?2 AND status NOT IN ('failed','cancelled','superseded')",
                 params![pulsation_id, stage.as_db_value(), now],
             )?;
+            for execution_id in affected {
+                Self::record_execution_status(db, &execution_id)?;
+            }
             Self::close_budget_accounts(db, pulsation_id, stage)?;
         }
         Self::supersede_scope_requests(db, pulsation_id, from_stage)?;
@@ -1746,10 +1843,18 @@ impl PersistenceService {
         pulsation_id: &str,
     ) -> Result<(), PersistenceServiceError> {
         let now = Self::now_iso();
+        let affected = Self::execution_ids(
+            db,
+            "SELECT id FROM stage_executions WHERE pulsation_id=?1 AND status NOT IN ('accepted','failed','cancelled','superseded')",
+            params![pulsation_id],
+        )?;
         db.execute(
             "UPDATE stage_executions SET status='cancelled',execution_version=execution_version+1,updated_at=?2 WHERE pulsation_id=?1 AND status NOT IN ('accepted','failed','cancelled','superseded')",
             params![pulsation_id, now],
         )?;
+        for execution_id in affected {
+            Self::record_execution_status(db, &execution_id)?;
+        }
         db.execute(
             "UPDATE stage_work_units SET state='cancelled',state_version=state_version+1,updated_at=?2 WHERE state IN ('pending','running') AND execution_id IN (SELECT id FROM stage_executions WHERE pulsation_id=?1)",
             params![pulsation_id, now],
@@ -1859,10 +1964,18 @@ impl PersistenceService {
     /// the shared allowance, and validated results stay untouched for reuse.
     pub(crate) fn recover_stage_executions(db: &Connection) -> Result<(), PersistenceServiceError> {
         let now = Self::now_iso();
+        let interrupted = Self::execution_ids(
+            db,
+            "SELECT id FROM stage_work_unit_attempts WHERE state IN ('reserved','running')",
+            [],
+        )?;
         db.execute(
             "UPDATE stage_work_unit_attempts SET state='interrupted',error_code='interrupted',diagnostic='The host restarted while the attempt was in flight.',finished_at=?1,updated_at=?1 WHERE state IN ('reserved','running')",
             [&now],
         )?;
+        for attempt_id in interrupted {
+            Self::record_attempt_state(db, &attempt_id)?;
+        }
         db.execute(
             "UPDATE stage_invocation_reservations SET state=CASE WHEN state='reserved' THEN 'released' ELSE 'settled' END,updated_at=?1 WHERE state IN ('reserved','started')",
             [&now],
@@ -2357,6 +2470,94 @@ mod tests {
             |r| r.get(0),
         )
         .unwrap()
+    }
+
+    /// ADR-037 M2: every execution status change and attempt state change
+    /// is one item of the execution's stream; a refused change adds none.
+    #[test]
+    fn execution_and_attempt_changes_record_one_item_each() {
+        let fixture = fixture();
+        let db = fixture.service.connection().unwrap();
+        let unit = unit(&db, &fixture.execution);
+        PersistenceService::transition_execution(
+            &db,
+            &fixture.execution,
+            &[ExecutionStatus::Planned],
+            ExecutionStatus::Running,
+            None,
+        )
+        .unwrap();
+        assert!(
+            PersistenceService::transition_execution(
+                &db,
+                &fixture.execution,
+                &[ExecutionStatus::Planned],
+                ExecutionStatus::Running,
+                None,
+            )
+            .is_err(),
+            "a stale compare-and-swap"
+        );
+        let reservation = PersistenceService::reserve_invocation(
+            &db,
+            &fixture.account,
+            &fixture.execution,
+            &unit,
+            Pool::Initial,
+            1,
+            500,
+            2_000,
+        )
+        .unwrap();
+        let attempt = PersistenceService::create_attempt(
+            &db,
+            "job",
+            &fixture.execution,
+            &unit,
+            1,
+            &reservation.id,
+            ExecutorKind::CodeImplementer,
+            &snapshot_id(&db),
+            &profile(),
+        )
+        .unwrap();
+        PersistenceService::mark_attempt_started(&db, &attempt, "llm-exec", "dispatch", "input")
+            .unwrap();
+        PersistenceService::finish_attempt(
+            &db,
+            &attempt,
+            AttemptState::Succeeded,
+            None,
+            None,
+            Some("fixture"),
+            None,
+        )
+        .unwrap();
+        PersistenceService::cancel_stage_executions(&db, "pulse").unwrap();
+
+        let keys: Vec<String> = db
+            .prepare(
+                "SELECT i.idempotency_key FROM exchange_items i JOIN exchange_streams s ON s.id=i.stream_id
+                 WHERE s.kind='stage_execution' AND s.subject_id=?1 ORDER BY i.seq",
+            )
+            .unwrap()
+            .query_map([&fixture.execution], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        let execution = &fixture.execution;
+        let id = &attempt.id;
+        assert_eq!(
+            keys,
+            vec![
+                format!("stage_execution:{execution}:planned:1"),
+                format!("stage_execution:{execution}:running:2"),
+                format!("unit_attempt:{id}:reserved"),
+                format!("unit_attempt:{id}:running"),
+                format!("unit_attempt:{id}:succeeded"),
+                format!("stage_execution:{execution}:cancelled:3"),
+            ]
+        );
     }
 }
 

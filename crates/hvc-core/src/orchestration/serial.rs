@@ -1476,6 +1476,41 @@ impl PersistenceService {
         Ok(progressed)
     }
 
+    /// ADR-037 M2: the exchange log item of a publication outcome, in the
+    /// pulsation's stream. A retried publication records each outcome.
+    fn record_publication_outcome(
+        tx: &Connection,
+        project_id: &str,
+        pulsation_id: &str,
+        artifact_id: &str,
+        state: &str,
+    ) -> Result<(), PersistenceServiceError> {
+        use crate::exchange::log::{
+            AppendRequest, LogRecordKind, PayloadRef, StreamKind, StreamRef,
+        };
+        let attempt: u64 = tx.query_row(
+            "SELECT COUNT(*) FROM exchange_items i JOIN exchange_streams s ON s.id=i.stream_id
+             WHERE s.project_id=?1 AND s.kind='pulsation' AND s.subject_id=?2
+               AND i.kind='publication_applied' AND i.payload_id=?3",
+            params![project_id, pulsation_id, artifact_id],
+            |row| row.get(0),
+        )?;
+        crate::exchange::log::record(
+            tx,
+            &AppendRequest::host(
+                StreamRef::new(project_id, StreamKind::Pulsation, pulsation_id),
+                LogRecordKind::PublicationApplied,
+                hvc_contracts::exchange::HostComponent::PipelineState,
+                Some(PayloadRef {
+                    table: "artifact_publications",
+                    id: artifact_id.to_owned(),
+                }),
+                format!("publication:{artifact_id}:{}:{state}", attempt + 1),
+            ),
+        )?;
+        Ok(())
+    }
+
     pub(super) fn apply_publication_unit(&self, id: &str) -> Result<(), PersistenceServiceError> {
         let mut db = self.connection()?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -1632,6 +1667,7 @@ impl PersistenceService {
                     }
                     return Ok(());
                 }
+                Self::record_publication_outcome(&tx, &project_id, &pulse, id, "applied")?;
                 tx.execute("INSERT INTO project_file_baselines(project_id,relative_path,content_sha256,updated_at) SELECT project_id,relative_path,desired_sha256,?2 FROM artifact_publications WHERE artifact_id=?1 ON CONFLICT(project_id,relative_path) DO UPDATE SET content_sha256=excluded.content_sha256,updated_at=excluded.updated_at",params![id,Self::now_iso()])?;
                 // The first publication of a path in this pulsation fixes its
                 // base; later revision rounds keep the pre-pulsation bytes.
@@ -1693,6 +1729,7 @@ impl PersistenceService {
                     tx.commit()?;
                     return Err(error);
                 }
+                Self::record_publication_outcome(&tx, &project_id, &pulse, id, "conflict")?;
                 let current = Self::find_pulsation_by_id(&tx, &pulse)?
                     .ok_or_else(|| invalid("Pulsation missing"))?;
                 if !matches!(
