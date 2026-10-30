@@ -57,7 +57,7 @@ and blob sizes, plus the other ceilings of the feature. All on `9526c77`.
 | Fixture benchmark (`composition_benchmark --held-out`) | 80/80 correct; calls, rejections and interventions equal to the baseline; every prompt identical to M1 | parity | met |
 | v4 prompt growth over the baseline | +915 characters at the median, +1,234 at most | +1,000 / +1,700 | met |
 | Legacy prompt growth over the baseline | +341 at the median, +497 at most | +600 | met |
-| Pulsation transition p95, against the baseline code | +12% non-terminal, +16% terminal (+0.4 to +0.6 ms); an earlier session gave +23% and +26% | +10%, and at most 15 ms | **over the relative ceiling**; under 15 ms |
+| Pulsation transition p95, against the baseline code | +12% non-terminal, +16% terminal (+0.4 to +0.6 ms); an earlier session gave +23% and +26% | +10%, and at most 15 ms | over the relative ceiling, **cost accepted**; under 15 ms |
 | Terminal re-read, page of 500 at 100,000 events | p95 23.0 ms | 50 ms | met |
 | Load rehearsal | 14 lags and 7 terminal gaps, all re-read; 0 resets | no full reload | met |
 | `search_pulsations` over 1,000 digests | p95 11.3 ms | 50 ms | met |
@@ -65,7 +65,7 @@ and blob sizes, plus the other ceilings of the feature. All on `9526c77`.
 
 Details: [M2](agent-exchange-m2-validation-2026-10-30.md#pulsation-transitions)
 and [M3 and M4](agent-exchange-m3-m4-validation-2026-10-30.md#measurements).
-The transition latency is the one open decision of the feature.
+The developer accepted the transition cost on 2026-10-30.
 
 ## Not done
 

@@ -132,5 +132,6 @@ Where the implementation differs from the decision:
 - **Transition latency.** Each pulsation transition gains 0.4 to 0.9 ms at
   p95 in the debug test profile, 12% to 26% over the code before M1 in
   alternating runs on one machine. That is under the 15 ms cap but over the
-  10% relative ceiling, which is one of this decision's review criteria; the
-  developer decides whether to accept it.
+  10% relative ceiling, which is one of this decision's review criteria. The
+  developer accepted the measured cost on 2026-10-30; a later alternating
+  measurement above 0.9 ms at p95 reopens the question.

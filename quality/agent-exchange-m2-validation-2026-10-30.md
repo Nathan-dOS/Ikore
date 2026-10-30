@@ -86,9 +86,9 @@ per transition at p95: under the 15 ms absolute cap, **over the 10% relative
 ceiling** of the plan. Trimming one statement per append (`d230cda`) made no
 measurable difference; the cost is the extra pages each commit writes (the
 item, its three indexes, the stream and the AUTOINCREMENT counter) under the
-rollback journal. This meets the ADR's own review criterion for transition
-latency, so the decision is the developer's: accept the cost, or ask for a
-deeper change such as fewer indexes or another journal mode.
+rollback journal. This met the ADR's own review criterion for transition
+latency, and the developer accepted the cost on 2026-10-30. Fewer indexes or
+another journal mode remain options if a later measurement exceeds 0.9 ms.
 
 ## Load rehearsal
 
