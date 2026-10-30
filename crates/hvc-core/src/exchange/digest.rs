@@ -472,7 +472,16 @@ pub fn refresh(db: &Connection, pulsation_id: &str) -> Result<bool, PersistenceS
     let Some(digest) = derive(db, pulsation_id)? else {
         return Ok(false);
     };
-    let content = crate::secret_redactor::redact_secrets(&digest.content).map_err(runtime)?;
+    let mut content = crate::secret_redactor::redact_secrets(&digest.content).map_err(runtime)?;
+    // A redaction marker can be longer than what it replaced; the stored
+    // digest keeps the cap.
+    if content.text.len() > MAX_DIGEST_BYTES {
+        let mut cut = MAX_DIGEST_BYTES;
+        while !content.text.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        content.text.truncate(cut);
+    }
     let title = crate::secret_redactor::redact_secrets(&digest.title).map_err(runtime)?;
     let sha256 = crate::lower_hex(&sha2::Sha256::digest(content.text.as_bytes()));
     let current: Option<(u32, String)> = db
@@ -558,7 +567,9 @@ pub fn refresh(db: &Connection, pulsation_id: &str) -> Result<bool, PersistenceS
 }
 
 /// Derives the missing digests of the project's newest finished pulsations,
-/// at most `limit`; the first search of a project backfills them.
+/// at most `limit`; the first search of a project backfills them. A
+/// pulsation that cannot be derived is skipped, so it never hides the others
+/// from a search.
 pub fn backfill(
     db: &Connection,
     project_id: &str,
@@ -577,8 +588,10 @@ pub fn backfill(
         })?;
     let mut derived = 0;
     for pulsation_id in missing {
-        if refresh(db, &pulsation_id)? {
-            derived += 1;
+        match refresh(db, &pulsation_id) {
+            Ok(true) => derived += 1,
+            Ok(false) => {}
+            Err(error) => eprintln!("pulsation digest skipped: {error}"),
         }
     }
     Ok(derived)

@@ -238,3 +238,46 @@ fn a_backfill_derives_only_the_missing_digests_of_finished_pulsations() {
     assert_eq!(backfill(&db, "p", BACKFILL_LIMIT).unwrap(), 1);
     assert_eq!(backfill(&db, "p", BACKFILL_LIMIT).unwrap(), 0);
 }
+
+/// A pulsation whose digest cannot be stored (here its exchange stream is
+/// out of step with its items) hides no older pulsation, from the
+/// background lane or from a search, and the lane does not retry it.
+#[test]
+fn a_digest_that_fails_blocks_neither_older_pulsations_nor_a_search() {
+    let root = tempfile::tempdir().unwrap();
+    let service = PersistenceService::initialize(root.path()).unwrap();
+    let db = Connection::open(service.database_path()).unwrap();
+    db.execute_batch(
+        "INSERT INTO projects(id,name,workspace_path,created_at,updated_at) VALUES('p','Digest','C:/p','now','now');
+         INSERT INTO pulsations(id,project_id,feature_name,stage,status,created_at,updated_at,pipeline_version,state_version)
+           VALUES('00000000-0000-4000-8000-0000000000b1','p','Broken','Integrator','done','now','2026-10-29T12:00:00Z',4,3);
+         INSERT INTO pulsations(id,project_id,feature_name,stage,status,created_at,updated_at,pipeline_version,state_version)
+           VALUES('00000000-0000-4000-8000-0000000000b2','p','Older','Integrator','done','now','2026-10-29T11:00:00Z',4,3);
+         INSERT INTO exchange_streams(id,project_id,kind,subject_id,next_seq,created_at)
+           VALUES('broken','p','pulsation','00000000-0000-4000-8000-0000000000b1',5,'now');",
+    )
+    .unwrap();
+    let digests = || -> Vec<String> {
+        db.prepare("SELECT pulsation_id FROM companion_pulsation_digests ORDER BY pulsation_id")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    assert!(service.digest_next_pulsation().is_err(), "the newest fails");
+    assert!(
+        service.digest_next_pulsation().unwrap(),
+        "the older one is next"
+    );
+    assert!(
+        !service.digest_next_pulsation().unwrap(),
+        "the failed one is not retried"
+    );
+    assert_eq!(digests(), ["00000000-0000-4000-8000-0000000000b2"]);
+
+    db.execute("DELETE FROM companion_pulsation_digests", [])
+        .unwrap();
+    assert_eq!(backfill(&db, "p", BACKFILL_LIMIT).unwrap(), 1);
+    assert_eq!(digests(), ["00000000-0000-4000-8000-0000000000b2"]);
+}

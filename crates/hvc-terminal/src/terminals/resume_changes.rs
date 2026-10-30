@@ -202,13 +202,20 @@ impl TerminalRepository {
 
     /// Removes the project's blobs no manifest points at any more.
     pub fn delete_orphan_snapshot_blobs(&self, project_id: &str) -> Result<usize, TerminalError> {
-        Ok(self.connection()?.execute(
-            "DELETE FROM terminal_snapshot_blobs WHERE project_id=?1 AND NOT EXISTS(
-               SELECT 1 FROM terminal_run_snapshot_files f JOIN terminal_runs r ON r.id=f.run_id
-               WHERE r.project_id=?1 AND f.blob_sha256=terminal_snapshot_blobs.sha256)",
-            [project_id],
-        )?)
+        Ok(delete_orphan_blobs(&self.connection()?, project_id)?)
     }
+}
+
+/// Removes the project's blobs no manifest points at any more, in the
+/// caller's transaction: every deletion of runs calls it, so blobs go with
+/// the last run that kept them.
+pub(super) fn delete_orphan_blobs(db: &Connection, project_id: &str) -> rusqlite::Result<usize> {
+    db.execute(
+        "DELETE FROM terminal_snapshot_blobs WHERE project_id=?1 AND NOT EXISTS(
+           SELECT 1 FROM terminal_run_snapshot_files f JOIN terminal_runs r ON r.id=f.run_id
+           WHERE r.project_id=?1 AND f.blob_sha256=terminal_snapshot_blobs.sha256)",
+        [project_id],
+    )
 }
 
 /// What resuming a session would tell the agent, for the resume dialog.

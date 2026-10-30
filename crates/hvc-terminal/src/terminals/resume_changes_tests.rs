@@ -376,12 +376,27 @@ fn blobs_stop_at_one_mebibyte_per_run_and_orphans_go_with_their_runs() {
         40
     );
 
+    // Clearing the role's history deletes the run, and its blobs go with it.
     Connection::open(fixture.database.database_path())
         .unwrap()
-        .execute("DELETE FROM terminal_runs WHERE id=?1", [&run.id])
+        .execute(
+            "UPDATE terminal_runs SET status='completed' WHERE id=?1",
+            [&run.id],
+        )
         .unwrap();
     assert_eq!(
+        fixture
+            .repository
+            .clear_history(&fixture.project, Some(AgentRole::BackendAgent))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
         fixture.count("SELECT COUNT(*) FROM terminal_run_snapshot_files"),
+        0
+    );
+    assert_eq!(
+        fixture.count("SELECT COUNT(*) FROM terminal_snapshot_blobs"),
         0
     );
     assert_eq!(
@@ -389,7 +404,7 @@ fn blobs_stop_at_one_mebibyte_per_run_and_orphans_go_with_their_runs() {
             .repository
             .delete_orphan_snapshot_blobs(&fixture.project)
             .unwrap(),
-        34
+        0
     );
 }
 

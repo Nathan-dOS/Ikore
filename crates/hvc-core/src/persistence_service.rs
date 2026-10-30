@@ -1458,6 +1458,9 @@ pub struct PersistenceService {
     model_pull_events: Arc<Mutex<Option<Arc<dyn ModelPullEventSink>>>>,
     pub(crate) document_cache: crate::document_cache::SharedDocumentCache,
     clock: Arc<dyn Clock>,
+    /// ADR-037 M4: pulsations whose digest failed in this process. The
+    /// background lane skips them until the app restarts.
+    digest_failures: Arc<Mutex<HashSet<String>>>,
 }
 
 impl PersistenceService {
@@ -1551,28 +1554,40 @@ impl PersistenceService {
             model_pull_events: Arc::new(Mutex::new(None)),
             document_cache: Default::default(),
             clock,
+            digest_failures: Default::default(),
         })
     }
 
     /// ADR-037 M4: derives the digest of the newest finished pulsation that
-    /// has none and whose seal is not pending. `false` when none waits.
+    /// has none and whose seal is not pending. `false` when none waits. A
+    /// pulsation whose derivation failed is skipped until the app restarts,
+    /// so it neither blocks the older ones nor fails every second.
     pub fn digest_next_pulsation(&self) -> Result<bool, PersistenceServiceError> {
         let db = self.connection()?;
-        let next: Option<String> = db
-            .query_row(
+        let failed = self
+            .digest_failures
+            .lock()
+            .map(|failed| failed.clone())
+            .unwrap_or_default();
+        let candidates = db
+            .prepare(
                 "SELECT p.id FROM pulsations p WHERE p.status IN ('done','failed')
                    AND NOT EXISTS(SELECT 1 FROM companion_pulsation_digests d WHERE d.pulsation_id=p.id)
                    AND NOT EXISTS(SELECT 1 FROM attestation_seal_intents i
                                   WHERE i.pulsation_id=p.id AND i.state='pending')
-                 ORDER BY p.updated_at DESC,p.id LIMIT 1",
-                [],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let Some(pulsation_id) = next else {
+                 ORDER BY p.updated_at DESC,p.id LIMIT ?1",
+            )?
+            .query_map([failed.len() as i64 + 1], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        let Some(pulsation_id) = candidates.into_iter().find(|id| !failed.contains(id)) else {
             return Ok(false);
         };
-        crate::exchange::digest::refresh(&db, &pulsation_id)?;
+        if let Err(error) = crate::exchange::digest::refresh(&db, &pulsation_id) {
+            if let Ok(mut failed) = self.digest_failures.lock() {
+                failed.insert(pulsation_id);
+            }
+            return Err(error);
+        }
         Ok(true)
     }
 

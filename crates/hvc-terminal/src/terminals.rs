@@ -1659,6 +1659,7 @@ impl TerminalRepository {
             "DELETE FROM terminal_runs WHERE project_id=?1 AND slot_id=?2",
             params![project_id, slot_id],
         )?;
+        resume_changes::delete_orphan_blobs(&transaction, project_id)?;
         let changed = transaction.execute(
             "DELETE FROM terminal_slots
              WHERE id=?1 AND project_id=?2 AND kind='free_form' AND version=?3",
@@ -2640,6 +2641,7 @@ impl TerminalRepository {
                 [required(project_id, "projectId")?],
             )?
         };
+        resume_changes::delete_orphan_blobs(&transaction, project_id)?;
         transaction.commit()?;
         Ok(affected)
     }
@@ -2673,12 +2675,14 @@ impl TerminalRepository {
                 "the history cannot be cleared while the free-form agent is active".into(),
             ));
         }
-        connection
-            .execute(
-                "DELETE FROM terminal_runs WHERE project_id=?1 AND slot_id=?2",
-                params![project_id, slot_id],
-            )
-            .map_err(TerminalError::from)
+        let transaction = connection.unchecked_transaction()?;
+        let deleted = transaction.execute(
+            "DELETE FROM terminal_runs WHERE project_id=?1 AND slot_id=?2",
+            params![project_id, slot_id],
+        )?;
+        resume_changes::delete_orphan_blobs(&transaction, project_id)?;
+        transaction.commit()?;
+        Ok(deleted)
     }
 
     pub fn recover_interrupted_runs(&self) -> Result<usize, TerminalError> {

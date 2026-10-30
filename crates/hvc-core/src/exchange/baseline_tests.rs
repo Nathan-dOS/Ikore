@@ -337,6 +337,17 @@ fn exchange_baseline_snapshot_manifest() {
         kept += 1;
         kept_bytes += len;
     }
+    // What M3 keeps (`record_snapshot_manifest`): in snapshot order, every
+    // text file up to 32 KiB that still fits in the run's 1 MiB.
+    let (mut m3_blobs, mut m3_blob_bytes, mut budget) = (0usize, 0usize, BLOB_BUDGET);
+    for file in &preparation.files {
+        let len = file.projected_content.len();
+        if len <= SMALL_TEXT && len <= budget {
+            budget -= len;
+            m3_blobs += 1;
+            m3_blob_bytes += len;
+        }
+    }
     let paths = preparation
         .files
         .iter()
@@ -361,6 +372,8 @@ fn exchange_baseline_snapshot_manifest() {
             "small_text_bytes": small.iter().sum::<usize>(),
             "blobs_within_1_mib": kept,
             "blob_bytes_within_1_mib": kept_bytes,
+            "m3_blob_files": m3_blobs,
+            "m3_blob_bytes": m3_blob_bytes,
             "paths_json_bytes": paths_json,
             "per_file_rows_estimated_bytes": rows_bytes,
             "prepare_snapshot_ms": micros(elapsed) / 1_000,
