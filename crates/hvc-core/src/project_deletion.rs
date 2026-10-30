@@ -381,6 +381,10 @@ fn purge_project(
             "INSERT INTO companion_agent_output_fts(companion_agent_output_fts) VALUES('optimize')",
             [],
         )?;
+        tx.execute(
+            "INSERT INTO companion_pulsation_digest_fts(companion_pulsation_digest_fts) VALUES('optimize')",
+            [],
+        )?;
         let canonical = root.to_string_lossy().to_string();
         for table in [
             "workspace_note_embeddings",
@@ -437,7 +441,7 @@ fn delete_project_graph(tx: &Transaction<'_>, id: &str) -> Result<(), Error> {
         "INSERT INTO project_deletion_rows SELECT 'projects',rowid FROM projects WHERE id=?1",
         [id],
     )?;
-    let names=tx.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'companion_agent_output_fts%' ORDER BY name")?
+    let names=tx.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'companion_agent_output_fts%' AND name NOT LIKE 'companion_pulsation_digest_fts%' ORDER BY name")?
         .query_map([],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
     let mut edges = Vec::new();
     for child in &names {

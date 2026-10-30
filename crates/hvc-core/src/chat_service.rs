@@ -2954,6 +2954,26 @@ struct ReadAgentOutputArgs {
     end_line: Option<usize>,
 }
 
+/// ADR-037 M4: full-text search over the project's pulsation digests.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SearchPulsationsArgs {
+    query: String,
+    path: Option<String>,
+    outcome: Option<String>,
+    limit: Option<usize>,
+}
+
+/// ADR-037 M4: one pulsation digest, or one of its sections, by lines.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ReadPulsationArgs {
+    reference: String,
+    section: Option<String>,
+    start_line: Option<usize>,
+    end_line: Option<usize>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SearchCliModelsArgs {
@@ -3017,6 +3037,14 @@ fn execute_companion_tool(
                 .map_err(|error| format!("Invalid arguments: {error}"))
                 .and_then(|args| summarize_agent_model_performance_tool(db_path, project_id, args))
         }
+        "search_pulsations" => {
+            serde_json::from_value::<SearchPulsationsArgs>(call.arguments.clone())
+                .map_err(|error| format!("Invalid arguments: {error}"))
+                .and_then(|args| search_pulsations_tool(db_path, project_id, args))
+        }
+        "read_pulsation" => serde_json::from_value::<ReadPulsationArgs>(call.arguments.clone())
+            .map_err(|error| format!("Invalid arguments: {error}"))
+            .and_then(|args| read_pulsation_tool(db_path, project_id, args)),
         _ => Err("Tool is not in the Companion read-only allowlist.".into()),
     };
     match outcome {
@@ -3536,6 +3564,153 @@ fn search_cli_models_tool(
         .map_err(|error| error.to_string())?;
     serde_json::to_string(&json!({ "models": rows })).map_err(|error| error.to_string())
 }
+
+/// Digests a search derives when they are missing (ADR-037 M4).
+const PULSATION_BACKFILL: usize = crate::exchange::digest::BACKFILL_LIMIT;
+
+fn search_pulsations_tool(
+    db_path: &Path,
+    project_id: &str,
+    args: SearchPulsationsArgs,
+) -> Result<String, String> {
+    let query = args.query.trim();
+    if query.is_empty() || query.chars().count() > 256 {
+        return Err("query must contain between 1 and 256 characters".into());
+    }
+    if let Some(outcome) = &args.outcome
+        && !matches!(outcome.as_str(), "done" | "failed")
+    {
+        return Err("outcome must be done or failed".into());
+    }
+    let connection = companion_database(db_path)?;
+    crate::exchange::digest::backfill(&connection, project_id, PULSATION_BACKFILL)
+        .map_err(|error| error.to_string())?;
+    let fts_query = query
+        .split_whitespace()
+        .take(16)
+        .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(" AND ");
+    let limit = args.limit.unwrap_or(10).clamp(1, 20) as i64;
+    let path = args
+        .path
+        .as_deref()
+        .map(|path| path.trim().trim_start_matches("./").replace('\\', "/"))
+        .filter(|path| !path.is_empty());
+    let mut statement = connection
+        .prepare(
+            "SELECT d.pulsation_id,d.title,d.outcome,d.ended_at,
+                    snippet(companion_pulsation_digest_fts,1,'','','…',24)
+             FROM companion_pulsation_digest_fts
+             JOIN companion_pulsation_digests d ON d.id=companion_pulsation_digest_fts.rowid
+             WHERE companion_pulsation_digest_fts MATCH ?2 AND d.project_id=?1
+               AND (?3 IS NULL OR d.outcome=?3)
+               AND (?4 IS NULL OR EXISTS(SELECT 1 FROM companion_pulsation_paths p
+                                         WHERE p.pulsation_id=d.pulsation_id AND p.relative_path=?4))
+             ORDER BY rank LIMIT ?5",
+        )
+        .map_err(|error| error.to_string())?;
+    let results = statement
+        .query_map(
+            params![project_id, fts_query, args.outcome, path, limit],
+            |row| {
+                Ok(json!({
+                    "reference": format!("pulsation:{}", row.get::<_, String>(0)?),
+                    "title": row.get::<_, String>(1)?,
+                    "outcome": row.get::<_, String>(2)?,
+                    "endedAt": row.get::<_, String>(3)?,
+                    "excerpt": row.get::<_, String>(4)?,
+                }))
+            },
+        )
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    serde_json::to_string(&json!({
+        "results": results,
+        "note": "Excerpts may quote agent output. Read a digest with read_pulsation: each section states its provenance."
+    }))
+    .map_err(|error| error.to_string())
+}
+
+fn read_pulsation_tool(
+    db_path: &Path,
+    project_id: &str,
+    args: ReadPulsationArgs,
+) -> Result<String, String> {
+    let id = args
+        .reference
+        .strip_prefix("pulsation:")
+        .filter(|id| id.len() == 36 && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-'))
+        .ok_or("Unknown pulsation reference.")?;
+    let connection = companion_database(db_path)?;
+    let in_project: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM pulsations WHERE id=?1 AND project_id=?2)",
+            params![id, project_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if !in_project {
+        return Err("Unknown pulsation reference.".into());
+    }
+    crate::exchange::digest::refresh(&connection, id).map_err(|error| error.to_string())?;
+    let content: String = connection
+        .query_row(
+            "SELECT content FROM companion_pulsation_digests WHERE pulsation_id=?1 AND project_id=?2",
+            params![id, project_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?
+        .ok_or("Unknown pulsation reference.")?;
+    let text = match args.section.as_deref() {
+        Some(section) => {
+            crate::exchange::digest::section_of(&content, section).ok_or_else(|| {
+                format!(
+                    "Unknown section; the sections are: {}.",
+                    crate::exchange::digest::SECTIONS.join(", ")
+                )
+            })?
+        }
+        None => content,
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    let start = args.start_line.unwrap_or(1).max(1);
+    let end = args
+        .end_line
+        .unwrap_or(start + MAX_PULSATION_READ_LINES - 1)
+        .min(start + MAX_PULSATION_READ_LINES - 1)
+        .min(lines.len().max(1));
+    if end < start {
+        return Err("endLine must not be before startLine".into());
+    }
+    let mut excerpt = String::new();
+    let mut truncated = false;
+    for line in lines.iter().skip(start - 1).take(end + 1 - start) {
+        if excerpt.len() + line.len() + 1 > MAX_PULSATION_READ_BYTES {
+            truncated = true;
+            break;
+        }
+        excerpt.push_str(line);
+        excerpt.push('\n');
+    }
+    serde_json::to_string(&json!({
+        "reference": args.reference,
+        "section": args.section,
+        "startLine": start,
+        "endLine": end,
+        "totalLines": lines.len(),
+        "truncated": truncated || end < lines.len(),
+        "content": excerpt
+    }))
+    .map_err(|error| error.to_string())
+}
+
+/// `read_pulsation` reads like `read_repository_file`: at most 400 lines
+/// and 64 KiB per call.
+const MAX_PULSATION_READ_LINES: usize = 400;
+const MAX_PULSATION_READ_BYTES: usize = 64 * 1024;
 
 fn summarize_agent_model_performance_tool(
     db_path: &Path,
@@ -4558,6 +4733,8 @@ fn companion_tool_names() -> Vec<&'static str> {
         "read_agent_output",
         "search_cli_models",
         "summarize_agent_model_performance",
+        "search_pulsations",
+        "read_pulsation",
     ]
 }
 
@@ -4573,7 +4750,11 @@ fn companion_result_trust(name: &str) -> TrustClass {
         "list_repository_tree" | "search_repository" | "read_repository_file" => {
             TrustClass::Repository
         }
-        "search_agent_outputs" | "read_agent_output" => TrustClass::AgentOutput,
+        // ADR-037 M4: digests quote approved agent output; each section
+        // states its own provenance.
+        "search_agent_outputs" | "read_agent_output" | "search_pulsations" | "read_pulsation" => {
+            TrustClass::AgentOutput
+        }
         _ => TrustClass::Host,
     }
 }
@@ -4717,6 +4898,36 @@ fn repository_tool_schemas() -> Vec<(&'static str, &'static str, Value)> {
                     "backend": { "type": "string" },
                     "model": { "type": "string" }
                 },
+                "additionalProperties": false
+            }),
+        ),
+        (
+            "search_pulsations",
+            "Search this project's finished pulsations by their host-written digests (intent, decisions, criteria, checkpoints, files). Returns pulsation:<id> references with title, outcome, end time and an excerpt.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "minLength": 1, "maxLength": 256 },
+                    "path": { "type": "string" },
+                    "outcome": { "type": "string", "enum": ["done", "failed"] },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 20 }
+                },
+                "required": ["query"],
+                "additionalProperties": false
+            }),
+        ),
+        (
+            "read_pulsation",
+            "Read one pulsation digest, or one of its sections (Header, Intent, Decisions, Criteria, Checkpoints, Stages, Files, Risk and coverage, Attestation), up to 400 lines or 64 KiB.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "reference": { "type": "string", "pattern": "^pulsation:[0-9a-f-]{36}$" },
+                    "section": { "type": "string" },
+                    "startLine": { "type": "integer", "minimum": 1 },
+                    "endLine": { "type": "integer", "minimum": 1 }
+                },
+                "required": ["reference"],
                 "additionalProperties": false
             }),
         ),
@@ -5466,6 +5677,274 @@ mod tests {
             Arc::new(NoopChatEventSink),
         ));
         (temp, workspace, service)
+    }
+
+    /// A finished pulsation of project A with an approved Specification
+    /// decision and one published file (ADR-037 M4).
+    fn insert_cookie_pulsation(db_path: &Path) -> &'static str {
+        let pulse = "00000000-0000-4000-8000-0000000000aa";
+        let db = Connection::open(db_path).unwrap();
+        db.execute_batch(&format!(
+            "INSERT INTO pulsations(id,project_id,feature_name,stage,status,created_at,updated_at,pipeline_version,state_version)
+               VALUES('{pulse}','project-a','Cookie rename','Integrator','done','2026-10-28T09:00:00Z','2026-10-28T10:00:00Z',4,5);
+             INSERT INTO artifacts(id,pulsation_id,name,kind,relative_path,content_sha256,created_at,updated_at,content,producer_stage,input_revision,acceptance)
+               VALUES('spec-aa','{pulse}','specification','specification',NULL,'a','now','now','# Specification\n\n## Decisions\n\n- Keep the old cookie name for one release.\n','SPECIFICATION',1,'accepted');
+             INSERT INTO artifacts(id,pulsation_id,name,kind,relative_path,content_sha256,created_at,updated_at,content,producer_stage,input_revision,acceptance)
+               VALUES('code-aa','{pulse}','src/session.rs','code','src/session.rs','b','now','now','fn a() {{}}','Code',1,'accepted');
+             INSERT INTO pulsation_file_bases(pulsation_id,path_key,relative_path,state,content_sha256,content,byte_len,first_artifact_id,captured_at)
+               VALUES('{pulse}','src/session.rs','src/session.rs','present','c',NULL,10,'code-aa','now');"
+        ))
+        .unwrap();
+        pulse
+    }
+
+    /// ADR-037 M4: a question about an earlier pulsation finds its digest by
+    /// a word and a published path, and reads the approved decision by
+    /// section; another project's pulsation stays unknown.
+    #[test]
+    fn pulsation_search_and_read_find_an_approved_decision() {
+        let (_temp, _workspace, service) = prepare_chat();
+        let pulse = insert_cookie_pulsation(&service.db_path);
+        let search = |path: &str| -> Value {
+            serde_json::from_str(
+                &search_pulsations_tool(
+                    &service.db_path,
+                    "project-a",
+                    SearchPulsationsArgs {
+                        query: "cookie".into(),
+                        path: Some(path.into()),
+                        outcome: Some("done".into()),
+                        limit: None,
+                    },
+                )
+                .unwrap(),
+            )
+            .unwrap()
+        };
+        let found = search("src/session.rs");
+        assert_eq!(
+            found["results"][0]["reference"],
+            format!("pulsation:{pulse}")
+        );
+        assert_eq!(found["results"][0]["outcome"], "done");
+        assert_eq!(search("src/other.rs")["results"], json!([]));
+        let read = |project: &str, reference: &str| {
+            read_pulsation_tool(
+                &service.db_path,
+                project,
+                ReadPulsationArgs {
+                    reference: reference.into(),
+                    section: Some("Decisions".into()),
+                    start_line: None,
+                    end_line: None,
+                },
+            )
+        };
+        let decision: Value =
+            serde_json::from_str(&read("project-a", &format!("pulsation:{pulse}")).unwrap())
+                .unwrap();
+        let content = decision["content"].as_str().unwrap();
+        assert!(content.starts_with("## Decisions\n> provenance: agent_output"));
+        assert!(content.contains("- Keep the old cookie name for one release."));
+        assert_eq!(
+            read("project-b", &format!("pulsation:{pulse}")).unwrap_err(),
+            "Unknown pulsation reference."
+        );
+        assert_eq!(
+            read(
+                "project-a",
+                "pulsation:00000000-0000-4000-8000-0000000000ff"
+            )
+            .unwrap_err(),
+            "Unknown pulsation reference."
+        );
+    }
+
+    /// ADR-037 M4 acceptance: asked why a choice was made, the model's two
+    /// calls, as they arrive on the wire, go through the Companion dispatcher;
+    /// the next round shows the pulsation's handle and its approved decision
+    /// as agent output, under the decision's own provenance line.
+    #[test]
+    fn a_question_about_a_past_choice_reaches_its_approved_decision() {
+        let (_temp, workspace, service) = prepare_chat();
+        let pulse = insert_cookie_pulsation(&service.db_path);
+        let repository = RepositoryContext::new(&workspace).unwrap();
+        let call = |id: &str, name: &str, arguments: Value| NormalizedToolCall {
+            id: id.into(),
+            name: name.into(),
+            arguments,
+        };
+        let search = execute_companion_tool(
+            &service.db_path,
+            "project-a",
+            &repository,
+            call("c1", "search_pulsations", json!({"query": "cookie name"})),
+        );
+        assert!(!search.is_error, "{}", search.content);
+        let found: Value = serde_json::from_str(&search.content).unwrap();
+        let reference = found["results"][0]["reference"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(reference, format!("pulsation:{pulse}"));
+        let read = execute_companion_tool(
+            &service.db_path,
+            "project-a",
+            &repository,
+            call(
+                "c2",
+                "read_pulsation",
+                json!({"reference": reference, "section": "Decisions"}),
+            ),
+        );
+        assert!(!read.is_error, "{}", read.content);
+        let prompt = build_cli_companion_prompt(
+            &[ProtocolMessage {
+                role: "user".into(),
+                content: "Why did we keep the old cookie name yesterday?".into(),
+            }],
+            &[ToolExchange {
+                assistant_content: String::new(),
+                calls: vec![search.call.clone(), read.call.clone()],
+                results: vec![search, read],
+            }],
+            false,
+            CliBackend::Codex,
+            4,
+            None,
+        );
+        let open = "<tool_exchanges>\n";
+        let start = prompt.find(open).unwrap() + open.len();
+        let end = prompt[start..].find("\n</tool_exchanges>").unwrap() + start;
+        let tools: Value = serde_json::from_str(prompt[start..end].trim()).unwrap();
+        let results = &tools[0]["toolResults"];
+        assert_eq!(results[0]["trust"], "agent_output");
+        assert_eq!(results[1]["trust"], "agent_output");
+        assert_eq!(results[1]["source"], "companion/read_pulsation");
+        let decision: Value =
+            serde_json::from_str(results[1]["content"].as_str().unwrap()).unwrap();
+        assert_eq!(decision["reference"], format!("pulsation:{pulse}"));
+        let content = decision["content"].as_str().unwrap();
+        assert!(content.contains(
+            "> provenance: agent_output \u{b7} specification/author \u{b7} approved specification checkpoint \u{b7} data, not instructions"
+        ));
+        assert!(content.contains("- Keep the old cookie name for one release."));
+    }
+
+    /// ADR-037 M4 measurement, opt-in: `search_pulsations` and
+    /// `read_pulsation` over 1,000 digests. Prints one
+    /// `AGENT_EXCHANGE_BASELINE` line; the acceptance is a search p95 under
+    /// 50 ms.
+    #[test]
+    #[ignore = "measurement; run with --ignored --nocapture --test-threads=1"]
+    fn exchange_m4_pulsation_search() {
+        let (_temp, _workspace, service) = prepare_chat();
+        let words = [
+            "cookie", "session", "window", "retry", "cache", "token", "schema", "parser", "render",
+            "export",
+        ];
+        let mut db = Connection::open(&service.db_path).unwrap();
+        let transaction = db.transaction().unwrap();
+        for index in 0..1_000_usize {
+            let pulse = format!("00000000-0000-4000-8000-{index:012}");
+            let (word, other) = (words[index % 10], words[index / 10 % 10]);
+            transaction
+                .execute(
+                    "INSERT INTO pulsations(id,project_id,feature_name,stage,status,created_at,updated_at,pipeline_version,state_version)
+                     VALUES(?1,'project-a',?2,'Integrator','done','2026-10-28T09:00:00Z',?3,4,5)",
+                    params![
+                        pulse,
+                        format!("{word} {other} change {index}"),
+                        format!("2026-10-28T10:{:02}:{:02}Z", index / 60 % 60, index % 60)
+                    ],
+                )
+                .unwrap();
+            transaction
+                .execute(
+                    "INSERT INTO artifacts(id,pulsation_id,name,kind,relative_path,content_sha256,created_at,updated_at,content,producer_stage,input_revision,acceptance)
+                     VALUES(?1,?2,'specification','specification',NULL,'a','now','now',?3,'SPECIFICATION',1,'accepted')",
+                    params![
+                        format!("spec-{index}"),
+                        pulse,
+                        format!(
+                            "# Specification\n\nChange the {word} handling.\n\n## Decisions\n\n- Keep the {other} path for one release.\n- Measure the {word} cost before and after.\n"
+                        )
+                    ],
+                )
+                .unwrap();
+            transaction
+                .execute(
+                    "INSERT INTO pulsation_file_bases(pulsation_id,path_key,relative_path,state,content_sha256,content,byte_len,first_artifact_id,captured_at)
+                     VALUES(?1,?2,?2,'present','c',NULL,10,?3,'now')",
+                    params![pulse, format!("src/{word}/{index}.rs"), format!("spec-{index}")],
+                )
+                .unwrap();
+        }
+        transaction.commit().unwrap();
+        let started = std::time::Instant::now();
+        let derived = crate::exchange::digest::backfill(&db, "project-a", 1_000).unwrap();
+        let backfill_ms = started.elapsed().as_millis();
+        assert_eq!(derived, 1_000);
+
+        let summary = |mut samples: Vec<std::time::Duration>| {
+            samples.sort();
+            let at = |q: f64| samples[((samples.len() as f64 * q).ceil() as usize).max(1) - 1];
+            json!({
+                "n": samples.len(),
+                "p50_us": at(0.50).as_micros(),
+                "p95_us": at(0.95).as_micros(),
+                "max_us": samples.last().unwrap().as_micros(),
+            })
+        };
+        let mut searches = Vec::new();
+        for index in 0..100_usize {
+            let query = format!("{} {}", words[index % 10], words[index / 10 % 10]);
+            let started = std::time::Instant::now();
+            let found: Value = serde_json::from_str(
+                &search_pulsations_tool(
+                    &service.db_path,
+                    "project-a",
+                    SearchPulsationsArgs {
+                        query,
+                        path: None,
+                        outcome: None,
+                        limit: Some(20),
+                    },
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            searches.push(started.elapsed());
+            assert!(!found["results"].as_array().unwrap().is_empty());
+        }
+        let mut reads = Vec::new();
+        for index in (0..1_000_usize).step_by(10) {
+            let started = std::time::Instant::now();
+            read_pulsation_tool(
+                &service.db_path,
+                "project-a",
+                ReadPulsationArgs {
+                    reference: format!("pulsation:00000000-0000-4000-8000-{index:012}"),
+                    section: Some("Decisions".into()),
+                    start_line: None,
+                    end_line: None,
+                },
+            )
+            .unwrap();
+            reads.push(started.elapsed());
+        }
+        println!(
+            "AGENT_EXCHANGE_BASELINE {}",
+            json!({
+                "measurement": "m4_pulsation_search",
+                "result": {
+                    "digests": derived,
+                    "backfill_ms": backfill_ms,
+                    "search_limit_20": summary(searches),
+                    "read_section": summary(reads),
+                }
+            })
+        );
     }
 
     /// ADR-037 M3: a turn warns, with paths only, when a file read in an
@@ -6650,7 +7129,7 @@ mod tests {
     }
 
     #[test]
-    fn exposes_only_the_eight_read_only_companion_tools() {
+    fn exposes_only_the_ten_read_only_companion_tools() {
         let names = repository_tool_schemas()
             .into_iter()
             .map(|(name, _, _)| name)
@@ -6665,7 +7144,9 @@ mod tests {
                 "search_agent_outputs",
                 "read_agent_output",
                 "search_cli_models",
-                "summarize_agent_model_performance"
+                "summarize_agent_model_performance",
+                "search_pulsations",
+                "read_pulsation"
             ]
         );
         let serialized = serde_json::to_string(&tool_definitions_openai_chat()).unwrap();

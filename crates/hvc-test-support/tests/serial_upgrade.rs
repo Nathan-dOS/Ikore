@@ -3155,3 +3155,120 @@ fn v62_to_v63_keeps_earlier_runs_strict_and_adds_the_resume_manifest() {
         0
     );
 }
+
+/// V64 adds the Companion's pulsation digests (ADR-037 M4). Purely additive:
+/// every earlier table keeps its definition and no digest is backfilled by
+/// the migration (the host derives them later). A digest is one per
+/// pulsation and at most 64 KiB, its index follows it, and digests and
+/// paths go with their pulsation.
+#[test]
+fn v63_to_v64_adds_pulsation_digests_without_backfilling_them() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("hard-vibe-code.db");
+    let mut db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    cli_migrations::migrations::runner()
+        .set_target(refinery::Target::Version(63))
+        .run(&mut db)
+        .unwrap();
+    db.execute_batch(
+        "INSERT INTO projects(id,name,workspace_path,created_at,updated_at) VALUES('p','V63 fixture','C:/fixture','now','now');
+         INSERT INTO pulsations(id,project_id,feature_name,stage,status,created_at,updated_at,pipeline_version,state_version) VALUES('pulse','p','Work','Integrator','done','now','now',4,9);",
+    )
+    .unwrap();
+    let tables = |db: &Connection| -> Vec<String> {
+        db.prepare(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND sql IS NOT NULL ORDER BY name",
+        )
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+    };
+    let before = tables(&db);
+    drop(db);
+
+    PersistenceService::initialize(root.path()).unwrap();
+    let db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    let after = tables(&db);
+    for table in &before {
+        assert!(after.contains(table), "V64 rebuilds nothing: {table}");
+    }
+    let count = |table: &str| -> u32 {
+        db.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap()
+    };
+    assert_eq!(
+        count("companion_pulsation_digests"),
+        0,
+        "the migration derives nothing"
+    );
+
+    let sha = "f".repeat(64);
+    let digest = |pulsation: &str, content: &str| {
+        db.execute(
+            "INSERT INTO companion_pulsation_digests(project_id,pulsation_id,digest_version,title,content,outcome,ended_at,content_sha256,created_at,updated_at)
+             VALUES('p',?1,1,'Work',?2,'done','now',?3,'now','now')",
+            params![pulsation, content, sha],
+        )
+    };
+    digest("pulse", "## Decisions\nUse a sliding window.").expect("a digest");
+    digest("pulse", "again").expect_err("one digest per pulsation");
+    digest("other", "x").expect_err("the pulsation must exist");
+    db.execute(
+        "UPDATE companion_pulsation_digests SET content=?1 WHERE pulsation_id='pulse'",
+        ["x".repeat(65_537)],
+    )
+    .expect_err("a digest is at most 64 KiB");
+    db.execute(
+        "UPDATE companion_pulsation_digests SET outcome='running' WHERE pulsation_id='pulse'",
+        [],
+    )
+    .expect_err("only finished pulsations have digests");
+    let indexed: u32 = db
+        .query_row(
+            "SELECT COUNT(*) FROM companion_pulsation_digest_fts WHERE companion_pulsation_digest_fts MATCH 'sliding'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(indexed, 1, "the index follows the digest");
+    db.execute(
+        "INSERT INTO companion_pulsation_paths(pulsation_id,relative_path,effect) VALUES('pulse','src/a.rs','modified')",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO companion_pulsation_paths(pulsation_id,relative_path,effect) VALUES('pulse','src/b.rs','renamed')",
+        [],
+    )
+    .expect_err("effects are modified, created or deleted");
+    db.execute("DELETE FROM pulsations WHERE id='pulse'", [])
+        .unwrap();
+    assert_eq!(
+        (
+            count("companion_pulsation_digests"),
+            count("companion_pulsation_paths")
+        ),
+        (0, 0),
+        "digests and paths go with their pulsation"
+    );
+    let still_indexed: u32 = db
+        .query_row(
+            "SELECT COUNT(*) FROM companion_pulsation_digest_fts WHERE companion_pulsation_digest_fts MATCH 'sliding'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(still_indexed, 0, "the index forgets a deleted digest");
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, u32>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+}

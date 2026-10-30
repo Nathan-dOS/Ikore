@@ -42,7 +42,7 @@ fn canvas_terminal_offer_is_explicit_closed_and_keeps_the_read_allowlist() {
         parse_terminal_offer(&response).unwrap().unwrap().text,
         "UI calls Core."
     );
-    assert_eq!(companion_tool_names().len(), 8);
+    assert_eq!(companion_tool_names().len(), 10);
     assert!(!is_companion_tool(CANVAS_OFFER_CONTROL));
     for forbidden in ["approved", "project_id", "session_id", "drawing_id"] {
         let mut forged = response.clone();

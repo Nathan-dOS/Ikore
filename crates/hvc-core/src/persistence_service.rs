@@ -1554,6 +1554,28 @@ impl PersistenceService {
         })
     }
 
+    /// ADR-037 M4: derives the digest of the newest finished pulsation that
+    /// has none and whose seal is not pending. `false` when none waits.
+    pub fn digest_next_pulsation(&self) -> Result<bool, PersistenceServiceError> {
+        let db = self.connection()?;
+        let next: Option<String> = db
+            .query_row(
+                "SELECT p.id FROM pulsations p WHERE p.status IN ('done','failed')
+                   AND NOT EXISTS(SELECT 1 FROM companion_pulsation_digests d WHERE d.pulsation_id=p.id)
+                   AND NOT EXISTS(SELECT 1 FROM attestation_seal_intents i
+                                  WHERE i.pulsation_id=p.id AND i.state='pending')
+                 ORDER BY p.updated_at DESC,p.id LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(pulsation_id) = next else {
+            return Ok(false);
+        };
+        crate::exchange::digest::refresh(&db, &pulsation_id)?;
+        Ok(true)
+    }
+
     /// ADR-037 M2: where a new follower of the project's exchange log starts.
     pub fn exchange_cursor(&self, project_id: &str) -> Result<i64, PersistenceServiceError> {
         Ok(crate::exchange::log::project_cursor(
@@ -2268,6 +2290,7 @@ impl PersistenceService {
         next_status: PulsationStatus,
         event_type: &str,
         event_id: &str,
+        state_version: u64,
     ) -> Result<(), PersistenceServiceError> {
         use crate::exchange::log::{
             AppendRequest, LogRecordKind, PayloadRef, StreamKind, StreamRef,
@@ -2283,11 +2306,6 @@ impl PersistenceService {
         } else {
             LogRecordKind::PulsationTransition
         };
-        let state_version: u64 = transaction.query_row(
-            "SELECT state_version FROM pulsations WHERE id=?1",
-            [current.id.as_str()],
-            |row| row.get(0),
-        )?;
         crate::exchange::log::record(
             transaction,
             &AppendRequest::host(
@@ -2320,16 +2338,18 @@ impl PersistenceService {
         }
 
         let now = Self::now_iso();
-        transaction.execute(
+        let state_version: u64 = transaction.query_row(
             "UPDATE pulsations
              SET status = ?1, stage = ?2, updated_at = ?3, state_version = state_version + 1
-             WHERE id = ?4",
+             WHERE id = ?4
+             RETURNING state_version",
             params![
                 next_status.as_db_value(),
                 next_stage.as_db_value(),
                 now,
                 current.id.as_str()
             ],
+            |row| row.get(0),
         )?;
         // ADR-032: base bytes serve the review of a live pulsation only; the
         // hashes and states stay for its report.
@@ -2378,6 +2398,7 @@ impl PersistenceService {
             next_status,
             event_type,
             &event_id,
+            state_version,
         )?;
 
         Ok(Pulsation {

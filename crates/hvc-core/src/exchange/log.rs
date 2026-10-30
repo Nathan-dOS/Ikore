@@ -398,23 +398,39 @@ fn fence_holds(db: &Connection, fence: &ExecutionFence) -> Result<bool, Exchange
 pub fn append(db: &Connection, request: &AppendRequest) -> Result<AppendReceipt, ExchangeError> {
     validate(request)?;
     let now = chrono::Utc::now().to_rfc3339();
-    let (stream_id, next_seq): (String, u64) = db
+    // An existing stream is only read here; its one write is the sequence
+    // update after the item.
+    let existing = db
         .prepare_cached(
-            "INSERT INTO exchange_streams(id,project_id,kind,subject_id,next_seq,created_at)
-             VALUES(?1,?2,?3,?4,1,?5)
-             ON CONFLICT(project_id,kind,subject_id) DO UPDATE SET next_seq=next_seq
-             RETURNING id,next_seq",
+            "SELECT id,next_seq FROM exchange_streams WHERE project_id=?1 AND kind=?2 AND subject_id=?3",
         )?
         .query_row(
             params![
-                uuid::Uuid::new_v4().to_string(),
                 request.stream.project_id,
                 request.stream.kind.as_str(),
-                request.stream.subject_id,
-                now
+                request.stream.subject_id
             ],
             |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
+        )
+        .optional()?;
+    let (stream_id, next_seq): (String, u64) = match existing {
+        Some(stream) => stream,
+        None => db
+            .prepare_cached(
+                "INSERT INTO exchange_streams(id,project_id,kind,subject_id,next_seq,created_at)
+                 VALUES(?1,?2,?3,?4,1,?5) RETURNING id,next_seq",
+            )?
+            .query_row(
+                params![
+                    uuid::Uuid::new_v4().to_string(),
+                    request.stream.project_id,
+                    request.stream.kind.as_str(),
+                    request.stream.subject_id,
+                    now
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?,
+    };
     if let Some((seq, global_seq)) = db
         .prepare_cached(
             "SELECT seq,global_seq FROM exchange_items WHERE stream_id=?1 AND idempotency_key=?2",

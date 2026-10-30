@@ -7,6 +7,7 @@
 //! measurements of ADR-037 are in `baseline_tests.rs`, a test module of
 //! `persistence_service`.
 
+pub mod digest;
 pub mod log;
 pub(crate) mod render;
 
