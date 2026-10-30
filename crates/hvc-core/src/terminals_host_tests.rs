@@ -416,3 +416,90 @@ fn terminal_host_reports_production_redaction_categories() {
     assert_eq!(projection.categories, ["bearer_token"]);
     assert!(!projection.text.contains("fixture-secret-token"));
 }
+
+/// ADR-037 M3: resuming a session after an edit tells the agent what
+/// changed, with hunks of the sanitized content only: a secret added to the
+/// changed file reaches the notice redacted.
+#[tokio::test]
+async fn a_resume_notice_carries_only_sanitized_hunks() {
+    let data = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    fs::create_dir_all(workspace.path().join("src")).unwrap();
+    fs::write(
+        workspace.path().join("src/config.rs"),
+        "pub const RETRIES: u32 = 3;\n",
+    )
+    .unwrap();
+    let persistence = PersistenceService::initialize(data.path()).unwrap();
+    let project = persistence
+        .create_project(CreateProjectRequest {
+            workspace_path: workspace.path().to_string_lossy().into_owned(),
+            name: Some("Resume notice fixture".into()),
+        })
+        .unwrap()
+        .project;
+    let db_path = persistence.database_path().to_path_buf();
+    let repository = TerminalRepository::new(&db_path);
+    repository
+        .ensure_project_configs(&project.id, true)
+        .unwrap();
+    let run = repository
+        .create_run(CreateTerminalRunRequest {
+            project_id: project.id.clone(),
+            agent_role: AgentRole::BackendAgent,
+            origin: ExecutionOrigin::Manual,
+            execution_mode: AgentExecutionMode::CliProcess,
+            backend: Some(CliBackend::Codex),
+            model: Some("fixture".into()),
+            pulsation_id: None,
+            job_id: None,
+            agent_run_id: None,
+            llm_execution_id: None,
+        })
+        .unwrap();
+    let store = SanitizationStore::new(&db_path);
+    let policy = store.policy_for_project(&project.id).unwrap();
+    store
+        .record_input(&project.id, None, &run.id, policy.identity(), 0, &[], 0, 0)
+        .unwrap();
+    // The session's launch: its snapshot and manifest.
+    CoreTerminalHost
+        .prepare_workspace(&db_path, workspace.path(), &run)
+        .unwrap();
+    rusqlite::Connection::open(&db_path)
+        .unwrap()
+        .execute(
+            "INSERT INTO terminal_run_resume_state(run_id,session_fingerprint_version) VALUES(?1,2)",
+            [&run.id],
+        )
+        .unwrap();
+
+    fs::write(
+        workspace.path().join("src/config.rs"),
+        "pub const RETRIES: u32 = 5;\npub const AUTH: &str = \"Authorization: Bearer fixture-secret-token\";\n",
+    )
+    .unwrap();
+    let terminals = Arc::new(
+        crate::terminals::TerminalService::new(
+            &db_path,
+            tokio::runtime::Handle::current(),
+            Arc::new(crate::events::AppEventBus::default()),
+        )
+        .unwrap(),
+    );
+    let crate::terminals::ResumePreview::Changes(changes) = terminals
+        .preview_resume(&project.id, &run.id)
+        .await
+        .unwrap()
+    else {
+        panic!("a session with a manifest previews its changes");
+    };
+    let notice = hvc_contracts::external_changes::render_notice(&changes).unwrap();
+    assert!(
+        notice.contains("- modified `src/config.rs` (+2 -1 lines)"),
+        "{notice}"
+    );
+    assert!(notice.contains("+pub const RETRIES: u32 = 5;"));
+    assert!(!notice.contains("fixture-secret-token"));
+    assert!(notice.contains("REDACTED"), "{notice}");
+}

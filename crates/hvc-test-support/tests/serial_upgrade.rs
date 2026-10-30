@@ -3037,3 +3037,121 @@ fn v61_to_v62_adds_the_exchange_log_without_backfilling_history() {
         0
     );
 }
+
+/// V63 adds the manifest a resumable CLI run keeps, its resume state and the
+/// Companion's read observations (ADR-037 M3). Purely additive: every
+/// earlier table keeps its definition, and a run from before the upgrade has
+/// no resume state, so its sessions keep the strict rule. Manifests and
+/// resume state go with their run, blobs with their project, observations
+/// with their tool call.
+#[test]
+fn v62_to_v63_keeps_earlier_runs_strict_and_adds_the_resume_manifest() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("hard-vibe-code.db");
+    let mut db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    cli_migrations::migrations::runner()
+        .set_target(refinery::Target::Version(62))
+        .run(&mut db)
+        .unwrap();
+    db.execute_batch(
+        "INSERT INTO projects(id,name,workspace_path,created_at,updated_at) VALUES('p','V62 fixture','C:/fixture','now','now');
+         INSERT INTO terminal_runs(id,project_id,agent_role,origin,execution_mode,status,created_at,updated_at) VALUES('run','p','backend_agent','manual','cli_process','completed','now','now');",
+    )
+    .unwrap();
+    let tables = |db: &Connection| -> Vec<String> {
+        db.prepare(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND sql IS NOT NULL ORDER BY name",
+        )
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+    };
+    let before = tables(&db);
+    drop(db);
+
+    PersistenceService::initialize(root.path()).unwrap();
+    let db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    let after = tables(&db);
+    for table in &before {
+        assert!(after.contains(table), "V63 rebuilds nothing: {table}");
+    }
+    let count = |table: &str| -> u32 {
+        db.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap()
+    };
+    assert_eq!(
+        count("terminal_run_resume_state"),
+        0,
+        "an earlier run keeps the strict rule"
+    );
+    db.execute(
+        "INSERT INTO terminal_run_resume_state(run_id,session_fingerprint_version) VALUES('run',3)",
+        [],
+    )
+    .expect_err("versions are 1 or 2");
+    db.execute(
+        "INSERT INTO terminal_run_resume_state(run_id,session_fingerprint_version,external_changes_sha256) VALUES('run',2,'short')",
+        [],
+    )
+    .expect_err("a change digest is a full SHA-256");
+    db.execute(
+        "INSERT INTO terminal_run_resume_state(run_id,session_fingerprint_version) VALUES('run',2)",
+        [],
+    )
+    .unwrap();
+
+    let sha = "d".repeat(64);
+    db.execute(
+        "INSERT INTO terminal_snapshot_blobs(project_id,sha256,content,byte_len,created_at) VALUES('p',?1,'fn a() {}',9,'now')",
+        [&sha],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO terminal_snapshot_blobs(project_id,sha256,content,byte_len,created_at) VALUES('p',?1,'big',40000,'now')",
+        [&"e".repeat(64)],
+    )
+    .expect_err("a blob is at most 32 KiB");
+    db.execute(
+        "INSERT INTO terminal_run_snapshot_files(run_id,relative_path,original_sha256,projected_sha256,byte_len,blob_sha256) VALUES('run','src/a.rs',?1,?1,9,?1)",
+        [&sha],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO terminal_run_snapshot_files(run_id,relative_path,original_sha256,projected_sha256,byte_len) VALUES('run','src/b.rs','short',?1,1)",
+        [&sha],
+    )
+    .expect_err("digests are full SHA-256");
+    db.execute("DELETE FROM terminal_runs WHERE id='run'", [])
+        .unwrap();
+    assert_eq!(
+        (
+            count("terminal_run_snapshot_files"),
+            count("terminal_run_resume_state")
+        ),
+        (0, 0),
+        "a manifest and its resume state go with their run"
+    );
+    let blob_parent: String = db
+        .query_row(
+            "SELECT \"table\" || ':' || on_delete FROM pragma_foreign_key_list('terminal_snapshot_blobs')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        blob_parent, "projects:CASCADE",
+        "blobs go with their project"
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, u32>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+}

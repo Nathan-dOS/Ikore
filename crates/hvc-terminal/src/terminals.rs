@@ -32,6 +32,8 @@ mod model_catalog;
 pub mod model_identity;
 mod observation_report;
 mod plan_usage;
+mod resume_changes;
+pub use resume_changes::{MAX_RUN_BLOB_BYTES, ResumePreview};
 
 pub use model_catalog::{
     CliModelCatalogEntry, CliModelCatalogService, CliModelCatalogSnapshot, CliModelCatalogSource,
@@ -4543,6 +4545,8 @@ struct CliDiscoveryCache {
 pub struct SafeCliWorkspace {
     directory: tempfile::TempDir,
     manifest_hash: String,
+    /// Path and original digest of every file (ADR-037 M3).
+    manifest: Vec<hvc_contracts::external_changes::ManifestEntry>,
 }
 
 #[derive(Debug)]
@@ -4556,7 +4560,16 @@ impl SafeCliWorkspace {
         Self {
             directory,
             manifest_hash,
+            manifest: Vec::new(),
         }
+    }
+
+    pub fn with_manifest(
+        mut self,
+        manifest: Vec<hvc_contracts::external_changes::ManifestEntry>,
+    ) -> Self {
+        self.manifest = manifest;
+        self
     }
     fn path(&self) -> &Path {
         self.directory.path()
@@ -5571,8 +5584,7 @@ impl TerminalService {
         request: ResumeManualRunRequest,
     ) -> Result<TerminalRun, TerminalError> {
         let host = self.host.as_ref();
-        let prepared_prompt = host.prepare_input("", required(&request.prompt, "prompt")?, None)?;
-        let prompt = prepared_prompt.user_prompt().to_owned();
+        let user_prompt = required(&request.prompt, "prompt")?.to_owned();
         if cli_mode_disabled() {
             return Err(TerminalError::Validation(
                 "CLI Mode is disabled by the local kill switch".into(),
@@ -5667,6 +5679,18 @@ impl TerminalService {
             )));
         }
         let workspace = self.repository.project_workspace(&request.project_id)?;
+        // ADR-037 M3: the notice goes before the developer's message, so the
+        // sanitization below covers it like the rest of the prompt.
+        let (notice, changes_digest) = self.resume_notice(&source, &workspace).await?;
+        let prepared_prompt = host.prepare_input(
+            "",
+            &match notice {
+                Some(notice) => format!("{notice}\n{user_prompt}"),
+                None => user_prompt,
+            },
+            None,
+        )?;
+        let prompt = prepared_prompt.user_prompt().to_owned();
         let spec = build_process_spec(
             host,
             CliInvocationRequest {
@@ -5700,6 +5724,10 @@ impl TerminalService {
                 continuation_reason: Some("explicit_resume".into()),
                 observation_trial_id: None,
             })?;
+        if let Some(digest) = &changes_digest {
+            self.repository
+                .set_external_changes_digest(&run.id, digest)?;
+        }
         let run = self
             .repository
             .set_run_deadline(&run.id, &deadline_timestamp(deadline))?;
@@ -6318,13 +6346,21 @@ impl TerminalService {
         if run.origin != ExecutionOrigin::Manual {
             validate_cli_launch_model(backend, run.model.as_deref(), &spec)?;
         }
-        let session_fingerprint = session_fingerprint(run, &safe_workspace.manifest_hash);
+        // ADR-037 M3: a manual run records a manifest, so its fingerprint
+        // (v2) leaves the workspace out; other runs keep the strict v1.
+        let resumable = run.origin == ExecutionOrigin::Manual;
+        let session_fingerprint = if resumable {
+            resume_changes::session_fingerprint_v2(run)
+        } else {
+            session_fingerprint(run, &safe_workspace.manifest_hash)
+        };
         if let Some(parent_run_id) = run.parent_run_id.as_deref() {
             let parent = self.repository.get_run(parent_run_id)?;
             validate_resume_parent(
+                &self.repository,
                 run,
                 &parent,
-                &safe_workspace.manifest_hash,
+                &safe_workspace,
                 spec.resume_session_id.as_deref(),
             )?;
         }
@@ -6332,6 +6368,10 @@ impl TerminalService {
             .set_workspace_snapshot_hash(&run.id, &safe_workspace.manifest_hash)?;
         self.repository
             .set_session_fingerprint(&run.id, &session_fingerprint)?;
+        if resumable {
+            self.repository
+                .set_session_fingerprint_version(&run.id, 2)?;
+        }
         self.repository
             .set_launch_identity(&run.id, &launch_identity_sha256)?;
         let starting = self.repository.set_run_status(
@@ -8887,11 +8927,13 @@ fn session_fingerprint(run: &TerminalRun, workspace_snapshot_hash: &str) -> Stri
 }
 
 fn validate_resume_parent(
+    repository: &TerminalRepository,
     run: &TerminalRun,
     parent: &TerminalRun,
-    workspace_snapshot_hash: &str,
+    workspace: &SafeCliWorkspace,
     requested_session_id: Option<&str>,
 ) -> Result<(), TerminalError> {
+    let workspace_snapshot_hash = workspace.manifest_hash.as_str();
     if parent.project_id != run.project_id
         || parent.slot_id != run.slot_id
         || parent.backend != run.backend
@@ -8906,11 +8948,6 @@ fn validate_resume_parent(
             "a session whose run is still active cannot be resumed".into(),
         ));
     }
-    if parent.workspace_snapshot_hash.as_deref() != Some(workspace_snapshot_hash) {
-        return Err(TerminalError::Validation(
-            "the workspace changed since the chosen session; start a new session".into(),
-        ));
-    }
     let native_session_id = parent.native_session_id.as_deref().ok_or_else(|| {
         TerminalError::Validation("the chosen run has no native session ID".into())
     })?;
@@ -8919,10 +8956,41 @@ fn validate_resume_parent(
             "the resume ID does not match the chosen session".into(),
         ));
     }
-    let expected = session_fingerprint(run, workspace_snapshot_hash);
+    if repository.session_fingerprint_version(&parent.id)? < 2 {
+        // A session recorded before V63 has no manifest: any change refuses.
+        if parent.workspace_snapshot_hash.as_deref() != Some(workspace_snapshot_hash) {
+            return Err(TerminalError::Validation(
+                "the workspace changed since the chosen session; start a new session".into(),
+            ));
+        }
+        let expected = session_fingerprint(run, workspace_snapshot_hash);
+        if parent.session_fingerprint.as_deref() != Some(expected.as_str()) {
+            return Err(TerminalError::Validation(
+                "the session fingerprint is not compatible with this run".into(),
+            ));
+        }
+        return Ok(());
+    }
+    let expected = resume_changes::session_fingerprint_v2(run);
     if parent.session_fingerprint.as_deref() != Some(expected.as_str()) {
         return Err(TerminalError::Validation(
             "the session fingerprint is not compatible with this run".into(),
+        ));
+    }
+    // ADR-037 M3: the session starts on the snapshot its notice described.
+    let parent_manifest: Vec<_> = repository
+        .snapshot_manifest(&parent.id)?
+        .into_iter()
+        .map(|(entry, _)| entry)
+        .collect();
+    let changes =
+        hvc_contracts::external_changes::diff_manifests(&parent_manifest, &workspace.manifest);
+    let digest = lower_hex(&Sha256::digest(
+        hvc_contracts::external_changes::canonical_change_list(&changes).as_bytes(),
+    ));
+    if repository.external_changes_digest(&run.id)?.as_deref() != Some(digest.as_str()) {
+        return Err(TerminalError::Validation(
+            "the workspace changed again while the session was starting; resume it again".into(),
         ));
     }
     Ok(())
@@ -9254,13 +9322,19 @@ pub(crate) fn materialize_safe_workspace<H: TerminalHost + ?Sized>(
         permissions.set_readonly(true);
         fs::set_permissions(entry.path(), permissions)?;
     }
-    let safe_workspace = SafeCliWorkspace::from_directory(directory, manifest_hash);
+    let safe_workspace = SafeCliWorkspace::from_directory(directory, manifest_hash)
+        .with_manifest(resume_changes::manifest_of(&snapshot));
     host.record_snapshot(
         db_path,
         run,
         &snapshot,
         started.elapsed().as_millis().min(u64::MAX as u128) as u64,
     )?;
+    // ADR-037 M3: a session the developer started can be resumed later, so
+    // its run keeps what it saw.
+    if run.origin == ExecutionOrigin::Manual {
+        resume_changes::record_snapshot_manifest(db_path, run, &snapshot)?;
+    }
     Ok(safe_workspace)
 }
 

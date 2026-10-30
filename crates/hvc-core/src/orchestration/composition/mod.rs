@@ -14,7 +14,8 @@ pub mod anchors;
 pub mod budget;
 pub mod contracts;
 pub mod edits;
-pub mod line_diff;
+// Lives in `hvc-contracts`, so the terminal crate renders resume notices with it (ADR-037 M3).
+pub use hvc_contracts::line_diff;
 pub mod parse;
 pub mod plan;
 pub mod planner;

@@ -369,6 +369,33 @@ CREATE TABLE "terminal_runs" (
     OR (slot_kind='free_form' AND agent_role IS NULL AND free_form_slot_id IS NOT NULL)
   )
 );
+-- V63 (ADR-037 M3)
+-- A run that records a manifest (fingerprint version 2) and, when it resumed
+-- a session, the digest of the change list its notice described. A run with
+-- no row is version 1: its sessions resume only on an unchanged workspace.
+CREATE TABLE terminal_run_resume_state (
+  run_id TEXT PRIMARY KEY REFERENCES terminal_runs(id) ON DELETE CASCADE,
+  session_fingerprint_version INTEGER NOT NULL CHECK(session_fingerprint_version IN (1, 2)),
+  external_changes_sha256 TEXT
+    CHECK(external_changes_sha256 IS NULL OR length(external_changes_sha256) = 64)
+);
+CREATE TABLE terminal_run_snapshot_files (
+  run_id TEXT NOT NULL REFERENCES terminal_runs(id) ON DELETE CASCADE,
+  relative_path TEXT NOT NULL CHECK(length(relative_path) BETWEEN 1 AND 1024),
+  original_sha256 TEXT NOT NULL CHECK(length(original_sha256) = 64),
+  projected_sha256 TEXT NOT NULL CHECK(length(projected_sha256) = 64),
+  byte_len INTEGER NOT NULL CHECK(byte_len >= 0),
+  blob_sha256 TEXT CHECK(blob_sha256 IS NULL OR length(blob_sha256) = 64),
+  PRIMARY KEY(run_id, relative_path)
+);
+CREATE TABLE terminal_snapshot_blobs (
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  sha256 TEXT NOT NULL CHECK(length(sha256) = 64),
+  content TEXT NOT NULL,
+  byte_len INTEGER NOT NULL CHECK(byte_len BETWEEN 0 AND 32768),
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(project_id, sha256)
+);
 
 CREATE TABLE "terminal_slots" (
   id TEXT PRIMARY KEY,

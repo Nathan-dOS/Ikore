@@ -3,6 +3,8 @@
 //! This crate contains no persistence, process execution or authorization logic.
 
 pub mod exchange;
+pub mod external_changes;
+pub mod line_diff;
 pub mod llm;
 pub mod stages;
 pub mod timeout;

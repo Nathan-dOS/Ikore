@@ -5847,6 +5847,23 @@ impl AppModel {
         let generation = self.agents.update(cx, |agents, _| agents.begin(false));
         cx.notify();
         self.agents_task = Some(cx.spawn(async move |this, cx| {
+            // ADR-037 M3: say what the agent will be told. A refusal comes
+            // from the resume itself, with the count.
+            let told = match backend
+                .preview_resume(project_id.clone(), source_run_id.clone())
+                .await
+            {
+                Ok(Some(hvc_core::terminals::ResumePreview::Changes(changes)))
+                    if changes.decision
+                        == hvc_core::exchange::external_changes::ExternalChangesDecision::Notice =>
+                {
+                    Some(format!(
+                        "{} files changed since this session; the agent will be told",
+                        changes.changed_files()
+                    ))
+                }
+                _ => None,
+            };
             let result = backend
                 .resume_manual(ResumeManualRunRequest {
                     project_id,
@@ -5861,6 +5878,9 @@ impl AppModel {
                         model.agents.update(cx, |agents, _| {
                             agents.apply_started_run(generation, run);
                         });
+                        if let Some(told) = told {
+                            model.push_header_notice(HeaderNoticeKind::Notice, told, cx);
+                        }
                         model.schedule_agents_notice_dismiss(cx);
                     }
                     Err(error) => {

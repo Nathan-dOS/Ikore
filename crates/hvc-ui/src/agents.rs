@@ -60,6 +60,15 @@ pub(crate) trait AgentsBackend: Send + Sync {
         request: UpsertFreeFormProviderRouteBindingRequest,
     ) -> AgentsFuture<FreeFormProviderRouteBinding>;
     fn resume_manual(&self, request: ResumeManualRunRequest) -> AgentsFuture<TerminalRun>;
+    /// What resuming a session would tell the agent (ADR-037 M3); `None`
+    /// where the backend cannot say.
+    fn preview_resume(
+        &self,
+        _project_id: String,
+        _source_run_id: String,
+    ) -> AgentsFuture<Option<hvc_core::terminals::ResumePreview>> {
+        Box::pin(async { Ok(None) })
+    }
     fn create_free_form(
         &self,
         request: CreateFreeFormSlotRequest,
@@ -324,6 +333,25 @@ impl AgentsBackend for CoreAgentsBackend {
                 .map_err(|error| {
                     UiCommandError::worker(format!("worker de retomada interrompido: {error}"))
                 })?
+                .map_err(terminal_error)
+        })
+    }
+
+    fn preview_resume(
+        &self,
+        project_id: String,
+        source_run_id: String,
+    ) -> AgentsFuture<Option<hvc_core::terminals::ResumePreview>> {
+        let terminals = self.core.terminals();
+        let runtime = self.core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn(async move { terminals.preview_resume(&project_id, &source_run_id).await })
+                .await
+                .map_err(|error| {
+                    UiCommandError::worker(format!("the change scan was interrupted: {error}"))
+                })?
+                .map(Some)
                 .map_err(terminal_error)
         })
     }

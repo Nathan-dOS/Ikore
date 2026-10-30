@@ -9,3 +9,6 @@
 
 pub mod log;
 pub(crate) mod render;
+
+/// What a resumed CLI session is told changed (ADR-037 M3).
+pub use hvc_contracts::external_changes;

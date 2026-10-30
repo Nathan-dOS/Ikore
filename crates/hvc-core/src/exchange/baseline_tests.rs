@@ -103,7 +103,12 @@ fn record_launch_receipt(service: &PersistenceService, project_id: &str, run: &T
 /// Writes stdout events `from..=to` of a run in one transaction. The M2
 /// measurements read and follow events; they do not need the per-append
 /// commit `exchange_baseline_terminal_events` measures.
-fn bulk_events(service: &PersistenceService, run_id: &str, from: u64, to: u64) -> Vec<TerminalEvent> {
+fn bulk_events(
+    service: &PersistenceService,
+    run_id: &str,
+    from: u64,
+    to: u64,
+) -> Vec<TerminalEvent> {
     let line = "   Compiling hvc-core v0.1.0 (C:/workspace/crates/hvc-core) build step";
     let mut connection = service.connection().expect("connection");
     let transaction = connection.transaction().expect("transaction");
@@ -128,7 +133,13 @@ fn bulk_events(service: &PersistenceService, run_id: &str, from: u64, to: u64) -
                 created_at: Utc::now().to_rfc3339(),
             };
             statement
-                .execute(params![event.id, run_id, sequence, event.content, event.created_at])
+                .execute(params![
+                    event.id,
+                    run_id,
+                    sequence,
+                    event.content,
+                    event.created_at
+                ])
                 .expect("event");
             events.push(event);
         }

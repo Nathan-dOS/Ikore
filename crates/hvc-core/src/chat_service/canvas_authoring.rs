@@ -1189,6 +1189,7 @@ impl ChatService {
                     assistant_message_id: admission.request.assistant_message_id.clone(),
                     workspace_root: PathBuf::new(),
                     cancellation: cancellation.clone(),
+                    host_notice: None,
                 };
                 let usage = UsageRecorder::new(
                     &self.db_path,
