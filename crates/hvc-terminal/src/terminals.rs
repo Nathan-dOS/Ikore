@@ -2030,6 +2030,9 @@ impl TerminalRepository {
                 current.status.as_str()
             ],
         )?;
+        if changed > 0 {
+            host.record_run_status(&transaction, &current.project_id, run_id, status)?;
+        }
         if changed > 0 && terminal && status != TerminalRunStatus::Completed {
             transaction.execute(
                 "UPDATE token_usage_records SET quality='partial',updated_at=?1
@@ -2529,17 +2532,41 @@ impl TerminalRepository {
             .map_err(TerminalError::from)
     }
 
+    /// One page of a run's events after `after_sequence`, sanitized.
+    ///
+    /// ADR-037 M2: a run recorded under a known sanitization policy is read
+    /// by indexed range, with up to [`RANGE_CONTEXT_EVENTS`] earlier events
+    /// as redaction context, so a missed range costs one page whatever the
+    /// run's length. A legacy run still reads its whole history, which its
+    /// fragmented-redaction check needs.
     pub fn list_events(
         &self,
         run_id: &str,
         after_sequence: u64,
         limit: usize,
     ) -> Result<Vec<TerminalEvent>, TerminalError> {
-        Ok(self
-            .redacted_run_events(run_id)?
+        let limit = limit.clamp(1, 500);
+        let connection = self.connection()?;
+        if !run_has_known_policy(&connection, run_id)? {
+            return Ok(self
+                .redacted_run_events(run_id)?
+                .into_iter()
+                .filter(|event| event.sequence > after_sequence)
+                .take(limit)
+                .collect());
+        }
+        let start = after_sequence.saturating_sub(RANGE_CONTEXT_EVENTS);
+        let mut events = read_run_events_range(
+            &connection,
+            run_id,
+            start,
+            limit + (after_sequence - start) as usize,
+        )?;
+        sanitize_history_events(self.host.as_ref(), &mut events, true)?;
+        Ok(events
             .into_iter()
             .filter(|event| event.sequence > after_sequence)
-            .take(limit.clamp(1, 500))
+            .take(limit)
             .collect())
     }
 
@@ -2547,13 +2574,7 @@ impl TerminalRepository {
         let host = self.host.as_ref();
         let connection = self.connection()?;
         let mut events = read_run_history_events(&connection, run_id)?;
-        let known_policy: bool = connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM secret_sanitization_receipts receipt
-             JOIN terminal_runs run ON run.id=?1 AND receipt.project_id=run.project_id
-             WHERE receipt.call_id=run.id OR receipt.call_id=run.llm_execution_id)",
-            [run_id],
-            |row| row.get(0),
-        )?;
+        let known_policy = run_has_known_policy(&connection, run_id)?;
         sanitize_history_events(host, &mut events, known_policy)?;
         Ok(events)
     }
@@ -2668,12 +2689,26 @@ impl TerminalRepository {
              (SELECT id FROM terminal_runs WHERE status IN ('queued','starting','running'))",
             [&now],
         )?;
+        let interrupted = transaction
+            .prepare(
+                "SELECT id,project_id FROM terminal_runs WHERE status IN ('queued','starting','running')",
+            )?
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
         let changed = transaction.execute(
             "UPDATE terminal_runs SET status='interrupted',error_code='app_restart',
                error_message='Run interrupted because the app closed.',finished_at=?1,updated_at=?1
              WHERE status IN ('queued','starting','running')",
             [now],
         )?;
+        for (run_id, project_id) in &interrupted {
+            self.host.record_run_status(
+                &transaction,
+                project_id,
+                run_id,
+                TerminalRunStatus::Interrupted,
+            )?;
+        }
         transaction.commit()?;
         Ok(changed)
     }
@@ -7737,6 +7772,41 @@ fn redact_continuous_segments(
         .collect()
 }
 
+/// Earlier events a ranged read sanitizes along with its page, so a secret
+/// split across the page boundary is still redacted.
+pub const RANGE_CONTEXT_EVENTS: u64 = 64;
+
+/// Whether the run was recorded under a known sanitization policy.
+fn run_has_known_policy(connection: &Connection, run_id: &str) -> Result<bool, TerminalError> {
+    Ok(connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM secret_sanitization_receipts receipt
+         JOIN terminal_runs run ON run.id=?1 AND receipt.project_id=run.project_id
+         WHERE receipt.call_id=run.id OR receipt.call_id=run.llm_execution_id)",
+        [run_id],
+        |row| row.get(0),
+    )?)
+}
+
+/// Events after `after_sequence`, in order, through the run/sequence index.
+fn read_run_events_range(
+    connection: &Connection,
+    run_id: &str,
+    after_sequence: u64,
+    limit: usize,
+) -> Result<Vec<TerminalEvent>, TerminalError> {
+    let mut statement = connection.prepare_cached(
+        "SELECT id,run_id,sequence,kind,stream,content,created_at,
+                redaction_count,redaction_categories_json FROM terminal_events
+         WHERE run_id=?1 AND sequence>?2 ORDER BY sequence LIMIT ?3",
+    )?;
+    let rows = statement.query_map(
+        params![required(run_id, "runId")?, after_sequence, limit as i64],
+        map_terminal_event,
+    )?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(TerminalError::from)
+}
+
 fn read_run_history_events(
     connection: &Connection,
     run_id: &str,
@@ -7748,33 +7818,35 @@ fn read_run_history_events(
     )?;
     let rows = statement.query_map(
         params![required(run_id, "runId")?, MAX_RUN_EVENTS + 1],
-        |row| {
-            let kind: String = row.get(3)?;
-            let categories: String = row.get(8)?;
-            Ok(TerminalEvent {
-                id: row.get(0)?,
-                run_id: row.get(1)?,
-                sequence: row.get(2)?,
-                kind: TerminalEventKind::parse(&kind).ok_or_else(|| invalid_column(3, kind))?,
-                stream: row.get(4)?,
-                content: row.get(5)?,
-                redaction_count: row.get(7)?,
-                redaction_categories: serde_json::from_str(&categories).map_err(|error| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        8,
-                        rusqlite::types::Type::Text,
-                        Box::new(error),
-                    )
-                })?,
-                created_at: row.get(6)?,
-            })
-        },
+        map_terminal_event,
     )?;
     let events = rows.collect::<Result<Vec<_>, _>>()?;
     if events.len() > MAX_RUN_EVENTS {
         return Err(TerminalError::OutputLimit);
     }
     Ok(events)
+}
+
+fn map_terminal_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<TerminalEvent> {
+    let kind: String = row.get(3)?;
+    let categories: String = row.get(8)?;
+    Ok(TerminalEvent {
+        id: row.get(0)?,
+        run_id: row.get(1)?,
+        sequence: row.get(2)?,
+        kind: TerminalEventKind::parse(&kind).ok_or_else(|| invalid_column(3, kind))?,
+        stream: row.get(4)?,
+        content: row.get(5)?,
+        redaction_count: row.get(7)?,
+        redaction_categories: serde_json::from_str(&categories).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                8,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?,
+        created_at: row.get(6)?,
+    })
 }
 
 /// Both export digests cover the full v1 envelope without the `sanitization`

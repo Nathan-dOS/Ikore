@@ -214,7 +214,15 @@ impl PersistenceService {
         )?;
         let updated = if current.status == PulsationStatus::Planning {
             tx.execute("UPDATE pulsations SET stage='Intake',state_version=state_version+1,updated_at=?2 WHERE id=?1",params![pulse,Self::now_iso()])?;
-            tx.execute("INSERT INTO pulse_events(id,pulsation_id,event_type,from_status,to_status,from_stage,to_stage,message,created_at) VALUES(?1,?2,'description_revised','planning','planning',?3,'Intake','Request edited; the previous generation was superseded.',?4)",params![Uuid::new_v4().to_string(),pulse,current.stage.as_db_value(),Self::now_iso()])?;
+            let event_id = Uuid::new_v4().to_string();
+            tx.execute("INSERT INTO pulse_events(id,pulsation_id,event_type,from_status,to_status,from_stage,to_stage,message,created_at) VALUES(?1,?2,'description_revised','planning','planning',?3,'Intake','Request edited; the previous generation was superseded.',?4)",params![event_id,pulse,current.stage.as_db_value(),Self::now_iso()])?;
+            Self::record_pulsation_transition(
+                &tx,
+                &current,
+                PulsationStatus::Planning,
+                "description_revised",
+                &event_id,
+            )?;
             Self::find_pulsation_by_id(&tx, pulse)?.ok_or_else(|| invalid("Pulsation missing."))?
         } else {
             Self::transition_pulsation(

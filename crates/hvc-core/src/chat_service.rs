@@ -80,6 +80,34 @@ impl Display for ChatCommandError {
 
 impl std::error::Error for ChatCommandError {}
 
+/// The exchange log item of a finished Companion reply (ADR-037 M2).
+fn record_turn_finished(
+    db: &rusqlite::Connection,
+    message_id: &str,
+) -> Result<(), ChatCommandError> {
+    use crate::exchange::log::{AppendRequest, LogRecordKind, PayloadRef, StreamKind, StreamRef};
+    let (project_id, conversation_id): (String, String) = db.query_row(
+        "SELECT c.project_id,m.conversation_id FROM chat_messages m JOIN chat_conversations c ON c.id=m.conversation_id WHERE m.id=?1",
+        [message_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    crate::exchange::log::record(
+        db,
+        &AppendRequest::host(
+            StreamRef::new(project_id, StreamKind::ChatConversation, conversation_id),
+            LogRecordKind::ChatTurnFinished,
+            hvc_contracts::exchange::HostComponent::CompanionState,
+            Some(PayloadRef {
+                table: "chat_messages",
+                id: message_id.to_owned(),
+            }),
+            format!("chat_message:{message_id}:final"),
+        ),
+    )
+    .map_err(|error| ChatCommandError::new("exchange_log", error.to_string()))?;
+    Ok(())
+}
+
 impl From<rusqlite::Error> for ChatCommandError {
     fn from(error: rusqlite::Error) -> Self {
         Self::database(error)
@@ -2700,13 +2728,21 @@ impl ChatService {
         error_code: Option<&str>,
         error_message: Option<&str>,
     ) -> Result<(), ChatCommandError> {
-        self.connection()?.execute(
-            "UPDATE chat_messages
-             SET status = ?1, error_code = ?2, error_message = ?3, updated_at = ?4
-             WHERE id = ?5",
-            params![status, error_code, error_message, now_iso(), message_id],
-        )?;
-        Ok(())
+        let db = self.connection()?;
+        crate::exchange::log::atomically(&db, || {
+            db.execute(
+                "UPDATE chat_messages
+                 SET status = ?1, error_code = ?2, error_message = ?3, updated_at = ?4
+                 WHERE id = ?5",
+                params![status, error_code, error_message, now_iso(), message_id],
+            )?;
+            // ADR-037 M2: a finished reply is one exchange log item of its
+            // conversation, written with the status that finishes it.
+            if matches!(status, "completed" | "cancelled" | "failed") {
+                record_turn_finished(&db, message_id)?;
+            }
+            Ok(())
+        })
     }
 
     fn replace_message_content(
@@ -5317,6 +5353,45 @@ mod tests {
             Arc::new(NoopChatEventSink),
         ));
         (temp, workspace, service)
+    }
+
+    /// ADR-037 M2: a finished reply is one item of its conversation's
+    /// stream; streaming states record nothing and a repeat is a duplicate.
+    #[test]
+    fn a_finished_reply_records_one_exchange_item() {
+        let (_temp, _workspace, service) = prepare_chat();
+        let db = service.connection().unwrap();
+        db.execute_batch(
+            "INSERT INTO chat_conversations(id,project_id,provider_id_snapshot,model_id_snapshot,title,created_at,updated_at) VALUES('chat','project-a','openai','model','title','now','now');
+             INSERT INTO chat_messages(id,conversation_id,ordinal,role,content,status,created_at,updated_at) VALUES('reply','chat',1,'assistant','','streaming','now','now');",
+        )
+        .unwrap();
+        service
+            .set_message_status("reply", "streaming", None, None)
+            .unwrap();
+        service
+            .set_message_status("reply", "completed", None, None)
+            .unwrap();
+        service
+            .set_message_status("reply", "completed", None, None)
+            .unwrap();
+        let items: Vec<(String, String)> = db
+            .prepare(
+                "SELECT i.kind,i.idempotency_key FROM exchange_items i JOIN exchange_streams s ON s.id=i.stream_id
+                 WHERE s.kind='chat_conversation' AND s.subject_id='chat'",
+            )
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            items,
+            vec![(
+                "chat_turn_finished".to_owned(),
+                "chat_message:reply:final".to_owned()
+            )]
+        );
     }
 
     #[test]

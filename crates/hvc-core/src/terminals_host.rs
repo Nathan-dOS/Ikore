@@ -68,6 +68,25 @@ impl TerminalUsageRecorder for CliUsageRecorder {
 }
 
 impl TerminalHost for CoreTerminalHost {
+    fn record_run_status(
+        &self,
+        transaction: &rusqlite::Connection,
+        project_id: &str,
+        run_id: &str,
+        status: hvc_terminal::terminals::TerminalRunStatus,
+    ) -> rusqlite::Result<()> {
+        crate::exchange::log::record_terminal_run_status(
+            transaction,
+            project_id,
+            run_id,
+            status.as_str(),
+        )
+        .map(|_| ())
+        .map_err(|error| match error {
+            crate::exchange::log::ExchangeError::Storage(error) => error,
+            other => rusqlite::Error::ToSqlConversionFailure(Box::new(other)),
+        })
+    }
     fn redact_context(&self, text: &str) -> Result<ContextRedaction, String> {
         secret_redactor::redact_context(text)
     }

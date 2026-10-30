@@ -671,6 +671,15 @@ impl AgentIdentifier {
     }
 }
 
+/// Live events a run skipped: sequences after `after` and before `before`.
+/// The panel re-reads them by range instead of reloading (ADR-037 M2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TerminalGap {
+    pub(crate) run_id: String,
+    pub(crate) after: u64,
+    pub(crate) before: u64,
+}
+
 #[derive(Debug)]
 pub(crate) struct AgentsModel {
     pub(crate) selected_agent: Option<AgentIdentifier>,
@@ -978,45 +987,42 @@ impl AgentsModel {
         true
     }
 
-    pub(crate) fn record_event(&mut self, envelope: TerminalEventEnvelope) -> bool {
-        let Some(snapshot) = self.snapshot.as_mut() else {
-            return false;
-        };
+    /// Applies one live event; returns the range it skipped, if any, for a
+    /// ranged re-read (ADR-037 M2).
+    pub(crate) fn record_event(&mut self, envelope: TerminalEventEnvelope) -> Option<TerminalGap> {
+        let snapshot = self.snapshot.as_mut()?;
         if snapshot.project_id != envelope.project_id {
-            return false;
+            return None;
         }
         let role = envelope.agent_role;
         let slot_id = envelope.run.slot_id.clone();
         let run_id = envelope.run_id.clone();
         let run_is_active = envelope.run.status.is_active();
         if let Some(role) = role {
-            let Some(agent) = snapshot
+            let agent = snapshot
                 .agents
                 .iter_mut()
-                .find(|agent| agent.config.agent_role == role)
-            else {
-                return false;
-            };
+                .find(|agent| agent.config.agent_role == role)?;
             upsert_recent_run(&mut agent.recent_runs, envelope.run);
             if run_is_active || !self.selected_run_by_role.contains_key(&role) {
                 self.selected_run_by_role.insert(role, run_id.clone());
             }
         } else {
-            let Some(free_form) = snapshot
+            let free_form = snapshot
                 .free_form_slots
                 .iter_mut()
-                .find(|free_form| free_form.slot.id == slot_id)
-            else {
-                return false;
-            };
+                .find(|free_form| free_form.slot.id == slot_id)?;
             upsert_recent_run(&mut free_form.recent_runs, envelope.run);
             if run_is_active || !self.selected_run_by_slot.contains_key(&slot_id) {
                 self.selected_run_by_slot.insert(slot_id, run_id.clone());
             }
         }
-        let events = self.events_by_run.entry(run_id).or_default();
-        let gap = events.last().map_or(envelope.sequence > 1, |event| {
-            envelope.sequence > event.sequence.saturating_add(1)
+        let events = self.events_by_run.entry(run_id.clone()).or_default();
+        let after = events.last().map_or(0, |event| event.sequence);
+        let gap = (envelope.sequence > after.saturating_add(1)).then_some(TerminalGap {
+            run_id,
+            after,
+            before: envelope.sequence,
         });
         if events
             .last()
@@ -1028,6 +1034,18 @@ impl AgentsModel {
             }
         }
         gap
+    }
+
+    /// Merges events a ranged re-read returned into the run's buffer, in
+    /// sequence order and once each, keeping the newest 500.
+    pub(crate) fn merge_events(&mut self, run_id: &str, missing: Vec<TerminalEvent>) {
+        let events = self.events_by_run.entry(run_id.to_owned()).or_default();
+        events.extend(missing);
+        events.sort_by_key(|event| event.sequence);
+        events.dedup_by_key(|event| event.sequence);
+        if events.len() > 500 {
+            events.drain(..events.len() - 500);
+        }
     }
 
     pub(crate) fn record_llm(&mut self, envelope: &LlmEventEnvelope) -> bool {
@@ -1437,12 +1455,20 @@ mod tests {
     #[test]
     fn live_terminal_events_insert_select_and_update_automatic_run() {
         let mut model = model();
-        assert!(!model.record_event(event_envelope(TerminalRunStatus::Running, 1)));
+        assert!(
+            model
+                .record_event(event_envelope(TerminalRunStatus::Running, 1))
+                .is_none()
+        );
         assert_eq!(
             model.selected_run_by_role.get(&AgentRole::BackendAgent),
             Some(&"run-1".to_string())
         );
-        assert!(!model.record_event(event_envelope(TerminalRunStatus::Completed, 2)));
+        assert!(
+            model
+                .record_event(event_envelope(TerminalRunStatus::Completed, 2))
+                .is_none()
+        );
         let agent = &model.snapshot.as_ref().unwrap().agents[0];
         assert_eq!(agent.recent_runs[0].status, TerminalRunStatus::Completed);
         assert_eq!(model.events_by_run["run-1"].len(), 2);
@@ -1451,14 +1477,47 @@ mod tests {
     #[test]
     fn live_terminal_events_report_sequence_gaps() {
         let mut model = model();
-        assert!(model.record_event(event_envelope(TerminalRunStatus::Running, 3)));
+        let gap = model
+            .record_event(event_envelope(TerminalRunStatus::Running, 3))
+            .expect("events 1 and 2 are missing");
+        assert_eq!(
+            (gap.run_id.as_str(), gap.after, gap.before),
+            ("run-1", 0, 3)
+        );
+    }
+
+    #[test]
+    fn a_reread_range_merges_in_order_without_duplicates() {
+        let mut model = model();
+        assert!(
+            model
+                .record_event(event_envelope(TerminalRunStatus::Running, 1))
+                .is_none()
+        );
+        let gap = model
+            .record_event(event_envelope(TerminalRunStatus::Running, 4))
+            .expect("events 2 and 3 are missing");
+        assert_eq!((gap.after, gap.before), (1, 4));
+        let missing = (2..=4)
+            .map(|sequence| event_envelope(TerminalRunStatus::Running, sequence).event)
+            .collect();
+        model.merge_events("run-1", missing);
+        let sequences: Vec<u64> = model.events_by_run["run-1"]
+            .iter()
+            .map(|event| event.sequence)
+            .collect();
+        assert_eq!(sequences, vec![1, 2, 3, 4]);
     }
 
     #[test]
     fn live_terminal_event_buffer_keeps_only_the_latest_five_hundred_events() {
         let mut model = model();
         for sequence in 1..=1_000 {
-            assert!(!model.record_event(event_envelope(TerminalRunStatus::Running, sequence,)));
+            assert!(
+                model
+                    .record_event(event_envelope(TerminalRunStatus::Running, sequence))
+                    .is_none()
+            );
         }
 
         let events = &model.events_by_run["run-1"];

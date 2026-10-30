@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
+#[path = "exchange_follow.rs"]
+mod exchange_follow;
 #[path = "preparation_ui.rs"]
 mod preparation_ui;
 #[path = "resolution_ui.rs"]
@@ -483,6 +485,16 @@ pub struct AppModel {
     /// A terminal/agents sequence gap raised `needs_resync`; the next applied Agents snapshot
     /// is the resync that clears it. Without this the header stayed red for the whole session.
     agents_resync_pending: bool,
+    /// ADR-037 M2: the cursor over the open project's exchange log.
+    pub(crate) exchange: Option<hvc_core::exchange::log::ExchangeFollower>,
+    /// The last time the log answered `reset`; the doorbell is trusted again a minute later.
+    pub(crate) exchange_reset_at: Option<std::time::Instant>,
+    pub(crate) exchange_read_task: Option<Task<()>>,
+    pub(crate) last_pulsation_poll: Option<std::time::Instant>,
+    /// Coalesces the pulsation refreshes a burst of doorbells asks for.
+    pub(crate) doorbell_refresh_task: Option<Task<()>>,
+    /// Ranged re-reads of terminal runs that skipped events, by run.
+    pub(crate) terminal_gap_tasks: HashMap<String, Task<()>>,
     vault_refresh_task: Option<Task<()>>,
     vault_search_task: Option<Task<()>>,
     vault_rename_task: Option<Task<()>>,
@@ -987,6 +999,12 @@ impl AppModel {
             cleanup_read: Default::default(),
             event_resync_pending: false,
             agents_resync_pending: false,
+            exchange: None,
+            exchange_reset_at: None,
+            exchange_read_task: None,
+            last_pulsation_poll: None,
+            doorbell_refresh_task: None,
+            terminal_gap_tasks: HashMap::new(),
             vault_refresh_task: None,
             vault_search_task: None,
             vault_rename_task: None,
@@ -7826,7 +7844,7 @@ impl AppModel {
                     Err(RecvError::Lagged(_)) => {
                         if this
                             .update(cx, |model, cx| {
-                                model.request_event_resync(cx);
+                                model.handle_event_lag(cx);
                             })
                             .is_err()
                         {
@@ -7860,8 +7878,10 @@ impl AppModel {
                     if model.lifecycle.is_disposed() {
                         return false;
                     }
+                    // ADR-037 M2: with a healthy doorbell, pulsations poll every 5 s.
                     if model.workspace.read(cx).project_id.is_some()
                         && !model.snapshot_in_flight
+                        && model.pulsation_poll_due()
                         && model.lifecycle.try_begin_poll()
                     {
                         model.refresh_pulsations(cx);
@@ -8355,6 +8375,11 @@ impl AppModel {
             self.apply_indexing_event(event, cx);
             return;
         }
+        // Doorbells are frequent and say nothing new about themselves.
+        if let AppEvent::Exchange(doorbell) = event {
+            self.handle_exchange_doorbell(doorbell, cx);
+            return;
+        }
         if let AppEvent::ModelPull(event) = event {
             match &event {
                 ModelPullEvent::Completed { model } => self.record_activity(
@@ -8569,15 +8594,12 @@ impl AppModel {
                 let gap = self
                     .agents
                     .update(cx, |agents, _| agents.record_event(*envelope));
-                if gap {
-                    self.needs_resync = true;
-                    self.agents_resync_pending = true;
-                    self.status = "Terminal gap detected; reloading persisted history".into();
+                // ADR-037 M2: the skipped range is re-read, not the panel.
+                if let Some(gap) = gap {
+                    self.repair_terminal_gap(gap, cx);
                 }
-                if terminal || gap {
-                    if terminal {
-                        self.refresh_pulsations(cx);
-                    }
+                if terminal {
+                    self.refresh_pulsations(cx);
                     if self.active_view == AppView::Agents {
                         self.refresh_agents(cx);
                     } else {
@@ -8612,6 +8634,7 @@ impl AppModel {
             // Returned early above, before the generic event-count/status preamble.
             AppEvent::Indexing(_) => unreachable!(),
             AppEvent::ModelPull(_) => unreachable!(),
+            AppEvent::Exchange(_) => unreachable!(),
         }
         cx.notify();
     }

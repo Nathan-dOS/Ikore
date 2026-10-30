@@ -31,6 +31,25 @@ pub enum AppEvent {
     Terminal(Box<TerminalEventEnvelope>),
     Indexing(IndexingEvent),
     ModelPull(ModelPullEvent),
+    /// An exchange log item was committed (ADR-037 M2).
+    Exchange(crate::exchange::log::ExchangeDoorbellV1),
+}
+
+/// How a subscriber that missed an event recovers it (ADR-037 M2). Every
+/// variant has a class; a new variant does not compile until it gets one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventClass {
+    /// Its domain write appends a log item to a stream of this kind; a
+    /// follower reads it back from its cursor.
+    Durable(crate::exchange::log::StreamKind),
+    /// Has a durable sequence of its own and a ranged re-read (terminal
+    /// events, chat message sequences); a run's status is durable apart,
+    /// in its `terminal_run` stream.
+    OwnSequence,
+    /// Broadcast only; its source is re-read when needed.
+    Ephemeral,
+    /// The doorbell itself; never recorded.
+    Doorbell,
 }
 
 impl AppEvent {
@@ -58,6 +77,33 @@ impl AppEvent {
                 ModelPullEvent::Completed { .. } => "model_pull://completed",
                 ModelPullEvent::Failed { .. } => "model_pull://failed",
             },
+            Self::Exchange(_) => "exchange://doorbell",
+        }
+    }
+
+    /// The event inventory of the Agent Exchange specification, section 2.
+    pub fn class(&self) -> EventClass {
+        use crate::chat_service::ChatEventKind;
+        use crate::exchange::log::StreamKind;
+        match self {
+            Self::Forge(_) => EventClass::Durable(StreamKind::Forge),
+            Self::Notes(_) => EventClass::Durable(StreamKind::Notes),
+            Self::Drawings(_) => EventClass::Durable(StreamKind::Drawings),
+            Self::DocDrift(_) => EventClass::Durable(StreamKind::Docs),
+            Self::CanvasAuthoring(_) => EventClass::Durable(StreamKind::ChatConversation),
+            Self::Chat(envelope) => match envelope.kind {
+                ChatEventKind::TurnCompleted
+                | ChatEventKind::TurnFailed
+                | ChatEventKind::TurnCancelled => EventClass::Durable(StreamKind::ChatConversation),
+                _ => EventClass::OwnSequence,
+            },
+            Self::Terminal(_) => EventClass::OwnSequence,
+            Self::Llm(_)
+            | Self::Indexing(_)
+            | Self::ModelPull(_)
+            | Self::Voice(_)
+            | Self::WorkspaceChanged(_) => EventClass::Ephemeral,
+            Self::Exchange(_) => EventClass::Doorbell,
         }
     }
 }
@@ -183,6 +229,52 @@ mod tests {
             };
             assert_eq!(event.relative_path, format!("note-{sequence}.md"));
         }
+    }
+
+    /// The event inventory of ADR-037 (specification, section 2). `class`
+    /// matches every variant, so a new one does not compile without a class;
+    /// this checks the classes the inventory assigns.
+    #[test]
+    fn every_event_family_has_its_inventory_class() {
+        use crate::exchange::log::{ExchangeDoorbellV1, StreamKind};
+        let forge = AppEvent::Forge(crate::feature_forge::ForgeEvent {
+            project_id: "p".into(),
+            feature_id: None,
+        });
+        let notes = AppEvent::Notes(crate::companion_notes::NotesEvent {
+            project_id: "p".into(),
+            note_id: None,
+        });
+        let drawings = AppEvent::Drawings(crate::companion_drawings::service::DrawingsEvent {
+            project_id: "p".into(),
+            drawing_id: "d".into(),
+            revision: 1,
+        });
+        let docs = AppEvent::DocDrift(crate::doc_reconciliation::DocDriftEvent {
+            project_id: "p".into(),
+        });
+        let workspace = AppEvent::WorkspaceChanged(WorkspaceChangedEvent {
+            kind: "modify".into(),
+            relative_path: "a.md".into(),
+            timestamp: "now".into(),
+        });
+        let doorbell = AppEvent::Exchange(ExchangeDoorbellV1 {
+            project_id: "p".into(),
+            stream_id: "s".into(),
+            stream_kind: StreamKind::Forge,
+            subject_id: "project".into(),
+            kind: "forge_changed".into(),
+            seq: 1,
+            global_seq: 1,
+            previous_global_seq: 0,
+        });
+        assert_eq!(forge.class(), EventClass::Durable(StreamKind::Forge));
+        assert_eq!(notes.class(), EventClass::Durable(StreamKind::Notes));
+        assert_eq!(drawings.class(), EventClass::Durable(StreamKind::Drawings));
+        assert_eq!(docs.class(), EventClass::Durable(StreamKind::Docs));
+        assert_eq!(workspace.class(), EventClass::Ephemeral);
+        assert_eq!(doorbell.class(), EventClass::Doorbell);
+        assert_eq!(doorbell.event_name(), "exchange://doorbell");
     }
 
     #[tokio::test]

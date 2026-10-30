@@ -319,3 +319,301 @@ fn exchange_baseline_snapshot_manifest() {
         }),
     );
 }
+
+/// ADR-037 M2: a ranged re-read of a run recorded under a known policy, one
+/// page of 500 at spread cursors of a 100,000-event run. Acceptance: p95 at
+/// most 50 ms.
+#[test]
+#[ignore = "ADR-037 M2 measurement; run explicitly with --ignored --nocapture"]
+fn exchange_m2_terminal_reread() {
+    let events: u64 = 100_000;
+    let data = tempfile::tempdir().expect("data dir");
+    let workspace = tempfile::tempdir().expect("workspace");
+    let service = PersistenceService::initialize(data.path()).expect("service");
+    let project_id = project_id(&service, workspace.path());
+    let repository = TerminalRepository::new(service.database_path());
+    let run = running_cli_run(&repository, &project_id);
+    record_launch_receipt(&service, &project_id, &run);
+    let line = "   Compiling hvc-core v0.1.0 (C:/workspace/crates/hvc-core) build step";
+    for sequence in 1..=events {
+        repository
+            .append_event(
+                &run.id,
+                sequence,
+                TerminalEventKind::Stdout,
+                Some("stdout"),
+                &format!("{line} {sequence}"),
+            )
+            .expect("append");
+    }
+    // A fixed, spread set of cursors (no RNG dependency), each read twice.
+    let mut samples = Vec::new();
+    for step in 0..50u64 {
+        let after = (step * 7_919) % (events - 500);
+        for _ in 0..2 {
+            let started = Instant::now();
+            let page = repository.list_events(&run.id, after, 500).expect("page");
+            samples.push(started.elapsed());
+            assert_eq!(page.len(), 500);
+            assert_eq!(page[0].sequence, after + 1);
+        }
+    }
+    report(
+        "m2_terminal_reread",
+        json!({ "events": events, "page_500": summary(samples) }),
+    );
+}
+
+/// What the load rehearsal's subscriber saw.
+#[derive(Debug, Default)]
+struct SubscriberTally {
+    cursor: i64,
+    last_terminal: u64,
+    lagged: u64,
+    gaps: u64,
+    reread_events: u64,
+    resets: u64,
+    transitions: u64,
+    /// The run's final status arrived; its tail must be read once.
+    run_settled: bool,
+    tail_read: bool,
+}
+
+/// Reads the log from `after` until the follower is current; false when
+/// the log asks for a snapshot.
+fn follow_log(
+    service: &PersistenceService,
+    project_id: &str,
+    follower: &mut crate::exchange::log::ExchangeFollower,
+    mut after: i64,
+    tally: &mut SubscriberTally,
+) -> bool {
+    use crate::exchange::log::{PageAction, StreamKind};
+    loop {
+        let page = service
+            .exchange_read_after(project_id, after, 500)
+            .expect("read");
+        tally.transitions += page
+            .items
+            .iter()
+            .filter(|item| item.stream_kind == StreamKind::Pulsation)
+            .count() as u64;
+        tally.run_settled |= page
+            .items
+            .iter()
+            .any(|item| item.stream_kind == StreamKind::TerminalRun);
+        match follower.on_page(&page) {
+            PageAction::Snapshot => return false,
+            PageAction::Continue(next) => after = next,
+            PageAction::Done => return true,
+        }
+    }
+}
+
+/// ADR-037 M2 load rehearsal: a slow subscriber on the default event bus
+/// while a run writes 100,000 terminal events and a pulsation makes 1,000
+/// transitions. The subscriber follows the exchange log and repairs every
+/// terminal gap by ranged re-read; acceptance is no full reload (no reset),
+/// every event reached and every transition seen once.
+#[test]
+#[ignore = "ADR-037 M2 load rehearsal; run explicitly with --ignored --nocapture"]
+fn exchange_m2_load_slow_subscriber() {
+    use crate::events::{AppEvent, AppEventBus};
+    use crate::exchange::log::{DoorbellAction, ExchangeFollower, StreamKind};
+    use crate::terminals::TerminalEventEnvelope;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tokio::sync::broadcast::error::RecvError;
+
+    let events: u64 = 100_000;
+    let data = tempfile::tempdir().expect("data dir");
+    let workspace = tempfile::tempdir().expect("workspace");
+    let service = PersistenceService::initialize(data.path()).expect("service");
+    let project_id = project_id(&service, workspace.path());
+    let repository = TerminalRepository::new(service.database_path());
+    let run = running_cli_run(&repository, &project_id);
+    record_launch_receipt(&service, &project_id, &run);
+    let pulsation = service
+        .create_pulsation(CreatePulsationRequest {
+            project_id: project_id.clone(),
+            feature_name: "Exchange load".into(),
+        })
+        .expect("pulsation")
+        .pulsation;
+    let mut connection = service.connection().expect("connection");
+    let mut current = to_running(&mut connection, pulsation);
+
+    let bus = Arc::new(AppEventBus::default());
+    let stop = Arc::new(AtomicBool::new(false));
+    let start_cursor = service.exchange_cursor(&project_id).expect("cursor");
+    crate::exchange::log::spawn_notifier(
+        service.database_path().to_path_buf(),
+        bus.clone(),
+        stop.clone(),
+        Duration::from_millis(25),
+    )
+    .expect("notifier");
+    let mut receiver = bus.subscribe();
+
+    // The subscriber is slow on purpose: it sleeps every 200 events.
+    let subscriber_service = service.clone();
+    let subscriber_project = project_id.clone();
+    let subscriber_run = run.id.clone();
+    let subscriber = std::thread::spawn(move || {
+        let repository = TerminalRepository::new(subscriber_service.database_path());
+        let mut follower = ExchangeFollower::new(subscriber_project.clone(), start_cursor);
+        let mut tally = SubscriberTally::default();
+        let mut handled = 0u64;
+        loop {
+            match receiver.blocking_recv() {
+                Ok(AppEvent::Terminal(envelope)) => {
+                    if envelope.sequence > tally.last_terminal + 1 {
+                        tally.gaps += 1;
+                        let mut after = tally.last_terminal;
+                        while after + 1 < envelope.sequence {
+                            let page = repository
+                                .list_events(&subscriber_run, after, 500)
+                                .expect("re-read");
+                            let Some(last) = page.last().map(|event| event.sequence) else {
+                                break;
+                            };
+                            tally.reread_events += page
+                                .iter()
+                                .filter(|event| event.sequence < envelope.sequence)
+                                .count() as u64;
+                            after = last;
+                        }
+                    }
+                    tally.last_terminal = tally.last_terminal.max(envelope.sequence);
+                }
+                Ok(AppEvent::Exchange(doorbell)) => match follower.on_doorbell(&doorbell) {
+                    DoorbellAction::Apply => match doorbell.stream_kind {
+                        StreamKind::Pulsation => tally.transitions += 1,
+                        StreamKind::TerminalRun => tally.run_settled = true,
+                        _ => {}
+                    },
+                    DoorbellAction::CatchUp(after) => {
+                        if !follow_log(
+                            &subscriber_service,
+                            &subscriber_project,
+                            &mut follower,
+                            after,
+                            &mut tally,
+                        ) {
+                            tally.resets += 1;
+                        }
+                    }
+                    DoorbellAction::Ignore => {}
+                },
+                Ok(_) => {}
+                Err(RecvError::Lagged(_)) => {
+                    tally.lagged += 1;
+                    if let Some(after) = follower.on_lagged()
+                        && !follow_log(
+                            &subscriber_service,
+                            &subscriber_project,
+                            &mut follower,
+                            after,
+                            &mut tally,
+                        )
+                    {
+                        tally.resets += 1;
+                    }
+                }
+                Err(RecvError::Closed) => break,
+            }
+            // The run settled: read whatever its last events were, as the
+            // Agents panel's refresh would.
+            if tally.run_settled && !tally.tail_read {
+                tally.tail_read = true;
+                loop {
+                    let page = repository
+                        .list_events(&subscriber_run, tally.last_terminal, 500)
+                        .expect("tail");
+                    let Some(last) = page.last().map(|event| event.sequence) else {
+                        break;
+                    };
+                    tally.reread_events += page.len() as u64;
+                    tally.last_terminal = last;
+                }
+            }
+            handled += 1;
+            if handled.is_multiple_of(200) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+        tally.cursor = follower.cursor();
+        tally
+    });
+
+    // The producer: the run's events, with a pulsation transition every 100.
+    let line = "   Compiling hvc-core v0.1.0 (C:/workspace/crates/hvc-core) build step";
+    let mut produced_transitions = 0u64;
+    let wall = Instant::now();
+    for sequence in 1..=events {
+        let event = repository
+            .append_event(
+                &run.id,
+                sequence,
+                TerminalEventKind::Stdout,
+                Some("stdout"),
+                &format!("{line} {sequence}"),
+            )
+            .expect("append");
+        bus.publish(AppEvent::Terminal(Box::new(TerminalEventEnvelope {
+            protocol_version: 2,
+            project_id: project_id.clone(),
+            agent_role: run.agent_role,
+            run_id: run.id.clone(),
+            sequence,
+            run: run.clone(),
+            event,
+        })));
+        if sequence % 100 == 0 && produced_transitions < 1_000 {
+            let next = if current.status == PulsationStatus::Running {
+                PulsationStatus::Checkpoint
+            } else {
+                PulsationStatus::Running
+            };
+            current = timed_transition(&mut connection, &current, next).0;
+            produced_transitions += 1;
+        }
+    }
+    repository
+        .set_run_status(&run.id, TerminalRunStatus::Completed, Some(0), None, None)
+        .expect("run completed");
+    let produce_wall = wall.elapsed();
+    // Let the notifier announce the last items, then close the bus.
+    let final_cursor = service.exchange_cursor(&project_id).expect("cursor");
+    std::thread::sleep(Duration::from_millis(500));
+    stop.store(true, Ordering::Relaxed);
+    std::thread::sleep(Duration::from_millis(100));
+    drop(bus);
+    let tally = subscriber.join().expect("subscriber");
+    report(
+        "m2_load_slow_subscriber",
+        json!({
+            "terminal_events": events,
+            "pulsation_transitions": produced_transitions,
+            "produce_wall_ms": micros(produce_wall) / 1_000,
+            "lagged": tally.lagged,
+            "terminal_gaps": tally.gaps,
+            "reread_events": tally.reread_events,
+            "resets": tally.resets,
+            "transitions_seen": tally.transitions,
+        }),
+    );
+    assert_eq!(tally.resets, 0, "no full reload");
+    assert_eq!(
+        tally.last_terminal, events,
+        "the subscriber reached the last event"
+    );
+    assert_eq!(
+        tally.cursor, final_cursor,
+        "the follower reached the last item"
+    );
+    assert_eq!(
+        tally.transitions, produced_transitions,
+        "every transition seen once"
+    );
+}

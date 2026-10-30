@@ -90,6 +90,18 @@ pub trait TerminalHost: Debug + Send + Sync {
         context: UsageContext,
         backend: CliBackend,
     ) -> rusqlite::Result<Arc<dyn TerminalUsageRecorder>>;
+    /// Records a run's status change in the host's exchange log (ADR-037
+    /// M2), inside the transaction that changed it; an error rolls the
+    /// change back. The default records nothing.
+    fn record_run_status(
+        &self,
+        _transaction: &rusqlite::Connection,
+        _project_id: &str,
+        _run_id: &str,
+        _status: crate::terminals::TerminalRunStatus,
+    ) -> rusqlite::Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]

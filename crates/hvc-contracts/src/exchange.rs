@@ -191,6 +191,16 @@ pub enum HostComponent {
     CompanionCatalog,
     CompanionNotice,
     ExchangeDigest,
+    /// Pulsation, stage execution, unit attempt and publication state (M2).
+    PipelineState,
+    /// CLI run status (M2).
+    TerminalRuntime,
+    /// Companion conversation, canvas request, note and drawing state (M2).
+    CompanionState,
+    /// Forge backlog and feature state (M2).
+    ForgeState,
+    /// Documentation reconciliation proposals (M2).
+    DocsState,
 }
 
 impl HostComponent {
@@ -204,6 +214,11 @@ impl HostComponent {
             Self::CompanionCatalog => "companion/catalog",
             Self::CompanionNotice => "companion/notice",
             Self::ExchangeDigest => "exchange/digest",
+            Self::PipelineState => "pipeline/state",
+            Self::TerminalRuntime => "terminal/runtime",
+            Self::CompanionState => "companion/state",
+            Self::ForgeState => "forge/state",
+            Self::DocsState => "docs/state",
         }
     }
 }

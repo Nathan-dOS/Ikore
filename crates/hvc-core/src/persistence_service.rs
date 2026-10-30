@@ -134,6 +134,9 @@ mod visualizer;
 #[cfg(test)]
 #[path = "exchange/baseline_tests.rs"]
 mod exchange_baseline_tests;
+#[cfg(test)]
+#[path = "exchange/writers_tests.rs"]
+mod exchange_writers_tests;
 
 mod embedded {
     use refinery::embed_migrations;
@@ -1551,6 +1554,29 @@ impl PersistenceService {
         })
     }
 
+    /// ADR-037 M2: where a new follower of the project's exchange log starts.
+    pub fn exchange_cursor(&self, project_id: &str) -> Result<i64, PersistenceServiceError> {
+        Ok(crate::exchange::log::project_cursor(
+            &self.connection()?,
+            project_id,
+        )?)
+    }
+
+    /// ADR-037 M2: the project's exchange log items after `after_global_seq`.
+    pub fn exchange_read_after(
+        &self,
+        project_id: &str,
+        after_global_seq: i64,
+        limit: usize,
+    ) -> Result<crate::exchange::log::Page, PersistenceServiceError> {
+        Ok(crate::exchange::log::read_after(
+            &self.connection()?,
+            project_id,
+            after_global_seq,
+            limit,
+        )?)
+    }
+
     pub(crate) fn connection(&self) -> Result<Connection, PersistenceServiceError> {
         let connection = Connection::open(&self.db_path)?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
@@ -2216,6 +2242,68 @@ impl PersistenceService {
         }
     }
 
+    /// ADR-037 M2: the exchange log item of a CLI run status the host
+    /// changed outside the terminal crate (the API fallback decision).
+    fn record_terminal_run_status(
+        transaction: &Connection,
+        run_id: &str,
+        status: &str,
+    ) -> Result<(), PersistenceServiceError> {
+        let project_id: String = transaction.query_row(
+            "SELECT project_id FROM terminal_runs WHERE id=?1",
+            [run_id],
+            |row| row.get(0),
+        )?;
+        crate::exchange::log::record_terminal_run_status(transaction, &project_id, run_id, status)?;
+        Ok(())
+    }
+
+    /// ADR-037 M2: one exchange log item per pulsation transition, in its
+    /// transaction. Opening or resolving a checkpoint and resolving a stage
+    /// failure always transition the pulsation, so the item's kind names
+    /// them and no second item is written.
+    fn record_pulsation_transition(
+        transaction: &Connection,
+        current: &Pulsation,
+        next_status: PulsationStatus,
+        event_type: &str,
+        event_id: &str,
+    ) -> Result<(), PersistenceServiceError> {
+        use crate::exchange::log::{
+            AppendRequest, LogRecordKind, PayloadRef, StreamKind, StreamRef,
+        };
+        let kind = if next_status == PulsationStatus::Checkpoint {
+            LogRecordKind::CheckpointOpened
+        } else if current.status == PulsationStatus::Checkpoint
+            && event_type.starts_with("stage_failure_")
+        {
+            LogRecordKind::StageFailureResolved
+        } else if current.status == PulsationStatus::Checkpoint {
+            LogRecordKind::CheckpointResolved
+        } else {
+            LogRecordKind::PulsationTransition
+        };
+        let state_version: u64 = transaction.query_row(
+            "SELECT state_version FROM pulsations WHERE id=?1",
+            [current.id.as_str()],
+            |row| row.get(0),
+        )?;
+        crate::exchange::log::record(
+            transaction,
+            &AppendRequest::host(
+                StreamRef::new(&current.project_id, StreamKind::Pulsation, &current.id),
+                kind,
+                hvc_contracts::exchange::HostComponent::PipelineState,
+                Some(PayloadRef {
+                    table: "pulse_events",
+                    id: event_id.to_owned(),
+                }),
+                format!("pulsation:{}:state:{state_version}", current.id),
+            ),
+        )?;
+        Ok(())
+    }
+
     fn transition_pulsation(
         transaction: &rusqlite::Transaction<'_>,
         current: &Pulsation,
@@ -2283,6 +2371,13 @@ impl PersistenceService {
                 message,
                 now
             ],
+        )?;
+        Self::record_pulsation_transition(
+            transaction,
+            current,
+            next_status,
+            event_type,
+            &event_id,
         )?;
 
         Ok(Pulsation {
@@ -3243,19 +3338,19 @@ impl PersistenceService {
             }
         };
         if let Some(run_id) = terminal_run_id.as_deref() {
-            transaction.execute(
+            let status = if request.decision == CliFallbackDecision::Cancel {
+                "cancelled"
+            } else {
+                "failed"
+            };
+            let changed = transaction.execute(
                 "UPDATE terminal_runs SET status=?2,updated_at=?3,finished_at=COALESCE(finished_at,?3)
                  WHERE id=?1 AND status='awaiting_fallback'",
-                params![
-                    run_id,
-                    if request.decision == CliFallbackDecision::Cancel {
-                        "cancelled"
-                    } else {
-                        "failed"
-                    },
-                    now,
-                ],
+                params![run_id, status, now],
             )?;
+            if changed == 1 {
+                Self::record_terminal_run_status(&transaction, run_id, status)?;
+            }
         }
         // ADR-035 M1: the approved API fallback is a transport amendment of
         // the mandate in force; before the Specification there is none, and
@@ -5830,11 +5925,21 @@ impl PersistenceService {
             params![agent_run_id, now],
         )?;
         if let Some(run_id) = terminal_run_id.as_deref() {
+            let previous: Option<String> = transaction
+                .query_row(
+                    "SELECT status FROM terminal_runs WHERE id=?1",
+                    [run_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
             transaction.execute(
                 "UPDATE terminal_runs SET status='awaiting_fallback',error_code=?2,
                    error_message=?3,updated_at=?4 WHERE id=?1",
                 params![run_id, error_code, diagnostic, now],
             )?;
+            if previous.is_some_and(|status| status != "awaiting_fallback") {
+                Self::record_terminal_run_status(&transaction, run_id, "awaiting_fallback")?;
+            }
         }
         debug_assert_eq!(updated.status, PulsationStatus::Checkpoint);
         transaction.commit()?;

@@ -448,6 +448,7 @@ impl NoteScribeRuntime {
                 at
             ],
         )?;
+        record_turn_end(&tx, turn, "completed")?;
         tx.commit()?;
         Ok(())
     }
@@ -480,9 +481,30 @@ impl NoteScribeRuntime {
                 params![turn.note_id, at],
             )?;
         }
+        record_turn_end(&tx, turn, if cancelled { "cancelled" } else { "failed" })?;
         tx.commit()?;
         Ok(())
     }
+}
+
+/// ADR-037 M2: the exchange log item of a finished Scribe turn, in the
+/// transaction that settles it; the broadcast follows the turn.
+fn record_turn_end(db: &Connection, turn: &AdmittedTurn, outcome: &str) -> Result<(), Error> {
+    use crate::exchange::log::{AppendRequest, LogRecordKind, PayloadRef, StreamKind, StreamRef};
+    crate::exchange::log::record(
+        db,
+        &AppendRequest::host(
+            StreamRef::new(&turn.project, StreamKind::Notes, &turn.note_id),
+            LogRecordKind::NoteChanged,
+            hvc_contracts::exchange::HostComponent::CompanionState,
+            Some(PayloadRef {
+                table: "companion_notes",
+                id: turn.note_id.clone(),
+            }),
+            format!("note:{}:turn:{}:{outcome}", turn.note_id, turn.turn_id),
+        ),
+    )?;
+    Ok(())
 }
 
 /// Redacts secrets, then checks the result: redaction can lengthen the text.

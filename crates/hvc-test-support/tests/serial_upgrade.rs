@@ -2934,3 +2934,106 @@ fn v60_to_v61_adds_scope_requests_without_touching_parked_failures() {
         0
     );
 }
+
+/// V62 adds the durable exchange log (ADR-037 M2). Purely additive: every
+/// earlier table keeps its definition, history from before the upgrade has
+/// no item, items are append-only with one sequence per stream and one key
+/// per stream, a stream kind is a closed set, and the log goes with its
+/// project.
+#[test]
+fn v61_to_v62_adds_the_exchange_log_without_backfilling_history() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("hard-vibe-code.db");
+    let mut db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    cli_migrations::migrations::runner()
+        .set_target(refinery::Target::Version(61))
+        .run(&mut db)
+        .unwrap();
+    db.execute_batch(
+        "INSERT INTO projects(id,name,workspace_path,created_at,updated_at) VALUES('p','V61 fixture','C:/fixture','now','now');
+         INSERT INTO pulsations(id,project_id,feature_name,stage,status,created_at,updated_at,pipeline_version,state_version) VALUES('pulse','p','Work','Code','running','now','now',4,3);
+         INSERT INTO pulse_events(id,pulsation_id,event_type,from_status,to_status,message,created_at) VALUES('event','pulse','stage_started','planning','running','Started','now');",
+    )
+    .unwrap();
+    let tables = |db: &Connection| -> Vec<String> {
+        db.prepare(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND sql IS NOT NULL ORDER BY name",
+        )
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+    };
+    let before = tables(&db);
+    drop(db);
+
+    PersistenceService::initialize(root.path()).unwrap();
+    let db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    let after = tables(&db);
+    for table in &before {
+        assert!(after.contains(table), "V62 rebuilds nothing: {table}");
+    }
+    let count = |table: &str| -> u32 {
+        db.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap()
+    };
+    assert_eq!(
+        (count("exchange_streams"), count("exchange_items")),
+        (0, 0),
+        "history from before V62 is not backfilled"
+    );
+
+    db.execute(
+        "INSERT INTO exchange_streams(id,project_id,kind,subject_id,next_seq,created_at) VALUES('s','p','pulsation','pulse',1,'now')",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO exchange_streams(id,project_id,kind,subject_id,next_seq,created_at) VALUES('s2','p','guessed','pulse',1,'now')",
+        [],
+    )
+    .expect_err("stream kinds are a closed set");
+    let item = |seq: i64, key: &str| {
+        db.execute(
+            "INSERT INTO exchange_items(project_id,stream_id,seq,kind,producer_kind,producer_ref,trust,payload_table,payload_id,idempotency_key,created_at)
+             VALUES('p','s',?1,'pulsation_transition','host','pipeline/state','host','pulse_events','event',?2,'now')",
+            params![seq, key],
+        )
+    };
+    item(1, "pulsation:pulse:state:3").expect("an item");
+    item(1, "pulsation:pulse:state:4").expect_err("one item per sequence");
+    item(2, "pulsation:pulse:state:3").expect_err("one item per key");
+    db.execute(
+        "INSERT INTO exchange_items(project_id,stream_id,seq,kind,producer_kind,trust,payload_table,idempotency_key,created_at)
+         VALUES('p','s',2,'pulsation_transition','host','host','pulse_events','k','now')",
+        [],
+    )
+    .expect_err("a payload names both its table and its row");
+    db.execute(
+        "INSERT INTO exchange_items(project_id,stream_id,seq,kind,producer_kind,trust,idempotency_key,created_at)
+         VALUES('p','s',2,'pulsation_transition','host','trusted','k','now')",
+        [],
+    )
+    .expect_err("trust classes are a closed set");
+    db.execute("UPDATE exchange_items SET kind='forged'", [])
+        .expect_err("items are append-only");
+    db.execute("DELETE FROM pulse_events", []).unwrap();
+    db.execute("DELETE FROM pulsations", []).unwrap();
+    db.execute("DELETE FROM projects WHERE id='p'", []).unwrap();
+    assert_eq!(
+        (count("exchange_streams"), count("exchange_items")),
+        (0, 0),
+        "the log goes with its project"
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, u32>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+}

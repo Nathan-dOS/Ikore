@@ -246,6 +246,41 @@ pub struct AppCore {
     workspace: Mutex<WorkspaceContext>,
     worker_cancellation: CancellationToken,
     worker_task: Mutex<Option<JoinHandle<()>>>,
+    _exchange_doorbell: ExchangeDoorbellTask,
+}
+
+/// How often the doorbell notifier looks for committed exchange log items.
+pub const EXCHANGE_DOORBELL_INTERVAL: Duration = Duration::from_millis(250);
+
+/// Stops the doorbell notifier when the core goes away (ADR-037 M2).
+struct ExchangeDoorbellTask {
+    stop: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl ExchangeDoorbellTask {
+    fn start(database_path: PathBuf, events: Arc<AppEventBus>) -> Self {
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        if let Err(error) = crate::exchange::log::spawn_notifier(
+            database_path,
+            events,
+            stop.clone(),
+            EXCHANGE_DOORBELL_INTERVAL,
+        ) {
+            // Without doorbells the UI keeps its polling cadence.
+            eprintln!("exchange doorbell unavailable: {error}");
+        }
+        Self { stop }
+    }
+
+    fn stop(&self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+impl Drop for ExchangeDoorbellTask {
+    fn drop(&mut self) {
+        self.stop();
+    }
 }
 
 impl AppCore {
@@ -324,6 +359,8 @@ impl AppCore {
             notes_scribe.clone(),
         );
         let worker_cancellation = CancellationToken::new();
+        let exchange_doorbell =
+            ExchangeDoorbellTask::start(persistence.database_path().to_path_buf(), events.clone());
 
         let core = Arc::new(Self {
             paths,
@@ -340,6 +377,7 @@ impl AppCore {
             workspace: Mutex::new(WorkspaceContext::default()),
             worker_cancellation,
             worker_task: Mutex::new(None),
+            _exchange_doorbell: exchange_doorbell,
         });
 
         let worker = core.persistence.clone();
@@ -699,6 +737,7 @@ impl AppCore {
         // Primeiro bloqueia novos claims; em seguida, cancela jobs/LLM já registrados. O worker
         // continua vivo apenas o suficiente para persistir o estado terminal antes do join.
         self.worker_cancellation.cancel();
+        self._exchange_doorbell.stop();
         self.persistence.cancel_all_active_jobs();
         self.chat.cancel_all_turns();
         self.chat.cancel_all_canvas_jobs();

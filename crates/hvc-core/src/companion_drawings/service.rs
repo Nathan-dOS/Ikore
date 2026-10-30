@@ -235,6 +235,7 @@ impl CompanionDrawingsService {
                 params![title, scene_text, viewport_text, revision, now(), id, project, expected_revision],
             )?;
             queue_write(&tx, project, id)?;
+            record_drawing_change(&tx, project, id, revision, false)?;
             let result = drawing(&tx, project, id)?;
             tx.commit()?;
             self.changed(project, &result.id, result.revision);
@@ -346,6 +347,7 @@ impl CompanionDrawingsService {
             )?;
             tx.execute("DELETE FROM companion_drawings WHERE id=?1 AND project_id=?2 AND revision=?3",
                 params![id, project, expected_revision])?;
+            record_drawing_change(&tx, project, id, expected_revision, true)?;
             tx.commit()?;
             self.changed(project, id, expected_revision);
             Ok(())
@@ -370,6 +372,36 @@ struct CanvasFileV1<'a> {
 
 fn json(value: &impl Serialize) -> Result<String, Error> {
     serde_json::to_string(value).map_err(|_| invalid("Drawing serialization failed"))
+}
+
+/// ADR-037 M2: the exchange log item of a drawing change, written in the
+/// change's transaction; the broadcast follows the commit (`changed`).
+pub(crate) fn record_drawing_change(
+    db: &Connection,
+    project: &str,
+    id: &str,
+    revision: u64,
+    deleted: bool,
+) -> Result<(), Error> {
+    use crate::exchange::log::{AppendRequest, LogRecordKind, PayloadRef, StreamKind, StreamRef};
+    crate::exchange::log::record(
+        db,
+        &AppendRequest::host(
+            StreamRef::new(project, StreamKind::Drawings, id),
+            LogRecordKind::DrawingChanged,
+            hvc_contracts::exchange::HostComponent::CompanionState,
+            Some(PayloadRef {
+                table: "companion_drawings",
+                id: id.to_owned(),
+            }),
+            if deleted {
+                format!("drawing:{id}:deleted:{revision}")
+            } else {
+                format!("drawing:{id}:rev:{revision}")
+            },
+        ),
+    )?;
+    Ok(())
 }
 
 pub(crate) fn insert_drawing(
@@ -403,6 +435,7 @@ pub(crate) fn insert_drawing(
         params![id, project, title, scene_json(&scene)?, json(viewport)?, basename, timestamp],
     )?;
     queue_write(db, project, &id)?;
+    record_drawing_change(db, project, &id, 1, false)?;
     drawing(db, project, &id)
 }
 

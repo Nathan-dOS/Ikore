@@ -15,7 +15,7 @@ pub mod doc_reconciliation;
 pub mod document_cache;
 pub mod embedding_service;
 pub mod events;
-mod exchange;
+pub mod exchange;
 pub mod feature_forge;
 pub mod llm;
 pub mod orchestration;
