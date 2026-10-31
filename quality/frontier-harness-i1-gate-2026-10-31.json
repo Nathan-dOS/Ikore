@@ -1,0 +1,86 @@
+{
+  "schemaVersion": 1,
+  "codeCommit": "0de140e48aea17694b412087ce723d5c63e18972",
+  "tests": {
+    "passed": 2002,
+    "failed": 0,
+    "ignored": 23,
+    "filtered": 0
+  },
+  "targets": 61,
+  "timings": {
+    "schemaVersion": 1,
+    "startedAt": "2026-10-30T21:31:49.9093815Z",
+    "finishedAt": "2026-10-30T22:05:17.7851107Z",
+    "durationSeconds": 2007.85,
+    "passed": true,
+    "steps": [
+      {
+        "name": "estrutura exclusivamente GPUI/Rust",
+        "durationSeconds": 0.703,
+        "passed": true,
+        "exitCode": 0
+      },
+      {
+        "name": "crate dependency boundaries",
+        "durationSeconds": 0.164,
+        "passed": true,
+        "exitCode": 0
+      },
+      {
+        "name": "cargo fmt",
+        "durationSeconds": 5.408,
+        "passed": true,
+        "exitCode": 0
+      },
+      {
+        "name": "Clippy",
+        "durationSeconds": 26.195,
+        "passed": true,
+        "exitCode": 0
+      },
+      {
+        "name": "testes Rust",
+        "durationSeconds": 1380.354,
+        "passed": true,
+        "exitCode": 0
+      },
+      {
+        "name": "build release GPUI",
+        "durationSeconds": 586.352,
+        "passed": true,
+        "exitCode": 0
+      },
+      {
+        "name": "smoke Windows GPUI",
+        "durationSeconds": 1.68,
+        "passed": true,
+        "exitCode": 0
+      },
+      {
+        "name": "licen\u00e7as e fontes Rust",
+        "durationSeconds": 1.964,
+        "passed": true,
+        "exitCode": 0
+      },
+      {
+        "name": "advisories Rust",
+        "durationSeconds": 4.862,
+        "passed": true,
+        "exitCode": 0
+      }
+    ]
+  },
+  "advisories": {
+    "schemaVersion": 1,
+    "auditedAt": "2026-10-30T22:05:17.7746879Z",
+    "cargoAuditExitCode": 0,
+    "cargoVulnerabilities": 0,
+    "cargoInformationalWarnings": {
+      "unmaintained": 14,
+      "unsound": 2
+    },
+    "rustSecLastCommit": "2295466c4e9df26647fd67d8fa1c705ac2fc7f81",
+    "passed": true
+  }
+}

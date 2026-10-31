@@ -32,6 +32,7 @@ historical check applies to the source and environment identified in that report
 | Durable exchange log and doorbell (ADR-037 M2) | [2026-10-30 implementation and validation](agent-exchange-m2-validation-2026-10-30.md) |
 | Resume after workspace edits and pulsation digests (ADR-037 M3, M4) | [2026-10-30 implementation and validation](agent-exchange-m3-m4-validation-2026-10-30.md) |
 | Agent exchange closing: reviewer kinds, threat model, measurements (ADR-037 M6) | [2026-10-30 closing validation](agent-exchange-closing-2026-10-30.md) |
+| Frontier Harness I1: stable prompt prefixes and qualified cache coverage | [2026-10-31 implementation and validation](frontier-harness-i1-validation-2026-10-31.md) |
 | Repository hygiene | [2026-10-17 change record](repository-hygiene-2026-10-17.md) |
 | Canvas AI consent, publication and semantic editing | [2026-10-29 source publication and selected-tree qualification](canvas-ai-publication-2026-10-29.md), [earlier combined-checkout workflow](canvas-ai-workflow-validation-2026-10-28.md) |
 
