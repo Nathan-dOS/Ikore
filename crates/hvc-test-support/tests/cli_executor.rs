@@ -1144,22 +1144,37 @@ async fn authenticated_antigravity_accepts_every_registry_payload_schema() {
     }
 }
 
-/// ADR-010/022 live qualification for Codex's model-less public item events.
+/// ADR-010/022 live qualification for model-less Codex items in pipeline and
+/// automatic host-context-only runs. The latter must retain their rollout.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "Requires local Codex authentication and network; sends one synthetic model identity probe"]
+#[ignore = "Requires local Codex authentication and network; sends four synthetic model identity probes"]
 async fn authenticated_codex_turn_context_model_smoke() {
     let harness = harness(Vec::new());
     harness.terminals.refresh_discovery().await;
+    for (role, job_chain) in [
+        (AgentRole::BackendAgent, "fixture"),
+        (AgentRole::FeatureAgent, "feature:identity-smoke"),
+        (AgentRole::NotesScribe, "note:identity-smoke"),
+        (
+            AgentRole::DocumentationReconciler,
+            "reconcile:identity-smoke",
+        ),
+    ] {
+        codex_turn_context_probe(&harness, role, job_chain).await;
+    }
+}
+
+async fn codex_turn_context_probe(harness: &Harness, role: AgentRole, job_chain: &str) {
     let current = harness
         .terminals
         .repository()
-        .get_config(&harness.project_id, AgentRole::BackendAgent)
+        .get_config(&harness.project_id, role)
         .unwrap();
     harness
         .terminals
         .update_config(UpdateCliAgentConfigRequest {
             project_id: harness.project_id.clone(),
-            agent_role: AgentRole::BackendAgent,
+            agent_role: role,
             execution_mode: AgentExecutionMode::CliProcess,
             backend: CliBackend::Codex,
             model: Some("gpt-5.6-luna".into()),
@@ -1176,6 +1191,8 @@ async fn authenticated_codex_turn_context_model_smoke() {
         &harness.project_id,
         Instant::now() + Duration::from_secs(180),
     );
+    probe.target = AgentExecutionTarget::canonical(role);
+    probe.job_chain = job_chain.into();
     probe.user_prompt = "Reply with exactly HVC_CODEX_MODEL_OK and do not call tools.".into();
     probe.max_output_tokens = 32;
     let result = tokio::time::timeout(
@@ -1187,7 +1204,7 @@ async fn authenticated_codex_turn_context_model_smoke() {
     .await
     .expect("Codex identity smoke exceeded 180 seconds");
     if let Err(error) = &result {
-        panic!("Codex identity smoke failed before audit: {error}");
+        panic!("Codex identity smoke for {role:?} failed before audit: {error}");
     }
     let db = rusqlite::Connection::open(&harness.database_path).unwrap();
     let (run_id, selected, observed): (String, Option<String>, Option<String>) = db

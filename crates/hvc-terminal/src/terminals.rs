@@ -6060,7 +6060,7 @@ impl TerminalService {
         let hardening_guard = harden_spec(
             config.backend,
             if companion_scoped {
-                Hardening::Companion
+                Hardening::HostContextOnly
             } else {
                 Hardening::Pipeline
             },
@@ -8163,8 +8163,10 @@ pub(crate) fn cli_context_scope(request: &LlmRequest) -> Result<bool, TerminalEr
 
 /// How much of the host's environment a spawned CLI is allowed to see.
 ///
-/// `Companion` turns every native tool off: discovery receives only
-/// host-selected context. `Pipeline` keeps the read tools, because a stage
+/// `Companion` and `HostContextOnly` turn every native tool off: discovery
+/// receives only host-selected context. Automatic `HostContextOnly` runs retain
+/// Codex's rollout so the host can verify each generation's model; actual
+/// Companion rounds remain ephemeral. `Pipeline` keeps the read tools, because a stage
 /// agent legitimately inspects the workspace, but still isolates the
 /// developer's own configuration, rules, MCP servers and skills - any of which
 /// could hand write or shell tools back to the model and falsify the read-only
@@ -8172,7 +8174,14 @@ pub(crate) fn cli_context_scope(request: &LlmRequest) -> Result<bool, TerminalEr
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Hardening {
     Companion,
+    HostContextOnly,
     Pipeline,
+}
+
+impl Hardening {
+    fn disables_native_tools(self) -> bool {
+        matches!(self, Self::Companion | Self::HostContextOnly)
+    }
 }
 
 /// Keeps a hardening artefact on disk for as long as the process it configures runs.
@@ -8205,7 +8214,7 @@ fn harden_spec(
                 .windows(2)
                 .find(|pair| pair[0] == "--model")
                 .map(|pair| pair[1].clone());
-            if mode == Hardening::Companion
+            if mode.disables_native_tools()
                 && let Some(index) = spec
                     .args
                     .iter()
@@ -8241,7 +8250,7 @@ fn harden_spec(
             }
         }
         CliBackend::Gemini => {
-            let tools = if mode == Hardening::Companion {
+            let tools = if mode.disables_native_tools() {
                 serde_json::json!({ "core": [], "allowed": [] })
             } else {
                 // Stage agents keep the read tools; only user configuration goes.
@@ -8277,7 +8286,7 @@ fn harden_spec(
             settings_guard = Some(HardeningGuard::ConfigDirectory(directory));
         }
         CliBackend::Opencode => {
-            if mode == Hardening::Companion
+            if mode.disables_native_tools()
                 && let Some((_, permissions)) = spec
                     .environment
                     .iter_mut()
@@ -8288,9 +8297,9 @@ fn harden_spec(
             // Pipeline keeps the adapter's read-only permission set as-is.
         }
         CliBackend::Custom => {
-            if mode == Hardening::Companion {
+            if mode.disables_native_tools() {
                 return Err(TerminalError::Validation(
-                    "Custom CLI is not allowed for the Companion".into(),
+                    "Custom CLI is not allowed for host-context-only execution".into(),
                 ));
             }
             // An arbitrary binary exposes no config, tool or sandbox knob to turn
@@ -8321,7 +8330,7 @@ fn isolate_antigravity(
         "execute_url(*)",
         "search_web(*)",
     ];
-    if mode == Hardening::Companion {
+    if mode.disables_native_tools() {
         deny.push("read_file(*)");
     }
     fs::write(

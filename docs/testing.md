@@ -48,6 +48,16 @@ same selection, toolchain, cache conditions and concurrency.
 
 ## Isolation
 
+Automatic Codex calls confined to host-selected context must retain the local
+rollout used to verify model-less public item events. The hardening tests cover
+all three modes across official backends; CLI executor fixtures reject
+`--ephemeral` for Feature discovery, Notes Scribe and Documentation Reconciler,
+and require it for actual Companion rounds. Missing or changed model evidence
+continues to fail closed. The opt-in
+`authenticated_codex_turn_context_model_smoke` qualifies pipeline and those
+three automatic roles against a signed-in Codex CLI using synthetic prompts.
+See the [2026-10-31 validation record](../quality/codex-host-context-model-evidence-2026-10-31.md).
+
 Use temporary directories, ephemeral SQLite databases, isolated keyrings and
 controlled loopback providers. Opt-in tests requiring authenticated CLIs,
 external services or paid quota retain their documented manual prerequisites.

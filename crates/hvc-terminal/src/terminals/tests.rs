@@ -689,7 +689,11 @@ fn pipeline_hardening_isolates_user_configuration_but_keeps_read_tools() {
 
 #[test]
 fn gemini_pipeline_keeps_core_tools_while_companion_removes_them() {
-    for (mode, expects_empty_core) in [(Hardening::Companion, true), (Hardening::Pipeline, false)] {
+    for (mode, expects_empty_core) in [
+        (Hardening::Companion, true),
+        (Hardening::HostContextOnly, true),
+        (Hardening::Pipeline, false),
+    ] {
         let mut spec = spec_for(CliBackend::Gemini);
         let guard = harden_spec(CliBackend::Gemini, mode, &mut spec).unwrap();
         let (_, path) = spec
@@ -720,12 +724,14 @@ fn custom_is_marked_read_only_for_pipelines_and_refused_for_the_companion() {
             .any(|(name, value)| name == "HVC_STAGE_READ_ONLY" && value == "1")
     );
 
-    let mut spec = spec_for(CliBackend::Custom);
-    assert!(harden_spec(CliBackend::Custom, Hardening::Companion, &mut spec).is_err());
+    for mode in [Hardening::Companion, Hardening::HostContextOnly] {
+        let mut spec = spec_for(CliBackend::Custom);
+        assert!(harden_spec(CliBackend::Custom, mode, &mut spec).is_err());
+    }
 }
 
 #[test]
-fn companion_hardening_disables_native_tools_and_user_configuration() {
+fn companion_and_host_context_hardening_disable_native_tools_and_user_configuration() {
     let cases = [
         (CliBackend::Codex, r"C:\Tools\codex.exe"),
         (CliBackend::Claude, r"C:\Tools\claude.exe"),
@@ -733,7 +739,11 @@ fn companion_hardening_disables_native_tools_and_user_configuration() {
         (CliBackend::Opencode, r"C:\Tools\opencode.exe"),
         (CliBackend::Antigravity, r"C:\Tools\agy.exe"),
     ];
-    for (backend, executable) in cases {
+    for (backend, executable, mode) in cases.into_iter().flat_map(|(backend, executable)| {
+        [Hardening::Companion, Hardening::HostContextOnly]
+            .into_iter()
+            .map(move |mode| (backend, executable, mode))
+    }) {
         let schema_file =
             (backend == CliBackend::Codex).then(|| PathBuf::from(r"C:\Temp\schema.json"));
         let schema = (backend == CliBackend::Claude).then(|| serde_json::json!({}));
@@ -753,13 +763,17 @@ fn companion_hardening_disables_native_tools_and_user_configuration() {
             },
         )
         .unwrap();
-        let guard = harden_spec(backend, Hardening::Companion, &mut spec).unwrap();
+        let guard = harden_spec(backend, mode, &mut spec).unwrap();
         match backend {
             CliBackend::Codex => {
                 let exec = spec.args.iter().position(|arg| arg == "exec").unwrap();
                 assert_eq!(spec.args[exec + 1], "--ignore-user-config");
                 assert_eq!(spec.args[exec + 2], "--ignore-rules");
-                assert_eq!(spec.args[exec + 3], "--ephemeral");
+                assert_eq!(
+                    spec.args.iter().any(|argument| argument == "--ephemeral"),
+                    mode == Hardening::Companion,
+                    "Only actual Companion rounds may omit the rollout needed to verify automatic generations"
+                );
             }
             CliBackend::Claude => {
                 let tools = spec.args.iter().position(|arg| arg == "--tools").unwrap();
