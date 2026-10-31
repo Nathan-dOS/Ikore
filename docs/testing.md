@@ -58,6 +58,16 @@ continues to fail closed. The opt-in
 three automatic roles against a signed-in Codex CLI using synthetic prompts.
 See the [2026-10-31 validation record](../quality/codex-host-context-model-evidence-2026-10-31.md).
 
+Forge Incubation regression coverage checks multiline composer geometry at
+narrow and wide widths, explicit file-path requests reaching one ordinary
+Feature Agent turn, replay without reopening or redispatch, and duplicate
+pending-decision prevention. Discovery context tests keep the full current
+feature, brief and developer message while omitting only older whole
+conversation turns to fit the configured character budget. An oversized
+required context must still fail before a provider call. See the
+[2026-10-31 follow-up record](../quality/forge-incubation-path-context-validation-2026-10-31.md)
+for execution status and limits.
+
 Use temporary directories, ephemeral SQLite databases, isolated keyrings and
 controlled loopback providers. Opt-in tests requiring authenticated CLIs,
 external services or paid quota retain their documented manual prerequisites.

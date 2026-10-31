@@ -1002,8 +1002,19 @@ fn incubation_main(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) ->
             .flex_col()
             .flex_shrink_0()
             .gap_2()
-            .child(text_area(model.forge.message.clone()))
-            .child(label("Enter sends · Shift+Enter inserts a newline"))
+            .child(
+                // Resolve the capped field width before measuring wrapped rows,
+                // so the field's border and the footer reserve the same height.
+                div().w_full().flex_shrink_0().flex().child(
+                    text_area(model.forge.message.clone())
+                        .flex_shrink_0()
+                        .debug_selector(|| "forge-message-input".into()),
+                ),
+            )
+            .child(
+                label("Enter sends · Shift+Enter inserts a newline")
+                    .debug_selector(|| "forge-message-hint".into()),
+            )
             .child(button(
                 "send-feature-message",
                 "Send message",

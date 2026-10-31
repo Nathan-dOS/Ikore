@@ -17,6 +17,7 @@ historical check applies to the source and environment identified in that report
 | Selectable local voice recognition | [2026-10-29 native Whisper replacement and qualification](whisper-cpp-validation-2026-10-29.md); [2026-10-26 historical Python medium validation](whisper-medium-validation-2026-10-26.md) |
 | CLI process boundary | [Threat model](cli-threat-model.md) |
 | Automatic Codex model verification | [2026-10-31 host-context rollout correction and validation](codex-host-context-model-evidence-2026-10-31.md) |
+| Forge Incubation, file-path requests and context budget | [2026-10-31 follow-up correction and validation](forge-incubation-path-context-validation-2026-10-31.md) |
 | Synchronization and human recovery | [Synchronization report](cerebro-sync-validation-2026-09-09.md) |
 | Context telemetry and Learning | [Validation](learning-context-optimization.md) |
 | Deterministic secret sanitization | [2026-10-22 implementation and validation](secret-sanitization-validation-2026-10-22.md) |

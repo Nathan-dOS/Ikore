@@ -715,14 +715,17 @@ impl FeatureForgeService {
         feature_id: &str,
         task_title: &str,
     ) -> Result<(), Error> {
+        text(task_title, 200)?;
         let mut db = self.persistence.connection()?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let f = feature(&tx, project, feature_id)?;
         editable_feature(&tx, &f, f.revision)?;
         let mut brief = f.brief;
-        brief.pending_decisions.push(format!(
-            "Define the explicit file path(s) for task \"{task_title}\"."
-        ));
+        let decision = format!("Define the explicit file path(s) for task \"{task_title}\".");
+        if brief.pending_decisions.contains(&decision) {
+            return Ok(());
+        }
+        brief.pending_decisions.push(decision);
         save_brief(&tx, feature_id, f.revision, &brief)?;
         tx.commit()?;
         Ok(())
