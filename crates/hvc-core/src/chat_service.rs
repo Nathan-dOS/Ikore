@@ -3845,25 +3845,34 @@ impl ChatService {
             .map_err(|_| sanitization_failure())?;
         let (messages, exchanges) =
             prepare_companion_inputs(messages, exchanges, policy.identity())?;
-        // ADR-037 M3: on the API the host notice joins the system message.
-        let system = match &context.host_notice {
-            Some(notice) => format!(
-                "{}\n<host_notices>\n{notice}\n</host_notices>",
-                system_prompt()
-            ),
-            None => system_prompt().to_owned(),
-        };
+        // The policy remains identical across turns. Current-turn notices are
+        // appended after complete tool exchanges, never inserted into history
+        // or between a tool call and its result (ADR-038, FH-C03).
+        let system = system_prompt();
         let mut payload = match profile.protocol {
             ProviderProtocol::OpenaiResponses => {
-                build_openai_responses_payload(model, &system, &messages, &exchanges)
+                build_openai_responses_payload(model, system, &messages, &exchanges)
             }
             ProviderProtocol::OpenaiChat => {
-                build_openai_chat_payload(model, &system, &messages, &exchanges)
+                build_openai_chat_payload(model, system, &messages, &exchanges)
             }
             ProviderProtocol::AnthropicMessages => {
-                build_anthropic_payload(model, &system, &messages, &exchanges)
+                build_anthropic_payload(model, system, &messages, &exchanges)
             }
         };
+        if let Some(notice) = &context.host_notice {
+            let input_key = match profile.protocol {
+                ProviderProtocol::OpenaiResponses => "input",
+                ProviderProtocol::OpenaiChat | ProviderProtocol::AnthropicMessages => "messages",
+            };
+            payload[input_key]
+                .as_array_mut()
+                .ok_or_else(sanitization_failure)?
+                .push(json!({
+                    "role": "user",
+                    "content": format!("<host_notices>\n{notice}\n</host_notices>")
+                }));
+        }
         if canvas_authoring_mode {
             canvas_authoring::configure_canvas_payload(&mut payload, profile.protocol);
         }
@@ -4589,17 +4598,17 @@ fn build_cli_companion_prompt(
         ""
     };
     format!(
-        "<system>\n{}\nYou have no native tools. The repository operations in <operations> are not tools you can call: to run them, return a tool_calls envelope naming them. This turn has {remaining_reads} reads remaining in total; never request more than that number. If none remain, return a final answer from the evidence already gathered and state any limit. The host runs requested operations and returns the results in <tool_exchanges>. When enough evidence is available, return a final envelope. Never include reasoning, traces, Markdown fences, or text outside the envelope.{}\n<operations>\n{}\n</operations>\n</system>\n{}<history>\n{}\n</history>\n<tool_exchanges>\n{}\n</tool_exchanges>\n<control_envelope_schema>\n{}\n</control_envelope_schema>\n{}",
+        "<system>\n{}\nYou have no native tools. The repository operations in <operations> are not tools you can call: to run them, return a tool_calls envelope naming them. Follow the remaining read budget in <turn_budget>; never request more than that number. If none remain, return a final answer from the evidence already gathered and state any limit. The host runs requested operations and returns the results in <tool_exchanges>. When enough evidence is available, return a final envelope. Never include reasoning, traces, Markdown fences, or text outside the envelope.{}\n<operations>\n{}\n</operations>\n<control_envelope_schema>\n{}\n</control_envelope_schema>\n</system>\n<history>\n{}\n</history>\n<tool_exchanges>\n{}\n</tool_exchanges>\n{}<turn_budget>\nThis turn has {remaining_reads} reads remaining in total.\n</turn_budget>\n{}",
         system_prompt(),
         delivery,
         serde_json::to_string(&repository_tool_schemas()).unwrap_or_else(|_| "[]".into()),
+        serde_json::to_string(&companion_schema_for_backend(backend))
+            .unwrap_or_else(|_| "{}".into()),
+        serde_json::to_string(&messages).unwrap_or_else(|_| "[]".into()),
+        serde_json::to_string(&exchanges).unwrap_or_else(|_| "[]".into()),
         host_notice
             .map(|notice| format!("<host_notices>\n{notice}\n</host_notices>\n"))
             .unwrap_or_default(),
-        serde_json::to_string(&messages).unwrap_or_else(|_| "[]".into()),
-        serde_json::to_string(&exchanges).unwrap_or_else(|_| "[]".into()),
-        serde_json::to_string(&companion_schema_for_backend(backend))
-            .unwrap_or_else(|_| "{}".into()),
         repair_instruction,
     )
 }
@@ -5257,6 +5266,247 @@ mod tests {
     use super::*;
     use crate::llm::error::LlmError;
     use crate::persistence_service::PersistenceService;
+
+    #[test]
+    fn frontier_cli_rounds_keep_contract_and_history_before_the_volatile_suffix() {
+        let messages = vec![ProtocolMessage {
+            role: "user".into(),
+            content: "Explain the parser using its source.".into(),
+        }];
+        let call = NormalizedToolCall {
+            id: "source-read".into(),
+            name: "read_repository_file".into(),
+            arguments: json!({"path":"src/parser.rs"}),
+        };
+        let exchanges = vec![ToolExchange {
+            assistant_content: String::new(),
+            calls: vec![call.clone()],
+            results: vec![ToolResult {
+                call,
+                content: json!({"path":"src/parser.rs","content":"fn parse() {}"}).to_string(),
+                is_error: false,
+                prepared_content: None,
+            }],
+        }];
+        let notice = json!({
+            "trust":"host", "source":"companion/notice", "changedPaths":["src/parser.rs"]
+        })
+        .to_string();
+        for backend in [CliBackend::Codex, CliBackend::Claude] {
+            let first = build_cli_companion_prompt(&messages, &[], false, backend, 24, None);
+            let later =
+                build_cli_companion_prompt(&messages, &exchanges, true, backend, 22, Some(&notice));
+            let history_end = first.find("\n</history>\n").unwrap() + "\n</history>\n".len();
+            assert!(
+                first.find("</control_envelope_schema>").unwrap()
+                    < first.find("<history>").unwrap(),
+                "the response schema belongs to the fixed contract, before history"
+            );
+            assert_eq!(
+                &first[..history_end],
+                &later[..history_end],
+                "remaining reads, notices, exchanges and repair must not alter the frozen prefix"
+            );
+            assert!(
+                later.find("<host_notices>").unwrap() > later.find("</tool_exchanges>").unwrap()
+            );
+            assert!(later.contains("22 reads remaining"));
+            assert!(later.contains("Your previous response exceeded"));
+            assert!(later.contains("\"trust\":\"repository\""));
+        }
+        assert_eq!(messages[0].content, "Explain the parser using its source.");
+    }
+
+    /// Capture the real dispatch path, including sanitization, for all API
+    /// dialects. No provider credential, provider network or chat history write.
+    #[tokio::test]
+    async fn frontier_api_notices_are_current_tail_input_without_changing_system_or_history() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (_temp, workspace, prepared) = prepare_chat();
+        let mut service = ChatService::new(
+            &prepared.db_path,
+            Arc::new(TestCredentials),
+            Arc::new(NoopChatEventSink),
+        );
+        service.http_client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let conversation = service
+            .create_conversation(CreateChatConversationRequest {
+                project_id: "project-a".into(),
+                target: ChatExecutionTargetRequest::Api {
+                    connection_id: "connection-a".into(),
+                },
+            })
+            .unwrap()
+            .conversation;
+        let synthetic = "sk-proj-syntheticabcdefghijklmnop";
+        let messages = vec![ProtocolMessage {
+            role: "user".into(),
+            content: format!("Explain the parser. Fixture token: {synthetic}"),
+        }];
+        let call = NormalizedToolCall {
+            id: "read-one".into(),
+            name: "read_repository_file".into(),
+            arguments: json!({"path":"src/parser.rs"}),
+        };
+        let exchanges = vec![ToolExchange {
+            assistant_content: String::new(),
+            calls: vec![call.clone()],
+            results: vec![ToolResult {
+                call,
+                content: json!({"path":"src/parser.rs","content":"fn parse() {}"}).to_string(),
+                is_error: false,
+                prepared_content: None,
+            }],
+        }];
+        let notice = json!({
+            "trust":"host", "source":"companion/notice", "changedPaths":["src/parser.rs"]
+        })
+        .to_string();
+        for protocol in [
+            ProviderProtocol::OpenaiResponses,
+            ProviderProtocol::OpenaiChat,
+            ProviderProtocol::AnthropicMessages,
+        ] {
+            let mut captured = Vec::new();
+            for host_notice in [None, Some(notice.clone())] {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let endpoint = format!("http://{}", listener.local_addr().unwrap());
+                let server = tokio::spawn(async move {
+                    tokio::time::timeout(Duration::from_secs(5), async move {
+                        let (mut socket, _) = listener.accept().await.unwrap();
+                        let mut bytes = Vec::new();
+                        let payload = loop {
+                            let mut block = [0u8; 8192];
+                            let count = socket.read(&mut block).await.unwrap();
+                            assert!(count > 0, "request ended before its JSON body");
+                            bytes.extend_from_slice(&block[..count]);
+                            assert!(bytes.len() <= 1024 * 1024);
+                            if let Some(header_end) = bytes.windows(4).position(|v| v == b"\r\n\r\n") {
+                                let headers = std::str::from_utf8(&bytes[..header_end]).unwrap();
+                                let length: usize = headers.lines().find_map(|line| {
+                                    let (name, value) = line.split_once(':')?;
+                                    name.eq_ignore_ascii_case("content-length").then(|| value.trim().parse().unwrap())
+                                }).unwrap();
+                                let body_start = header_end + 4;
+                                if bytes.len() >= body_start + length {
+                                    break serde_json::from_slice::<Value>(&bytes[body_start..body_start + length]).unwrap();
+                                }
+                            }
+                        };
+                        let body = r#"{"error":{"message":"Fixture stops after payload capture."}}"#;
+                        socket.write_all(format!(
+                            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()
+                        ).as_bytes()).await.unwrap();
+                        payload
+                    }).await.unwrap()
+                });
+                let mut profile = profile_by_id("openai").unwrap();
+                profile.protocol = protocol;
+                profile.auth_style = AuthStyle::None;
+                let connection = ResolvedConnection {
+                    id: crate::llm::domain::ConnectionId::new("connection-a"),
+                    provider_id: crate::llm::domain::ProviderId::new("openai"),
+                    credential_ref: String::new(),
+                    endpoint_url: endpoint,
+                    default_model: "fixture-model".into(),
+                    enabled: true,
+                    state: "active".into(),
+                    cooldown_until: None,
+                    backoff_level: 0,
+                    max_concurrency: 1,
+                };
+                let context = TurnContext {
+                    conversation: service.get_conversation_record(&conversation.id).unwrap(),
+                    connection: Some(connection.clone()),
+                    execution_id: Uuid::new_v4().to_string(),
+                    generation_id: Uuid::new_v4().to_string(),
+                    assistant_message_id: Uuid::new_v4().to_string(),
+                    workspace_root: workspace.clone(),
+                    cancellation: CancellationToken::new(),
+                    host_notice,
+                };
+                let usage = UsageRecorder::new(
+                    &service.db_path,
+                    UsageContext {
+                        source_kind: "chat_model_call".into(),
+                        source_id: Uuid::new_v4().to_string(),
+                        pulsation_id: None,
+                        project_id: Some("project-a".into()),
+                        transport: UsageTransport::Api,
+                        provider_id: "fixture".into(),
+                        requested_model: Some("fixture-model".into()),
+                        started_at: now_iso(),
+                    },
+                );
+                assert_eq!(
+                    service
+                        .call_model(
+                            &profile,
+                            &connection,
+                            "fixture-model",
+                            None,
+                            &context,
+                            &messages,
+                            &exchanges,
+                            &usage,
+                            false,
+                        )
+                        .await
+                        .unwrap_err()
+                        .code,
+                    "validation_error"
+                );
+                let wire = server.await.unwrap();
+                assert!(
+                    !wire.to_string().contains(synthetic),
+                    "unapproved raw input must be redacted on the wire"
+                );
+                captured.push(wire);
+            }
+            let (system_key, input_key) = match protocol {
+                ProviderProtocol::OpenaiResponses => ("instructions", "input"),
+                ProviderProtocol::OpenaiChat => ("messages", "messages"),
+                ProviderProtocol::AnthropicMessages => ("system", "messages"),
+            };
+            if protocol == ProviderProtocol::OpenaiChat {
+                assert_eq!(captured[0][system_key][0], captured[1][system_key][0]);
+            } else {
+                assert_eq!(captured[0][system_key], captured[1][system_key]);
+            }
+            assert_eq!(captured[0]["tools"], captured[1]["tools"]);
+            let plain = captured[0][input_key].as_array().unwrap();
+            let noticed = captured[1][input_key].as_array().unwrap();
+            assert_eq!(noticed.len(), plain.len() + 1);
+            assert_eq!(
+                &noticed[..plain.len()],
+                plain.as_slice(),
+                "tool call/result adjacency and prior input are unchanged"
+            );
+            let tail = noticed.last().unwrap();
+            assert_eq!(tail["role"], "user");
+            let content = tail["content"].as_str().unwrap();
+            assert!(content.contains("<host_notices>"));
+            assert!(content.contains(&notice));
+        }
+        assert!(
+            messages[0].content.contains(synthetic),
+            "preparation must not rewrite original history input"
+        );
+        let stored: i64 = service
+            .connection()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM chat_messages", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            stored, 0,
+            "the transient notice never becomes a persisted chat message"
+        );
+    }
 
     #[tokio::test]
     async fn companion_stream_requires_completion_before_any_observable_output() {
@@ -6001,7 +6251,7 @@ mod tests {
             Some(&notice.to_string()),
         );
         let notices = prompt.find("<host_notices>").expect("the notice block");
-        assert!(notices < prompt.find("<history>").unwrap());
+        assert!(notices > prompt.find("</history>").unwrap());
     }
 
     /// ADR-037 M2: a finished reply is one item of its conversation's

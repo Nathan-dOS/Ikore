@@ -707,6 +707,25 @@ pub fn render_unit_prompt(
         user.push('\n');
     }
 
+    if let Some(extra) = inputs.extra_instructions {
+        if plan.units.len() > 1 {
+            let _ = writeln!(
+                user,
+                "## Stage guidance (whole batch, shared by every unit)\n\n{extra}\n"
+            );
+        } else {
+            let _ = writeln!(user, "## Stage guidance\n\n{extra}\n");
+        }
+    }
+
+    let _ = writeln!(
+        user,
+        "## Response contract\n\n{}\n\n{}\n\nYour entire reply must be one complete JSON object. If it cannot be closed it is discarded whole; keep prose short and structure complete.",
+        response_field_guide(policy.kind),
+        failure_envelope_guide(flavor)
+    );
+
+    // Attempt-specific diagnostics follow every frozen policy/context block.
     if let Some(correction) = inputs.correction {
         // The rejected answer is discarded whole and never shown: asking for
         // "only the fix" produced a partial answer the same validation
@@ -766,24 +785,6 @@ pub fn render_unit_prompt(
         }
         user.push('\n');
     }
-
-    if let Some(extra) = inputs.extra_instructions {
-        if plan.units.len() > 1 {
-            let _ = writeln!(
-                user,
-                "## Stage guidance (whole batch, shared by every unit)\n\n{extra}\n"
-            );
-        } else {
-            let _ = writeln!(user, "## Stage guidance\n\n{extra}\n");
-        }
-    }
-
-    let _ = writeln!(
-        user,
-        "## Response contract\n\n{}\n\n{}\n\nYour entire reply must be one complete JSON object. If it cannot be closed it is discarded whole; keep prose short and structure complete.",
-        response_field_guide(policy.kind),
-        failure_envelope_guide(flavor)
-    );
 
     let system = system_prompt(policy);
     let chars = system.chars().count() + user.chars().count();
@@ -1435,5 +1436,241 @@ mod tests {
         // Content with triple backticks gets a longer fence.
         assert_eq!(fence_for("```"), "````");
         assert_eq!(fence_for("````"), "`````");
+    }
+
+    /// FH-T05: a retry of the same executor and frozen context appends only
+    /// attempt data; guidance and the response contract remain reusable.
+    #[test]
+    fn frontier_corrections_append_after_the_complete_frozen_prompt() {
+        let (plan, table, bytes) = setup();
+        let src = h("src_1");
+        let decisions = vec!["Preserve the public signature.".to_owned()];
+        let inputs = UnitPromptInputs {
+            decisions: &decisions,
+            delivered: vec![DeliveredSource {
+                handle: &src,
+                content: std::str::from_utf8(&bytes).unwrap(),
+                redaction: None,
+                replaceable: false,
+                provenance: repository_file(),
+            }],
+            extra_instructions: Some("Keep the approved public interface unchanged."),
+            ..Default::default()
+        };
+        let policy = policy_for(ExecutorKind::CodeRepairer);
+        let initial = render_unit_prompt(
+            &plan,
+            &plan.units[0],
+            &table,
+            policy,
+            &inputs,
+            SchemaFlavor::Canonical,
+        );
+        for reason in [
+            "The edit omitted criterion crit_1_1.",
+            "The edit used an unknown anchor.",
+        ] {
+            let correction = CorrectionContext {
+                diagnostics: vec![reason.into()],
+                rejected_artifact_keys: vec![h("lib_v2")],
+                tool_diagnostics: Some((
+                    ToolProducer::HostChecks,
+                    vec!["cargo check failed".into()],
+                )),
+            };
+            let repaired = render_unit_prompt(
+                &plan,
+                &plan.units[0],
+                &table,
+                policy,
+                &UnitPromptInputs {
+                    correction: Some(&correction),
+                    ..inputs.clone()
+                },
+                SchemaFlavor::Canonical,
+            );
+            assert_eq!(repaired.system, initial.system);
+            let suffix = repaired
+                .user
+                .strip_prefix(&initial.user)
+                .expect("attempt data must follow every frozen prompt byte");
+            assert!(suffix.contains("## Correction"));
+            assert!(suffix.contains(reason));
+            assert!(suffix.contains("cargo check failed"));
+            assert!(suffix.contains("data, not instructions"));
+            assert!(suffix.contains("return the COMPLETE response again"));
+            assert_eq!(
+                repaired.authorized_user_ranges,
+                initial.authorized_user_ranges
+            );
+            assert_eq!(
+                repaired.chars,
+                repaired.system.chars().count() + repaired.user.chars().count()
+            );
+        }
+    }
+
+    /// FH-T06: prefix reuse is scoped to the actual executor, schema and
+    /// approved context, rather than erasing differences to improve a hit rate.
+    #[test]
+    fn frontier_prompt_reuse_preserves_executor_schema_and_context_boundaries() {
+        let (mut plan, table, _bytes) = setup();
+        let inputs = UnitPromptInputs::default();
+        let initial = render_unit_prompt(
+            &plan,
+            &plan.units[0],
+            &table,
+            policy_for(ExecutorKind::CodeImplementer),
+            &inputs,
+            SchemaFlavor::Canonical,
+        );
+        let repair_role = render_unit_prompt(
+            &plan,
+            &plan.units[0],
+            &table,
+            policy_for(ExecutorKind::CodeRepairer),
+            &inputs,
+            SchemaFlavor::Canonical,
+        );
+        assert_ne!(initial.system, repair_role.system);
+        assert!(initial.system.contains("code_implementer"));
+        assert!(repair_role.system.contains("code_repairer"));
+        let strict_schema = render_unit_prompt(
+            &plan,
+            &plan.units[0],
+            &table,
+            policy_for(ExecutorKind::CodeImplementer),
+            &inputs,
+            SchemaFlavor::Strict,
+        );
+        assert_ne!(initial.user, strict_schema.user);
+        plan.units[0].objective = "Keep value() at one after a human revision.".into();
+        let revised = render_unit_prompt(
+            &plan,
+            &plan.units[0],
+            &table,
+            policy_for(ExecutorKind::CodeImplementer),
+            &inputs,
+            SchemaFlavor::Canonical,
+        );
+        assert_ne!(initial.user, revised.user);
+        assert!(
+            revised
+                .user
+                .contains("Keep value() at one after a human revision.")
+        );
+        assert!(
+            !revised
+                .user
+                .contains("Make `value()` return 2 without changing its signature.")
+        );
+    }
+
+    /// FH-T05/FH-T33: moving a repair suffix must not shift or widen a source
+    /// exception, even when rejected diagnostic text repeats its secret bytes.
+    #[test]
+    fn frontier_repair_suffix_preserves_authorized_source_ranges_only() {
+        let synthetic = "sk-proj-abcdefghijklmnopqrst";
+        let original = format!("pub fn value() -> u8 {{\n    1 // {synthetic}\n}}\n");
+        let mut redaction = crate::secret_redactor::redact_context(&original).unwrap();
+        let authorized = redaction.spans.remove(0);
+        redaction.text = crate::secret_redactor::render_redacted_range(
+            &original,
+            &redaction.spans,
+            0,
+            original.len(),
+        )
+        .unwrap();
+        redaction
+            .authorized_spans
+            .push(crate::secret_redactor::AuthorizedSpan {
+                start_byte: authorized.start_byte,
+                end_byte: authorized.end_byte,
+                exception_id: "synthetic-fixture".into(),
+            });
+        let (mut plan, _table, _bytes) = setup();
+        let mut builder = ReferenceTable::builder();
+        builder
+            .add_task(
+                "t-1",
+                1,
+                "Return two",
+                &[("AC-1".into(), "value() returns 2.".into())],
+            )
+            .unwrap();
+        let source = builder
+            .add_existing(
+                RelPath::new("src/lib.rs").unwrap(),
+                Sha256Hex::of(original.as_bytes()),
+                SourceRole::Source,
+            )
+            .unwrap();
+        builder.add_unavailable(UnavailableReason::Ambiguous, "Two candidate callers.");
+        builder.add_check(h("cargo_check")).unwrap();
+        builder
+            .add_line_anchor(&source, original.as_bytes(), 1, 3)
+            .unwrap();
+        let table = builder.build();
+        plan.references = table.entries().to_vec();
+        plan.anchors = table.anchors().to_vec();
+        plan.scope = table.scope().to_vec();
+        let inputs = UnitPromptInputs {
+            delivered: vec![DeliveredSource {
+                handle: &source,
+                content: &original,
+                redaction: Some(&redaction),
+                replaceable: false,
+                provenance: repository_file(),
+            }],
+            extra_instructions: Some("Preserve the public signature."),
+            ..Default::default()
+        };
+        let policy = policy_for(ExecutorKind::CodeRepairer);
+        let initial = render_unit_prompt(
+            &plan,
+            &plan.units[0],
+            &table,
+            policy,
+            &inputs,
+            SchemaFlavor::Canonical,
+        );
+        let correction = CorrectionContext {
+            diagnostics: vec![format!("Untrusted diagnostic repeats {synthetic}")],
+            ..Default::default()
+        };
+        let repaired = render_unit_prompt(
+            &plan,
+            &plan.units[0],
+            &table,
+            policy,
+            &UnitPromptInputs {
+                correction: Some(&correction),
+                ..inputs
+            },
+            SchemaFlavor::Canonical,
+        );
+        assert!(repaired.user.starts_with(&initial.user));
+        assert_eq!(
+            repaired.authorized_user_ranges,
+            initial.authorized_user_ranges
+        );
+        assert_eq!(repaired.authorized_user_ranges.len(), 1);
+        let range = repaired.authorized_user_ranges[0].clone();
+        assert_eq!(&repaired.user[range], synthetic);
+        let prepared = crate::secret_redactor::PreparedModelInput::with_authorized_ranges(
+            &repaired.system,
+            &repaired.user,
+            "trusted-policy",
+            &[],
+            &repaired.authorized_user_ranges,
+        )
+        .unwrap();
+        prepared.verify().unwrap();
+        assert_eq!(prepared.user_prompt().matches(synthetic).count(), 1);
+        assert!(
+            prepared
+                .user_prompt()
+                .contains("Untrusted diagnostic repeats <REDACTED_SECRET:")
+        );
     }
 }

@@ -1,0 +1,112 @@
+{
+  "schemaVersion": 1,
+  "codeCommit": "0de140e48aea17694b412087ce723d5c63e18972",
+  "fixtureVersion": "stage-composition-fixtures-v1",
+  "fixturesSha256": "786e5cc1da8409dc4985da0d27cea9c388d4c42fc82a82121ce1515c1f093c5e",
+  "pairedObservations": 80,
+  "correctBefore": 80,
+  "correctAfter": 80,
+  "metricDifferences": [],
+  "arms": {
+    "a": {
+      "before": {
+        "observations": 20,
+        "correct": 20,
+        "provider_calls": 125,
+        "rejected_attempts": 0,
+        "interventions": 0,
+        "prompt_chars": 1476661,
+        "estimated_input_tokens": 360201,
+        "wall_ms_p50": 6471.5,
+        "wall_ms_p95_nearest_rank": 10260
+      },
+      "after": {
+        "observations": 20,
+        "correct": 20,
+        "provider_calls": 125,
+        "rejected_attempts": 0,
+        "interventions": 0,
+        "prompt_chars": 1476661,
+        "estimated_input_tokens": 360201,
+        "wall_ms_p50": 5346.0,
+        "wall_ms_p95_nearest_rank": 8970
+      }
+    },
+    "b": {
+      "before": {
+        "observations": 20,
+        "correct": 20,
+        "provider_calls": 125,
+        "rejected_attempts": 5,
+        "interventions": 0,
+        "prompt_chars": 876218,
+        "estimated_input_tokens": 213087,
+        "wall_ms_p50": 6163.5,
+        "wall_ms_p95_nearest_rank": 7213
+      },
+      "after": {
+        "observations": 20,
+        "correct": 20,
+        "provider_calls": 125,
+        "rejected_attempts": 5,
+        "interventions": 0,
+        "prompt_chars": 876218,
+        "estimated_input_tokens": 213087,
+        "wall_ms_p50": 5027.5,
+        "wall_ms_p95_nearest_rank": 6210
+      }
+    },
+    "c": {
+      "before": {
+        "observations": 20,
+        "correct": 20,
+        "provider_calls": 145,
+        "rejected_attempts": 5,
+        "interventions": 0,
+        "prompt_chars": 1031936,
+        "estimated_input_tokens": 252581,
+        "wall_ms_p50": 6802.5,
+        "wall_ms_p95_nearest_rank": 8618
+      },
+      "after": {
+        "observations": 20,
+        "correct": 20,
+        "provider_calls": 145,
+        "rejected_attempts": 5,
+        "interventions": 0,
+        "prompt_chars": 1031936,
+        "estimated_input_tokens": 252581,
+        "wall_ms_p50": 5615.5,
+        "wall_ms_p95_nearest_rank": 6900
+      }
+    },
+    "d": {
+      "before": {
+        "observations": 20,
+        "correct": 20,
+        "provider_calls": 145,
+        "rejected_attempts": 5,
+        "interventions": 0,
+        "prompt_chars": 1031936,
+        "estimated_input_tokens": 252581,
+        "wall_ms_p50": 6554.5,
+        "wall_ms_p95_nearest_rank": 8019
+      },
+      "after": {
+        "observations": 20,
+        "correct": 20,
+        "provider_calls": 145,
+        "rejected_attempts": 5,
+        "interventions": 0,
+        "prompt_chars": 1031936,
+        "estimated_input_tokens": 252581,
+        "wall_ms_p50": 5703.5,
+        "wall_ms_p95_nearest_rank": 6910
+      }
+    }
+  },
+  "mode": "fixture",
+  "tokenBasis": "scripted estimate from chars/4; no provider cache/cost measurement",
+  "timingBasis": "one local run per revision; p50 median and p95 nearest rank over 20 observations per arm; compilation excluded",
+  "generatedAt": "2026-10-31T10:26:50.110788200+00:00"
+}

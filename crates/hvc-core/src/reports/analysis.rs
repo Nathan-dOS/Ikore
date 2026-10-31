@@ -58,7 +58,7 @@ fn optional_elapsed(from: Option<&String>, to: Option<&String>) -> Option<f64> {
     elapsed_seconds(from?, to?)
 }
 
-fn ratio(part: f64, whole: f64) -> Option<f64> {
+pub(super) fn ratio(part: f64, whole: f64) -> Option<f64> {
     (whole > 0.0).then(|| (part / whole * 1000.0).round() / 10.0)
 }
 
@@ -120,6 +120,133 @@ impl AgentRun {
     }
 }
 
+/// One compatible set of supplier-reported accounting units. A missing cache
+/// breakdown is unknown, even when the total input is known.
+#[derive(Debug, Clone, Default)]
+struct CacheMeasurement {
+    records: u64,
+    // eligible + unknown + invalid + unavailable partitions all records.
+    eligible_records: u64,
+    // Quality and zero-input are subsets; they overlap the eligibility partition.
+    partial_records: u64,
+    unknown_records: u64,
+    invalid_records: u64,
+    unavailable_records: u64,
+    zero_input_records: u64,
+    input: i64,
+    read: i64,
+    overflow: bool,
+}
+
+impl CacheMeasurement {
+    fn observe(&mut self, input: Option<i64>, read: Option<i64>, quality: &str) {
+        self.records = self.records.saturating_add(1);
+        if quality == "unavailable" {
+            self.unavailable_records = self.unavailable_records.saturating_add(1);
+            return;
+        }
+        if quality == "partial" {
+            self.partial_records = self.partial_records.saturating_add(1);
+        }
+        let (Some(input), Some(read)) = (input, read) else {
+            self.unknown_records = self.unknown_records.saturating_add(1);
+            return;
+        };
+        if input < 0 || read < 0 || read > input {
+            self.invalid_records = self.invalid_records.saturating_add(1);
+            return;
+        }
+        self.eligible_records = self.eligible_records.saturating_add(1);
+        if input == 0 {
+            self.zero_input_records = self.zero_input_records.saturating_add(1);
+        }
+        match (self.input.checked_add(input), self.read.checked_add(read)) {
+            (Some(input), Some(read)) => {
+                self.input = input;
+                self.read = read;
+            }
+            _ => self.overflow = true,
+        }
+    }
+
+    fn add(&mut self, other: &Self) {
+        self.records = self.records.saturating_add(other.records);
+        self.eligible_records = self.eligible_records.saturating_add(other.eligible_records);
+        self.partial_records = self.partial_records.saturating_add(other.partial_records);
+        self.unknown_records = self.unknown_records.saturating_add(other.unknown_records);
+        self.invalid_records = self.invalid_records.saturating_add(other.invalid_records);
+        self.unavailable_records = self
+            .unavailable_records
+            .saturating_add(other.unavailable_records);
+        self.zero_input_records = self
+            .zero_input_records
+            .saturating_add(other.zero_input_records);
+        self.overflow |= other.overflow;
+        match (
+            self.input.checked_add(other.input),
+            self.read.checked_add(other.read),
+        ) {
+            (Some(input), Some(read)) => {
+                self.input = input;
+                self.read = read;
+            }
+            _ => self.overflow = true,
+        }
+    }
+
+    fn ratio_percent(&self) -> Option<f64> {
+        if self.overflow {
+            None
+        } else {
+            ratio(self.read as f64, self.input as f64)
+        }
+    }
+
+    fn state(&self) -> &'static str {
+        let incomplete = self.unknown_records > 0
+            || self.invalid_records > 0
+            || self.unavailable_records > 0
+            || self.partial_records > 0;
+        if self.overflow {
+            "unknown"
+        } else if self.input > 0 {
+            if incomplete { "partial" } else { "known" }
+        } else if self.zero_input_records > 0 && !incomplete {
+            "not_applicable"
+        } else {
+            "unknown"
+        }
+    }
+
+    fn to_json(&self) -> Value {
+        json!({
+            "state": self.state(),
+            "basis": "reported_normalized_input",
+            "input_tokens": (!self.overflow && self.eligible_records > 0).then_some(self.input),
+            "cache_read_tokens": (!self.overflow && self.eligible_records > 0).then_some(self.read),
+            "ratio_percent": self.ratio_percent(),
+            "records": self.records,
+            "eligible_records": self.eligible_records,
+            "partial_records": self.partial_records,
+            "unknown_records": self.unknown_records,
+            "invalid_records": self.invalid_records,
+            "unavailable_records": self.unavailable_records,
+            "zero_input_records": self.zero_input_records,
+            "overflow": self.overflow,
+        })
+    }
+}
+
+/// Group from each ledger row, rather than its enclosing CLI process: one
+/// process can report several models. Prompt/schema versions were not recorded.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct CacheGroup {
+    transport: String,
+    provider: Option<String>,
+    model: Option<String>,
+    model_source: &'static str,
+}
+
 #[derive(Debug, Clone, Default)]
 struct Tokens {
     input: i64,
@@ -131,27 +258,89 @@ struct Tokens {
     unavailable_records: i64,
     /// Records with an all-zero body, emitted alongside a real one by some backends.
     phantom_records: i64,
+    /// Numeric legacy totals saturate instead of wrapping; this flag discloses it.
+    totals_overflow: bool,
+    cache: CacheMeasurement,
+    cache_groups: BTreeMap<CacheGroup, CacheMeasurement>,
+}
+
+fn cache_model_identifier(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let value = value.trim();
+        (!value.is_empty() && value != "default").then(|| value.to_owned())
+    })
+}
+
+/// Preserve the numeric legacy DTO shape while flagging unrepresentable totals.
+fn add_token_count(target: &mut i64, value: i64, overflow: &mut bool) {
+    match target.checked_add(value) {
+        Some(total) => *target = total,
+        None => {
+            *target = target.saturating_add(value);
+            *overflow = true;
+        }
+    }
 }
 
 impl Tokens {
     fn add(&mut self, other: &Tokens) {
-        self.input += other.input;
-        self.output += other.output;
-        self.reasoning += other.reasoning;
-        self.cache_read += other.cache_read;
-        self.cache_write += other.cache_write;
-        self.unavailable_records += other.unavailable_records;
-        self.phantom_records += other.phantom_records;
+        self.totals_overflow |= other.totals_overflow;
+        add_token_count(&mut self.input, other.input, &mut self.totals_overflow);
+        add_token_count(&mut self.output, other.output, &mut self.totals_overflow);
+        add_token_count(
+            &mut self.reasoning,
+            other.reasoning,
+            &mut self.totals_overflow,
+        );
+        add_token_count(
+            &mut self.cache_read,
+            other.cache_read,
+            &mut self.totals_overflow,
+        );
+        add_token_count(
+            &mut self.cache_write,
+            other.cache_write,
+            &mut self.totals_overflow,
+        );
+        self.unavailable_records = self
+            .unavailable_records
+            .saturating_add(other.unavailable_records);
+        self.phantom_records = self.phantom_records.saturating_add(other.phantom_records);
+        self.cache.add(&other.cache);
+        for (group, measurement) in &other.cache_groups {
+            self.cache_groups
+                .entry(group.clone())
+                .or_default()
+                .add(measurement);
+        }
     }
 
     fn to_json(&self) -> Value {
+        let groups: Vec<Value> = self
+            .cache_groups
+            .iter()
+            .map(|(group, measurement)| {
+                json!({
+                    "transport": group.transport,
+                    "provider": group.provider,
+                    "model": group.model,
+                    "model_source": group.model_source,
+                    "prompt_version": Value::Null,
+                    "response_schema_version": Value::Null,
+                    "measurement": measurement.to_json(),
+                })
+            })
+            .collect();
         json!({
             "input": self.input,
             "output": self.output,
             "reasoning": self.reasoning,
             "cache_read": self.cache_read,
             "cache_write": self.cache_write,
-            "cache_read_ratio_percent": ratio(self.cache_read as f64, self.input as f64),
+            "cache_read_ratio_percent": self.cache.ratio_percent(),
+            "cache_measurement": self.cache.to_json(),
+            "cache_groups": groups,
+            "totals_overflow": self.totals_overflow,
             "unavailable_records": self.unavailable_records,
             "phantom_records": self.phantom_records,
         })
@@ -296,7 +485,7 @@ fn load_tokens(
 ) -> Result<HashMap<String, Tokens>, AnalysisError> {
     let mut by_run: HashMap<String, Tokens> = HashMap::new();
     let mut statement = connection.prepare(
-        "SELECT input_tokens,output_tokens,reasoning_tokens,cache_read_tokens,cache_write_tokens,quality FROM token_usage_records WHERE source_kind=?1 AND source_id=?2",
+        "SELECT input_tokens,output_tokens,reasoning_tokens,cache_read_tokens,cache_write_tokens,quality,transport,provider_id,requested_model,observed_model FROM token_usage_records WHERE source_kind=?1 AND source_id=?2",
     )?;
     for run in runs {
         let entry = by_run.entry(run.id.clone()).or_default();
@@ -308,10 +497,50 @@ fn load_tokens(
                 row.get::<_, Option<i64>>(3)?,
                 row.get::<_, Option<i64>>(4)?,
                 row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, String>(7)?,
+                row.get::<_, Option<String>>(8)?,
+                row.get::<_, Option<String>>(9)?,
             ))
         })?;
         for row in rows {
-            let (input, output, reasoning, cache_read, cache_write, quality) = row?;
+            let (
+                input,
+                output,
+                reasoning,
+                cache_read,
+                cache_write,
+                quality,
+                transport,
+                provider,
+                requested_model,
+                observed_model,
+            ) = row?;
+            // Older rows may predate the recorder's identifier guard. An empty
+            // string or the dynamic default is not an observed model identity.
+            let observed_model = cache_model_identifier(observed_model);
+            let requested_model = cache_model_identifier(requested_model);
+            let provider = (!provider.trim().is_empty()).then(|| provider.trim().to_owned());
+            let (model, model_source) = if let Some(observed) = observed_model {
+                (Some(observed), "observed")
+            } else if let Some(requested) = requested_model {
+                (Some(requested), "requested")
+            } else {
+                (None, "unknown")
+            };
+            let group = CacheGroup {
+                transport,
+                provider,
+                model,
+                model_source,
+            };
+            // Cache coverage is classified even for zero/phantom usage rows.
+            entry.cache.observe(input, cache_read, &quality);
+            entry
+                .cache_groups
+                .entry(group)
+                .or_default()
+                .observe(input, cache_read, &quality);
             if quality == "unavailable" {
                 entry.unavailable_records += 1;
                 continue;
@@ -320,11 +549,31 @@ fn load_tokens(
                 entry.phantom_records += 1;
                 continue;
             }
-            entry.input += input.unwrap_or(0);
-            entry.output += output.unwrap_or(0);
-            entry.reasoning += reasoning.unwrap_or(0);
-            entry.cache_read += cache_read.unwrap_or(0);
-            entry.cache_write += cache_write.unwrap_or(0);
+            add_token_count(
+                &mut entry.input,
+                input.unwrap_or(0),
+                &mut entry.totals_overflow,
+            );
+            add_token_count(
+                &mut entry.output,
+                output.unwrap_or(0),
+                &mut entry.totals_overflow,
+            );
+            add_token_count(
+                &mut entry.reasoning,
+                reasoning.unwrap_or(0),
+                &mut entry.totals_overflow,
+            );
+            add_token_count(
+                &mut entry.cache_read,
+                cache_read.unwrap_or(0),
+                &mut entry.totals_overflow,
+            );
+            add_token_count(
+                &mut entry.cache_write,
+                cache_write.unwrap_or(0),
+                &mut entry.totals_overflow,
+            );
         }
     }
     Ok(by_run)
@@ -991,10 +1240,14 @@ pub fn analyze(database: &Path, selector: &Selector) -> Result<Value, AnalysisEr
             "api_seconds_discarded": discarded_api,
             "tokens": overall_tokens.to_json(),
             "tokens_discarded": discarded_tokens.to_json(),
-            "token_waste_percent": ratio(
-                (discarded_tokens.input + discarded_tokens.output) as f64,
-                (overall_tokens.input + overall_tokens.output) as f64,
-            ),
+            "token_waste_percent": if discarded_tokens.totals_overflow || overall_tokens.totals_overflow {
+                None
+            } else {
+                ratio(
+                    discarded_tokens.input as f64 + discarded_tokens.output as f64,
+                    overall_tokens.input as f64 + overall_tokens.output as f64,
+                )
+            },
         },
         "stages": staged.stages,
         "learning": {
@@ -1120,6 +1373,13 @@ pub fn to_html_report(report: &Value) -> Result<PulsationReport, AnalysisError> 
                 cache_read: count(&totals["tokens"]["cache_read"]),
                 discarded_input: count(&totals["tokens_discarded"]["input"]),
                 discarded_output: count(&totals["tokens_discarded"]["output"]),
+                cache_measurement: serde_json::from_value(
+                    totals["tokens"]["cache_measurement"].clone(),
+                )
+                .ok(),
+                totals_overflow: totals["tokens"]["totals_overflow"]
+                    .as_bool()
+                    .unwrap_or(false),
             },
             stages,
             plan_quota: report["plan_quota"]
@@ -1210,17 +1470,42 @@ pub fn render_text(report: &Value) -> String {
         percent(&totals["cli_waste_percent"]),
         duration(totals["api_seconds_discarded"].as_f64()),
     ));
+    let cache_basis = if tokens
+        .get("cache_measurement")
+        .is_some_and(Value::is_object)
+    {
+        "eligible reported input"
+    } else {
+        "input; legacy coverage unavailable"
+    };
     out.push_str(&format!(
-        "  tokens               {} in / {} out ({} reasoning)\n  cache read           {} ({} of input)\n  tokens discarded     {} in / {} out ({} of all tokens)\n",
+        "  tokens               {} in / {} out ({} reasoning)\n  cache read           {} reported tokens\n  cache read ratio     {} of {}\n  tokens discarded     {} in / {} out ({} of all tokens)\n",
         tokens["input"],
         tokens["output"],
         tokens["reasoning"],
         tokens["cache_read"],
         percent(&tokens["cache_read_ratio_percent"]),
+        cache_basis,
         totals["tokens_discarded"]["input"],
         totals["tokens_discarded"]["output"],
         percent(&totals["token_waste_percent"]),
     ));
+    if let Some(cache) = tokens
+        .get("cache_measurement")
+        .filter(|cache| cache.is_object())
+    {
+        out.push_str(&format!(
+            "  cache coverage       state={} eligible={}/{} unknown={} invalid={} unavailable={} partial={}\n",
+            cache["state"].as_str().unwrap_or("unknown"),
+            cache["eligible_records"], cache["records"], cache["unknown_records"],
+            cache["invalid_records"], cache["unavailable_records"], cache["partial_records"],
+        ));
+    }
+    if tokens["totals_overflow"].as_bool() == Some(true) {
+        out.push_str(
+            "  WARNING: token totals overflowed; numeric totals are saturated, not exact.\n",
+        );
+    }
     if tokens["unavailable_records"].as_i64().unwrap_or(0) > 0
         || tokens["phantom_records"].as_i64().unwrap_or(0) > 0
     {
@@ -1412,6 +1697,321 @@ mod tests {
     use super::*;
     use crate::persistence_service::{PulsationStage, PulsationStatus};
     use crate::reports::render_pulsation_report;
+
+    // FH-T08: cache measurements use the same reported accounting units in
+    // numerator and denominator. Missing optional counters are not zero.
+    fn cache_fixture_run(id: &str, transport: Transport) -> AgentRun {
+        AgentRun {
+            transport,
+            id: id.to_owned(),
+            job_id: None,
+            agent_role: Some("Code".to_owned()),
+            backend: Some("provider-a".to_owned()),
+            model: Some("requested-model".to_owned()),
+            observed_model: Some("observed-model".to_owned()),
+            status: "completed".to_owned(),
+            exit_code: Some(0),
+            error_code: None,
+            termination_reason: None,
+            output_bytes: 0,
+            event_count: 0,
+            started_at: None,
+            finished_at: None,
+            deadline_at: None,
+            agent_run_id: None,
+        }
+    }
+
+    fn cache_fixture_database() -> Connection {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE token_usage_records(
+                source_kind TEXT,source_id TEXT,input_tokens INTEGER,
+                output_tokens INTEGER,reasoning_tokens INTEGER,
+                cache_read_tokens INTEGER,cache_write_tokens INTEGER,quality TEXT,
+                transport TEXT,provider_id TEXT,requested_model TEXT,observed_model TEXT
+            );",
+        )
+        .unwrap();
+        db
+    }
+
+    fn insert_cache_fixture_row(
+        db: &Connection,
+        run: &AgentRun,
+        input: Option<i64>,
+        cache_read: Option<i64>,
+        quality: &str,
+    ) {
+        db.execute(
+            "INSERT INTO token_usage_records VALUES(?1,?2,?3,1,NULL,?4,NULL,?5,?6,?7,?8,?9)",
+            rusqlite::params![
+                run.transport.source_kind(),
+                run.id,
+                input,
+                cache_read,
+                quality,
+                run.transport.as_str(),
+                run.backend,
+                run.model,
+                run.observed_model,
+            ],
+        )
+        .unwrap();
+    }
+
+    fn fixture_tokens(db: &Connection, run: &AgentRun) -> Tokens {
+        load_tokens(db, std::slice::from_ref(run))
+            .unwrap()
+            .remove(&run.id)
+            .unwrap()
+    }
+
+    #[test]
+    fn cache_measurement_distinguishes_missing_from_reported_zero() {
+        let db = cache_fixture_database();
+        let run = cache_fixture_run("missing", Transport::Api);
+        insert_cache_fixture_row(&db, &run, Some(100), None, "complete");
+        let missing = fixture_tokens(&db, &run).to_json();
+        assert!(missing["cache_read_ratio_percent"].is_null(), "{missing}");
+        assert_eq!(missing["cache_measurement"]["state"], "unknown");
+        assert_eq!(missing["cache_measurement"]["unknown_records"], 1);
+        assert_eq!(missing["cache_measurement"]["eligible_records"], 0);
+        assert_eq!(missing["input"], 100);
+
+        let zero_run = cache_fixture_run("zero", Transport::Api);
+        insert_cache_fixture_row(&db, &zero_run, Some(100), Some(0), "complete");
+        let zero = fixture_tokens(&db, &zero_run).to_json();
+        assert_eq!(zero["cache_read_ratio_percent"], 0.0);
+        assert_eq!(zero["cache_measurement"]["state"], "known");
+        assert_eq!(zero["cache_measurement"]["eligible_records"], 1);
+    }
+
+    #[test]
+    fn cache_measurement_uses_paired_weighted_observations_and_reports_coverage() {
+        let db = cache_fixture_database();
+        let run = cache_fixture_run("mixed", Transport::Api);
+        insert_cache_fixture_row(&db, &run, Some(100), Some(50), "complete");
+        insert_cache_fixture_row(&db, &run, Some(900), None, "complete");
+        insert_cache_fixture_row(&db, &run, Some(300), Some(30), "complete");
+        let tokens = fixture_tokens(&db, &run);
+        let measured = tokens.to_json();
+        assert_eq!(measured["input"], 1300);
+        assert_eq!(measured["cache_read"], 80);
+        assert_eq!(measured["cache_read_ratio_percent"], 20.0);
+        assert_eq!(measured["cache_measurement"]["input_tokens"], 400);
+        assert_eq!(measured["cache_measurement"]["cache_read_tokens"], 80);
+        assert_eq!(measured["cache_measurement"]["eligible_records"], 2);
+        assert_eq!(measured["cache_measurement"]["unknown_records"], 1);
+        assert_eq!(measured["cache_measurement"]["records"], 3);
+        assert_eq!(measured["cache_measurement"]["state"], "partial");
+        let mut aggregated = Tokens::default();
+        aggregated.add(&tokens);
+        aggregated.add(&tokens);
+        let aggregated = aggregated.to_json();
+        assert_eq!(aggregated["cache_read_ratio_percent"], 20.0);
+        assert_eq!(aggregated["cache_measurement"]["input_tokens"], 800);
+        assert_eq!(aggregated["cache_groups"].as_array().unwrap().len(), 1);
+        assert_eq!(aggregated["cache_groups"][0]["measurement"]["records"], 6);
+    }
+
+    #[test]
+    fn cache_measurement_retains_zero_input_even_in_phantom_records() {
+        let db = cache_fixture_database();
+        let run = cache_fixture_run("empty", Transport::Api);
+        insert_cache_fixture_row(&db, &run, Some(0), Some(0), "complete");
+        db.execute("UPDATE token_usage_records SET output_tokens=0", [])
+            .unwrap();
+        let measured = fixture_tokens(&db, &run).to_json();
+        assert!(measured["cache_read_ratio_percent"].is_null());
+        assert_eq!(measured["cache_measurement"]["state"], "not_applicable");
+        assert_eq!(measured["cache_measurement"]["zero_input_records"], 1);
+        assert_eq!(measured["cache_measurement"]["eligible_records"], 1);
+        assert_eq!(measured["phantom_records"], 1);
+    }
+
+    #[test]
+    fn cache_measurement_rejects_impossible_pairs_and_labels_partial_usage() {
+        let db = cache_fixture_database();
+        let invalid_run = cache_fixture_run("invalid", Transport::Api);
+        insert_cache_fixture_row(&db, &invalid_run, Some(100), Some(101), "complete");
+        insert_cache_fixture_row(&db, &invalid_run, Some(-1), Some(0), "complete");
+        let invalid = fixture_tokens(&db, &invalid_run).to_json();
+        assert!(invalid["cache_read_ratio_percent"].is_null(), "{invalid}");
+        assert_eq!(invalid["cache_measurement"]["state"], "unknown");
+        assert_eq!(invalid["cache_measurement"]["invalid_records"], 2);
+
+        let partial_run = cache_fixture_run("partial", Transport::Cli);
+        insert_cache_fixture_row(&db, &partial_run, Some(100), Some(25), "partial");
+        insert_cache_fixture_row(&db, &partial_run, None, None, "unavailable");
+        let partial = fixture_tokens(&db, &partial_run).to_json();
+        assert_eq!(partial["cache_read_ratio_percent"], 25.0);
+        assert_eq!(partial["cache_measurement"]["state"], "partial");
+        assert_eq!(partial["cache_measurement"]["partial_records"], 1);
+        assert_eq!(partial["cache_measurement"]["unavailable_records"], 1);
+        assert_eq!(partial["unavailable_records"], 1);
+    }
+
+    #[test]
+    fn cache_measurement_groups_each_accounting_rows_transport_provider_and_model() {
+        let db = cache_fixture_database();
+        let api_run = cache_fixture_run("api", Transport::Api);
+        insert_cache_fixture_row(&db, &api_run, Some(100), Some(50), "complete");
+        let mut cli_run = cache_fixture_run("cli", Transport::Cli);
+        cli_run.backend = Some("provider-b".to_owned());
+        cli_run.observed_model = Some("model-one".to_owned());
+        insert_cache_fixture_row(&db, &cli_run, Some(100), Some(10), "complete");
+        cli_run.observed_model = Some("model-two".to_owned());
+        insert_cache_fixture_row(&db, &cli_run, Some(100), None, "complete");
+        cli_run.observed_model = None;
+        insert_cache_fixture_row(&db, &cli_run, Some(100), Some(20), "complete");
+        let loaded = load_tokens(&db, &[api_run, cli_run]).unwrap();
+        let mut total = Tokens::default();
+        for tokens in loaded.values() {
+            total.add(tokens);
+        }
+        let report = total.to_json();
+        let groups = report["cache_groups"].as_array().unwrap();
+        assert_eq!(groups.len(), 4);
+        assert_eq!(groups[0]["transport"], "api");
+        assert_eq!(groups[0]["provider"], "provider-a");
+        assert_eq!(groups[0]["model_source"], "observed");
+        assert_eq!(groups[0]["measurement"]["ratio_percent"], 50.0);
+        let unavailable = groups
+            .iter()
+            .find(|group| group["model"] == "model-two")
+            .unwrap();
+        assert_eq!(unavailable["measurement"]["state"], "unknown");
+        assert!(unavailable["measurement"]["ratio_percent"].is_null());
+        let requested = groups
+            .iter()
+            .find(|group| group["model_source"] == "requested")
+            .unwrap();
+        assert_eq!(requested["model"], "requested-model");
+        assert!(requested["prompt_version"].is_null());
+        assert!(requested["response_schema_version"].is_null());
+        assert_eq!(requested["measurement"]["ratio_percent"], 20.0);
+    }
+
+    #[test]
+    fn cache_measurement_does_not_promote_empty_or_default_model_metadata() {
+        let db = cache_fixture_database();
+        let mut run = cache_fixture_run("metadata", Transport::Api);
+        run.observed_model = Some("  ".to_owned());
+        run.model = Some(" requested-model ".to_owned());
+        insert_cache_fixture_row(&db, &run, Some(100), Some(20), "complete");
+        run.observed_model = Some("default".to_owned());
+        run.model = None;
+        run.backend = Some("  ".to_owned());
+        insert_cache_fixture_row(&db, &run, Some(100), Some(10), "complete");
+        let measured = fixture_tokens(&db, &run).to_json();
+        let groups = measured["cache_groups"].as_array().unwrap();
+        assert_eq!(groups.len(), 2);
+        let requested = groups
+            .iter()
+            .find(|group| group["model_source"] == "requested")
+            .unwrap();
+        assert_eq!(requested["model"], "requested-model");
+        let unknown = groups
+            .iter()
+            .find(|group| group["model_source"] == "unknown")
+            .unwrap();
+        assert!(unknown["model"].is_null());
+        assert!(unknown["provider"].is_null());
+        assert_eq!(unknown["measurement"]["ratio_percent"], 10.0);
+    }
+
+    #[test]
+    fn cache_measurement_overflow_is_unknown_instead_of_wrapping_or_panicking() {
+        let db = cache_fixture_database();
+        let run = cache_fixture_run("overflow", Transport::Api);
+        insert_cache_fixture_row(&db, &run, Some(i64::MAX), Some(1), "complete");
+        insert_cache_fixture_row(&db, &run, Some(1), Some(0), "complete");
+        let tokens = fixture_tokens(&db, &run);
+        let measured = tokens.to_json();
+        assert!(measured["cache_read_ratio_percent"].is_null());
+        assert_eq!(measured["cache_measurement"]["state"], "unknown");
+        assert_eq!(measured["cache_measurement"]["overflow"], true);
+        assert!(measured["cache_measurement"]["input_tokens"].is_null());
+        assert_eq!(measured["totals_overflow"], true);
+        let mut aggregated = tokens.clone();
+        aggregated.add(&tokens);
+        assert!(aggregated.to_json()["cache_read_ratio_percent"].is_null());
+    }
+
+    #[test]
+    fn cache_measurement_text_labels_eligible_input_and_unknown_coverage() {
+        let db = cache_fixture_database();
+        let run = cache_fixture_run("render", Transport::Api);
+        insert_cache_fixture_row(&db, &run, Some(100), None, "complete");
+        let mut report = analysis();
+        report["totals"]["tokens"] = fixture_tokens(&db, &run).to_json();
+        let text = render_text(&report);
+        assert!(text.contains("of eligible reported input"), "{text}");
+        assert!(text.contains("cache coverage"), "{text}");
+        assert!(text.contains("state=unknown"), "{text}");
+        assert!(text.contains("unknown=1"), "{text}");
+    }
+
+    #[test]
+    fn cache_measurement_text_keeps_legacy_coverage_unavailable() {
+        let mut report = analysis();
+        report["totals"]["tokens"]["cache_read_ratio_percent"] = json!(51.1);
+        let text = render_text(&report);
+        assert!(text.contains("legacy coverage unavailable"), "{text}");
+        assert!(!text.contains("of eligible reported input"), "{text}");
+        report["totals"]["tokens"]["cache_measurement"] = Value::Null;
+        assert!(render_text(&report).contains("legacy coverage unavailable"));
+    }
+
+    #[test]
+    fn cache_measurement_html_and_json_use_one_rounding_rule() {
+        for (input, read, expected) in [(400, 1, 0.3), (80, 1, 1.3), (400, 3, 0.8)] {
+            let db = cache_fixture_database();
+            let run = cache_fixture_run("rounding", Transport::Api);
+            insert_cache_fixture_row(&db, &run, Some(input), Some(read), "complete");
+            let mut report = analysis();
+            report["totals"]["tokens"] = fixture_tokens(&db, &run).to_json();
+            let normalized = report["totals"]["tokens"]["cache_read_ratio_percent"]
+                .as_f64()
+                .unwrap();
+            assert_eq!(normalized, expected);
+            let percentage = format!("{normalized:.1}%");
+            assert!(render_text(&report).contains(&percentage));
+            let html = crate::reports::render_pulsation_report(&to_html_report(&report).unwrap());
+            assert!(
+                html.contains(&format!(
+                    "Cache reuse: {percentage} of eligible reported input."
+                )),
+                "cache={read}, input={input}: HTML must match the normalized JSON value {percentage}"
+            );
+        }
+    }
+
+    #[test]
+    fn cache_measurement_survives_the_typed_html_report_boundary() {
+        let db = cache_fixture_database();
+        let run = cache_fixture_run("typed", Transport::Api);
+        insert_cache_fixture_row(&db, &run, Some(100), Some(25), "complete");
+        let mut report = analysis();
+        report["totals"]["tokens"] = fixture_tokens(&db, &run).to_json();
+        let typed = serde_json::to_value(to_html_report(&report).unwrap()).unwrap();
+        assert_eq!(
+            typed["run"]["tokens"]["cache_measurement"]["eligible_records"],
+            1
+        );
+        assert_eq!(
+            typed["run"]["tokens"]["cache_measurement"]["input_tokens"],
+            100
+        );
+        assert_eq!(
+            typed["run"]["tokens"]["cache_measurement"]["cache_read_tokens"],
+            25
+        );
+        report["totals"]["tokens"]["totals_overflow"] = json!(true);
+        let overflowed = serde_json::to_value(to_html_report(&report).unwrap()).unwrap();
+        assert_eq!(overflowed["run"]["tokens"]["totals_overflow"], true);
+    }
 
     #[test]
     fn analysis_exports_sanitize_nested_runtime_fields_without_rewriting_source_identity() {

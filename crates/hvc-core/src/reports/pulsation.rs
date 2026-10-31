@@ -240,6 +240,36 @@ pub struct ReportTokens {
     pub cache_read: i64,
     pub discarded_input: i64,
     pub discarded_output: i64,
+    /// The paired, provider-reported cache breakdown; absent in older reports.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_measurement: Option<ReportCacheMeasurement>,
+    /// Arithmetic saturation means the displayed token totals are not exact.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub totals_overflow: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+/// Cache coverage is separate from the all-input token totals. Counts and
+/// normalized sums remain integral so the report can validate the ratio before
+/// rendering it; the ratio is never accepted from a serialized floating value.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ReportCacheMeasurement {
+    pub state: String,
+    pub basis: String,
+    pub input_tokens: Option<i64>,
+    pub cache_read_tokens: Option<i64>,
+    pub records: u64,
+    pub eligible_records: u64,
+    pub partial_records: u64,
+    pub unknown_records: u64,
+    pub invalid_records: u64,
+    pub unavailable_records: u64,
+    pub zero_input_records: u64,
+    pub overflow: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -377,6 +407,10 @@ fn observed_report(report: &PulsationReport) -> PulsationReport {
         for file in &mut outcome.files {
             text(&mut file.path);
         }
+    }
+    if let Some(cache) = &mut report.run.tokens.cache_measurement {
+        text(&mut cache.state);
+        text(&mut cache.basis);
     }
     for quota in &mut report.run.plan_quota {
         text(&mut quota.cli);
@@ -1277,7 +1311,7 @@ fn tokens_chart(run: &ReportRun) -> SafeHtml {
         .map(|stage| {
             (
                 stage.stage,
-                (stage.input_tokens + stage.output_tokens) as f64,
+                stage.input_tokens as f64 + stage.output_tokens as f64,
             )
         })
         .collect();
@@ -1421,16 +1455,68 @@ fn stage_table(run: &ReportRun) -> SafeHtml {
             .push_markup("</td></tr>");
     }
     let tokens = &run.tokens;
-    html.push_markup("</tbody></table></div><p class=\"dim\" style=\"margin-top:10px;font-size:12.5px\">")
-        .push_text(&format!(
-            "All stages: {} in, {} out, {} read from cache. Discarded by failed or rejected runs: {} in, {} out.",
-            compact(tokens.input as f64),
-            compact(tokens.output as f64),
-            compact(tokens.cache_read as f64),
-            compact(tokens.discarded_input as f64),
-            compact(tokens.discarded_output as f64),
-        ))
-        .push_markup("</p>");
+    let cache_description = if tokens.cache_measurement.is_some() {
+        "cache-read tokens reported"
+    } else {
+        "read from cache"
+    };
+    html.push_markup(
+        "</tbody></table></div><p class=\"dim\" style=\"margin-top:10px;font-size:12.5px\">",
+    )
+    .push_text(&format!(
+        "All stages: {} in, {} out, {} {}. Discarded by failed or rejected runs: {} in, {} out.",
+        compact(tokens.input as f64),
+        compact(tokens.output as f64),
+        compact(tokens.cache_read as f64),
+        cache_description,
+        compact(tokens.discarded_input as f64),
+        compact(tokens.discarded_output as f64),
+    ))
+    .push_markup("</p>");
+    if tokens.totals_overflow {
+        html.push_markup("<p class=\"dim\" id=\"token-overflow\">")
+            .push_text("Token totals saturated after an overflow and are not exact.")
+            .push_markup("</p>");
+    }
+    if let Some(cache) = &tokens.cache_measurement {
+        let ratio = match (cache.input_tokens, cache.cache_read_tokens) {
+            (Some(input), Some(read))
+                if !cache.overflow
+                    && cache.basis == "reported_normalized_input"
+                    && cache.eligible_records > 0
+                    && matches!(cache.state.as_str(), "known" | "partial")
+                    && input > 0
+                    && read >= 0
+                    && read <= input =>
+            {
+                super::analysis::ratio(read as f64, input as f64)
+                    .map(|percentage| format!("{percentage:.1}%"))
+                    .unwrap_or_else(|| "unavailable".to_owned())
+            }
+            (Some(0), Some(0))
+                if !cache.overflow
+                    && cache.basis == "reported_normalized_input"
+                    && cache.state == "not_applicable" =>
+            {
+                "not applicable".to_owned()
+            }
+            _ => "unavailable".to_owned(),
+        };
+        html.push_markup("<p class=\"dim\" id=\"cache-measurement\">")
+            .push_text(&format!(
+                "Cache reuse: {ratio} of eligible reported input. Coverage: {}/{} eligible; {} unknown; {} invalid; {} unavailable; {} partial; {} zero-input. State: {}. Basis: {}.",
+                cache.eligible_records,
+                cache.records,
+                cache.unknown_records,
+                cache.invalid_records,
+                cache.unavailable_records,
+                cache.partial_records,
+                cache.zero_input_records,
+                if cache.state.is_empty() { "unknown" } else { &cache.state },
+                if cache.basis.is_empty() { "unavailable" } else { &cache.basis },
+            ))
+            .push_markup("</p>");
+    }
     if !run.plan_quota.is_empty() {
         let parts = run
             .plan_quota
@@ -1717,6 +1803,153 @@ mod tests {
 
     const GOLDEN: &str = "src/reports/fixtures/pulsation-report.golden.html";
 
+    fn frontier_cache_metadata() -> serde_json::Value {
+        serde_json::json!({
+            "state": "partial",
+            "basis": "reported_normalized_input",
+            "input_tokens": 100,
+            "cache_read_tokens": 50,
+            "records": 2,
+            "eligible_records": 1,
+            "partial_records": 0,
+            "unknown_records": 1,
+            "invalid_records": 0,
+            "unavailable_records": 0,
+            "zero_input_records": 0,
+            "overflow": false
+        })
+    }
+
+    fn frontier_report_with_cache(metadata: serde_json::Value) -> PulsationReport {
+        // Exercise the same typed JSON boundary that report generation uses.
+        let mut value = serde_json::to_value(sample()).unwrap();
+        value["run"]["tokens"]["cache_measurement"] = metadata;
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn frontier_html_cache_legacy_reports_keep_absent_measurement_unknown() {
+        let mut value = serde_json::to_value(sample()).unwrap();
+        let tokens = value["run"]["tokens"].as_object_mut().unwrap();
+        tokens.remove("cache_measurement");
+        tokens.remove("totals_overflow");
+        let report: PulsationReport = serde_json::from_value(value).unwrap();
+        assert_eq!(report, sample());
+        let html = render_pulsation_report(&report);
+        assert!(!html.contains("Cache reuse:"));
+        assert!(!html.contains("Token totals saturated"));
+    }
+
+    #[test]
+    fn frontier_html_cache_reports_only_the_eligible_paired_input_with_coverage() {
+        let report = frontier_report_with_cache(frontier_cache_metadata());
+        let html = render_pulsation_report(&report);
+        if let Some(path) = std::env::var_os("HVC_FRONTIER_REPORT_PREVIEW") {
+            std::fs::write(path, &html).unwrap();
+        }
+        assert!(html.contains("Cache reuse: 50.0% of eligible reported input."));
+        assert!(html.contains(
+            "Coverage: 1/2 eligible; 1 unknown; 0 invalid; 0 unavailable; 0 partial; 0 zero-input."
+        ));
+        assert!(html.contains("Basis: reported_normalized_input."));
+        assert!(html.contains("cache-read tokens reported"));
+        // The 180K all-input total in sample() must not dilute the 100-token
+        // denominator whose cache breakdown was actually observed.
+        assert!(!html.contains("Cache reuse: 0.0%"));
+    }
+
+    #[test]
+    fn frontier_html_cache_does_not_invent_a_ratio_for_unknown_zero_or_invalid_data() {
+        let variants = [
+            ("unknown", Some(100), None, false, "unavailable"),
+            ("not_applicable", Some(0), Some(0), false, "not applicable"),
+            ("known", Some(100), Some(101), false, "unavailable"),
+            ("known", Some(-1), Some(0), false, "unavailable"),
+            ("known", Some(100), Some(-1), false, "unavailable"),
+            ("known", Some(100), Some(50), true, "unavailable"),
+            ("unknown", Some(100), Some(50), false, "unavailable"),
+        ];
+        for (state, input, read, overflow, expected) in variants {
+            let mut metadata = frontier_cache_metadata();
+            metadata["state"] = serde_json::json!(state);
+            metadata["input_tokens"] = serde_json::json!(input);
+            metadata["cache_read_tokens"] = serde_json::json!(read);
+            metadata["overflow"] = serde_json::json!(overflow);
+            let html = render_pulsation_report(&frontier_report_with_cache(metadata));
+            assert!(
+                html.contains(&format!(
+                    "Cache reuse: {expected} of eligible reported input."
+                )),
+                "{state}: {html}"
+            );
+            assert!(!html.contains("Cache reuse: 0.0%"), "{state}");
+            assert!(!html.contains("Cache reuse: 50.0%"), "{state}");
+        }
+        // Plausible values with an unrecognized accounting basis cannot
+        // establish either a numeric ratio or a zero-input conclusion.
+        for (state, input, read) in [("partial", 100, 50), ("not_applicable", 0, 0)] {
+            let mut metadata = frontier_cache_metadata();
+            metadata["state"] = serde_json::json!(state);
+            metadata["basis"] = serde_json::json!("unsupported_accounting_basis");
+            metadata["input_tokens"] = serde_json::json!(input);
+            metadata["cache_read_tokens"] = serde_json::json!(read);
+            let html = render_pulsation_report(&frontier_report_with_cache(metadata));
+            assert!(html.contains("Cache reuse: unavailable of eligible reported input."));
+            assert!(!html.contains("Cache reuse: 50.0%"));
+            assert!(!html.contains("Cache reuse: not applicable"));
+        }
+        // A known, explicitly reported zero remains a valid observation.
+        let mut zero = frontier_cache_metadata();
+        zero["state"] = serde_json::json!("known");
+        zero["cache_read_tokens"] = serde_json::json!(0);
+        assert!(
+            render_pulsation_report(&frontier_report_with_cache(zero))
+                .contains("Cache reuse: 0.0% of eligible reported input.")
+        );
+    }
+
+    #[test]
+    fn frontier_html_cache_escapes_untrusted_state_and_basis() {
+        let hostile = "</p><script>alert(1)</script><img src=x onerror=alert(2)>";
+        let mut metadata = frontier_cache_metadata();
+        metadata["state"] = serde_json::json!(hostile);
+        metadata["basis"] = serde_json::json!(hostile);
+        let html = render_pulsation_report(&frontier_report_with_cache(metadata));
+        assert!(!html.contains("<script"));
+        assert!(!html.contains("<img"));
+        assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+        assert!(html.contains("Cache reuse: unavailable"));
+        assert!(html.contains("default-src &#39;none&#39;"));
+    }
+
+    #[test]
+    fn frontier_html_token_overflow_warns_without_losing_non_token_evidence() {
+        let mut value = serde_json::to_value(sample()).unwrap();
+        value["run"]["tokens"]["totals_overflow"] = serde_json::json!(true);
+        let report: PulsationReport = serde_json::from_value(value).unwrap();
+        let html = render_pulsation_report(&report);
+        assert!(html.contains("Token totals saturated after an overflow and are not exact."));
+        assert!(html.contains("One row per pulsation and model."));
+        assert!(html.contains("id=\"criteria\""));
+    }
+
+    #[test]
+    fn frontier_html_maximum_stage_tokens_do_not_overflow_the_chart() {
+        let mut value = serde_json::to_value(sample()).unwrap();
+        value["run"]["tokens"]["input"] = serde_json::json!(i64::MAX);
+        value["run"]["tokens"]["output"] = serde_json::json!(i64::MAX);
+        value["run"]["tokens"]["totals_overflow"] = serde_json::json!(true);
+        value["run"]["stages"][0]["input_tokens"] = serde_json::json!(i64::MAX);
+        value["run"]["stages"][0]["output_tokens"] = serde_json::json!(i64::MAX);
+        let report: PulsationReport = serde_json::from_value(value).unwrap();
+        let html = render_pulsation_report(&report);
+        assert!(html.contains("Token totals saturated after an overflow and are not exact."));
+        assert!(html.contains("Tokens by stage"));
+        assert!(html.contains("One row per pulsation and model."));
+        assert!(!html.contains("NaN"));
+        assert!(!html.contains("inf%"));
+    }
+
     fn sample() -> PulsationReport {
         let check = |check_ref: &str, required: bool, status: CheckStatus| ReportCheck {
             check_ref: check_ref.into(),
@@ -1840,6 +2073,8 @@ mod tests {
                     cache_read: 92_000,
                     discarded_input: 0,
                     discarded_output: 0,
+                    cache_measurement: None,
+                    totals_overflow: false,
                 },
                 stages: vec![
                     stage(PulsationStage::Intake, 1, 64.0, 7_000, 1_400),
