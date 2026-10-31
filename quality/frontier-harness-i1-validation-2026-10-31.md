@@ -3,8 +3,9 @@
 Date: 2026-10-31. Scope: I1/M2, stable prompt prefixes and qualified cache
 measurement. Code commit: `0de140e48aea17694b412087ce723d5c63e18972`, based on
 `80bf8af446e827ac64ca224d73f74ef039d92b90`, on branch
-`feat/frontier-harness-i1`. This records branch qualification; integration into
-`main` is a separate operation.
+`feat/frontier-harness-i1`. The qualification below remains attributed to that
+source. It was subsequently merged and published; see the integration record
+at the end of this report.
 
 ## Resulting behavior
 
@@ -110,3 +111,20 @@ cargo run --locked --offline -p hvc-test-support --example composition_benchmark
 
 The advisory gate requires the existing local `cargo-audit` tool and current
 RustSec data, as documented in the [testing guide](../docs/testing.md).
+
+## Integration and cleanup — 2026-10-31
+
+The developer confirmed integration. Merge
+[`3569664`](https://github.com/Nathan-dOS/HARD-VC/commit/35696645779556c5f0486babdfc8b058c7c8e396)
+was pushed to `origin/main`, with the remote ref verified at that revision.
+The merge tree exactly matched the qualified branch head `f5c4d64`; the four
+changed Rust source blobs are identical to code commit `0de140e`. The passing
+2,002-test suite and 80-observation benchmark remain the pre-merge qualification,
+not a new execution on the merge.
+
+The temporary worktree and local feature branch were removed and worktree
+metadata was pruned. No remote feature branch existed. The pre-existing local
+edit in `candidate_capture.rs` was restored byte for byte, with its diff verified;
+it was excluded from publication and from this qualification. The temporary
+preservation stash was removed. The [integration record](frontier-harness-i1-integration-2026-10-31.json)
+contains revision, source identity and cleanup evidence.

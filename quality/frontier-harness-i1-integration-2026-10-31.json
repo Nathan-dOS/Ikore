@@ -1,0 +1,49 @@
+{
+  "branch": "feat/frontier-harness-i1",
+  "mainBefore": "80bf8af446e827ac64ca224d73f74ef039d92b90",
+  "branchHead": "f5c4d64dc0391e4c7f2a526baef5adf5071c8334",
+  "preexistingPath": "crates/hvc-core/src/orchestration/composition/validation/candidate_capture.rs",
+  "preexistingSha256": "db0faafabd60bc2035b1cd2f683c6f268c2078d912a816e062a3adbe2eb5b0ef",
+  "preexistingPatchSha256": "382f9cb18f85ce402e2af521fa7fcc0fb6cf7072a92bcf98e19bae62de5469fa",
+  "mergeCommit": "35696645779556c5f0486babdfc8b058c7c8e396",
+  "mergedTree": "9781ccb42d8679fdebc963a9f88b61afcf1b99e0",
+  "qualifiedTreeMatches": true,
+  "preexistingRestoredByteExact": true,
+  "preexistingPatchRestoredExact": true,
+  "remotePublishedCommit": "35696645779556c5f0486babdfc8b058c7c8e396",
+  "remoteFeatureBranchExists": false,
+  "preservationStashRemoved": true,
+  "recordedAt": "2026-10-31",
+  "worktreeRemoved": true,
+  "localFeatureBranchRemoved": true,
+  "remoteFeatureBranchAbsentVerified": true,
+  "sourceBlobs": [
+    {
+      "path": "crates/hvc-core/src/chat_service.rs",
+      "qualifiedBlob": "600db732dbdc2da73549de6832ae974a7bb7d720",
+      "integratedBlob": "600db732dbdc2da73549de6832ae974a7bb7d720",
+      "equal": true
+    },
+    {
+      "path": "crates/hvc-core/src/orchestration/composition/projection.rs",
+      "qualifiedBlob": "37dd3be51cf20b8d129aeeca2d12d9e9d658e469",
+      "integratedBlob": "37dd3be51cf20b8d129aeeca2d12d9e9d658e469",
+      "equal": true
+    },
+    {
+      "path": "crates/hvc-core/src/reports/analysis.rs",
+      "qualifiedBlob": "a03e58528b901b295b2249fa18ff71fb70abe1e6",
+      "integratedBlob": "a03e58528b901b295b2249fa18ff71fb70abe1e6",
+      "equal": true
+    },
+    {
+      "path": "crates/hvc-core/src/reports/pulsation.rs",
+      "qualifiedBlob": "d37d4d56d2a7363569054dfa7a4d4b83cdff067e",
+      "integratedBlob": "d37d4d56d2a7363569054dfa7a4d4b83cdff067e",
+      "equal": true
+    }
+  ],
+  "qualification": "2002 passed, 0 failed, 23 ignored; 9/9 gate; 80/80 fixtures, qualified before merge; no new test execution on merge",
+  "preexistingEditIncludedInPublishedCommit": false,
+  "preexistingEditQualifiedByThisGate": false
+}
