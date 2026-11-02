@@ -344,20 +344,24 @@ impl PersistenceService {
                 task.draft.title
             )));
         }
-        // Dispatch-time file-path anchoring gate (ADR-022 clarification loop,
-        // P1/A1.3): a composed batch with no task naming an explicit path has
-        // nowhere to anchor a PlannedDestination/ExistingSource, which is what
-        // leaves the Specification Author stuck later (P3). Greenfield batches
-        // (no repository sources to infer a convention from) are exempt.
-        let path_confirmation_source = if pipeline_version.supports_composition() {
+        // Freeze host-resolved files separately from the approved task drafts.
+        // Specification receives real source/planned handles without requiring
+        // the developer to know filenames or reopen an approved feature.
+        let destination_plan = if pipeline_version.supports_composition() {
             let hints: std::collections::HashMap<&str, Option<&str>> = request
                 .tasks
                 .iter()
                 .map(|t| (t.task_id.as_str(), t.manual_path_hint.as_deref()))
                 .collect();
-            Self::resolve_path_confirmation(&tx, &request.project_id, &hints, &ordered, &features)?
+            Some(Self::resolve_batch_destinations(
+                &tx,
+                &request.project_id,
+                &hints,
+                &ordered,
+                &features,
+            )?)
         } else {
-            PathConfirmationSource::None
+            None
         };
         let manifest = BatchManifest {
             schema_version: 1,
@@ -365,13 +369,31 @@ impl PersistenceService {
             title: request.title.clone(),
             tasks: ordered,
             features,
-            path_confirmation_source,
+            path_confirmation_source: if destination_plan.is_some() {
+                PathConfirmationSource::ForgeGate
+            } else {
+                PathConfirmationSource::None
+            },
+            task_destinations: destination_plan
+                .as_ref()
+                .map(|plan| plan.task_destinations.clone())
+                .unwrap_or_default(),
+            destination_notices: destination_plan
+                .map(|plan| plan.notices)
+                .unwrap_or_default(),
         };
         let encoded = json(&manifest)?;
-        if encoded.chars().count() > self.load_runtime_config()?.context_chars_limit / 2 {
-            return Err(invalid(
-                "Batch exceeds the context budget; select a smaller batch or increase the configured budget",
-            ));
+        let budget = crate::feature_forge::batch_budget::assess_batch_context(
+            &manifest,
+            pipeline_version,
+            self.load_runtime_config()?.context_chars_limit,
+        )
+        .map_err(invalid)?;
+        if !budget.fits() {
+            return Err(invalid(format!(
+                "Batch exceeds the context budget: {} characters required, {} available; select fewer tasks or increase the configured budget",
+                budget.required_chars, budget.limit_chars,
+            )));
         }
         let pulse = id();
         let now = now();
@@ -424,90 +446,37 @@ impl PersistenceService {
         Ok(current)
     }
 
-    /// The dispatch-time file-path anchoring gate itself (ADR-022
-    /// clarification loop, P1/A1.3): a batch with at least one task naming an
-    /// explicit path (in its title/description, via the same `explicit_paths`
-    /// the composed pipeline already reads, or via a `manual_path_hint`) is
-    /// `ForgeGate`-confirmed. A batch with none is blocked unless every task
-    /// qualifies for the greenfield exception, in which case it dispatches
-    /// with `PathConfirmationSource::None` (the preventive HITL gate, P5/M2,
-    /// is what actually protects those batches before Specification runs).
-    /// `pub(crate)` so `orchestration::serial`'s preventive-HITL guard and its
-    /// checkpoint-resolution method can reuse the identical check.
-    pub(crate) fn resolve_path_confirmation(
+    /// Resolve safe file candidates from the actual repository and approved
+    /// architecture. A complete inventory with no application code is greenfield,
+    /// regardless of the feature's historical coverage label.
+    pub(crate) fn resolve_batch_destinations(
         conn: &Connection,
         project_id: &str,
         hints: &std::collections::HashMap<&str, Option<&str>>,
         tasks: &[WorkTask],
         features: &[Feature],
-    ) -> Result<PathConfirmationSource, PersistenceServiceError> {
-        let has_path = |task: &WorkTask| -> bool {
-            !crate::orchestration::composition::recipes::explicit_paths(&format!(
-                "{} {}",
-                task.draft.title, task.draft.description
-            ))
-            .is_empty()
-                || hints
-                    .get(task.id.as_str())
-                    .copied()
-                    .flatten()
-                    .is_some_and(|hint| !hint.trim().is_empty())
-        };
-        if tasks.iter().any(has_path) {
-            return Ok(PathConfirmationSource::ForgeGate);
-        }
-        let workspace_root: String = conn.query_row(
+    ) -> Result<crate::feature_forge::DestinationResolution, PersistenceServiceError> {
+        let root: String = conn.query_row(
             "SELECT workspace_path FROM projects WHERE id=?1",
             [project_id],
             |r| r.get(0),
         )?;
-        let workspace_empty = Self::workspace_has_no_code_files(&workspace_root);
-        let is_exempt = |task: &WorkTask| -> bool {
-            match &task.draft.feature_id {
-                Some(feature_id) => features
-                    .iter()
-                    .find(|f| &f.id == feature_id)
-                    .is_some_and(|f| f.brief.coverage == "unavailable"),
-                None => workspace_empty,
-            }
-        };
-        if tasks.iter().all(is_exempt) {
-            return Ok(PathConfirmationSource::None);
-        }
-        Err(invalid(
-            "This batch implies creating or changing files, but no task names an explicit file path. \
-             Add a path to a task's description, supply a manual path hint, or ask the Feature Agent \
-             to define one before dispatching.",
-        ))
+        let hints = hints
+            .iter()
+            .filter_map(|(task, hint)| {
+                hint.filter(|value| !value.trim().is_empty())
+                    .map(|path| ((*task).to_owned(), path.to_owned()))
+            })
+            .collect();
+        crate::feature_forge::resolve_task_destinations(
+            std::path::Path::new(&root),
+            tasks,
+            features,
+            &hints,
+        )
     }
 
-    /// Whether `root` has no file `RepositoryContext` recognizes as code --
-    /// the greenfield signal for tasks with no `feature_id` (a feature's own
-    /// coverage, `facts.sources.is_empty()`, already answers this for
-    /// feature-owned tasks; see `runtime.rs`). An unreadable root defaults to
-    /// `true`: this is an advisory exception to a dispatch gate, not a
-    /// filesystem integrity check, so an I/O error should not additionally
-    /// block dispatch.
-    fn workspace_has_no_code_files(root: &str) -> bool {
-        let Ok(repository) =
-            crate::repository_context::RepositoryContext::new(std::path::Path::new(root))
-        else {
-            return true;
-        };
-        let Ok(result) = repository.list_tree(crate::repository_context::ListRepositoryTreeArgs {
-            path: None,
-            depth: Some(8),
-            max_entries: Some(1000),
-        }) else {
-            return true;
-        };
-        !result.entries.iter().any(|entry| {
-            entry.kind == "file"
-                && crate::repository_context::RepositoryContext::is_code_relative_path(&entry.path)
-        })
-    }
-
-    /// Read-only preview of [`Self::resolve_path_confirmation`], for the UI to
+    /// Read-only preview of the destination plan, for the UI to
     /// check before attempting a dispatch. Reuses the identical helper so the
     /// preview and the real gate can never diverge.
     pub fn preview_dispatch_gate(
@@ -532,10 +501,10 @@ impl PersistenceService {
             }
             drafts.push(t);
         }
-        match Self::resolve_path_confirmation(&db, project_id, &hints, &drafts, &features) {
-            Ok(source) => Ok(DispatchGateStatus {
+        match Self::resolve_batch_destinations(&db, project_id, &hints, &drafts, &features) {
+            Ok(plan) => Ok(DispatchGateStatus {
                 blocked: false,
-                greenfield: source == PathConfirmationSource::None,
+                greenfield: plan.greenfield,
                 tasks_missing_paths: Vec::new(),
             }),
             Err(_) => {

@@ -14,7 +14,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use hvc_contracts::exchange::{
-    AgentProducer, ApprovalGate, ExchangeItemV1, ExchangeKind, HumanSource, Producer,
+    AgentProducer, ApprovalGate, ExchangeItemV1, ExchangeKind, HostComponent, HumanSource, Producer,
 };
 use hvc_contracts::stages::PulsationStage;
 use serde::{Deserialize, Serialize};
@@ -244,13 +244,22 @@ pub fn role_for_path(path: &RelPath) -> SourceRole {
     if lower.ends_with(".md") || lower.ends_with(".txt") || lower.ends_with(".rst") {
         SourceRole::Document
     } else if lower.starts_with("tests/")
+        || lower.starts_with("__tests__/")
         || lower.contains("/tests/")
         || lower.contains("/__tests__/")
         || name.ends_with("_test.rs")
-        || name.ends_with(".test.ts")
-        || name.ends_with(".test.tsx")
-        || name.ends_with(".spec.ts")
-        || name.ends_with(".test.js")
+        || [
+            ".test.ts",
+            ".test.tsx",
+            ".test.js",
+            ".test.jsx",
+            ".spec.ts",
+            ".spec.tsx",
+            ".spec.js",
+            ".spec.jsx",
+        ]
+        .iter()
+        .any(|suffix| name.ends_with(suffix))
         || name.ends_with("_test.py")
         || name.starts_with("test_")
     {
@@ -280,7 +289,7 @@ pub fn default_test_destination(title: &str, sources: &[SourceFile]) -> Option<R
         .find(|ext| {
             matches!(
                 *ext,
-                "rs" | "ts" | "tsx" | "js" | "py" | "go" | "java" | "cs"
+                "rs" | "ts" | "tsx" | "js" | "jsx" | "py" | "go" | "java" | "cs"
             )
         })?;
     RelPath::new(format!(
@@ -416,6 +425,32 @@ fn batch_guidance(manifest: &BatchManifest, inputs: &StageInputs) -> String {
             ),
             single_line(answer.trim())
         ));
+    }
+    if !manifest.task_destinations.is_empty() {
+        text.push_str(&format!("\n{}\nFile candidates resolved from repository conventions; these do not expand task scope. Existing and planned reference kinds describe whether each file exists. Confirm the appropriate destinations in Specification review.\n",
+            guidance_line(ExchangeKind::DerivedContext, Producer::Host(HostComponent::PipelineGuidance), &[])));
+        for (index, task) in manifest.tasks.iter().enumerate() {
+            for destination in manifest
+                .task_destinations
+                .iter()
+                .filter(|entry| entry.task_id == task.id)
+            {
+                text.push_str(&format!(
+                    "task_{} file candidates ({:?}): {}\n",
+                    index + 1,
+                    destination.origin,
+                    destination
+                        .paths
+                        .iter()
+                        .map(|path| path.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+        }
+        for notice in &manifest.destination_notices {
+            text.push_str(&format!("- {}\n", single_line(notice)));
+        }
     }
     text
 }
@@ -2142,6 +2177,8 @@ mod tests {
             schema_version: 1,
             title: "Login".into(),
             path_confirmation_source: crate::feature_forge::PathConfirmationSource::default(),
+            task_destinations: Vec::new(),
+            destination_notices: Vec::new(),
             tasks: vec![
                 task(
                     "t-1",
@@ -2246,6 +2283,84 @@ mod tests {
             "tests/user_login_test.rs"
         );
         assert!(default_test_destination("x", &[]).is_none());
+    }
+
+    #[test]
+    fn react_test_candidates_belong_to_test_and_jsx_sources_get_a_test_fallback() {
+        let source = SourceFile {
+            path: RelPath::new("src/Login.jsx").unwrap(),
+            role: SourceRole::Source,
+            content: "export default function Login() { return <button>Log in</button>; }\n".into(),
+            origin: SourceOrigin::Brief,
+        };
+        let record = StagePayloadRecord {
+            schema_version: SchemaV1,
+            stage: Stage::Specification,
+            plan_sha256: Sha256Hex::of(b"approved-react-specification"),
+            references: vec![],
+            units: vec![UnitPayloadRecord {
+                logical_unit_key: Handle::new("specify_batch").unwrap(),
+                response: UnitModelResponseV1::Completed {
+                    executor_kind: ExecutorKind::SpecificationAuthor,
+                    payload: CompletedPayloadV1::Specification(SpecificationContractV1 {
+                        objective: "Preserve the login component behavior.".into(),
+                        exclusions: vec![],
+                        decisions: vec![],
+                        requirements: vec![],
+                        existing_file_refs: vec![],
+                        planned_file_refs: vec![],
+                        interface_intent: vec![],
+                        unit_proposals: vec![],
+                    }),
+                },
+            }],
+        };
+        for path in [
+            "__tests__/Login.jsx",
+            "__tests__/login.test.jsx",
+            "src/login.test.jsx",
+            "src/login.spec.jsx",
+            "src/login.spec.tsx",
+            "src/login.spec.js",
+        ] {
+            let mut stage_inputs = inputs(vec![source.clone()], vec![path]);
+            stage_inputs
+                .prior
+                .insert(Stage::Specification, record.clone());
+            let code = prepare(Stage::Code, &stage_inputs).unwrap();
+            assert_eq!(
+                code.drafts[0].owned_destination_refs,
+                vec![Handle::new("src_1").unwrap()],
+                "Code must not own the test candidate {path}"
+            );
+            let test = prepare(Stage::Test, &stage_inputs).unwrap();
+            let owned = &test.drafts[0].owned_destination_refs;
+            assert_eq!(owned.len(), 1);
+            assert_eq!(
+                test.table
+                    .entry(&owned[0])
+                    .unwrap()
+                    .relative_path()
+                    .unwrap()
+                    .as_str(),
+                path
+            );
+        }
+
+        let mut no_test = inputs(vec![source], vec![]);
+        no_test.prior.insert(Stage::Specification, record);
+        let test = prepare(Stage::Test, &no_test).unwrap();
+        let owned = &test.drafts[0].owned_destination_refs;
+        assert_eq!(owned.len(), 1);
+        assert_eq!(
+            test.table
+                .entry(&owned[0])
+                .unwrap()
+                .relative_path()
+                .unwrap()
+                .as_str(),
+            "tests/login_test.jsx"
+        );
     }
 
     // ADR-022 clarification loop (P2/A2.2): `parse_clarification_tags` reads

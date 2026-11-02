@@ -56,6 +56,24 @@ state transitions and publication. Pipeline v4 divides suitable stages into
 bounded work units under a frozen plan; a worker result does not independently
 advance the pipeline. See [ADR-022](adr/022-stage-composition.md).
 
+Forge resolves task file candidates through bounded reads of the registered
+repository, supported manifests and approved scope. Optional file overrides
+are validated inside that root. The immutable batch stores `taskDestinations`
+with their origin and `destinationNotices` separately from approved task prose;
+these candidates do not authorize writes. Stage preparation keeps existing
+sources distinct from proposed destinations. Unknown stacks receive an
+architecture-document candidate and a notice. Older manifests default these
+arrays to empty and keep their preventive path checkpoint compatibility.
+
+Batch admission and legacy handoff accounting use the same model-facing
+manifest projection as the prompt: duplicated feature backlog drafts are
+excluded, while selected tasks and approved scope remain complete. Dispatch
+reserves half the applicable prompt capacity: the global character limit for
+v3 and `max(64000, 4 * context_chars_limit)` for v4. Persisted manifests and
+their hashes remain complete. See the
+[destination and budget validation record](../quality/forge-destinations-validation-2026-11-02.md)
+for the execution status and limits of this correction.
+
 Review uses complete persisted documents. The derived Brief reads validated
 typed payloads under the same checkpoint identity and state version. It does
 not replace the persisted documents or the host's approval checks. Confirm and

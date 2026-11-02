@@ -139,26 +139,12 @@ impl StageHandoffV1 {
                 label_artifact(artifact, handoff, self.stage);
             }
         }
-        // `batchManifest.tasks` is the only executable list. Feature briefs carry
-        // every planned draft for the feature, ID-less and usually a superset, so
-        // leaving both in the prompt made compact models execute the backlog.
-        // Persistence and the manifest hash are untouched; this is prompt-only.
-        // `get_mut` rather than indexing: serde_json's `IndexMut` would insert the
-        // key when the handoff carries no manifest, resurrecting a field that
-        // `skip_serializing_if` deliberately omits.
-        if let Some(features) = value
-            .get_mut("batchManifest")
-            .and_then(|manifest| manifest.get_mut("features"))
-            .and_then(serde_json::Value::as_array_mut)
-        {
-            for feature in features {
-                if let Some(tasks) = feature
-                    .get_mut("brief")
-                    .and_then(|brief| brief.get_mut("tasks"))
-                {
-                    *tasks = serde_json::Value::Array(Vec::new());
-                }
-            }
+        // Share the model-facing manifest projection with dispatch admission;
+        // persistence and the manifest hash retain the complete approved data.
+        // Avoid inserting a batch field on handoffs that do not carry one.
+        if let Some(manifest) = &self.batch_manifest {
+            value["batchManifest"] =
+                crate::feature_forge::batch_budget::batch_prompt_projection(manifest)?;
         }
         serde_json::to_string(&value)
     }

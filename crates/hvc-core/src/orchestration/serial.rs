@@ -1296,12 +1296,12 @@ impl PersistenceService {
     /// Resolves a preventive path-confirmation checkpoint (ADR-022
     /// clarification loop, P5/A5.2): re-validates the batch's tasks against
     /// the supplied hints via the identical dispatch-time gate
-    /// (`feature_forge::PersistenceService::resolve_path_confirmation`), and
+    /// (`feature_forge::PersistenceService::resolve_batch_destinations`), and
     /// on success records the manifest's `path_confirmation_source` as
     /// `ManualHitl` (distinct from `ForgeGate`, for the Preparation view to
     /// tell the two apart later), closes the checkpoint and queues
-    /// Specification. The manifest is otherwise frozen at dispatch; this is
-    /// the one field the host is allowed to amend afterward.
+    /// Specification. Legacy recovery also freezes the validated candidates;
+    /// approved task drafts remain unchanged.
     pub fn resolve_path_confirmation_checkpoint(
         &self,
         request: ResolvePathConfirmationRequest,
@@ -1338,13 +1338,18 @@ impl PersistenceService {
             .iter()
             .map(|hint| (hint.task_id.as_str(), Some(hint.path.as_str())))
             .collect();
-        Self::resolve_path_confirmation(
+        if hints.len() != request.manual_path_hints.len() {
+            return Err(invalid("A task has repeated file overrides."));
+        }
+        let destinations = Self::resolve_batch_destinations(
             &tx,
             &current.project_id,
             &hints,
             &manifest.tasks,
             &manifest.features,
         )?;
+        manifest.task_destinations = destinations.task_destinations;
+        manifest.destination_notices = destinations.notices;
         manifest.path_confirmation_source =
             crate::feature_forge::PathConfirmationSource::ManualHitl;
         let encoded = serde_json::to_string(&manifest).map_err(|e| invalid(e.to_string()))?;
@@ -1370,10 +1375,18 @@ impl PersistenceService {
                 decision: "confirmed",
                 state_version: request.expected_state_version,
                 reviewed: Vec::new(),
-                confirmed_paths: request
-                    .manual_path_hints
+                confirmed_paths: manifest
+                    .task_destinations
                     .iter()
-                    .map(|hint| hint.path.clone())
+                    .filter(|destination| {
+                        destination.origin == crate::feature_forge::DestinationOrigin::Manual
+                    })
+                    .flat_map(|destination| {
+                        destination
+                            .paths
+                            .iter()
+                            .map(|path| path.as_str().to_owned())
+                    })
                     .collect(),
                 feedback: None,
             },

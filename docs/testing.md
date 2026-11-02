@@ -68,6 +68,30 @@ required context must still fail before a provider call. See the
 [2026-10-31 follow-up record](../quality/forge-incubation-path-context-validation-2026-10-31.md)
 for execution status and limits.
 
+Forge destination regressions cover automatic file planning for greenfield,
+existing and manifest-only projects; documented architecture decisions for
+unknown stacks; optional manual overrides; bounded/truncated inventories; and
+rejection of traversal, directories, private/generated/policy paths and links.
+Batch budget tests count the shared model-facing projection in Unicode
+characters, preserve selected criteria and approved scope, exercise exact
+limits and v3/v4 capacity, and keep unselected backlog drafts from blocking
+legacy handoffs. Integration scenarios cover frozen destination propagation,
+unchanged approved revisions, request replay and older manifests. Native UI
+scenarios cover automatic destination guidance, optional overrides and
+approval/wave refresh without a restart. See the
+[2026-11-02 record](../quality/forge-destinations-validation-2026-11-02.md)
+for which checks have actually run. Focused selections are:
+
+```powershell
+cargo test --locked -p hvc-core --lib feature_forge::batch_budget -- --test-threads=2
+cargo test --locked -p hvc-core --lib feature_forge::destinations -- --test-threads=2
+cargo test --locked -p hvc-core --lib feature_forge::tests -- --test-threads=2
+cargo test --locked -p hvc-test-support --test composition_validation -- --test-threads=2
+cargo test --locked -p hvc-ui forge::tests -- --test-threads=2
+```
+
+Focused success does not replace the complete workspace regression gate.
+
 Use temporary directories, ephemeral SQLite databases, isolated keyrings and
 controlled loopback providers. Opt-in tests requiring authenticated CLIs,
 external services or paid quota retain their documented manual prerequisites.

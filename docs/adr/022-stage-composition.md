@@ -56,6 +56,19 @@ public summaries of the contract, not a second schema implementation.
 
 ## Evidence and limits
 
+The 2026-11-02 destination-planning refinement freezes host-resolved file
+candidates and their origin in the batch, separately from approved task prose.
+Bounded repository reads and approved scope supply conventional paths;
+developer overrides are optional and validated. Existing files and proposed
+destinations keep their separate reference roles. These candidates do not
+change Specification review, ownership, mandates or publication authority.
+Older manifests with no candidates keep their preventive path checkpoint
+compatibility. Dispatch reserves half the composed prompt capacity
+`max(64000, 4 * context_chars_limit)` and excludes duplicated feature backlog
+drafts when measuring the model-facing manifest. See the
+[2026-11-02 validation record](../../quality/forge-destinations-validation-2026-11-02.md)
+for current check status.
+
 Host-controlled checks run against a disposable candidate of a trusted project.
 The process controls do not create an operating system sandbox. Publication of
 multiple files uses durable intent, replay and reconciliation rather than an

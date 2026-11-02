@@ -404,6 +404,16 @@ impl RepositoryContext {
         let mut current = self.root.clone();
         for component in relative.components() {
             current.push(component.as_os_str());
+            if component
+                .as_os_str()
+                .to_str()
+                .is_some_and(|name| name.eq_ignore_ascii_case("bin"))
+                && !is_rust_binary_source_directory(&current)
+            {
+                return Err(RepositoryError(
+                    "Generated binary directories are not repository source.".into(),
+                ));
+            }
             if fs::symlink_metadata(&current)
                 .map(|metadata| is_link(&metadata))
                 .unwrap_or(false)
@@ -846,12 +856,31 @@ fn allowed_entry(entry: &DirEntry) -> bool {
     }
     let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
     if entry.file_type().is_some_and(|kind| kind.is_dir()) {
-        return !excluded_directories().contains(name.as_str())
+        return (!excluded_directories().contains(name.as_str())
+            || (name == "bin" && is_rust_binary_source_directory(entry.path())))
             && !entry.file_type().is_some_and(|kind| kind.is_symlink());
     }
     !is_sensitive_name(&name)
         && allowed_text_name(&name)
         && !entry.file_type().is_some_and(|kind| kind.is_symlink())
+}
+
+/// Cargo's conventional multi-binary source directory is not a build output.
+/// Require the concrete crate manifest; unrelated `bin/` directories stay hidden.
+pub(crate) fn is_rust_binary_source_directory(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("bin"))
+        && path.parent().is_some_and(|source| {
+            source
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.eq_ignore_ascii_case("src"))
+                && source.parent().is_some_and(|crate_root| {
+                    fs::symlink_metadata(crate_root.join("Cargo.toml"))
+                        .is_ok_and(|metadata| metadata.is_file() && !is_link(&metadata))
+                })
+        })
 }
 
 fn is_link(metadata: &fs::Metadata) -> bool {
@@ -1002,6 +1031,65 @@ fn truncate_chars(value: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rust_multi_binary_sources_are_readable_in_root_and_workspace_crates() {
+        let temp = tempfile::tempdir().unwrap();
+        for prefix in ["", "crates/worker/"] {
+            fs::create_dir_all(temp.path().join(format!("{prefix}src/bin"))).unwrap();
+            fs::write(
+                temp.path().join(format!("{prefix}Cargo.toml")),
+                "[package]\nname = \"worker\"\nversion = \"0.1.0\"\n",
+            )
+            .unwrap();
+            fs::write(
+                temp.path().join(format!("{prefix}src/bin/worker.rs")),
+                "fn main() {}\n",
+            )
+            .unwrap();
+        }
+        let repository = RepositoryContext::new(temp.path()).unwrap();
+        let tree = repository
+            .list_tree(ListRepositoryTreeArgs {
+                path: None,
+                depth: Some(8),
+                max_entries: Some(100),
+            })
+            .unwrap();
+        for source in ["src/bin/worker.rs", "crates/worker/src/bin/worker.rs"] {
+            assert!(tree.entries.iter().any(|entry| entry.path == source));
+            assert_eq!(repository.read_document(source).unwrap(), "fn main() {}\n");
+        }
+    }
+
+    #[test]
+    fn generated_bin_and_unestablished_src_bin_remain_filtered() {
+        let temp = tempfile::tempdir().unwrap();
+        for source in [
+            "bin/generated.rs",
+            "src/bin/generated.rs",
+            "nested/bin/generated.rs",
+        ] {
+            let path = temp.path().join(source);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, "generated\n").unwrap();
+        }
+        let repository = RepositoryContext::new(temp.path()).unwrap();
+        let tree = repository
+            .list_tree(ListRepositoryTreeArgs {
+                path: None,
+                depth: Some(8),
+                max_entries: Some(100),
+            })
+            .unwrap();
+        assert!(
+            !tree
+                .entries
+                .iter()
+                .any(|entry| entry.path.ends_with("generated.rs"))
+        );
+        assert!(repository.read_document("bin/generated.rs").is_err());
+    }
 
     #[test]
     fn exact_code_context_skips_valid_documents_but_reports_broken_references() {

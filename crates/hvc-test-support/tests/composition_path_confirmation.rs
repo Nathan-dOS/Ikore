@@ -2,19 +2,19 @@
     clippy::unwrap_used,
     reason = "Test-only integration helpers fail immediately when fixture setup is invalid"
 )]
-//! ADR-022 clarification loop preventive HITL gate (P5/A5.2): a composed
-//! batch that skipped the Forge dispatch gate (P1/A1.3) - greenfield
-//! exemption, no confirmed path - parks at Intake instead of letting
-//! Specification run, once Intake accepts a batch containing a `Foundation`
-//! task. Resolving the checkpoint with a manual path hint queues
-//! Specification and records `pathConfirmationSource: manualHitl` on the
-//! otherwise-frozen manifest.
+//! Automatic host-owned destination planning reaches Specification with
+//! frozen file references. Legacy batches lacking a destination plan retain
+//! the preventive Intake checkpoint and preserve manual recovery paths.
 mod composition_support;
 
 use composition_support::*;
 use hvc_core::feature_forge::{AcceptanceCriterion, TaskDraft, TaskKind};
-use hvc_core::orchestration::{ManualPathHint, ResolvePathConfirmationRequest};
+use hvc_core::orchestration::{
+    ContentSha256, ManualPathHint, ResolvePathConfirmationRequest,
+    composition::settings::CompositionSettings,
+};
 use hvc_test_support::IsolatedTestEnvironment;
+use serde_json::Value;
 
 fn foundation_task_with_no_path() -> TaskDraft {
     TaskDraft {
@@ -42,19 +42,46 @@ fn manifest_json(harness: &Harness) -> serde_json::Value {
     serde_json::from_str(&raw).unwrap()
 }
 
-/// Proof that the pulsation advanced normally past Intake -- Specification's
-/// job exists -- without requiring it to succeed: this fixture's scripted
-/// replies have no real source to cite once a task's text names no existing
-/// file, an orthogonal, pre-existing gap unrelated to this gate.
-fn wait_for_specification_job(harness: &Harness) {
+/// Wait for the actual frozen Specification plan, so a queued but unusable
+/// stage cannot masquerade as successful destination handoff.
+fn specification_plan(harness: &Harness) -> Value {
     wait_until(&harness.service, &harness.pulse, |db| {
         db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM jobs WHERE pulsation_id=?1 AND kind='run_stage::SPECIFICATION')",
+            "SELECT EXISTS(SELECT 1 FROM stage_executions WHERE pulsation_id=?1 AND stage='SPECIFICATION')",
             [&harness.pulse],
             |r| r.get(0),
         )
         .unwrap()
     });
+    let raw: String = harness.db().query_row(
+        "SELECT plan_json FROM stage_executions WHERE pulsation_id=?1 AND stage='SPECIFICATION' ORDER BY created_at DESC LIMIT 1",
+        [&harness.pulse],
+        |row| row.get(0),
+    ).unwrap();
+    serde_json::from_str(&raw).unwrap()
+}
+
+fn assert_reference(plan: &Value, path: &str, kind: &str) {
+    assert!(
+        plan["references"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|reference| { reference["relativePath"] == path && reference["kind"] == kind }),
+        "missing {kind} reference for {path}: {plan}"
+    );
+}
+
+fn assert_no_path_checkpoint(harness: &Harness) {
+    let parked: bool = harness.db().query_row(
+        "SELECT EXISTS(SELECT 1 FROM checkpoints WHERE pulsation_id=?1 AND kind='path_confirmation')",
+        [&harness.pulse],
+        |row| row.get(0),
+    ).unwrap();
+    assert!(
+        !parked,
+        "automatic destination planning must not ask for file names"
+    );
 }
 
 fn wait_for_path_confirmation_checkpoint(harness: &Harness) -> String {
@@ -73,16 +100,56 @@ fn wait_for_path_confirmation_checkpoint(harness: &Harness) -> String {
 }
 
 #[test]
-fn a_foundation_task_with_no_confirmed_path_parks_before_specification_and_resolves_with_a_hint() {
-    // An empty workspace admits the dispatch under the greenfield exception
-    // (P1/A1.3) with `pathConfirmationSource: none` -- only this preventive
-    // gate (P5/A5.2) stands between this batch and Specification's budget.
+fn a_pathless_foundation_task_freezes_automatic_destinations_before_specification() {
     let env = IsolatedTestEnvironment::new();
     let harness = Harness::start_in(env, vec![foundation_task_with_no_path()], |facts, _, _| {
         completed_reply(facts)
     });
+    let manifest = manifest_json(&harness);
+    assert_eq!(manifest["pathConfirmationSource"], "forge_gate");
+    let destination = &manifest["taskDestinations"][0];
+    assert_eq!(destination["taskId"], harness.task_id());
+    assert_eq!(destination["origin"], "repository_convention");
+    let paths = destination["paths"].as_array().unwrap();
+    assert!(!paths.is_empty());
+    let plan = specification_plan(&harness);
+    for path in paths {
+        assert_reference(&plan, path.as_str().unwrap(), "planned_destination");
+    }
+    assert_no_path_checkpoint(&harness);
+}
 
-    assert_eq!(manifest_json(&harness)["pathConfirmationSource"], "none");
+#[test]
+fn a_legacy_pathless_batch_keeps_its_checkpoint_and_freezes_the_recovery_hint() {
+    let env = IsolatedTestEnvironment::new();
+    let harness = Harness::start_prepared(
+        env,
+        vec![foundation_task_with_no_path()],
+        CompositionSettings {
+            enabled: true,
+            ..Default::default()
+        }
+        .with_all_recipes_qualified(),
+        |facts, _, _| completed_reply(facts),
+        |harness| {
+            // This is the manifest an existing pulsation stored before
+            // automatic destination planning. Mutate before the worker starts
+            // rather than racing Intake's acceptance.
+            let mut manifest = manifest_json(harness);
+            let object = manifest.as_object_mut().unwrap();
+            object.remove("taskDestinations");
+            object.remove("destinationNotices");
+            object.insert(
+                "pathConfirmationSource".into(),
+                Value::String("none".into()),
+            );
+            let encoded = serde_json::to_string(&manifest).unwrap();
+            harness.db().execute(
+                "UPDATE pulsation_batches SET manifest_json=?2,manifest_sha256=?3 WHERE pulsation_id=?1",
+                rusqlite::params![harness.pulse, encoded, ContentSha256::of(encoded.as_bytes()).as_str()],
+            ).unwrap();
+        },
+    );
 
     let checkpoint_id = wait_for_path_confirmation_checkpoint(&harness);
     let specification_queued: bool = harness
@@ -129,27 +196,23 @@ fn a_foundation_task_with_no_confirmed_path_parks_before_specification_and_resol
     assert_eq!(receipt.decision, "confirmed");
     assert_eq!(receipt.confirmed_paths, vec!["src/layout.rs".to_string()]);
 
-    // Resolving the checkpoint amends the frozen manifest's provenance and
-    // queues Specification -- verified directly rather than by waiting for
-    // Specification's own checkpoint, since nothing in this task's text ever
-    // names "src/layout.rs" (the hint only satisfies the gate, per A1.3; it
-    // is not wired into the stage's own reference table until M3), so a
-    // scripted Specification reply for this fixture has no real source to
-    // cite regardless -- an orthogonal, pre-existing fixture limitation,
-    // not something this milestone's gate is responsible for.
+    let manifest = manifest_json(&harness);
+    assert_eq!(manifest["pathConfirmationSource"], "manual_hitl");
+    assert_eq!(manifest["taskDestinations"][0]["taskId"], harness.task_id());
+    assert_eq!(manifest["taskDestinations"][0]["origin"], "manual");
     assert_eq!(
-        manifest_json(&harness)["pathConfirmationSource"],
-        "manual_hitl"
+        manifest["taskDestinations"][0]["paths"],
+        serde_json::json!(["src/layout.rs"])
     );
-    wait_for_specification_job(&harness);
+    assert_reference(
+        &specification_plan(&harness),
+        "src/layout.rs",
+        "planned_destination",
+    );
 }
 
 #[test]
 fn a_batch_with_a_confirmed_path_never_parks_on_the_preventive_checkpoint() {
-    // Same greenfield workspace and the same `Foundation` task, but this time
-    // the description names a path -- the Forge gate (P1/A1.3) already
-    // confirms `pathConfirmationSource: forgeGate` at dispatch, so the
-    // preventive gate (P5/A5.2) has nothing to add and must not fire.
     let mut task = foundation_task_with_no_path();
     task.description = "Lay out the crate's first modules in src/layout.rs.".into();
     let env = IsolatedTestEnvironment::new();
@@ -159,26 +222,22 @@ fn a_batch_with_a_confirmed_path_never_parks_on_the_preventive_checkpoint() {
         manifest_json(&harness)["pathConfirmationSource"],
         "forge_gate"
     );
-    wait_for_specification_job(&harness);
-    let parked_on_path_confirmation: bool = harness
-        .db()
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM checkpoints WHERE pulsation_id=?1 AND kind='path_confirmation')",
-            [&harness.pulse],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert!(!parked_on_path_confirmation);
+    assert_eq!(
+        manifest_json(&harness)["taskDestinations"][0]["origin"],
+        "task_text"
+    );
+    assert_reference(
+        &specification_plan(&harness),
+        "src/layout.rs",
+        "planned_destination",
+    );
+    assert_no_path_checkpoint(&harness);
 }
 
 #[test]
-fn a_bugfix_task_with_no_confirmed_path_never_parks_on_the_preventive_checkpoint() {
-    // The preventive gate only fires for `Foundation` (host-known) or
-    // Intake-classified `feature` tasks; an ordinary bugfix in the same
-    // greenfield workspace advances straight through, unprotected and
-    // unblocked, exactly as before this milestone.
+fn a_pathless_bugfix_resolves_the_existing_handler_and_delivers_it_to_specification() {
     let task = TaskDraft {
-        title: "Fix the off-by-one".into(),
+        title: "Fix the request handler counter".into(),
         kind: TaskKind::Bug,
         description: "The counter overshoots by one somewhere in the request handler.".into(),
         criteria: vec![AcceptanceCriterion {
@@ -189,17 +248,26 @@ fn a_bugfix_task_with_no_confirmed_path_never_parks_on_the_preventive_checkpoint
         feature_id: None,
     };
     let env = IsolatedTestEnvironment::new();
+    std::fs::create_dir_all(env.workspace_dir().join("src")).unwrap();
+    std::fs::write(
+        env.workspace_dir().join("src/handler.rs"),
+        "pub fn count() -> usize { 1 }\n",
+    )
+    .unwrap();
     let harness = Harness::start_in(env, vec![task], |facts, _, _| completed_reply(facts));
 
-    assert_eq!(manifest_json(&harness)["pathConfirmationSource"], "none");
-    wait_for_specification_job(&harness);
-    let parked_on_path_confirmation: bool = harness
-        .db()
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM checkpoints WHERE pulsation_id=?1 AND kind='path_confirmation')",
-            [&harness.pulse],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert!(!parked_on_path_confirmation);
+    let manifest = manifest_json(&harness);
+    assert_eq!(manifest["pathConfirmationSource"], "forge_gate");
+    assert_eq!(
+        manifest["taskDestinations"][0]["origin"],
+        "repository_convention"
+    );
+    assert_eq!(
+        manifest["taskDestinations"][0]["paths"],
+        serde_json::json!(["src/handler.rs", "tests/handler.rs"])
+    );
+    let plan = specification_plan(&harness);
+    assert_reference(&plan, "src/handler.rs", "existing_source");
+    assert_reference(&plan, "tests/handler.rs", "planned_destination");
+    assert_no_path_checkpoint(&harness);
 }

@@ -2268,7 +2268,16 @@ impl PersistenceService {
         }
         for task in &manifest.tasks {
             let text = format!("{} {}", task.draft.title, task.draft.description);
-            for path in recipes::explicit_paths(&text) {
+            let paths = manifest
+                .task_destinations
+                .iter()
+                .find(|destination| destination.task_id == task.id)
+                .map(|destination| destination.paths.clone())
+                .unwrap_or_else(|| recipes::explicit_paths(&text));
+            for path in paths {
+                // Recheck containment at consumption, including new parents
+                // or symlinks created after the manifest was frozen.
+                crate::feature_forge::validate_destination_path(root, path.as_str())?;
                 match read(path.as_str()) {
                     Some(content) => push(path, content, SourceOrigin::Task),
                     None => {

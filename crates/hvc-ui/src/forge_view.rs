@@ -439,7 +439,14 @@ fn backlog_body(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
             "compose-pulsation",
             "Select tasks to execute and integrate as a single batch.",
         ))
-        .child(sized_input(model.forge.batch_title.clone(), INPUT_MEDIUM));
+        .child(sized_input(model.forge.batch_title.clone(), INPUT_MEDIUM))
+        .child(
+            div()
+                .debug_selector(|| "forge-destination-guidance".into())
+                .child(label(
+                    "File destinations are resolved from the repository and project conventions.",
+                )),
+        );
     for task in model
         .forge
         .snapshot
@@ -447,10 +454,6 @@ fn backlog_body(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
         .iter()
         .filter(|t| model.forge.selected_tasks.contains(&t.id))
     {
-        let has_explicit_path = !hvc_core::orchestration::composition::recipes::explicit_paths(
-            &format!("{} {}", task.draft.title, task.draft.description),
-        )
-        .is_empty();
         let mut item = div().flex().flex_col().gap_1().child(
             div()
                 .flex()
@@ -465,22 +468,8 @@ fn backlog_body(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
                     cx,
                 )),
         );
-        if !has_explicit_path {
-            item = item.child(label(
-                "No explicit file path detected; the dispatch gate may block this batch \
-                 unless another selected task has one.",
-            ));
-            if let Some(input) = model.forge.path_hint_inputs.get(&task.id) {
-                item = item.child(sized_input(input.clone(), INPUT_LONG));
-            }
-            if task.draft.feature_id.is_some() {
-                item = item.child(button(
-                    format!("request-path-{}", task.id),
-                    "Ask Feature Agent for a path",
-                    ForgeAction::RequestPathClarification(task.id.clone()),
-                    cx,
-                ));
-            }
+        if let Some(input) = model.forge.path_hint_inputs.get(&task.id) {
+            item = item.child(sized_input(input.clone(), INPUT_LONG));
         }
         selected = selected.child(item);
     }

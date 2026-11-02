@@ -1,5 +1,8 @@
 //! Product planning and task backlogs. Only the pulsation host integrates code.
+pub(crate) mod batch_budget;
+mod destinations;
 mod failure;
+pub use destinations::*;
 pub mod pipeline;
 pub mod preflight;
 mod publication;
@@ -52,12 +55,11 @@ pub enum Wave {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PathConfirmationSource {
-    /// The dispatch gate found an explicit path on at least one task.
+    /// Dispatch froze safe files from explicit paths, overrides or repository conventions.
     ForgeGate,
     /// The developer confirmed paths through a preventive HITL checkpoint.
     ManualHitl,
-    /// No path was confirmed; the batch qualified for the greenfield
-    /// exception (feature coverage `unavailable`, or an empty workspace).
+    /// Legacy or non-composed batch without a frozen destination plan.
     #[default]
     None,
 }
@@ -240,12 +242,8 @@ pub struct CreateFeatureRequest {
 pub struct TaskSelection {
     pub task_id: String,
     pub expected_revision: u64,
-    /// A developer-supplied path that satisfies the dispatch-time anchoring
-    /// gate (ADR-022 clarification loop, P1/A1.3) for this task without
-    /// persisting it to the task's stored draft. This is the mechanism for
-    /// correcting a feature-owned task at dispatch time: `WorkTaskService::revise`
-    /// refuses tasks with a `feature_id`, so a transient hint on the selection
-    /// is the only way to satisfy the gate short of reopening Incubation.
+    /// Optional file override, frozen in the composed manifest's destinations
+    /// without changing the approved task draft or reopening Incubation.
     #[serde(default)]
     pub manual_path_hint: Option<String>,
 }
@@ -267,8 +265,8 @@ pub struct CreatePulsationFromTasksRequest {
 #[serde(rename_all = "camelCase")]
 pub struct DispatchGateStatus {
     pub blocked: bool,
-    /// Whether the batch qualified for the greenfield exception (a task's
-    /// feature has no observed sources, or its workspace has no code files).
+    /// A complete bounded inventory found no application code. Retrieval
+    /// coverage labels alone do not establish this condition.
     pub greenfield: bool,
     pub tasks_missing_paths: Vec<String>,
 }
@@ -284,6 +282,11 @@ pub struct BatchManifest {
     pub feature_dependencies: Vec<FeatureDependency>,
     #[serde(default)]
     pub path_confirmation_source: PathConfirmationSource,
+    /// Host-resolved file candidates, frozen separately from approved task prose.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub task_destinations: Vec<TaskDestinations>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub destination_notices: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

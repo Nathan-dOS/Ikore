@@ -1,0 +1,71 @@
+{
+  "date": "2026-11-02",
+  "platform": "Windows x64",
+  "base_commit": "28b454e2933746e875de2b0bd3065be2d40998c3",
+  "branch": "fix/forge-repository-destinations",
+  "workspace_tests": {
+    "passed": 2059,
+    "failed": 0,
+    "ignored": 23,
+    "filtered": 0,
+    "target_summaries": 61
+  },
+  "workspace_log": "target/forge-destinations-workspace-final-verified.log",
+  "checks": {
+    "fmt": "passed",
+    "crate_boundaries": "passed",
+    "clippy_all_targets_deny_warnings": "passed",
+    "debug_build": "passed",
+    "isolated_gpui_window_smoke": "passed"
+  },
+  "binary": {
+    "path": "target/debug/hard-vibe-code.exe",
+    "sha256": "7c4aed7ab1664845668f48dbdfc28b4fa57501a0ea6b4d0be60d034d9db6c58c",
+    "bytes": 111133184
+  },
+  "smoke": {
+    "binary": "<repo>\\target\\debug\\hard-vibe-code.exe",
+    "database": "<repo>\\target\\smoke-data\\43b3096dbb4049838d085b8ca09f4701\\hard-vibe-code.db",
+    "windowHandle": 2426992,
+    "gracefulShutdown": true,
+    "exitCode": 0
+  },
+  "source_sha256": {
+    "crates/hvc-core/src/agent_runtime.rs": "26d0e198859e7dd51394c876d5180c7eec5c542fa6cba8fe97740aa2da0c63bd",
+    "crates/hvc-core/src/feature_forge/batch_budget.rs": "a4dbd67851f1cfec1e9c373a2521f3fa5980dc9f0c389baaf616177e968a4ab6",
+    "crates/hvc-core/src/feature_forge/batch_budget_tests.rs": "903b3118ba2934d57c65a6570d29e2f1817c9b69034f3f5fe5696155d857662e",
+    "crates/hvc-core/src/feature_forge/destinations.rs": "b95bce99c0203b154c78945734519183be0f89d45258ca4c0f31dcbca7e74485",
+    "crates/hvc-core/src/feature_forge/destinations_tests.rs": "470f4c5c338b56160847de02fb50e4d7ee32ab7e9a38567f3eb59b41f8eb9422",
+    "crates/hvc-core/src/feature_forge/mod.rs": "4e0fdb44871b8c28737947daea5962d31b20b4b5bf5622a91525556644b0568c",
+    "crates/hvc-core/src/feature_forge/path_clarification_tests.rs": "44db31f9ac82ca086fb4edbf4714b506686c325b34af9506c797f70bfcc8d6ae",
+    "crates/hvc-core/src/feature_forge/persistence.rs": "7f19c5a795852c104419858d47a0f891cc44e1a142a446b2d3da2eef26a2940a",
+    "crates/hvc-core/src/feature_forge/runtime.rs": "dfe40c68a4c654743c3ac04704518cc3caa85a474767dca6584f64babecf2ee0",
+    "crates/hvc-core/src/feature_forge/tests.rs": "51a91251d987b4d618274c0c9cd0ad8fe6c4449844e4bdf3fb3b80605b39b5d8",
+    "crates/hvc-core/src/orchestration/composition/host_coordinator.rs": "f24ee397cebd273ec7318c7f05cfebe78ea02d78633e1cd0dd56e78a5a15d409",
+    "crates/hvc-core/src/orchestration/composition/recipes.rs": "87a1677c99d405a2f1620307cf0c82b76e19c78889c6bbb5ddf46b8f73782f09",
+    "crates/hvc-core/src/orchestration/mandate/tests.rs": "20cfb668998d6defcd29629974bcafef2dcf8d9f444491a2e7db5a6e0b68f45e",
+    "crates/hvc-core/src/orchestration/policy.rs": "a7dc4b91ebe7f98a6324bb71d7e118f4020177917e3ea09e68da3a35bec33706",
+    "crates/hvc-core/src/orchestration/prompt_context.rs": "259a1b719f6dcdfb91d2e339289fdbabc1085ad7b18d7c7d79e0d1f5b323aa96",
+    "crates/hvc-core/src/orchestration/resolution.rs": "cae8c520ddc2324ef0de2f657e5f5ee1df60b816d27a28bf1c4b9280132ebdd3",
+    "crates/hvc-core/src/orchestration/review_brief/tests.rs": "32878d63e6e59100fbca62669042b44d3f3bbc4adacdf7bbd49d242649836b93",
+    "crates/hvc-core/src/orchestration/serial.rs": "79be87bd049ce7192d740d50e9d514966729bf9a8b359bde6bd3d360e06ec248",
+    "crates/hvc-core/src/orchestration/tests.rs": "b8b757d625b17d294848654c1e0457c322baf0f5dc3a638f87415128c222ce72",
+    "crates/hvc-core/src/repository_context.rs": "b61ed22c7c8669d0528866e3e9b3ce3c43e62c74a8dfc8dd8d88e4d8d431fd74",
+    "crates/hvc-test-support/src/prompt_inventory.rs": "337015a3ab08ce61c2aa2343a3500dcf8cb6e18160175deb7e915f2165436289",
+    "crates/hvc-test-support/tests/composition_path_confirmation.rs": "0a434821696ce1154940c2f0bcbd0eb6d18fb6193a53e0d14a72325d0efb82de",
+    "crates/hvc-test-support/tests/prompt_input_inventory.rs": "b5dfb4aab001fa22c676485b1d376d6a1e824f7f2b3875b29c0d761bd11bdaf6",
+    "crates/hvc-ui/src/forge.rs": "857718c16ff5e1dab8b2866e19ecabe8a094e7a563b41c0dcbc46445c35862ad",
+    "crates/hvc-ui/src/forge_view.rs": "acb9afc5855ab6cf92761ed43c8ca578cfc291b914b7a1da01a71b943e35bae8",
+    "scripts/smoke-windows.ps1": "158f6d9a5c480ab45ef8a16ff0453764dfa576a88cfc84ac2d6e3e041786b518"
+  },
+  "preserved_unrelated_changes": [
+    "crates/hvc-app/assets/icon.ico",
+    "crates/hvc-core/src/orchestration/composition/validation/candidate_capture.rs"
+  ],
+  "no_worktree_created": true,
+  "limits": [
+    "23 optional tests remain ignored; authenticated providers were not exercised",
+    "Debug qualification; no release or distribution qualification",
+    "Existing incremental-cache and proc-macro-error2 future-compatibility warnings remain"
+  ]
+}

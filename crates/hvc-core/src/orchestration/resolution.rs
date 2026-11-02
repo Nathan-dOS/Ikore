@@ -250,6 +250,7 @@ mod tests {
 
     struct Fixture {
         _data: tempfile::TempDir,
+        _workspace: tempfile::TempDir,
         service: PersistenceService,
         project: String,
     }
@@ -268,6 +269,7 @@ mod tests {
                 .id;
             Self {
                 _data: data,
+                _workspace: workspace,
                 service,
                 project,
             }

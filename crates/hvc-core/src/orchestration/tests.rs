@@ -776,6 +776,8 @@ fn prompt_handoff_drops_backlog_drafts_but_keeps_the_dispatched_tasks() {
         schema_version: 1,
         title: "Batch".into(),
         path_confirmation_source: crate::feature_forge::PathConfirmationSource::default(),
+        task_destinations: Vec::new(),
+        destination_notices: Vec::new(),
         tasks: vec![WorkTask {
             id: "task-0001".into(),
             project_id: "project-a".into(),

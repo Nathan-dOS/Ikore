@@ -43,6 +43,8 @@ fn manifest() -> BatchManifest {
         schema_version: 1,
         title: "Login".into(),
         path_confirmation_source: crate::feature_forge::PathConfirmationSource::default(),
+        task_destinations: Vec::new(),
+        destination_notices: Vec::new(),
         tasks: vec![
             task(
                 "t-2",

@@ -47,6 +47,7 @@ async fn asking_for_a_path_starts_the_agent_and_replays_without_reopening() {
     let prompts = gateway.prompts();
     assert_eq!(prompts.len(), 1);
     assert!(prompts[0].contains("Define the explicit file path(s)"));
+    assert!(prompts[0].contains("File placement is the application's responsibility"));
     {
         let requests = gateway.requests.lock().unwrap();
         assert_eq!(

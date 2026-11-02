@@ -648,10 +648,6 @@ pub(crate) enum ForgeAction {
     Evaluate,
     SelectFeatureTasks(String),
     SuggestFeature(String),
-    /// "Ask the Feature Agent for a path" (ADR-022 clarification loop,
-    /// P1/A1.3): the task id, resolved to its feature at dispatch time since
-    /// only feature-owned tasks can reach this action.
-    RequestPathClarification(String),
     /// Ask the Feature Agent for the triage judgement. Prompts first if the
     /// on-screen answers would be overwritten; `ConfirmAnalyzeTriage` is the
     /// same request past that prompt.
@@ -691,8 +687,6 @@ enum Operation {
     /// the snapshot on the UI side so this reuses `set_dependency` rather than
     /// needing a bulk-delete of its own.
     ClearAgentDependencies(String, Vec<String>),
-    /// Feature id, task title.
-    RequestPathClarification(String, String),
     /// Feature id, finding id and the developer's decision (ADR-034 M6).
     ResolvePreflight(
         String,
@@ -902,7 +896,10 @@ impl AppModel {
                             .entry(id.clone())
                             .or_insert_with(|| {
                                 cx.new(|cx| {
-                                    NativeTextInput::new("Optional: path this task touches", cx)
+                                    NativeTextInput::new(
+                                        "Optional file override, e.g. src/app.js",
+                                        cx,
+                                    )
                                 })
                             });
                         self.forge.selected_tasks.insert(id);
@@ -1087,17 +1084,6 @@ impl AppModel {
                         self.forge.idea.read(cx).value().into(),
                     )
                 }
-            }
-            ForgeAction::RequestPathClarification(id) => {
-                let Some(task) = self.forge.snapshot.tasks.iter().find(|t| t.id == id) else {
-                    return;
-                };
-                let Some(feature_id) = task.draft.feature_id.clone() else {
-                    return;
-                };
-                let title = task.draft.title.clone();
-                self.forge.section = ForgeSection::Incubation;
-                Operation::RequestPathClarification(feature_id, title)
             }
             ForgeAction::Dispatch => Operation::Dispatch(
                 self.forge.batch_title.read(cx).value().into(),
@@ -1388,20 +1374,6 @@ impl AppModel {
                                 forge.archive(&project, &id, &reason)?
                             }
                             Operation::Reopen(id) => forge.reopen(&project, &id)?,
-                            Operation::RequestPathClarification(feature_id, title) => {
-                                core.feature_agent().start_path_clarification(
-                                    &project,
-                                    &feature_id,
-                                    &title,
-                                    &key,
-                                )?;
-                                notice = Some(
-                                    "The Feature Agent is clarifying the file paths in Incubation."
-                                        .into(),
-                                );
-                                selected = Some(feature_id);
-                                navigate = Some(AppView::Forge);
-                            }
                             Operation::Complete(id, revision) => {
                                 forge.complete(&project, &id, revision)?
                             }
@@ -1982,6 +1954,146 @@ mod tests {
             assert!(model.forge.selected_tasks.is_empty());
             assert!(model.forge.path_hint_inputs.is_empty());
         });
+    }
+
+    #[gpui::test]
+    fn batch_destinations_are_automatic_and_file_overrides_remain_optional(
+        cx: &mut TestAppContext,
+    ) {
+        let (model, visual) = cx.add_window_view(|_, cx| AppModel::new_for_test(cx));
+        visual.simulate_resize(size(px(1440.0), px(900.0)));
+        for (feature_owned, description) in [
+            (false, "Create the notes application"),
+            (true, "Define the product vision and MVP boundaries"),
+            (true, "Update src/app.js"),
+        ] {
+            model.update(visual, |model, cx| {
+                model.workspace.update(cx, |workspace, _| {
+                    workspace.project_id = Some("project".into())
+                });
+                model.select_view(AppView::Forge, cx);
+                model.forge.section = ForgeSection::Backlog;
+                model.forge.clear_batch_composer(cx);
+                let mut task = test_task("automatic-path", "ready", None);
+                task.draft.description = description.into();
+                task.draft.feature_id = feature_owned.then(|| "feature".into());
+                model.forge.snapshot.tasks = vec![task];
+                model.forge_action(ForgeAction::ToggleTask("automatic-path".into()), cx);
+            });
+            visual.run_until_parked();
+            assert!(visual.debug_bounds("forge-destination-guidance").is_some());
+            assert!(visual.debug_bounds("request-path-automatic-path").is_none());
+            assert!(
+                visual
+                    .debug_bounds("native-input:Optional file override, e.g. src/app.js")
+                    .is_some()
+            );
+            assert!(visual.debug_bounds("dispatch-batch").is_some());
+            model.read_with(visual, |model, cx| {
+                assert!(
+                    model.forge.path_hint_inputs["automatic-path"]
+                        .read(cx)
+                        .value()
+                        .is_empty()
+                );
+                assert!(model.forge.selected_tasks.contains("automatic-path"));
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn approval_and_wave_changes_refresh_tasks_without_restarting(cx: &mut TestAppContext) {
+        use hvc_core::feature_forge::FeatureBrief;
+        use hvc_core::persistence_service::EnsureProjectForWorkspaceRequest;
+        let harness = hvc_test_support::CoreTestHarness::new();
+        let core = harness.core();
+        let project = core
+            .persistence()
+            .ensure_project_for_workspace(EnsureProjectForWorkspaceRequest {
+                workspace_path: harness.workspace_dir().to_string_lossy().into(),
+                preferred_name: None,
+            })
+            .unwrap()
+            .project
+            .id;
+        let forge = FeatureForgeService::new(core.persistence().clone());
+        let feature = forge
+            .create(CreateFeatureRequest {
+                project_id: project.clone(),
+                request_id: "approval-refresh".into(),
+                title: "Notes foundation".into(),
+                idea: "Create a local notes application".into(),
+            })
+            .unwrap();
+        let criterion = AcceptanceCriterion {
+            id: "criterion-1".into(),
+            description: "Notes remain available after reopening the application".into(),
+        };
+        let feature = forge
+            .revise(
+                &project,
+                &feature.id,
+                feature.revision,
+                FeatureBrief {
+                    objective: "Create local notes".into(),
+                    audience: "Students".into(),
+                    behavior: "Create notes and preserve them locally".into(),
+                    scope: "Local note storage".into(),
+                    criteria: vec![criterion.clone()],
+                    tasks: vec![TaskDraft {
+                        title: "Create local notes".into(),
+                        kind: TaskKind::Foundation,
+                        description: "Create the initial application structure".into(),
+                        criteria: vec![criterion],
+                        dependencies: vec![],
+                        feature_id: None,
+                    }],
+                    coverage: "complete".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let (model, visual) = cx.add_window_view(|_, cx| AppModel::new_for_test(cx));
+        visual.simulate_resize(size(px(1440.0), px(900.0)));
+        model.update(visual, |model, cx| {
+            model.workspace.update(cx, |workspace, _| {
+                workspace.project_id = Some(project.clone().into())
+            });
+            model.select_view(AppView::Forge, cx);
+            model.core = Some(core.clone());
+            model.forge.project_id = Some(project.clone());
+            model.forge.selected_feature = Some(feature.id.clone());
+            model.forge.snapshot.features = vec![feature.clone()];
+            model.forge_action(ForgeAction::Approve, cx);
+        });
+        finish_request(&model, visual);
+        model.read_with(visual, |model, _| {
+            assert!(model.forge.error.is_none(), "{:?}", model.forge.error);
+            assert_eq!(
+                model.forge.feature().unwrap().approved_revision,
+                Some(feature.revision)
+            );
+            assert_eq!(model.forge.snapshot.tasks.len(), 1);
+            assert_eq!(model.forge.snapshot.tasks[0].state, "ready");
+        });
+        model.update(visual, |model, cx| {
+            model.forge_action(ForgeAction::Move(feature.id.clone(), Wave::Current), cx);
+        });
+        finish_request(&model, visual);
+        model.update(visual, |model, cx| {
+            assert!(model.forge.error.is_none(), "{:?}", model.forge.error);
+            assert_eq!(model.forge.feature().unwrap().wave, Some(Wave::Current));
+            let task_id = model.forge.snapshot.tasks[0].id.clone();
+            model.forge_action(ForgeAction::ToggleTask(task_id.clone()), cx);
+            assert!(model.forge.selected_tasks.contains(&task_id));
+        });
+        assert!(
+            TaskService::new(core.persistence().clone())
+                .list(&project)
+                .unwrap()
+                .iter()
+                .all(|task| task.state == "ready")
+        );
     }
 
     #[gpui::test]

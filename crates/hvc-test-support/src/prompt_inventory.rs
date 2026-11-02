@@ -163,6 +163,8 @@ const fn block(
     }
 }
 
+const HOST_DESTINATION_ROW: &str = "task_<number> file candidates (<origin>):";
+
 /// Blocks a host section embeds (adjustments A1, A3 and A5).
 pub const EMBEDDED_BLOCKS: &[EmbeddedBlock] = &[
     block(
@@ -170,6 +172,12 @@ pub const EMBEDDED_BLOCKS: &[EmbeddedBlock] = &[
         "task_",
         Position::Before,
         TrustClass::AgentOutput,
+    ),
+    block(
+        Builder::V4Unit,
+        HOST_DESTINATION_ROW,
+        Position::Before,
+        TrustClass::Host,
     ),
     block(
         Builder::V4Unit,
@@ -251,6 +259,38 @@ fn labels(line: &str, trust: TrustClass) -> bool {
     line.strip_prefix(LINE_PREFIX)
         .and_then(|rest| rest.strip_prefix(trust.as_str()))
         .is_some_and(|rest| rest.starts_with(hvc_contracts::exchange::SEPARATOR))
+}
+
+/// The host's frozen file plan is a separate row shape from `task_1:` scope
+/// prose. Only this exact renderer shape may use host provenance; every other
+/// `task_` line retains the agent-output requirement.
+fn is_host_destination_row(line: &str) -> bool {
+    let Some((number, row)) = line
+        .strip_prefix("task_")
+        .and_then(|tail| tail.split_once(" file candidates ("))
+    else {
+        return false;
+    };
+    if number.is_empty()
+        || number.starts_with('0')
+        || !number.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return false;
+    }
+    let Some((origin, paths)) = row.split_once("): ") else {
+        return false;
+    };
+    matches!(origin, "Manual" | "TaskText" | "RepositoryConvention") && !paths.trim().is_empty()
+}
+
+fn matches_embedded_block(block: &EmbeddedBlock, line: &str) -> bool {
+    if block.marker == HOST_DESTINATION_ROW {
+        is_host_destination_row(line)
+    } else if block.marker == "task_" {
+        line.starts_with(block.marker) && !is_host_destination_row(line)
+    } else {
+        line.starts_with(block.marker)
+    }
 }
 
 /// Checks one rendered prompt against the inventory. Prompts of other
@@ -340,7 +380,7 @@ pub fn check_prompt(system: &str, user: &str) -> Result<(), Vec<String>> {
         }
         for block in EMBEDDED_BLOCKS
             .iter()
-            .filter(|block| block.builder == builder && line.starts_with(block.marker))
+            .filter(|block| block.builder == builder && matches_embedded_block(block, line))
         {
             let found = match block.position {
                 Position::After => lines.get(index + 1).copied(),

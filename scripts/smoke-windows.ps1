@@ -16,6 +16,7 @@ if ($null -eq ('HvcSmoke.NativeWindow' -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace HvcSmoke
 {
@@ -29,6 +30,9 @@ namespace HvcSmoke
         [DllImport("user32.dll")]
         private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
 
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern int GetClassName(IntPtr window, StringBuilder className, int maxCount);
+
         [DllImport("user32.dll", SetLastError = true)]
         private static extern bool PostMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
 
@@ -41,8 +45,14 @@ namespace HvcSmoke
                 GetWindowThreadProcessId(window, out owner);
                 if (owner == processId)
                 {
-                    result = window;
-                    return false;
+                    // A debug build also owns a console; close the GPUI window.
+                    var className = new StringBuilder(256);
+                    if (GetClassName(window, className, className.Capacity) > 0 &&
+                        className.ToString() == "Zed::Window")
+                    {
+                        result = window;
+                        return false;
+                    }
                 }
                 return true;
             }, IntPtr.Zero);
@@ -105,6 +115,9 @@ try {
     $gracefulShutdown = $closeRequested -and $process.WaitForExit(5000)
     if (-not $gracefulShutdown) {
         throw 'O binário não concluiu o shutdown gracioso dentro de 5 segundos.'
+    }
+    if ($process.ExitCode -ne 0) {
+        throw "O binário encerrou com código inesperado: $($process.ExitCode)."
     }
 
     [pscustomobject]@{

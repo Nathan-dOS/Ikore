@@ -1034,6 +1034,8 @@ fn task_local_criterion_manifest() -> BatchManifest {
         features: Vec::new(),
         feature_dependencies: Vec::new(),
         path_confirmation_source: Default::default(),
+        task_destinations: Vec::new(),
+        destination_notices: Vec::new(),
     }
 }
 

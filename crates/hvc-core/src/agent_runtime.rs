@@ -3098,6 +3098,8 @@ mod prompt_tests {
             schema_version: 1,
             title: "Batch".into(),
             path_confirmation_source: crate::feature_forge::PathConfirmationSource::default(),
+            task_destinations: Vec::new(),
+            destination_notices: Vec::new(),
             tasks: vec![WorkTask {
                 id: "task-selected-0001".into(),
                 project_id: "project-1".into(),

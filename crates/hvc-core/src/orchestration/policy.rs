@@ -137,7 +137,9 @@ pub fn validate_specification_answers(
 impl StageHandoffV1 {
     pub fn normative_chars(&self) -> usize {
         self.batch_manifest.as_ref().map_or(0, |manifest| {
-            serde_json::to_string(manifest).map_or(usize::MAX / 2, |text| text.chars().count())
+            crate::feature_forge::batch_budget::batch_prompt_projection(manifest)
+                .and_then(|projection| serde_json::to_string(&projection))
+                .map_or(usize::MAX / 2, |text| text.chars().count())
         }) + self
             .artifacts
             .iter()

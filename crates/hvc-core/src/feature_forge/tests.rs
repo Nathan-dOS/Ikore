@@ -1910,20 +1910,213 @@ fn enable_composition(f: &Fixture) {
 }
 
 #[test]
-fn dispatch_is_blocked_when_no_task_has_a_path_and_the_workspace_is_not_greenfield() {
+fn empty_repository_feature_dispatch_plans_files_without_reopening_approved_scope() {
+    let f = Fixture::new();
+    enable_composition(&f);
+    std::fs::create_dir_all(f.workspace.path().join("docs")).unwrap();
+    std::fs::write(
+        f.workspace.path().join("docs/PROJECT_AGENT.md"),
+        "# Project\n",
+    )
+    .unwrap();
+    let feature = f.feature("Define product vision and MVP boundaries");
+    let mut brief = feature.brief.clone();
+    brief.coverage = "complete".into();
+    brief.tasks[0].kind = TaskKind::Foundation;
+    let feature = f
+        .forge()
+        .revise(&f.project, &feature.id, feature.revision, brief)
+        .unwrap();
+    f.forge()
+        .approve(&f.project, &feature.id, feature.revision)
+        .unwrap();
+    let approved = f
+        .forge()
+        .move_to_wave(&f.project, &feature.id, Wave::Current, 0)
+        .unwrap();
+    let selected = f.tasks().list(&f.project).unwrap();
+    let pulse = f
+        .tasks()
+        .dispatch(f.dispatch(&selected))
+        .expect("a repository without code must plan its own file destinations");
+    let manifest = pipeline::manifest(&f.service.connection().unwrap(), &pulse.id)
+        .unwrap()
+        .unwrap();
+    let value = serde_json::to_value(&manifest).unwrap();
+    assert!(!value["taskDestinations"].as_array().unwrap().is_empty());
+    assert_eq!(
+        manifest.tasks, selected,
+        "destination planning must not rewrite approved drafts"
+    );
+    assert_eq!(manifest.features[0].brief, approved.brief);
+    assert_eq!(
+        manifest.features[0].approved_revision,
+        Some(approved.revision)
+    );
+}
+
+#[test]
+fn manual_file_override_is_frozen_in_the_batch_without_changing_the_task() {
+    let f = Fixture::new();
+    enable_composition(&f);
+    let task = f.add("Create the account view");
+    let mut request = f.dispatch(std::slice::from_ref(&task));
+    request.tasks[0].manual_path_hint = Some("src/account.js".into());
+    let pulse = f.tasks().dispatch(request).unwrap();
+    let manifest = pipeline::manifest(&f.service.connection().unwrap(), &pulse.id)
+        .unwrap()
+        .unwrap();
+    let value = serde_json::to_value(&manifest).unwrap();
+    assert_eq!(value["taskDestinations"][0]["paths"][0], "src/account.js");
+    assert_eq!(manifest.tasks[0], task);
+}
+
+#[test]
+fn directory_and_outside_workspace_overrides_cannot_confirm_a_file() {
+    let f = Fixture::new();
+    enable_composition(&f);
+    std::fs::create_dir_all(f.workspace.path().join("src")).unwrap();
+    let task = f.add("Create the account view");
+    for path in [
+        "src",
+        "../account.js",
+        "C:/outside/account.js",
+        ".env",
+        "docs/REVIEW.md",
+    ] {
+        let mut request = f.dispatch(std::slice::from_ref(&task));
+        request.tasks[0].manual_path_hint = Some(path.into());
+        assert!(
+            f.tasks().dispatch(request).is_err(),
+            "invalid file override accepted: {path}"
+        );
+    }
+    assert!(
+        f.service
+            .list_pulsations(ListPulsationsRequest {
+                project_id: f.project
+            })
+            .unwrap()
+            .pulsations
+            .is_empty()
+    );
+}
+
+#[test]
+fn dispatch_budgets_selected_context_and_preserves_the_complete_approved_backlog() {
+    for composed in [false, true] {
+        let f = Fixture::new();
+        if composed {
+            enable_composition(&f);
+        }
+        let feature = f.feature("Document product vision");
+        let mut brief = feature.brief.clone();
+        let mut future = draft("Future implementation");
+        future.description = "Detailed future behavior. ".repeat(700);
+        brief.tasks.push(future);
+        let feature = f
+            .forge()
+            .revise(&f.project, &feature.id, feature.revision, brief)
+            .unwrap();
+        f.forge()
+            .approve(&f.project, &feature.id, feature.revision)
+            .unwrap();
+        let approved = f
+            .forge()
+            .move_to_wave(&f.project, &feature.id, Wave::Current, 0)
+            .unwrap();
+        let task = f
+            .tasks()
+            .list(&f.project)
+            .unwrap()
+            .into_iter()
+            .find(|task| task.draft.title == "Document product vision")
+            .unwrap();
+        let request = f.dispatch(&[task]);
+        let pulse = f.tasks().dispatch(request.clone()).expect(
+            "unselected backlog is not sent to the agents and must not consume the context budget",
+        );
+        assert_eq!(
+            f.tasks().dispatch(request).unwrap().id,
+            pulse.id,
+            "dispatch replay remains idempotent"
+        );
+        let manifest = pipeline::manifest(&f.service.connection().unwrap(), &pulse.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(manifest.tasks.len(), 1);
+        assert_eq!(manifest.features[0].brief, approved.brief);
+        assert!(serde_json::to_string(&manifest).unwrap().len() > 16_000);
+    }
+}
+
+#[test]
+fn required_context_overflow_reports_capacity_and_rolls_back_dispatch() {
+    let f = Fixture::new();
+    enable_composition(&f);
+    let feature = f.feature("Document product vision");
+    let mut brief = feature.brief.clone();
+    brief.behavior = "x".repeat(35_000);
+    let feature = f
+        .forge()
+        .revise(&f.project, &feature.id, feature.revision, brief)
+        .unwrap();
+    f.forge()
+        .approve(&f.project, &feature.id, feature.revision)
+        .unwrap();
+    f.forge()
+        .move_to_wave(&f.project, &feature.id, Wave::Current, 0)
+        .unwrap();
+    let tasks = f.tasks().list(&f.project).unwrap();
+    let error = f
+        .tasks()
+        .dispatch(f.dispatch(&tasks))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("characters required, 32000 available"),
+        "{error}"
+    );
+    assert!(
+        f.service
+            .list_pulsations(ListPulsationsRequest {
+                project_id: f.project.clone()
+            })
+            .unwrap()
+            .pulsations
+            .is_empty()
+    );
+    assert!(
+        f.tasks()
+            .list(&f.project)
+            .unwrap()
+            .iter()
+            .all(|task| task.state == "ready")
+    );
+}
+
+#[test]
+fn dispatch_resolves_a_file_when_the_task_has_no_path_in_an_existing_repository() {
     let f = Fixture::new();
     enable_composition(&f);
     std::fs::write(f.workspace.path().join("existing.rs"), "fn x() {}\n").unwrap();
     let task = f.add("Fix the thing");
-    let error = f
+    let pulse = f
         .tasks()
         .dispatch(f.dispatch(&[task]))
-        .expect_err("a non-greenfield batch with no path on any task must be blocked");
-    assert!(error.to_string().contains("explicit file path"));
+        .expect("the application must resolve files instead of asking the developer");
+    let manifest = pipeline::manifest(&f.service.connection().unwrap(), &pulse.id)
+        .unwrap()
+        .unwrap();
+    assert!(!manifest.task_destinations[0].paths.is_empty());
+    assert_eq!(
+        manifest.path_confirmation_source,
+        PathConfirmationSource::ForgeGate
+    );
 }
 
 #[test]
-fn dispatch_proceeds_and_records_no_confirmation_source_on_a_greenfield_workspace() {
+fn dispatch_proceeds_and_freezes_an_automatic_file_plan_on_a_greenfield_workspace() {
     let f = Fixture::new();
     enable_composition(&f);
     // Fixture::new's workspace starts empty: no code files, so this loose
@@ -1935,7 +2128,7 @@ fn dispatch_proceeds_and_records_no_confirmation_source_on_a_greenfield_workspac
         .unwrap();
     assert_eq!(
         manifest.path_confirmation_source,
-        PathConfirmationSource::None
+        PathConfirmationSource::ForgeGate
     );
 }
 
@@ -1985,11 +2178,7 @@ fn dispatch_proceeds_when_a_manual_path_hint_satisfies_the_gate() {
 }
 
 #[test]
-fn dispatch_proceeds_for_a_feature_task_with_no_path_when_its_brief_coverage_is_unavailable() {
-    // `Fixture::feature` already stamps `coverage: "unavailable"` -- the
-    // greenfield signal `runtime.rs` records when the Feature Agent found no
-    // repository sources -- so a feature task is exempt independent of what
-    // the workspace on disk actually contains.
+fn dispatch_resolves_files_independently_of_a_feature_coverage_label() {
     let f = Fixture::new();
     enable_composition(&f);
     std::fs::write(f.workspace.path().join("existing.rs"), "fn x() {}\n").unwrap();
@@ -2007,7 +2196,7 @@ fn dispatch_proceeds_for_a_feature_task_with_no_path_when_its_brief_coverage_is_
         .unwrap();
     assert_eq!(
         manifest.path_confirmation_source,
-        PathConfirmationSource::None
+        PathConfirmationSource::ForgeGate
     );
 }
 
@@ -2022,12 +2211,18 @@ fn preview_dispatch_gate_matches_the_real_gate_without_dispatching() {
         .tasks()
         .preview_dispatch_gate(&f.project, &request.tasks)
         .unwrap();
-    assert!(status.blocked);
+    assert!(!status.blocked);
     assert!(!status.greenfield);
-    assert_eq!(status.tasks_missing_paths, vec![task.id.clone()]);
+    assert!(status.tasks_missing_paths.is_empty());
     assert!(
-        f.tasks().dispatch(request).is_err(),
-        "preview must not itself dispatch, and the real gate must agree it is blocked"
+        f.service
+            .list_pulsations(ListPulsationsRequest {
+                project_id: f.project.clone()
+            })
+            .unwrap()
+            .pulsations
+            .is_empty(),
+        "preview must not itself dispatch"
     );
 
     let mut with_hint = f.dispatch(&[task]);
