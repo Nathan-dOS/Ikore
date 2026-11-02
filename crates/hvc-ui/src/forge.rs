@@ -1095,7 +1095,9 @@ impl AppModel {
                 let Some(feature_id) = task.draft.feature_id.clone() else {
                     return;
                 };
-                Operation::RequestPathClarification(feature_id, task.draft.title.clone())
+                let title = task.draft.title.clone();
+                self.forge.section = ForgeSection::Incubation;
+                Operation::RequestPathClarification(feature_id, title)
             }
             ForgeAction::Dispatch => Operation::Dispatch(
                 self.forge.batch_title.read(cx).value().into(),
@@ -1387,9 +1389,14 @@ impl AppModel {
                             }
                             Operation::Reopen(id) => forge.reopen(&project, &id)?,
                             Operation::RequestPathClarification(feature_id, title) => {
-                                forge.request_path_clarification(&project, &feature_id, &title)?;
+                                core.feature_agent().start_path_clarification(
+                                    &project,
+                                    &feature_id,
+                                    &title,
+                                    &key,
+                                )?;
                                 notice = Some(
-                                    "Incubation reopened; the Feature Agent will ask for a file path."
+                                    "The Feature Agent is clarifying the file paths in Incubation."
                                         .into(),
                                 );
                                 selected = Some(feature_id);

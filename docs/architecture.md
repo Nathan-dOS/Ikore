@@ -131,6 +131,14 @@ use a disposable writable candidate of a trusted project; this is not an
 operating system security sandbox. Model-authored claims do not prove that a
 check ran. Accepted execution evidence must come from host receipts.
 
+Automatic Feature discovery, Notes Scribe, Documentation Reconciler and
+host-context-only work units use `Hardening::HostContextOnly`: the same native
+tool restrictions and empty temporary workspace as Companion rounds. Codex
+retains its local session rollout so each model-less generation can be checked
+against the matching current-run `turn_context.model`. Missing evidence still
+rejects the result. Actual Companion rounds remain stateless and use Codex
+`--ephemeral`; pipeline work with repository context keeps its read tools.
+
 Publication validates expected content and current ownership before applying
 changes. Multi-file publication uses durable, replayable intent rather than
 claiming one atomic filesystem transaction.

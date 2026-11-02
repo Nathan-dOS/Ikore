@@ -2213,6 +2213,102 @@ fn discovery_reply(feature: &Feature, message: &str, suggested: Vec<FeatureDepen
     reply.to_string()
 }
 
+#[tokio::test]
+async fn discovery_context_omits_old_rounds_without_losing_the_brief_or_latest_message() {
+    let f = Fixture::new();
+    let feature = f.feature("Study planner");
+    let mut brief = feature.brief.clone();
+    brief.scope = "Preserve the complete planning scope and its accepted constraints. ".repeat(90);
+    brief.pending_decisions =
+        vec!["Define the explicit file paths for the study planner task.".into()];
+    let feature = f
+        .forge()
+        .revise(&f.project, &feature.id, feature.revision, brief)
+        .unwrap();
+    for ordinal in 1..=6 {
+        f.service.connection().unwrap().execute(
+            "INSERT INTO forge_turns(id,feature_id,feature_revision,ordinal,request_id,status,user_message,assistant_message,kind,created_at,updated_at) VALUES(?1,?2,?3,?4,?1,'completed',?5,?6,'discovery','now','now')",
+            params![id(),feature.id,feature.revision,ordinal,format!("Earlier developer answer {ordinal}"),"A prior explanation whose decisions are already kept in the evolving brief. ".repeat(55)],
+        ).unwrap();
+    }
+    let gateway = ScriptedGateway::new(vec![discovery_reply(
+        &feature,
+        "Segue a proposta de caminho.",
+        vec![],
+    )]);
+    let runtime = runtime_with(&f, gateway.clone());
+    let latest = "Escolha um caminho padrão. 🧭 Preserve todos os critérios.";
+    runtime
+        .start(&f.project, &feature.id, feature.revision, &id(), latest)
+        .unwrap();
+    let turn = only_turn(&runtime, &f, &feature).await;
+    assert_eq!(turn.status, "completed", "{:?}", turn.error);
+    let prompts = gateway.prompts.lock().unwrap();
+    assert_eq!(prompts.len(), 1);
+    assert!(prompts[0].chars().count() <= 16_000);
+    let payload: serde_json::Value =
+        serde_json::from_str(prompts[0].lines().last().unwrap()).unwrap();
+    assert_eq!(payload["feature"], serde_json::to_value(&feature).unwrap());
+    let conversation = payload["conversation"].as_array().unwrap();
+    assert_eq!(conversation.last().unwrap()["userMessage"], latest);
+    assert!(
+        payload["contextOmissions"]["conversationTurns"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
+    assert!(
+        payload["contextOmissions"]["notice"]
+            .as_str()
+            .unwrap()
+            .contains("omitted")
+    );
+    assert_eq!(
+        runtime.history(&f.project, &feature.id).unwrap().len(),
+        7,
+        "prompt projection must not delete persisted conversation rounds"
+    );
+}
+
+#[tokio::test]
+async fn discovery_context_never_truncates_required_scope_or_the_latest_developer_message() {
+    for oversized_scope in [true, false] {
+        let f = Fixture::new();
+        let feature = f.feature("Required context");
+        let feature = if oversized_scope {
+            let mut brief = feature.brief.clone();
+            brief.scope = "Mandatory scope must remain complete. ".repeat(400);
+            f.forge()
+                .revise(&f.project, &feature.id, feature.revision, brief)
+                .unwrap()
+        } else {
+            feature
+        };
+        let latest = if oversized_scope {
+            "Continue".into()
+        } else {
+            "Keep this developer request complete. ".repeat(400)
+        };
+        let gateway = ScriptedGateway::new(vec![discovery_reply(&feature, "Done", vec![])]);
+        let runtime = runtime_with(&f, gateway.clone());
+        runtime
+            .start(&f.project, &feature.id, feature.revision, &id(), &latest)
+            .unwrap();
+        let turn = only_turn(&runtime, &f, &feature).await;
+        assert_eq!(turn.status, "failed", "required scope: {oversized_scope}");
+        assert_eq!(turn.failure.unwrap().kind, TurnFailureKind::ContextTooLarge);
+        assert_eq!(turn.user_message, latest);
+        assert!(gateway.requests.lock().unwrap().is_empty());
+        assert_eq!(
+            f.forge().get(&f.project, &feature.id).unwrap().brief,
+            feature.brief
+        );
+    }
+}
+
+#[path = "path_clarification_tests.rs"]
+mod path_clarification_tests;
+
 fn suggestion(feature: &str, prerequisite: &str) -> FeatureDependency {
     FeatureDependency {
         feature_id: feature.into(),

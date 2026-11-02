@@ -492,7 +492,9 @@ impl EntityInputHandler for NativeTextInput {
 
 impl Render for NativeTextInput {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let debug_placeholder = self.placeholder.clone();
         div()
+            .debug_selector(move || format!("native-input:{debug_placeholder}"))
             .key_context("NativeTextInput")
             .track_focus(&self.focus_handle(cx))
             .when(!self.multiline, |d| d.h(px(40.0)))

@@ -4345,6 +4345,82 @@ fn all_three_navigation_lists_keep_long_titles_on_one_line(cx: &mut TestAppConte
 }
 
 #[gpui::test]
+fn forge_multiline_composer_keeps_its_hint_below_the_input(cx: &mut TestAppContext) {
+    use gpui::EntityInputHandler;
+    use hvc_core::feature_forge::FeatureState;
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    forge_feature_fixture(&model, visual, &[FeatureState::Incubating]);
+    select(&model, visual, AppView::Forge);
+    model.update(visual, |m, cx| {
+        m.forge.section = crate::forge::ForgeSection::Incubation;
+        cx.notify();
+    });
+
+    for width in [960.0, 1440.0, 2400.0] {
+        visual.simulate_resize(size(px(width), px(900.0)));
+        let drafts = [1, 3, 6, 20]
+            .into_iter()
+            .map(|rows| (rows, vec!["A reply about studying and planning."; rows].join("\n")))
+            .chain([
+                (2, "- The main audience would be university students who want to organize their study notes and planning activities.\n- Responsive web and mobile.".into()),
+                (3, "- The main audience would be university students who want to organize their study notes and planning activities.\n- Responsive web and mobile.\n".into()),
+                (4, "- The main audience would be university students who want to organize their study notes and planning activities.\n- Responsive web and mobile.\n\n".into()),
+                (6, "A reply about studying and planning. ".repeat(30)),
+            ]);
+        for (rows, draft) in drafts {
+            model.update(visual, |m, cx| {
+                m.forge
+                    .message
+                    .update(cx, |input, cx| input.set_value(draft.clone(), cx));
+            });
+            visual.run_until_parked();
+            let input = visual.debug_bounds("forge-message-input").unwrap();
+            let field = visual
+                .debug_bounds("native-input:Answer questions or refine your idea")
+                .unwrap();
+            let hint = visual.debug_bounds("forge-message-hint").unwrap();
+            let send = visual.debug_bounds("send-feature-message").unwrap();
+            let composer = visual.debug_bounds("forge-message-composer").unwrap();
+            let message = model.read_with(visual, |m, _| m.forge.message.clone());
+            let caret = visual.update(|window, cx| {
+                message.update(cx, |message, cx| {
+                    let end = draft.encode_utf16().count();
+                    message
+                        .bounds_for_range(end..end, input, window, cx)
+                        .unwrap()
+                })
+            });
+            let minimum_input_height = px(rows.min(6) as f32 * 24.0 + 18.0);
+            assert!(
+                input.size.height >= minimum_input_height,
+                "{width}px, {rows} rows: the input wrapper collapsed: {input:?}"
+            );
+            assert!(
+                hint.top() + px(0.5) >= field.bottom() + px(8.0),
+                "{width}px, {rows} rows: hint overlaps the field border: {hint:?}, field {field:?}, wrapper {input:?}, draft {draft:?}"
+            );
+            assert!(
+                hint.top() >= input.bottom() + px(8.0),
+                "{width}px, {rows} rows: hint overlaps the input: {hint:?}, {input:?}"
+            );
+            assert!(
+                hint.top() + px(0.5) >= caret.bottom() + px(16.0),
+                "{width}px, {rows} rows: hint overlaps the rendered input: {hint:?}, caret {caret:?}, wrapper {input:?}"
+            );
+            assert!(
+                send.top() + px(0.5) >= hint.bottom() + px(8.0),
+                "{width}px, {rows} rows: send overlaps the hint: {send:?}, {hint:?}"
+            );
+            assert!(send.bottom() <= composer.bottom());
+            assert_eq!(
+                model.read_with(visual, |m, cx| m.forge.message.read(cx).value().to_owned()),
+                draft
+            );
+        }
+    }
+}
+
+#[gpui::test]
 fn forge_incubation_and_triage_render_three_resizable_columns(cx: &mut TestAppContext) {
     use hvc_core::feature_forge::FeatureState;
     let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));

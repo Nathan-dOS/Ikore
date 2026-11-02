@@ -166,7 +166,18 @@ fn main() {
             "Discovery must only receive host-selected context"
         );
         match official_backend {
-            Some("codex") => assert!(args.iter().any(|s| s == "--ignore-rules")),
+            Some("codex") => {
+                assert!(args.iter().any(|s| s == "--ignore-user-config"));
+                assert!(args.iter().any(|s| s == "--ignore-rules"));
+                assert!(
+                    !args.iter().any(|s| s == "--ephemeral"),
+                    "Automatic agents need a persisted Codex rollout for model verification"
+                );
+                assert!(
+                    args.windows(2)
+                        .any(|pair| pair == ["--sandbox", "read-only"])
+                );
+            }
             Some("claude") => assert!(args.iter().any(|s| s == "--strict-mcp-config")),
             Some("gemini") => assert!(env::var_os("GEMINI_CLI_SYSTEM_SETTINGS_PATH").is_some()),
             Some("opencode") => {
@@ -242,6 +253,10 @@ fn main() {
         }
         if stdin.contains("<control_envelope_schema>") {
             if backend == "codex" {
+                assert!(
+                    args.iter().any(|arg| arg == "--ephemeral"),
+                    "Actual Companion rounds must remain ephemeral"
+                );
                 let path = value_after(&args, "--output-schema").expect("Codex needs a schema");
                 let schema: serde_json::Value =
                     serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
