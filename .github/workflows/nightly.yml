@@ -1,12 +1,10 @@
 name: Stage 7 gate
 
 on:
-  # No schedule: a full gate costs about two hours of Windows minutes. New advisories are
-  # still caught by the weekly cargo audit in security.yml.
+  # Manual only: a full gate costs about two hours of hosted Windows minutes, a tenth of the free
+  # plan's monthly allowance. Run scripts/gate-stage7.ps1 locally instead. New advisories are still
+  # caught by the weekly cargo audit in security.yml.
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths: ["Cargo.lock", "third_party/**", "scripts/**"]
 
 permissions:
   contents: read

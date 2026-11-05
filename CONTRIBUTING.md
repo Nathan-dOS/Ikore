@@ -136,9 +136,11 @@ keyring.
 
 ### 4.3. Checks before committing (required)
 
-GitHub Actions runs the complete workspace suite on Windows, the integration
-tests, the headless Linux harness in Docker and the dependency audits. Locally,
-run the minimum that keeps your pull request green:
+On its own, GitHub Actions only checks formatting and audits dependencies. The
+complete workspace suite on Windows, the integration tests and the headless
+Linux harness in Docker run only when a maintainer dispatches them by hand,
+because hosted Windows minutes are too expensive while the repository is
+private. These local checks are the real gate for your pull request:
 
 ```powershell
 # 1. Formatting
