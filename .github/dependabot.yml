@@ -1,9 +1,11 @@
+# Monthly: each Dependabot push spends Actions minutes on the dependency workflows. New advisories
+# are still caught by the weekly cargo audit in security.yml.
 version: 2
 updates:
   - package-ecosystem: cargo
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
     groups:
       cargo-minor-patch:
         update-types: [minor, patch]
@@ -14,4 +16,4 @@ updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly

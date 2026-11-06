@@ -1,5 +1,8 @@
 name: CI
 
+# Only fmt runs by itself. The other jobs cost two to four hours of hosted Windows minutes per
+# run, and the free plan's monthly allowance, shared by every private repository on the account,
+# covers about six such runs. They run only when dispatched by hand; see docs/testing.md.
 on:
   pull_request:
   push:
@@ -33,6 +36,7 @@ jobs:
 
   clippy:
     name: clippy (windows)
+    if: github.event_name == 'workflow_dispatch'
     needs: fmt
     runs-on: windows-latest
     timeout-minutes: 45
@@ -54,6 +58,7 @@ jobs:
 
   unit:
     name: unit (windows)
+    if: github.event_name == 'workflow_dispatch'
     needs: fmt
     runs-on: windows-latest
     timeout-minutes: 120 # never finished in 60 on hosted runners, so the shared cache was never saved
@@ -73,6 +78,7 @@ jobs:
 
   integration:
     name: integration (windows)
+    if: github.event_name == 'workflow_dispatch'
     needs: fmt
     runs-on: windows-latest
     timeout-minutes: 60
@@ -89,6 +95,7 @@ jobs:
 
   linux-docker:
     name: linux headless (docker)
+    if: github.event_name == 'workflow_dispatch'
     needs: fmt
     runs-on: ubuntu-latest
     timeout-minutes: 60
