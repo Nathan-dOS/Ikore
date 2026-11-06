@@ -876,7 +876,7 @@ pub fn materialize_from_baseline(
                 }
                 #[cfg(windows)]
                 {
-                    // Windows exposes a read-only attribute; Unix uses the explicit mode above.
+                    // This Windows-only flag does not change Unix permission bits.
                     #[allow(clippy::permissions_set_readonly_false)]
                     permissions.set_readonly(false);
                 }
