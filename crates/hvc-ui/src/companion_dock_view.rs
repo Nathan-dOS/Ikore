@@ -77,7 +77,8 @@ pub(crate) fn dock(model: &AppModel, window: &Window, cx: &mut Context<AppModel>
         .flex_col()
         .items_end()
         .gap_2()
-        .key_context("CompanionDock");
+        .key_context("CompanionDock")
+        .when_some(dock.focus.clone(), |stack, focus| stack.track_focus(&focus));
     if dock.open {
         let mut row = div().flex().items_end().gap_2();
         for item in visible {

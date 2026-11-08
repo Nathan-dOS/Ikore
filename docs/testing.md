@@ -151,6 +151,12 @@ below describe required coverage, not a passing delivery gate.
   over a linked decision, bind a decision after its chat was opened and restore
   legacy layouts in either alias order. They retain one canonical decision
   window, the same composer and unsent drafts, without merging distinct cards.
+  Focus regressions send full shortcut down/up gestures before and after hiding
+  the dock, closing/minimizing a focused topic, binding Ask Companion or replacing
+  Send with Cancel, including changes rendered while the window is inactive.
+  A persistent dock ancestor recovers only the same removed child's focus,
+  without activating the window; full Chat focus, explicit blur followed by
+  removal, and automatic decision opening remain unaffected.
   Shutdown coverage delays an
   admitted Forge answer until closing, then verifies the final empty draft
   tombstones, newer unsent edits and refused submissions. Chat shutdown retains

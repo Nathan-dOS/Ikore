@@ -78,6 +78,9 @@ pub(crate) struct CompanionDockUi {
     pub confirming: Option<String>,
     pub action_busy: HashSet<String>,
     pub history_input: Option<Entity<NativeTextInput>>,
+    pub focus: Option<gpui::FocusHandle>,
+    focus_owner: Option<gpui::FocusHandle>,
+    focus_subscription: Option<gpui::Subscription>,
     pub subscriptions: Vec<gpui::Subscription>,
     pub new_chat_pending: bool,
     pub(crate) shutting_down: bool,
@@ -116,6 +119,9 @@ impl Default for CompanionDockUi {
             confirming: None,
             action_busy: HashSet::new(),
             history_input: None,
+            focus: None,
+            focus_owner: None,
+            focus_subscription: None,
             subscriptions: Vec::new(),
             new_chat_pending: false,
             shutting_down: false,
@@ -419,11 +425,18 @@ impl AppModel {
             .map(ToString::to_string);
         if project != self.companion_dock.project_id {
             self.persist_companion_immediately(cx);
+            let focus = self.companion_dock.focus.take();
+            let focus_subscription = self.companion_dock.focus_subscription.take();
             self.companion_dock = CompanionDockUi {
                 project_id: project.clone(),
+                focus,
+                focus_subscription,
                 ..Default::default()
             };
         }
+        self.companion_dock
+            .focus
+            .get_or_insert_with(|| cx.focus_handle());
         let Some(project) = project else {
             return;
         };
@@ -630,6 +643,42 @@ impl AppModel {
         self.companion_dock.open = !self.companion_dock.open;
         self.persist_companion_layout(cx);
         cx.notify();
+    }
+    pub(crate) fn observe_companion_dock_focus(
+        &mut self,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.companion_dock.shutting_down {
+            return;
+        }
+        let Some(focus) = self.companion_dock.focus.clone() else {
+            return;
+        };
+        // Retain the exact previous owner through paint, even if its button is
+        // removed while the window is inactive. A deliberate blur clears it.
+        self.companion_dock.focus_owner = if focus.contains_focused(window, cx) {
+            window.focused(cx)
+        } else {
+            None
+        };
+        if self.companion_dock.focus_subscription.is_some() {
+            return;
+        }
+        self.companion_dock.focus_subscription =
+            Some(cx.on_focus_lost(window, |model, window, _| {
+                let previous_owner = model.companion_dock.focus_owner.take();
+                if !model.companion_dock.shutting_down
+                    && window.context_stack().is_empty()
+                    && previous_owner.is_some_and(|owner| owner.is_focused(window))
+                    && let Some(focus) = &model.companion_dock.focus
+                {
+                    // The container stays mounted with the launcher, so shell
+                    // shortcuts remain reachable after any child is replaced/hidden,
+                    // including while inactive. This does not activate the window.
+                    focus.focus(window);
+                }
+            }));
     }
     pub(crate) fn open_companion_chat(&mut self, id: String, cx: &mut Context<Self>) {
         self.companion_dock
@@ -1781,6 +1830,334 @@ mod tests {
                 model.chat_composer_for("dock-c").unwrap().entity_id()
             );
         });
+    }
+
+    #[gpui::test]
+    fn dock_shortcut_reopens_after_hiding_its_focused_history_button_or_composer(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(crate::shell::register_navigation_keybindings);
+        cx.update(crate::text_input::register_text_input_keybindings);
+        let mut failures = Vec::new();
+        for focus_button in [true, false] {
+            let (model, visual) = cx.add_window_view(|_, cx| {
+                let mut model = dock_fixture(cx);
+                model.companion_dock.history_open = true;
+                model
+                    .chat_composer_for("dock-c")
+                    .unwrap()
+                    .update(cx, |input, cx| input.set_value("Unsent UTF-8 · ação", cx));
+                model
+            });
+            visual.update(|window, _| window.activate_window());
+            visual.simulate_resize(size(px(1440.0), px(900.0)));
+            visual.run_until_parked();
+            if focus_button {
+                let button = visual.debug_bounds("dock-history-dock-c").unwrap();
+                visual.simulate_click(button.center(), gpui::Modifiers::default());
+            } else {
+                let input = model.read_with(visual, |model, _| {
+                    model.chat_composer_for("dock-c").unwrap()
+                });
+                visual.update(|window, cx| input.read(cx).focus_handle(cx).focus(window));
+            }
+            visual.run_until_parked();
+            let before = visual.update(|window, cx| (window.focused(cx), window.context_stack()));
+            assert!(before.0.is_some());
+            assert!(
+                before
+                    .1
+                    .iter()
+                    .any(|context| context.contains("CompanionDock")),
+                "{before:?}"
+            );
+            visual.simulate_keystrokes("ctrl-shift-c");
+            visual.simulate_event(gpui::KeyUpEvent {
+                keystroke: gpui::Keystroke::parse("ctrl-shift-c").unwrap(),
+            });
+            visual.run_until_parked();
+            assert!(!model.read_with(visual, |model, _| model.companion_dock.open));
+            let closed = visual.update(|window, cx| (window.focused(cx), window.context_stack()));
+            visual.simulate_keystrokes("ctrl-shift-c");
+            visual.simulate_event(gpui::KeyUpEvent {
+                keystroke: gpui::Keystroke::parse("ctrl-shift-c").unwrap(),
+            });
+            visual.run_until_parked();
+            let reopened = visual.update(|window, cx| (window.focused(cx), window.context_stack()));
+            if !model.read_with(visual, |model, _| model.companion_dock.open)
+                || !closed.1.iter().any(|context| context.contains("Shell"))
+            {
+                failures.push(format!("must reopen without an intervening click and keep a mounted focus path; button={focus_button}, before={before:?}, closed={closed:?}, reopened={reopened:?}"));
+            }
+            model.read_with(visual, |model, cx| {
+                assert_eq!(
+                    model.chat_composer_for("dock-c").unwrap().read(cx).value(),
+                    "Unsent UTF-8 · ação"
+                );
+                assert_eq!(model.active_view(), AppView::Home);
+            });
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[gpui::test]
+    fn dock_shortcut_keeps_focus_in_the_full_chat_when_hiding_the_dock(cx: &mut TestAppContext) {
+        cx.update(crate::shell::register_navigation_keybindings);
+        cx.update(crate::text_input::register_text_input_keybindings);
+        let (model, visual) = cx.add_window_view(|_, cx| {
+            let mut model = dock_fixture(cx);
+            model
+                .companion_dock
+                .windows
+                .retain(|topic| topic.conversation_id.as_deref() == Some("dock-c"));
+            model.select_chat_conversation("dock-b".into(), cx);
+            model.select_view(AppView::Chat, cx);
+            model
+        });
+        visual.update(|window, _| window.activate_window());
+        visual.simulate_resize(size(px(1440.0), px(900.0)));
+        visual.run_until_parked();
+        let input = model.read_with(visual, |model, _| {
+            model.chat_composer_for("dock-b").unwrap()
+        });
+        let focus = visual.update(|window, cx| {
+            let focus = input.read(cx).focus_handle(cx);
+            focus.focus(window);
+            focus
+        });
+        for expected_open in [false, true] {
+            visual.simulate_keystrokes("ctrl-shift-c");
+            visual.simulate_event(gpui::KeyUpEvent {
+                keystroke: gpui::Keystroke::parse("ctrl-shift-c").unwrap(),
+            });
+            visual.run_until_parked();
+            assert_eq!(
+                model.read_with(visual, |model, _| model.companion_dock.open),
+                expected_open
+            );
+            visual.update(|window, _| {
+                assert!(
+                    focus.is_focused(window),
+                    "a full Chat input must keep focus"
+                )
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn dock_shortcut_remains_available_after_hiding_its_focused_topic(cx: &mut TestAppContext) {
+        cx.update(crate::shell::register_navigation_keybindings);
+        let mut failures = Vec::new();
+        for minimize in [true, false] {
+            let (model, visual) = cx.add_window_view(|_, cx| {
+                let mut model = dock_fixture(cx);
+                model
+                    .companion_dock
+                    .windows
+                    .retain(|topic| topic.conversation_id.as_deref() == Some("dock-c"));
+                model
+            });
+            visual.update(|window, _| window.activate_window());
+            visual.simulate_resize(size(px(1440.0), px(900.0)));
+            visual.run_until_parked();
+            let button = visual
+                .debug_bounds(if minimize {
+                    "dock-minimize-chat:dock-c"
+                } else {
+                    "dock-close-chat:dock-c"
+                })
+                .unwrap();
+            visual.simulate_click(button.center(), gpui::Modifiers::default());
+            visual.run_until_parked();
+            let hidden = visual.update(|window, cx| (window.focused(cx), window.context_stack()));
+            assert!(model.read_with(visual, |model, _| model.companion_dock.open));
+            visual.simulate_keystrokes("ctrl-shift-c");
+            visual.simulate_event(gpui::KeyUpEvent {
+                keystroke: gpui::Keystroke::parse("ctrl-shift-c").unwrap(),
+            });
+            visual.run_until_parked();
+            if model.read_with(visual, |model, _| model.companion_dock.open) {
+                failures.push(format!("shortcut must close after hiding focused topic; minimize={minimize}, focus={hidden:?}"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[gpui::test]
+    fn dock_shortcut_recovers_when_async_controls_are_replaced(cx: &mut TestAppContext) {
+        assert_shortcut_after_async_replacement(cx, false, false);
+    }
+
+    #[gpui::test]
+    fn dock_shortcut_recovers_when_async_controls_are_replaced_while_inactive(
+        cx: &mut TestAppContext,
+    ) {
+        assert_shortcut_after_async_replacement(cx, true, false);
+    }
+
+    #[gpui::test]
+    fn dock_shortcut_does_not_reclaim_blurred_async_controls_after_reactivation(
+        cx: &mut TestAppContext,
+    ) {
+        assert_shortcut_after_async_replacement(cx, true, true);
+    }
+
+    fn assert_shortcut_after_async_replacement(
+        cx: &mut TestAppContext,
+        inactive: bool,
+        explicit_blur: bool,
+    ) {
+        cx.update(crate::shell::register_navigation_keybindings);
+        let mut failures = Vec::new();
+        for ask_companion in [true, false] {
+            let (model, visual) = cx.add_window_view(|_, cx| {
+                let mut model = dock_fixture(cx);
+                model.companion_dock.windows.clear();
+                if ask_companion {
+                    let decision = decision_fixture();
+                    model.companion_dock.pending.push(decision.clone());
+                    model.companion_dock.open_topic(
+                        format!("decision:{}", decision.id),
+                        None,
+                        Some(decision.id),
+                    );
+                } else {
+                    model.companion_dock.open_topic(
+                        "chat:dock-c".into(),
+                        Some("dock-c".into()),
+                        None,
+                    );
+                    model
+                        .chat_composer_for("dock-c")
+                        .unwrap()
+                        .update(cx, |input, cx| input.set_value("Fixture message", cx));
+                }
+                model
+            });
+            visual.update(|window, _| window.activate_window());
+            visual.simulate_resize(size(px(1440.0), px(900.0)));
+            visual.run_until_parked();
+            let button = visual
+                .debug_bounds(if ask_companion {
+                    "dock-help-checkpoint:fixture"
+                } else {
+                    "dock-send-dock-c"
+                })
+                .unwrap();
+            visual.simulate_click(button.center(), gpui::Modifiers::default());
+            visual.run_until_parked();
+            let mut before =
+                visual.update(|window, cx| (window.focused(cx), window.context_stack()));
+            assert!(before.0.is_some());
+            if explicit_blur {
+                before.0.take();
+            }
+            if inactive {
+                visual.deactivate_window();
+            }
+            visual.update(|window, cx| {
+                if explicit_blur {
+                    window.blur();
+                }
+                model.update(cx, |model, cx| {
+                    if ask_companion {
+                        model.companion_dock.open_topic(
+                            "decision:checkpoint:fixture".into(),
+                            Some("dock-c".into()),
+                            Some("checkpoint:fixture".into()),
+                        );
+                    } else {
+                        model.chat.update(cx, |chat, _| {
+                            let conversation = chat
+                                .conversations
+                                .iter()
+                                .find(|conversation| conversation.id == "dock-c")
+                                .unwrap()
+                                .clone();
+                            chat.store_conversation_snapshot(
+                                hvc_core::chat_service::GetChatConversationResponse {
+                                    conversation,
+                                    messages: vec![hvc_core::chat_service::ChatMessage {
+                                        id: "fixture-stream".into(),
+                                        conversation_id: "dock-c".into(),
+                                        ordinal: 1,
+                                        role: "assistant".into(),
+                                        content: "Fixture response".into(),
+                                        status: "streaming".into(),
+                                        execution_id: Some("fixture-execution".into()),
+                                        generation_id: Some("fixture-generation".into()),
+                                        last_sequence: 1,
+                                        input_tokens: None,
+                                        output_tokens: None,
+                                        estimated_cost_usd: None,
+                                        error_code: None,
+                                        error_message: None,
+                                        target_label: None,
+                                        created_at: "now".into(),
+                                        updated_at: "now".into(),
+                                    }],
+                                    tool_calls: Vec::new(),
+                                },
+                            );
+                        });
+                    }
+                    cx.notify();
+                });
+            });
+            visual.run_until_parked();
+            assert!(
+                visual
+                    .debug_bounds(if ask_companion {
+                        "dock-composer-dock-c"
+                    } else {
+                        "dock-cancel-dock-c"
+                    })
+                    .is_some()
+            );
+            if inactive {
+                visual.update(|window, _| {
+                    assert!(
+                        !window.is_window_active(),
+                        "recovery must not activate the window"
+                    )
+                });
+                visual.update(|window, _| window.activate_window());
+                visual.run_until_parked();
+            }
+            if explicit_blur {
+                visual.update(|window, cx| {
+                    assert!(
+                        window.focused(cx).is_none(),
+                        "reactivation must preserve explicit blur after Ask/Send removal"
+                    )
+                });
+                continue;
+            }
+            let replaced = visual.update(|window, cx| (window.focused(cx), window.context_stack()));
+            visual.simulate_keystrokes("ctrl-shift-c");
+            visual.simulate_event(gpui::KeyUpEvent {
+                keystroke: gpui::Keystroke::parse("ctrl-shift-c").unwrap(),
+            });
+            visual.run_until_parked();
+            if model.read_with(visual, |model, _| model.companion_dock.open) {
+                failures.push(format!("shortcut must work after replacing a focused control; ask={ask_companion}, inactive={inactive}, before={before:?}, replaced={replaced:?}"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[gpui::test]
+    fn dock_shortcut_does_not_reclaim_an_explicitly_blurred_input(cx: &mut TestAppContext) {
+        let (model, visual) = cx.add_window_view(|_, cx| dock_fixture(cx));
+        visual.update(|window, _| window.activate_window());
+        let input = model.read_with(visual, |model, _| {
+            model.chat_composer_for("dock-c").unwrap()
+        });
+        visual.update(|window, cx| input.read(cx).focus_handle(cx).focus(window));
+        visual.run_until_parked();
+        visual.update(|window, _| window.blur());
+        visual.run_until_parked();
+        visual.update(|window, cx| assert!(window.focused(cx).is_none()));
     }
 
     #[gpui::test]

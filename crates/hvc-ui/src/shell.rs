@@ -208,6 +208,7 @@ impl Render for AppModel {
         let badges = self.sidebar_badges(cx);
         self.collect_notifications(cx);
         self.observe_companion_dock(cx);
+        self.observe_companion_dock_focus(window, cx);
         let unread = self.notifications.queue.unread();
         if self.agents.read(cx).active_model_picker.is_some()
             && matches!(active, AppView::Agents | AppView::Chat)
