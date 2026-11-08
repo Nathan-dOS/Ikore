@@ -208,23 +208,67 @@ impl CompanionDockUi {
         decision_id: Option<String>,
     ) {
         self.open = true;
-        if let Some(index) = self.windows.iter().position(|item| item.key == key) {
-            let mut item = self.windows.remove(index);
-            item.minimized = false;
-            if conversation_id.is_some() {
-                item.conversation_id = conversation_id;
+        self.store_topic(DockWindow {
+            key,
+            conversation_id,
+            decision_id,
+            minimized: false,
+        });
+    }
+
+    fn store_topic(&mut self, mut item: DockWindow) {
+        if let Some(index) = self
+            .windows
+            .iter()
+            .position(|previous| previous.key == item.key)
+        {
+            let previous = self.windows.remove(index);
+            item.conversation_id = item.conversation_id.or(previous.conversation_id);
+            item.decision_id = item.decision_id.or(previous.decision_id);
+            item.minimized &= previous.minimized;
+        }
+        if let Some(conversation) = item.conversation_id.as_deref() {
+            // A decision owns its card identity; a history link is only an alias
+            // for its conversation. Never merge two distinct guarded decisions.
+            if item.decision_id.is_none()
+                && let Some(index) = self.windows.iter().position(|previous| {
+                    previous.decision_id.is_some()
+                        && previous.conversation_id.as_deref() == Some(conversation)
+                })
+            {
+                let decision = self.windows.remove(index);
+                item.key = decision.key;
+                item.decision_id = decision.decision_id;
+                item.minimized &= decision.minimized;
             }
-            if decision_id.is_some() {
-                item.decision_id = decision_id;
-            }
-            self.windows.push(item);
-        } else {
-            self.windows.push(DockWindow {
-                key,
-                conversation_id,
-                decision_id,
-                minimized: false,
+            self.windows.retain(|previous| {
+                let alias = previous.decision_id.is_none()
+                    && previous.conversation_id.as_deref() == Some(conversation);
+                if alias {
+                    item.minimized &= previous.minimized;
+                }
+                !alias
             });
+        }
+        self.windows.push(item);
+    }
+
+    fn restore_layout(&mut self, layout: CompanionDockLayout) {
+        self.open = layout.open;
+        self.windows.clear();
+        for item in layout.conversations {
+            self.store_topic(DockWindow {
+                key: item.topic_id,
+                conversation_id: item.conversation_id,
+                decision_id: item.decision_id,
+                minimized: item.minimized,
+            });
+        }
+        for item in &mut self.windows {
+            item.minimized |= item.decision_id.is_some();
+        }
+        if !self.windows.is_empty() && self.windows.iter().all(|item| item.decision_id.is_some()) {
+            self.open = false;
         }
     }
 
@@ -490,27 +534,7 @@ impl AppModel {
                         if let Some(snapshot) = snapshot {
                             if !model.companion_dock.layout_dirty {
                                 model.companion_dock.layout_revision = snapshot.layout_revision;
-                                model.companion_dock.open = snapshot.layout.open;
-                                model.companion_dock.windows = snapshot
-                                    .layout
-                                    .conversations
-                                    .into_iter()
-                                    .map(|item| DockWindow {
-                                        key: item.topic_id,
-                                        conversation_id: item.conversation_id,
-                                        minimized: item.minimized || item.decision_id.is_some(),
-                                        decision_id: item.decision_id,
-                                    })
-                                    .collect();
-                                if !model.companion_dock.windows.is_empty()
-                                    && model
-                                        .companion_dock
-                                        .windows
-                                        .iter()
-                                        .all(|window| window.decision_id.is_some())
-                                {
-                                    model.companion_dock.open = false;
-                                }
+                                model.companion_dock.restore_layout(snapshot.layout);
                             } else {
                                 model.companion_dock.layout_revision = model
                                     .companion_dock
@@ -1534,6 +1558,179 @@ mod tests {
         visual.run_until_parked();
         assert!(visual.debug_bounds("dock-restore-chat:dock-b").is_some());
         assert!(visual.debug_bounds("dock-restore-chat:dock-c").is_none());
+    }
+
+    #[gpui::test]
+    fn conversation_aliases_reuse_the_decision_window_and_its_composer(cx: &mut TestAppContext) {
+        let (model, visual) = cx.add_window_view(|_, cx| {
+            let mut model = dock_fixture(cx);
+            model.companion_dock.windows.clear();
+            let decision = decision_fixture();
+            model.companion_dock.pending.push(decision.clone());
+            model.companion_dock.open_topic(
+                format!("decision:{}", decision.id),
+                Some("dock-c".into()),
+                Some(decision.id.clone()),
+            );
+            let composer = model.chat_composer_for("dock-c").unwrap();
+            composer.update(cx, |input, cx| {
+                input.set_value("Unsent conversation text", cx)
+            });
+            let feedback = format!("feedback:{}", decision.id);
+            model.ensure_companion_form(feedback.clone(), &decision, "Feedback", cx);
+            model.companion_dock.forms[&feedback]
+                .update(cx, |input, cx| input.set_value("Unsent decision text", cx));
+            let form_id = model.companion_dock.forms[&feedback].entity_id();
+            model.open_companion_chat("dock-c".into(), cx);
+            assert_eq!(model.companion_dock.windows.len(), 1);
+            let topic = &model.companion_dock.windows[0];
+            assert_eq!(topic.key, format!("decision:{}", decision.id));
+            assert_eq!(topic.decision_id.as_deref(), Some(decision.id.as_str()));
+            assert_eq!(
+                model.chat_composer_for("dock-c").unwrap().entity_id(),
+                composer.entity_id()
+            );
+            assert_eq!(model.companion_dock.forms[&feedback].entity_id(), form_id);
+            assert_eq!(
+                model.companion_dock.pending[0].state_version,
+                decision.state_version
+            );
+            model.stage_companion_inputs(cx);
+            assert_eq!(
+                model.companion_dock.draft_contents["chat:dock-c"],
+                "Unsent conversation text"
+            );
+            assert_eq!(
+                model.companion_dock.draft_contents[&feedback],
+                "Unsent decision text"
+            );
+            model
+        });
+        visual.simulate_resize(size(px(1440.0), px(900.0)));
+        visual.run_until_parked();
+        assert!(
+            visual
+                .debug_bounds("dock-topic-decision:checkpoint:fixture")
+                .is_some()
+        );
+        assert!(visual.debug_bounds("dock-composer-dock-c").is_some());
+        assert_dock_element_absent(&model, visual, "dock-topic-chat:dock-c");
+    }
+
+    #[test]
+    fn conversation_aliases_merge_after_late_binding_without_merging_decisions() {
+        let mut dock = CompanionDockUi::default();
+        dock.open_topic("chat:shared".into(), Some("shared".into()), None);
+        dock.open_topic("decision:first".into(), None, Some("first".into()));
+        dock.open_topic(
+            "decision:first".into(),
+            Some("shared".into()),
+            Some("first".into()),
+        );
+        assert_eq!(dock.windows.len(), 1);
+        assert_eq!(dock.windows[0].key, "decision:first");
+        assert_eq!(dock.windows[0].decision_id.as_deref(), Some("first"));
+        assert_eq!(dock.windows[0].conversation_id.as_deref(), Some("shared"));
+        dock.open_topic(
+            "decision:second".into(),
+            Some("shared".into()),
+            Some("second".into()),
+        );
+        assert_eq!(
+            dock.windows.len(),
+            2,
+            "distinct decisions retain their own guarded cards"
+        );
+        assert_eq!(dock.windows[0].decision_id.as_deref(), Some("first"));
+        assert_eq!(dock.windows[1].decision_id.as_deref(), Some("second"));
+    }
+
+    #[test]
+    fn conversation_aliases_restore_one_canonical_decision_without_rebinding_drafts() {
+        for decision_first in [false, true] {
+            let chat = CompanionDockItem {
+                topic_id: "chat:shared".into(),
+                conversation_id: Some("shared".into()),
+                decision_id: None,
+                minimized: false,
+            };
+            let decision = CompanionDockItem {
+                topic_id: "decision:checkpoint:first".into(),
+                conversation_id: Some("shared".into()),
+                decision_id: Some("checkpoint:first".into()),
+                minimized: false,
+            };
+            let mut conversations = if decision_first {
+                vec![decision, chat]
+            } else {
+                vec![chat, decision]
+            };
+            conversations.push(CompanionDockItem {
+                topic_id: "chat:other".into(),
+                conversation_id: Some("other".into()),
+                decision_id: None,
+                minimized: false,
+            });
+            let mut dock = CompanionDockUi {
+                layout_revision: 9,
+                ..Default::default()
+            };
+            dock.record_draft("chat:shared".into(), "Unsent message".into());
+            dock.record_draft("feedback:checkpoint:first".into(), "Unsent feedback".into());
+            dock.draft_context.insert(
+                "feedback:checkpoint:first".into(),
+                (None, Some("checkpoint:first".into()), Some(4)),
+            );
+            dock.restored_drafts
+                .insert("shared".into(), "Unsent message".into());
+            dock.restore_layout(CompanionDockLayout {
+                open: true,
+                conversations,
+            });
+            assert_eq!(dock.windows.len(), 2);
+            let topic = dock
+                .windows
+                .iter()
+                .find(|topic| topic.conversation_id.as_deref() == Some("shared"))
+                .unwrap();
+            assert_eq!(topic.key, "decision:checkpoint:first");
+            assert_eq!(topic.decision_id.as_deref(), Some("checkpoint:first"));
+            assert!(
+                topic.minimized,
+                "restoring an alias must not auto-open a decision"
+            );
+            assert!(
+                dock.open,
+                "the other ordinary chat keeps its restored visibility"
+            );
+            assert_eq!(dock.visible_windows(1440.0)[0].key, "chat:other");
+            assert_eq!(dock.draft_contents["chat:shared"], "Unsent message");
+            assert_eq!(
+                dock.draft_contents["feedback:checkpoint:first"],
+                "Unsent feedback"
+            );
+            assert_eq!(
+                dock.draft_context["feedback:checkpoint:first"],
+                (None, Some("checkpoint:first".into()), Some(4))
+            );
+            assert_eq!(dock.restored_drafts["shared"], "Unsent message");
+            assert_eq!(dock.layout_revision, 9);
+            assert!(!dock.layout_dirty);
+            let saved = dock.layout();
+            assert_eq!(saved.conversations.len(), 2);
+            assert!(
+                !saved
+                    .conversations
+                    .iter()
+                    .any(|topic| topic.topic_id == "chat:shared")
+            );
+            dock.open_topic("chat:shared".into(), Some("shared".into()), None);
+            assert_eq!(dock.windows.len(), 2);
+            assert_eq!(
+                dock.visible_windows(1440.0)[0].key,
+                "decision:checkpoint:first"
+            );
+        }
     }
 
     #[gpui::test]

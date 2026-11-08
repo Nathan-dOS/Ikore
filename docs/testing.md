@@ -147,7 +147,11 @@ below describe required coverage, not a passing delivery gate.
   keeping the artifact-review count separate from failures and clarifications.
   Composer regressions retain multiline geometry when opening full Chat from
   navigation or Expand, mount the shared input in one surface, and list only
-  minimized or overflow topics under Reopen. Shutdown coverage delays an
+  minimized or overflow topics under Reopen. Alias regressions open history
+  over a linked decision, bind a decision after its chat was opened and restore
+  legacy layouts in either alias order. They retain one canonical decision
+  window, the same composer and unsent drafts, without merging distinct cards.
+  Shutdown coverage delays an
   admitted Forge answer until closing, then verifies the final empty draft
   tombstones, newer unsent edits and refused submissions. Chat shutdown retains
   Send/Create admissions while dropping read/cancel/delete tasks. These flushes
