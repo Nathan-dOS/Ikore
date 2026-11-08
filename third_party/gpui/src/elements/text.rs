@@ -374,7 +374,9 @@ impl TextLayout {
 
                 if let Some(text_layout) = element_state.0.borrow().as_ref()
                     && text_layout.size.is_some()
-                    && (wrap_width.is_none() || wrap_width == text_layout.wrap_width)
+                    // HVC-GPUI-006: an intrinsic measurement must not reuse
+                    // lines that were wrapped to a previous definite width.
+                    && wrap_width == text_layout.wrap_width
                     // HVC-GPUI-004: single-line text is measured first without a width (no
                     // truncation); reusing that size once the width is known dropped the
                     // ellipsis and let the text overflow its box.

@@ -72,6 +72,28 @@ Permanece somente o aviso de incompatibilidade futura de
 
 HVC-GPUI-002 records the subsequent `afac996` startup/activation correction in `third_party/gpui/HVC-PATCHES.md`. Source review confirms normal-window visibility, hidden-window activation and the separate minimized-window restore path. A fresh physical Windows smoke for this patch is deferred; the historical Stage 7 results above do not certify this later change. Current synchronization evidence is in `quality/cerebro-sync-validation-2026-09-09.md`.
 
+## Persistent message text follow-up — 2026-11-08
+
+HVC-GPUI-006 corrects text measurement reuse when a definite wrapping width
+becomes unconstrained. Its new `hvc-ui::selectable_message::tests` regression
+failed against the earlier condition. Companion message pieces now retain
+unchanged unselected text layouts through a local wrapper; the complete
+inherited text style and rem size invalidate them, and selected pieces rebuild
+the consumed highlight recipe. Full Markdown parsing, content, workload and
+speed thresholds are unchanged.
+
+Focused validation: `cargo test --locked -p hvc-ui --lib
+selectable_message::tests -- --test-threads=2` passed all 10 selected tests
+(five added), with zero failed/ignored and 470 filtered. Before the vendor
+condition changed, the narrow-to-intrinsic regression failed; the first
+focused run also exposed and corrected two test-fixture issues (a rem change
+needed an explicit redraw, and the diff-copy control needed a debug selector).
+The confirmed rerun is in `target/companion-final/text-layout-tests.log`.
+
+Disposition: **deferred for integration** pending the release speed comparison
+and complete delivery gate. The earlier Stage 7 results above do not certify
+this follow-up.
+
 ## Distribuição
 
 O executável release está tecnicamente operável, mas distribuição externa não

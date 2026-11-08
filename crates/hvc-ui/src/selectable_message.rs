@@ -1,9 +1,11 @@
+use std::cell::RefCell;
 use std::ops::Range;
 use std::rc::Rc;
 
 use gpui::{
-    App, ClipboardItem, FocusHandle, HighlightStyle, IntoElement, MouseButton, RenderOnce,
-    SharedString, StyledText, TextLayout, Window, div, prelude::*, px,
+    App, Bounds, ClipboardItem, Element, ElementId, FocusHandle, GlobalElementId, HighlightStyle,
+    InspectorElementId, IntoElement, LayoutId, MouseButton, Pixels, RenderOnce, SharedString,
+    StyledText, TextLayout, TextStyle, Window, div, prelude::*, px,
 };
 use hvc_editor::{ChatContentPart, parse_chat_content, parse_markdown};
 
@@ -41,11 +43,180 @@ impl SelectableMessage {
 
 struct Selection {
     projection: MessageProjection,
+    text_cache: Vec<CachedTextPiece>,
     text: String,
     anchor: usize,
     head: usize,
     dragging: bool,
     focus: FocusHandle,
+}
+
+/// Keep unchanged text measurements across streamed appends. The parser still
+/// processes the complete source, including Markdown that revises earlier blocks.
+#[derive(Clone)]
+struct CachedTextPiece {
+    text: SharedString,
+    state: Rc<RefCell<CachedTextState>>,
+}
+
+impl CachedTextPiece {
+    fn for_text(previous: Option<&Self>, text: String) -> Self {
+        if let Some(previous) = previous.filter(|piece| piece.text.as_ref() == text) {
+            return previous.clone();
+        }
+        let text = SharedString::from(text);
+        Self {
+            state: Rc::new(RefCell::new(CachedTextState::new(text.clone(), 0..0))),
+            text,
+        }
+    }
+
+    fn element(&self, selected: Range<usize>) -> CachedTextElement {
+        CachedTextElement {
+            // StyledText consumes highlights during request_layout. A selected
+            // piece gets a fresh recipe; it never mutates the unselected cache.
+            state: if selected.is_empty() {
+                self.state.clone()
+            } else {
+                Rc::new(RefCell::new(CachedTextState::new(
+                    self.text.clone(),
+                    selected,
+                )))
+            },
+        }
+    }
+}
+
+struct CachedTextState {
+    text: SharedString,
+    selected: Range<usize>,
+    styled: StyledText,
+    style: Option<(TextStyle, Pixels)>,
+}
+
+impl CachedTextState {
+    fn new(text: SharedString, selected: Range<usize>) -> Self {
+        Self {
+            styled: Self::styled(&text, selected.clone()),
+            text,
+            selected,
+            style: None,
+        }
+    }
+
+    fn styled(text: &SharedString, selected: Range<usize>) -> StyledText {
+        let styled = StyledText::new(text.clone());
+        if selected.is_empty() {
+            styled
+        } else {
+            styled.with_highlights([(
+                selected,
+                HighlightStyle {
+                    background_color: Some(theme::accent().into()),
+                    color: Some(theme::canvas().into()),
+                    ..Default::default()
+                },
+            )])
+        }
+    }
+
+    fn prepare(&mut self, style: &TextStyle, rem_size: Pixels) -> bool {
+        // TextLayout caches geometry and decoration, so the entire inherited
+        // style matters, including color and the resolved size of a rem.
+        let reset = !self.selected.is_empty()
+            || self
+                .style
+                .as_ref()
+                .is_some_and(|(old_style, old_rem)| old_style != style || *old_rem != rem_size);
+        if reset {
+            self.styled = Self::styled(&self.text, self.selected.clone());
+        }
+        if self
+            .style
+            .as_ref()
+            .is_none_or(|(old, rem)| old != style || *rem != rem_size)
+        {
+            self.style = Some((style.clone(), rem_size));
+        }
+        reset
+    }
+}
+
+struct CachedTextElement {
+    state: Rc<RefCell<CachedTextState>>,
+}
+
+impl IntoElement for CachedTextElement {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for CachedTextElement {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        let mut state = self.state.borrow_mut();
+        state.prepare(&window.text_style(), window.rem_size());
+        state.styled.request_layout(id, inspector_id, window, cx)
+    }
+
+    fn prepaint(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        request_layout: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.state.borrow_mut().styled.prepaint(
+            id,
+            inspector_id,
+            bounds,
+            request_layout,
+            window,
+            cx,
+        );
+    }
+
+    fn paint(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        request_layout: &mut (),
+        prepaint: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.state.borrow_mut().styled.paint(
+            id,
+            inspector_id,
+            bounds,
+            request_layout,
+            prepaint,
+            window,
+            cx,
+        );
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -105,7 +276,15 @@ impl Selection {
 #[derive(Clone)]
 struct TextPiece {
     range: Range<usize>,
-    layout: TextLayout,
+    state: Rc<RefCell<CachedTextState>>,
+}
+
+impl TextPiece {
+    fn layout(&self) -> TextLayout {
+        // A style/rem change may replace StyledText during request_layout,
+        // after the selection handlers were built. Read the current layout.
+        self.state.borrow().styled.layout().clone()
+    }
 }
 
 fn boundary(text: &str, index: usize) -> usize {
@@ -122,7 +301,7 @@ fn index_at(pieces: &[TextPiece], position: gpui::Point<gpui::Pixels>) -> Option
         .iter()
         .min_by(|a, b| {
             let distance = |piece: &TextPiece| {
-                let bounds = piece.layout.bounds();
+                let bounds = piece.layout().bounds();
                 let dx = (bounds.left() - position.x)
                     .max(position.x - bounds.right())
                     .max(px(0.0));
@@ -135,7 +314,7 @@ fn index_at(pieces: &[TextPiece], position: gpui::Point<gpui::Pixels>) -> Option
         })
         .map(|piece| {
             let local = piece
-                .layout
+                .layout()
                 .index_for_position(position)
                 .unwrap_or_else(|index| index);
             piece.range.start + local.min(piece.range.len())
@@ -146,6 +325,7 @@ impl RenderOnce for SelectableMessage {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let selection = window.use_keyed_state(self.id.clone(), cx, |_, cx| Selection {
             projection: MessageProjection::new(self.content.clone()),
+            text_cache: Vec::new(),
             text: String::new(),
             anchor: 0,
             head: 0,
@@ -168,6 +348,8 @@ impl RenderOnce for SelectableMessage {
         };
         let mut projected = String::new();
         let mut pieces = Vec::new();
+        let previous_text = selection.update(cx, |state, _| std::mem::take(&mut state.text_cache));
+        let mut text_cache = Vec::with_capacity(previous_text.len());
         let mut text_element = |text: String| {
             if !projected.is_empty() {
                 projected.push_str("\n\n");
@@ -177,27 +359,19 @@ impl RenderOnce for SelectableMessage {
             let end = projected.len();
             let from = boundary(&text, selected.start.saturating_sub(start));
             let to = boundary(&text, selected.end.saturating_sub(start));
-            let mut styled = StyledText::new(text);
-            if from < to {
-                styled = styled.with_highlights([(
-                    from..to,
-                    HighlightStyle {
-                        background_color: Some(theme::accent().into()),
-                        color: Some(theme::canvas().into()),
-                        ..Default::default()
-                    },
-                )]);
-            }
             let index = pieces.len();
+            let cached = CachedTextPiece::for_text(previous_text.get(index), text);
+            let element = cached.element(from..to);
             pieces.push(TextPiece {
                 range: start..end,
-                layout: styled.layout().clone(),
+                state: element.state.clone(),
             });
+            text_cache.push(cached);
             let debug_id = format!("{}:text:{index}", self.id);
             div()
                 .debug_selector(move || debug_id.clone())
                 .min_w_0()
-                .child(styled)
+                .child(element)
                 .into_any_element()
         };
         let mut blocks = Vec::new();
@@ -214,6 +388,7 @@ impl RenderOnce for SelectableMessage {
                     let on_copy = self.on_copy_diff.clone();
                     let diff_id =
                         SharedString::from(format!("{}:copy-diff:{}", self.id, blocks.len()));
+                    let diff_selector = diff_id.clone();
                     blocks.push(
                         div()
                             .my_2()
@@ -235,6 +410,7 @@ impl RenderOnce for SelectableMessage {
                                     .child(
                                         div()
                                             .id(diff_id)
+                                            .debug_selector(move || diff_selector.to_string())
                                             .mt_2()
                                             .p_2()
                                             .rounded_md()
@@ -268,6 +444,7 @@ impl RenderOnce for SelectableMessage {
             }
         }
         selection.update(cx, |state, _| {
+            state.text_cache = text_cache;
             if state.text != projected {
                 state.text = projected;
                 state.anchor = 0;
@@ -345,6 +522,184 @@ impl RenderOnce for SelectableMessage {
 mod tests {
     use super::*;
     use gpui::{Context, Modifiers, Render, TestAppContext, point, px, size};
+
+    #[test]
+    fn text_piece_cache_reuses_equal_text_and_replaces_only_changed_pieces() {
+        let first = CachedTextPiece::for_text(None, "First \u{e9} \u{1f980}".into());
+        let second = CachedTextPiece::for_text(None, "Second".into());
+        let first_again = CachedTextPiece::for_text(Some(&first), "First \u{e9} \u{1f980}".into());
+        let second_changed = CachedTextPiece::for_text(Some(&second), "Second updated".into());
+        assert!(Rc::ptr_eq(&first.state, &first_again.state));
+        assert!(!Rc::ptr_eq(&second.state, &second_changed.state));
+        assert_eq!(second_changed.text.as_ref(), "Second updated");
+    }
+
+    #[test]
+    fn text_piece_cache_invalidates_inherited_style_and_rem_and_refreshes_highlights() {
+        let piece = CachedTextPiece::for_text(None, "Unicode \u{e9} \u{1f980}".into());
+        let style = gpui::TextStyle::default();
+        let mut state = piece.state.borrow_mut();
+        assert!(!state.prepare(&style, px(16.0)));
+        assert!(!state.prepare(&style, px(16.0)));
+        let larger = gpui::TextStyle {
+            font_size: px(24.0).into(),
+            ..style.clone()
+        };
+        assert!(state.prepare(&larger, px(16.0)));
+        assert!(!state.prepare(&larger, px(16.0)));
+        assert!(state.prepare(&larger, px(20.0)));
+        let recolored = gpui::TextStyle {
+            color: theme::accent().into(),
+            ..larger
+        };
+        assert!(state.prepare(&recolored, px(20.0)));
+        drop(state);
+
+        let ordinary = piece.element(0..0);
+        let selected = piece.element(0..piece.text.len());
+        let selected_again = piece.element(0..piece.text.len());
+        assert!(Rc::ptr_eq(&piece.state, &ordinary.state));
+        assert!(!Rc::ptr_eq(&piece.state, &selected.state));
+        assert!(!Rc::ptr_eq(&selected.state, &selected_again.state));
+        let mut selected = selected.state.borrow_mut();
+        assert!(selected.prepare(&style, px(16.0)));
+        assert!(selected.prepare(&style, px(16.0)));
+    }
+
+    struct CachedHarness {
+        piece: CachedTextPiece,
+        font_rems: f32,
+    }
+
+    #[gpui::test]
+    fn cached_text_remeasures_when_wrapping_becomes_unconstrained(cx: &mut TestAppContext) {
+        use gpui::{AvailableSpace, Styled};
+        let result = Rc::new(RefCell::new(None));
+        let output = result.clone();
+        let (_, visual) = cx.add_window_view(|_, _| {
+            struct MeasureHarness(Rc<RefCell<Option<(gpui::Size<Pixels>, gpui::Size<Pixels>)>>>);
+            impl Render for MeasureHarness {
+                fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                    let output = self.0.clone();
+                    gpui::canvas(
+                        move |_, window, cx| {
+                            let cache = CachedTextPiece::for_text(
+                                None,
+                                "Several words with Unicode \u{e9} \u{1f980}".into(),
+                            );
+                            let mut text = cache.element(0..0).into_any_element();
+                            let narrow = text.layout_as_root(
+                                size(
+                                    AvailableSpace::Definite(px(60.0)),
+                                    AvailableSpace::MaxContent,
+                                ),
+                                window,
+                                cx,
+                            );
+                            let intrinsic = text.layout_as_root(
+                                size(AvailableSpace::MaxContent, AvailableSpace::MaxContent),
+                                window,
+                                cx,
+                            );
+                            *output.borrow_mut() = Some((narrow, intrinsic));
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .size(px(1.0))
+                }
+            }
+            MeasureHarness(output)
+        });
+        visual.run_until_parked();
+        let (narrow, intrinsic) = result.borrow().unwrap();
+        assert!(intrinsic.width > narrow.width);
+        assert!(intrinsic.height < narrow.height);
+    }
+    impl Render for CachedHarness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().w_full().text_size(gpui::rems(self.font_rems)).child(
+                div()
+                    .debug_selector(|| "cached-text".into())
+                    .child(self.piece.element(0..0)),
+            )
+        }
+    }
+
+    #[gpui::test]
+    fn cached_text_measures_inherited_style_rem_size_and_wrapping(cx: &mut TestAppContext) {
+        let (harness, visual) = cx.add_window_view(|_, _| CachedHarness {
+            piece: CachedTextPiece::for_text(None, "Unicode \u{e9} \u{1f980} ".repeat(24)),
+            font_rems: 1.0,
+        });
+        visual.simulate_resize(size(px(400.0), px(900.0)));
+        visual.update(|window, _| window.set_rem_size(px(16.0)));
+        visual.run_until_parked();
+        let initial = visual.debug_bounds("cached-text").unwrap();
+        harness.update(visual, |h, cx| {
+            h.font_rems = 2.0;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let larger_font = visual.debug_bounds("cached-text").unwrap();
+        assert!(larger_font.size.height > initial.size.height);
+        visual.update(|window, _| window.set_rem_size(px(24.0)));
+        harness.update(visual, |_, cx| cx.notify());
+        visual.run_until_parked();
+        let larger_rem = visual.debug_bounds("cached-text").unwrap();
+        assert!(larger_rem.size.height > larger_font.size.height);
+        visual.simulate_resize(size(px(180.0), px(900.0)));
+        visual.run_until_parked();
+        let narrow = visual.debug_bounds("cached-text").unwrap();
+        assert!(narrow.size.width <= px(180.0));
+        assert!(narrow.size.height > larger_rem.size.height);
+        visual.simulate_resize(size(px(600.0), px(900.0)));
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("cached-text").unwrap().size.height < narrow.size.height);
+    }
+
+    #[gpui::test]
+    fn cached_streamed_table_and_diff_keep_complete_unicode_copy(cx: &mut TestAppContext) {
+        cx.update(crate::text_input::register_text_input_keybindings);
+        let diff = "--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1 +1 @@\n-old\n+new \u{1f980}";
+        let source = format!(
+            "# Start\n\n| Column | Value |\n| --- | --- |\n| Unicode | caf\u{e9} \u{1f980} |\n\n```diff\n{diff}\n```"
+        );
+        let (harness, visual) = cx.add_window_view(|_, _| Harness(source.clone()));
+        visual.simulate_resize(size(px(600.0), px(900.0)));
+        visual.run_until_parked();
+        harness.update(visual, |h, cx| {
+            h.0.push_str("\n\nFinal \u{e9} \u{1f980}");
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let first = visual.debug_bounds("test-message:text:0").unwrap();
+        visual.simulate_mouse_down(first.center(), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(first.center(), MouseButton::Left, Modifiers::default());
+        visual.simulate_keystrokes("ctrl-a");
+        let expected = format!(
+            "Start\n\nColumn\n\nValue\n\nUnicode\n\ncaf\u{e9} \u{1f980}\n\nsrc/a.rs\n\n{diff}\n\nFinal \u{e9} \u{1f980}"
+        );
+        for width in [600.0, 300.0, 600.0] {
+            visual.simulate_resize(size(px(width), px(900.0)));
+            harness.update(visual, |_, cx| cx.notify());
+            visual.run_until_parked();
+            visual.simulate_keystrokes("ctrl-c");
+            visual.update(|_, cx| {
+                assert_eq!(
+                    cx.read_from_clipboard().unwrap().text().as_deref(),
+                    Some(expected.as_str())
+                );
+            });
+        }
+        let copy = visual.debug_bounds("test-message:copy-diff:2").unwrap();
+        visual.simulate_click(copy.center(), Modifiers::default());
+        visual.update(|_, cx| {
+            assert_eq!(
+                cx.read_from_clipboard().unwrap().text().as_deref(),
+                Some(diff)
+            );
+        });
+    }
 
     #[test]
     fn message_projection_reuses_parsing_until_the_message_changes() {

@@ -42,7 +42,10 @@ The Companion dock is a native shell surface sharing the same conversation
 state as the full Chat view. Loading, streaming, cancellation and errors belong
 to a conversation, rather than the selected view. Project hydration has its own
 generation; a result from an old project or operation cannot replace current
-state. Markdown/diff presentation is cached by message content.
+state. Markdown/diff parsing is cached by message content. Unchanged text pieces
+retain their measurement state across streamed appends. Inherited text style,
+rem size and exact wrapping/truncation constraints govern measurement reuse;
+selection highlights and current hit-testing bounds remain frame-specific.
 
 A conversation's native composer is mounted in one surface at a time. When its
 full Chat is visible, the dock offers a link back to that surface instead of

@@ -85,11 +85,35 @@ Validation: `cargo test -p hvc-ui --lib`
 smoke on Windows 11 (isolated profile). See the 2026-09-25 "Home dashboard,
 keyboard navigation and icon controls" report in the maintainers' design archive; see the public [historical evidence context](../../quality/README.md#historical-design-references).
 
+## HVC-GPUI-006 — exact wrapping constraints for text measurement reuse
+
+File: `src/elements/text.rs`
+
+Local correction (2026-11-08); no upstream backport provenance is claimed.
+
+The text measurement cache formerly reused wrapped lines whenever a new
+measurement had no definite wrapping width. A persistent text element measured
+at a narrow width and then with intrinsic (`MaxContent`) constraints therefore
+kept the narrow size and wrapped lines. Cache reuse now requires exact equality
+of `wrap_width`, including `None`, alongside the existing truncation key.
+
+The application retains unchanged unselected message pieces through a local
+`StyledText` wrapper, invalidating the full inherited text style and rem size.
+Selected pieces remain fresh because layout consumes their highlight recipe.
+The complete Markdown source and clipboard text are preserved.
+
+Regression: `cached_text_remeasures_when_wrapping_becomes_unconstrained` in
+`hvc-ui::selectable_message::tests` failed with the previous condition. The same
+suite covers inherited style/rem changes, resizing and complete Unicode,
+table and diff copy. Current test results and qualification disposition are
+recorded in [`quality/stage7-report.md`](../../quality/stage7-report.md);
+speed and complete-gate qualification are tracked separately.
+
 ## Integridade
 
 - Versão-base: `gpui` 0.2.2.
 - Fonte-base: crates.io.
-- Functional patches are maintained in `src/platform/windows/directx_devices.rs` (HVC-GPUI-001), `src/platform/windows/window.rs` (HVC-GPUI-002) and `src/elements/text.rs` (HVC-GPUI-004), plus `src/window.rs` and `src/elements/div.rs` (HVC-GPUI-005).
+- Functional patches are maintained in `src/platform/windows/directx_devices.rs` (HVC-GPUI-001), `src/platform/windows/window.rs` (HVC-GPUI-002) and `src/elements/text.rs` (HVC-GPUI-004, HVC-GPUI-006), plus `src/window.rs` and `src/elements/div.rs` (HVC-GPUI-005).
 - Ajuste adicional em `src/taffy.rs` explicita literais `f32` exigidos pelo
   Rust 1.98; ele não altera comportamento nem desempenho.
 - Mudanças futuras devem receber um identificador `HVC-GPUI-NNN` e registrar

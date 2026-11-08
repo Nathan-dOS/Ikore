@@ -159,6 +159,11 @@ below describe required coverage, not a passing delivery gate.
   removal, and automatic decision opening remain unaffected.
   Unicode input fixtures use Rust escapes for language-specific characters so
   the English-source guard remains enforced without losing Unicode coverage.
+  Selectable-message regressions retain unchanged text-piece measurements
+  across streamed appends, invalidate inherited text style and rem changes,
+  remeasure wrapped text when width becomes unconstrained, and preserve full
+  Unicode/table/diff selection and copy through redraws and resizing. Selected
+  pieces rebuild their consumed highlight recipe on every layout request.
   Shutdown coverage delays an
   admitted Forge answer until closing, then verifies the final empty draft
   tombstones, newer unsent edits and refused submissions. Chat shutdown retains
