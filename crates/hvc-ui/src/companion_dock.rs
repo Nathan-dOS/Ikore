@@ -1846,7 +1846,9 @@ mod tests {
                 model
                     .chat_composer_for("dock-c")
                     .unwrap()
-                    .update(cx, |input, cx| input.set_value("Unsent UTF-8 · ação", cx));
+                    .update(cx, |input, cx| {
+                        input.set_value("Unsent UTF-8 · a\u{e7}\u{e3}o", cx)
+                    });
                 model
             });
             visual.update(|window, _| window.activate_window());
@@ -1892,7 +1894,7 @@ mod tests {
             model.read_with(visual, |model, cx| {
                 assert_eq!(
                     model.chat_composer_for("dock-c").unwrap().read(cx).value(),
-                    "Unsent UTF-8 · ação"
+                    "Unsent UTF-8 · a\u{e7}\u{e3}o"
                 );
                 assert_eq!(model.active_view(), AppView::Home);
             });

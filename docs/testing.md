@@ -157,6 +157,8 @@ below describe required coverage, not a passing delivery gate.
   A persistent dock ancestor recovers only the same removed child's focus,
   without activating the window; full Chat focus, explicit blur followed by
   removal, and automatic decision opening remain unaffected.
+  Unicode input fixtures use Rust escapes for language-specific characters so
+  the English-source guard remains enforced without losing Unicode coverage.
   Shutdown coverage delays an
   admitted Forge answer until closing, then verifies the final empty draft
   tombstones, newer unsent edits and refused submissions. Chat shutdown retains
