@@ -90,6 +90,16 @@ focused run also exposed and corrected two test-fixture issues (a rem change
 needed an explicit redraw, and the diff-copy control needed a debug selector).
 The confirmed rerun is in `target/companion-final/text-layout-tests.log`.
 
+The following allocation-only refinement borrows the cached Markdown AST and
+text in the Companion renderer, allocating owned text only for changed cache
+pieces and reserving message-buffer capacity. Existing Workspace/Vault/Notes/
+Review consumers retain their original owned-string path. Three new tests
+verify borrowed storage, the owned path's moved storage, and matching geometry
+across all supported block types. The focused suite then passed 13/13, zero
+failed/ignored and 470 filtered; the log is
+`target/companion-final/borrowed-markdown-tests.log`. Its release speed result
+is not established by these functional tests.
+
 Disposition: **deferred for integration** pending the release speed comparison
 and complete delivery gate. The earlier Stage 7 results above do not certify
 this follow-up.

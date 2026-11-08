@@ -60,11 +60,11 @@ struct CachedTextPiece {
 }
 
 impl CachedTextPiece {
-    fn for_text(previous: Option<&Self>, text: String) -> Self {
+    fn for_text(previous: Option<&Self>, text: &str) -> Self {
         if let Some(previous) = previous.filter(|piece| piece.text.as_ref() == text) {
             return previous.clone();
         }
-        let text = SharedString::from(text);
+        let text = SharedString::from(text.to_owned());
         Self {
             state: Rc::new(RefCell::new(CachedTextState::new(text.clone(), 0..0))),
             text,
@@ -346,19 +346,20 @@ impl RenderOnce for SelectableMessage {
         } else {
             0..0
         };
-        let mut projected = String::new();
-        let mut pieces = Vec::new();
+        let mut projected = String::with_capacity(self.content.len());
         let previous_text = selection.update(cx, |state, _| std::mem::take(&mut state.text_cache));
-        let mut text_cache = Vec::with_capacity(previous_text.len());
-        let mut text_element = |text: String| {
+        let text_capacity = previous_text.len().max(parsed.len());
+        let mut pieces = Vec::with_capacity(text_capacity);
+        let mut text_cache = Vec::with_capacity(text_capacity);
+        let mut text_element = |text: &str| {
             if !projected.is_empty() {
                 projected.push_str("\n\n");
             }
             let start = projected.len();
-            projected.push_str(&text);
+            projected.push_str(text);
             let end = projected.len();
-            let from = boundary(&text, selected.start.saturating_sub(start));
-            let to = boundary(&text, selected.end.saturating_sub(start));
+            let from = boundary(text, selected.start.saturating_sub(start));
+            let to = boundary(text, selected.end.saturating_sub(start));
             let index = pieces.len();
             let cached = CachedTextPiece::for_text(previous_text.get(index), text);
             let element = cached.element(from..to);
@@ -374,8 +375,8 @@ impl RenderOnce for SelectableMessage {
                 .child(element)
                 .into_any_element()
         };
-        let mut blocks = Vec::new();
-        for part in parsed.iter().cloned() {
+        let mut blocks = Vec::with_capacity(parsed.len());
+        for part in parsed.iter() {
             match part {
                 MessagePart::Markdown(block) => {
                     blocks.push(crate::workspace_view::render_markdown_block_with(
@@ -523,12 +524,180 @@ mod tests {
     use super::*;
     use gpui::{Context, Modifiers, Render, TestAppContext, point, px, size};
 
+    #[gpui::test]
+    fn owned_markdown_renderer_moves_original_paragraph_storage(cx: &mut TestAppContext) {
+        let text = String::from("Owned paragraph \u{e9} \u{1f980}");
+        let original = text.as_ptr() as usize;
+        let (_, visual) = cx.add_window_view(|_, _| Harness(String::new()));
+        visual.draw(
+            point(px(0.0), px(0.0)),
+            size(px(280.0), px(300.0)),
+            |_, _| {
+                crate::workspace_view::render_markdown_block_owned_with(
+                    hvc_editor::MarkdownBlock::Paragraph(text),
+                    &mut |text| {
+                        assert_eq!(text.as_ptr() as usize, original);
+                        assert_eq!(text, "Owned paragraph \u{e9} \u{1f980}");
+                        text.into_any_element()
+                    },
+                )
+            },
+        );
+    }
+
+    #[gpui::test]
+    fn owned_and_borrowed_markdown_renderers_keep_matching_block_geometry(cx: &mut TestAppContext) {
+        use hvc_editor::MarkdownBlock;
+        struct ParityHarness(Vec<MarkdownBlock>);
+        impl Render for ParityHarness {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div()
+                    .flex()
+                    .flex_col()
+                    .children(self.0.iter().enumerate().map(|(index, block)| {
+                        div().flex().children([
+                            div()
+                                .w(px(280.0))
+                                .debug_selector(move || format!("owned-{index}"))
+                                .child(crate::workspace_view::render_markdown_block(block.clone())),
+                            div()
+                                .w(px(280.0))
+                                .debug_selector(move || format!("borrowed-{index}"))
+                                .child(crate::workspace_view::render_markdown_block_with(
+                                    block,
+                                    &mut |text| text.to_owned().into_any_element(),
+                                )),
+                        ])
+                    }))
+            }
+        }
+        let (_, visual) = cx.add_window_view(|_, _| {
+            ParityHarness(vec![
+                MarkdownBlock::Paragraph("Complete paragraph \u{e9} \u{1f980} ".repeat(20)),
+                MarkdownBlock::Heading {
+                    level: 1,
+                    text: "Heading".into(),
+                },
+                MarkdownBlock::Heading {
+                    level: 6,
+                    text: "Small heading".into(),
+                },
+                MarkdownBlock::CodeBlock {
+                    language: Some("rust".into()),
+                    code: "let value = 1;".into(),
+                },
+                MarkdownBlock::CodeBlock {
+                    language: None,
+                    code: "Unlabelled code".into(),
+                },
+                MarkdownBlock::Quote("Quotation \u{e9}".into()),
+                MarkdownBlock::ListItem("List \u{1f980}".into()),
+                MarkdownBlock::Table {
+                    headers: vec!["Name".into(), "Value".into()],
+                    rows: vec![vec!["Cell".into(), "Unicode \u{e9}".into()]],
+                },
+                MarkdownBlock::Rule,
+            ])
+        });
+        visual.simulate_resize(size(px(800.0), px(1800.0)));
+        visual.run_until_parked();
+        for (owned, borrowed) in [
+            ("owned-0", "borrowed-0"),
+            ("owned-1", "borrowed-1"),
+            ("owned-2", "borrowed-2"),
+            ("owned-3", "borrowed-3"),
+            ("owned-4", "borrowed-4"),
+            ("owned-5", "borrowed-5"),
+            ("owned-6", "borrowed-6"),
+            ("owned-7", "borrowed-7"),
+            ("owned-8", "borrowed-8"),
+        ] {
+            assert_eq!(
+                visual.debug_bounds(owned).unwrap().size,
+                visual.debug_bounds(borrowed).unwrap().size,
+                "{owned}"
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn borrowed_markdown_renderer_keeps_original_text_and_complete_transformed_blocks(
+        cx: &mut TestAppContext,
+    ) {
+        use hvc_editor::MarkdownBlock;
+        let paragraph = String::from("Paragraph \u{e9} \u{1f980}");
+        let header = String::from("Column");
+        let cell = String::from("Cell \u{e9}");
+        let expected_pointers = [
+            paragraph.as_ptr() as usize,
+            header.as_ptr() as usize,
+            cell.as_ptr() as usize,
+        ];
+        let observed = Rc::new(RefCell::new(Vec::new()));
+        let output = observed.clone();
+        struct BorrowedHarness {
+            blocks: Vec<MarkdownBlock>,
+            observed: Rc<RefCell<Vec<(usize, String)>>>,
+        }
+        impl Render for BorrowedHarness {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                self.observed.borrow_mut().clear();
+                div().children(self.blocks.iter().map(|block| {
+                    crate::workspace_view::render_markdown_block_with(block, &mut |text| {
+                        self.observed
+                            .borrow_mut()
+                            .push((text.as_ptr() as usize, text.to_owned()));
+                        text.to_owned().into_any_element()
+                    })
+                }))
+            }
+        }
+        let (_, visual) = cx.add_window_view(|_, _| BorrowedHarness {
+            blocks: vec![
+                MarkdownBlock::Paragraph(paragraph),
+                MarkdownBlock::Table {
+                    headers: vec![header],
+                    rows: vec![vec![cell]],
+                },
+                MarkdownBlock::CodeBlock {
+                    language: Some("rust".into()),
+                    code: "let value = 1;".into(),
+                },
+                MarkdownBlock::ListItem("List \u{1f980}".into()),
+            ],
+            observed: output,
+        });
+        visual.run_until_parked();
+        let observed = observed.borrow();
+        assert_eq!(
+            observed
+                .iter()
+                .take(3)
+                .map(|(pointer, _)| *pointer)
+                .collect::<Vec<_>>(),
+            expected_pointers
+        );
+        assert_eq!(
+            observed
+                .iter()
+                .map(|(_, text)| text.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "Paragraph \u{e9} \u{1f980}",
+                "Column",
+                "Cell \u{e9}",
+                "rust\nlet value = 1;",
+                "\u{2022} List \u{1f980}"
+            ]
+        );
+    }
+
     #[test]
     fn text_piece_cache_reuses_equal_text_and_replaces_only_changed_pieces() {
-        let first = CachedTextPiece::for_text(None, "First \u{e9} \u{1f980}".into());
-        let second = CachedTextPiece::for_text(None, "Second".into());
-        let first_again = CachedTextPiece::for_text(Some(&first), "First \u{e9} \u{1f980}".into());
-        let second_changed = CachedTextPiece::for_text(Some(&second), "Second updated".into());
+        let first = CachedTextPiece::for_text(None, "First \u{e9} \u{1f980}");
+        let second = CachedTextPiece::for_text(None, "Second");
+        let first_again = CachedTextPiece::for_text(Some(&first), "First \u{e9} \u{1f980}");
+        let second_changed = CachedTextPiece::for_text(Some(&second), "Second updated");
         assert!(Rc::ptr_eq(&first.state, &first_again.state));
         assert!(!Rc::ptr_eq(&second.state, &second_changed.state));
         assert_eq!(second_changed.text.as_ref(), "Second updated");
@@ -536,7 +705,7 @@ mod tests {
 
     #[test]
     fn text_piece_cache_invalidates_inherited_style_and_rem_and_refreshes_highlights() {
-        let piece = CachedTextPiece::for_text(None, "Unicode \u{e9} \u{1f980}".into());
+        let piece = CachedTextPiece::for_text(None, "Unicode \u{e9} \u{1f980}");
         let style = gpui::TextStyle::default();
         let mut state = piece.state.borrow_mut();
         assert!(!state.prepare(&style, px(16.0)));
@@ -577,7 +746,8 @@ mod tests {
         let result = Rc::new(RefCell::new(None));
         let output = result.clone();
         let (_, visual) = cx.add_window_view(|_, _| {
-            struct MeasureHarness(Rc<RefCell<Option<(gpui::Size<Pixels>, gpui::Size<Pixels>)>>>);
+            type MeasuredSizes = Rc<RefCell<Option<(gpui::Size<Pixels>, gpui::Size<Pixels>)>>>;
+            struct MeasureHarness(MeasuredSizes);
             impl Render for MeasureHarness {
                 fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
                     let output = self.0.clone();
@@ -585,7 +755,7 @@ mod tests {
                         move |_, window, cx| {
                             let cache = CachedTextPiece::for_text(
                                 None,
-                                "Several words with Unicode \u{e9} \u{1f980}".into(),
+                                "Several words with Unicode \u{e9} \u{1f980}",
                             );
                             let mut text = cache.element(0..0).into_any_element();
                             let narrow = text.layout_as_root(
@@ -628,7 +798,7 @@ mod tests {
     #[gpui::test]
     fn cached_text_measures_inherited_style_rem_size_and_wrapping(cx: &mut TestAppContext) {
         let (harness, visual) = cx.add_window_view(|_, _| CachedHarness {
-            piece: CachedTextPiece::for_text(None, "Unicode \u{e9} \u{1f980} ".repeat(24)),
+            piece: CachedTextPiece::for_text(None, &"Unicode \u{e9} \u{1f980} ".repeat(24)),
             font_rems: 1.0,
         });
         visual.simulate_resize(size(px(400.0), px(900.0)));

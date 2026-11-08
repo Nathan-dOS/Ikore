@@ -837,10 +837,12 @@ fn workspace_editor_surface(
 }
 
 pub(crate) fn render_markdown_block(block: MarkdownBlock) -> AnyElement {
-    render_markdown_block_with(block, &mut |text| text.into_any_element())
+    render_markdown_block_owned_with(block, &mut |text| text.into_any_element())
 }
 
-pub(crate) fn render_markdown_block_with(
+// Owned consumers move their strings; the Companion borrows its cached AST.
+// Keep both paths to avoid paying for a clone in either ownership mode.
+pub(crate) fn render_markdown_block_owned_with(
     block: MarkdownBlock,
     text_element: &mut impl FnMut(String) -> AnyElement,
 ) -> AnyElement {
@@ -912,6 +914,87 @@ pub(crate) fn render_markdown_block_with(
             .mb_1()
             .text_sm()
             .child(text_element(format!("• {text}")))
+            .into_any_element(),
+        MarkdownBlock::Rule => div()
+            .my_3()
+            .h(px(1.0))
+            .bg(theme::border())
+            .into_any_element(),
+    }
+}
+
+pub(crate) fn render_markdown_block_with(
+    block: &MarkdownBlock,
+    text_element: &mut impl FnMut(&str) -> AnyElement,
+) -> AnyElement {
+    match block {
+        MarkdownBlock::Table { headers, rows } => div()
+            .mb_3()
+            .min_w_0()
+            .border_1()
+            .border_color(theme::border())
+            .children(
+                std::iter::once((true, headers))
+                    .chain(rows.iter().map(|row| (false, row)))
+                    .map(|(header, row)| {
+                        div()
+                            .flex()
+                            .min_w_0()
+                            .when(header, |row| {
+                                row.bg(theme::surface_raised())
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                            })
+                            .children(row.iter().map(|text| {
+                                div()
+                                    .flex_1()
+                                    .min_w(px(100.0))
+                                    .p_2()
+                                    .text_sm()
+                                    .border_b_1()
+                                    .border_r_1()
+                                    .border_color(theme::border())
+                                    .child(text_element(text))
+                            }))
+                    }),
+            )
+            .into_any_element(),
+        MarkdownBlock::Heading { level, text } => div()
+            .mt_2()
+            .mb_2()
+            .text_size(px(22.0 - f32::from(*level) * 1.5))
+            .font_weight(gpui::FontWeight::BOLD)
+            .child(text_element(text))
+            .into_any_element(),
+        MarkdownBlock::Paragraph(text) => div()
+            .mb_3()
+            .text_sm()
+            .line_height(px(22.0))
+            .child(text_element(text))
+            .into_any_element(),
+        MarkdownBlock::CodeBlock { language, code } => div()
+            .mb_3()
+            .p_3()
+            .rounded_md()
+            .bg(theme::canvas())
+            .font_family(theme::FONT_MONO)
+            .text_sm()
+            .child(text_element(&format!(
+                "{}\n{code}",
+                language.as_deref().unwrap_or_default()
+            )))
+            .into_any_element(),
+        MarkdownBlock::Quote(text) => div()
+            .mb_2()
+            .pl_3()
+            .border_l_2()
+            .border_color(theme::accent())
+            .text_color(theme::text_muted())
+            .child(text_element(text))
+            .into_any_element(),
+        MarkdownBlock::ListItem(text) => div()
+            .mb_1()
+            .text_sm()
+            .child(text_element(&format!("• {text}")))
             .into_any_element(),
         MarkdownBlock::Rule => div()
             .my_3()

@@ -164,6 +164,12 @@ below describe required coverage, not a passing delivery gate.
   remeasure wrapped text when width becomes unconstrained, and preserve full
   Unicode/table/diff selection and copy through redraws and resizing. Selected
   pieces rebuild their consumed highlight recipe on every layout request.
+  The borrowed Markdown renderer passes original paragraph/table storage to
+  its callback, preserves complete code/list formatting, and owns text only
+  when a cached piece changes. Message buffers reserve capacity without
+  omitting any blocks or clipboard content. The separate owned renderer still
+  moves its original string storage; parity tests compare block geometry for
+  headings, paragraphs, tables, labelled/unlabelled code, quotes, lists and rules.
   Shutdown coverage delays an
   admitted Forge answer until closing, then verifies the final empty draft
   tombstones, newer unsent edits and refused submissions. Chat shutdown retains
