@@ -11,6 +11,7 @@ mod code_context;
 pub mod composition;
 mod context;
 mod contracts;
+pub mod decisions;
 pub mod failure;
 pub mod layers;
 pub mod learning_report;

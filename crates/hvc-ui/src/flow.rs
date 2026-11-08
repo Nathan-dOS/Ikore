@@ -8,7 +8,9 @@
 // `select_view`/`forge_action`/`apply_hitl_decision` entry points every other button already calls.
 
 use gpui::{App, Context, SharedString, Window};
+use hvc_core::feature_forge::{FeatureState, Wave};
 use hvc_core::persistence_service::{HitlDecision, PulsationStatus};
+use std::collections::{HashMap, HashSet};
 
 use crate::app_model::{AppModel, AppView};
 use crate::forge::{ForgeAction, ForgeSection};
@@ -42,6 +44,130 @@ pub(crate) struct NextStep {
     pub label: SharedString,
     pub icon: Icon,
     pub target: FlowTarget,
+}
+
+/// A conservative, deterministic batch from the cached snapshot. This is only
+/// navigation guidance: dispatch still repeats the host's complete admission.
+/// Build dependency order rather than calling any `ready` row executable.
+fn has_dispatchable_tasks(forge: &crate::forge::ForgeUi, project: &str) -> bool {
+    if forge.project_id.as_deref() != Some(project) {
+        return false;
+    }
+    if forge.start_preview.as_ref().is_some_and(|preview| {
+        preview.blockers.iter().any(|issue| {
+            matches!(
+                issue.code.as_str(),
+                "model_configuration" | "base_needs_review"
+            )
+        })
+    }) {
+        return false;
+    }
+    let snapshot = &forge.snapshot;
+    let features: HashMap<_, _> = snapshot
+        .features
+        .iter()
+        .filter(|feature| feature.project_id == project)
+        .map(|feature| (feature.id.as_str(), feature))
+        .collect();
+    let done: HashSet<_> = snapshot
+        .tasks
+        .iter()
+        .filter(|task| task.project_id == project && task.state == "done")
+        .map(|task| task.id.as_str())
+        .collect();
+    let candidates: Vec<_> = snapshot
+        .tasks
+        .iter()
+        .filter(|task| {
+            if task.project_id != project
+                || task.state != "ready"
+                || task.active_pulsation_id.is_some()
+                || (snapshot.composition_enabled && task.draft.criteria.is_empty())
+            {
+                return false;
+            }
+            let Some(feature_id) = task.draft.feature_id.as_deref() else {
+                return true;
+            };
+            let Some(feature) = features.get(feature_id) else {
+                return false;
+            };
+            feature.approved_revision == Some(feature.revision)
+                && task.feature_revision == Some(feature.revision)
+                && feature.wave == Some(Wave::Current)
+                && matches!(
+                    feature.state,
+                    FeatureState::Approved | FeatureState::Planned
+                )
+                && forge.start_preview.as_ref().is_none_or(|preview| {
+                    preview.feature_id != feature.id
+                        || preview.expected_revision != feature.revision
+                        || preview.blockers.is_empty()
+                })
+        })
+        .collect();
+    let mut admitted = HashSet::new();
+    loop {
+        let before = admitted.len();
+        for task in &candidates {
+            if admitted.contains(task.id.as_str())
+                || !task
+                    .draft
+                    .dependencies
+                    .iter()
+                    .all(|id| done.contains(id.as_str()) || admitted.contains(id.as_str()))
+            {
+                continue;
+            }
+            let prerequisites_ready = task.draft.feature_id.as_deref().is_none_or(|feature_id| {
+                snapshot
+                    .dependencies
+                    .iter()
+                    .filter(|edge| edge.feature_id == feature_id)
+                    .all(|edge| {
+                        let Some(prerequisite) = features.get(edge.prerequisite_id.as_str()) else {
+                            return false;
+                        };
+                        if prerequisite.state == FeatureState::Done {
+                            return true;
+                        }
+                        if prerequisite.approved_revision != Some(prerequisite.revision)
+                            || prerequisite.wave != Some(Wave::Current)
+                        {
+                            return false;
+                        }
+                        let required: Vec<_> = snapshot
+                            .tasks
+                            .iter()
+                            .filter(|task| {
+                                task.project_id == project
+                                    && task.draft.feature_id.as_deref()
+                                        == Some(prerequisite.id.as_str())
+                                    && task.feature_revision == prerequisite.approved_revision
+                            })
+                            .collect();
+                        !required.is_empty()
+                            && required
+                                .iter()
+                                .any(|task| admitted.contains(task.id.as_str()))
+                            && required.iter().all(|task| {
+                                done.contains(task.id.as_str())
+                                    || admitted.contains(task.id.as_str())
+                            })
+                    })
+            });
+            if prerequisites_ready {
+                admitted.insert(task.id.as_str());
+                if admitted.len() == 100 {
+                    return true;
+                }
+            }
+        }
+        if before == admitted.len() {
+            return !admitted.is_empty();
+        }
+    }
 }
 
 impl AppModel {
@@ -82,7 +208,7 @@ impl AppModel {
 /// Returns 1-3 suggested next steps, primary first. Pure function of state — see the state table in
 /// the UI flow plan Part 3 for the intent behind each branch.
 pub(crate) fn next_steps(model: &AppModel, cx: &App) -> Vec<NextStep> {
-    let Some(_project_id) = model.workspace.read(cx).project_id.as_ref() else {
+    let Some(project_id) = model.workspace.read(cx).project_id.as_ref() else {
         return vec![NextStep {
             id: "flow-open-project",
             label: "Open project".into(),
@@ -190,11 +316,18 @@ pub(crate) fn next_steps(model: &AppModel, cx: &App) -> Vec<NextStep> {
     }
 
     let forge = &model.forge;
-    let has_ready_tasks = forge
-        .snapshot
-        .tasks
-        .iter()
-        .any(|task| task.state == "ready");
+    let base_needs_review =
+        model
+            .pulsations
+            .read(cx)
+            .coordination
+            .as_ref()
+            .is_some_and(|snapshot| {
+                snapshot.pipeline.project_id == project_id.as_ref()
+                    && snapshot.pipeline.base_state
+                        == hvc_core::orchestration::BaseState::NeedsReview
+            });
+    let has_ready_tasks = !base_needs_review && has_dispatchable_tasks(forge, project_id.as_ref());
     if has_ready_tasks {
         return vec![
             NextStep {
@@ -205,6 +338,32 @@ pub(crate) fn next_steps(model: &AppModel, cx: &App) -> Vec<NextStep> {
             },
             NextStep {
                 id: "flow-open-backlog",
+                label: "Open backlog".into(),
+                icon: Icon::ListTodo,
+                target: FlowTarget::ForgeSection(ForgeSection::Backlog),
+            },
+        ];
+    }
+
+    let unplanned_approved = forge.snapshot.features.iter().any(|feature| {
+        feature.project_id == project_id.as_ref()
+            && feature.approved_revision == Some(feature.revision)
+            && matches!(
+                feature.state,
+                FeatureState::Approved | FeatureState::Planned
+            )
+            && feature.wave != Some(Wave::Current)
+    });
+    if unplanned_approved {
+        return vec![
+            NextStep {
+                id: "flow-plan-waves",
+                label: "Plan waves".into(),
+                icon: Icon::Waves,
+                target: FlowTarget::ForgeSection(ForgeSection::Waves),
+            },
+            NextStep {
+                id: "flow-open-backlog-planned",
                 label: "Open backlog".into(),
                 icon: Icon::ListTodo,
                 target: FlowTarget::ForgeSection(ForgeSection::Backlog),
@@ -225,26 +384,6 @@ pub(crate) fn next_steps(model: &AppModel, cx: &App) -> Vec<NextStep> {
             icon: Icon::MessageSquare,
             target: FlowTarget::ForgeSection(ForgeSection::Incubation),
         }];
-    }
-
-    let unplanned_approved = forge.snapshot.features.iter().any(|feature| {
-        feature.state == hvc_core::feature_forge::FeatureState::Approved && feature.wave.is_none()
-    });
-    if unplanned_approved {
-        return vec![
-            NextStep {
-                id: "flow-plan-waves",
-                label: "Plan waves".into(),
-                icon: Icon::Waves,
-                target: FlowTarget::ForgeSection(ForgeSection::Waves),
-            },
-            NextStep {
-                id: "flow-open-backlog-planned",
-                label: "Open backlog".into(),
-                icon: Icon::ListTodo,
-                target: FlowTarget::ForgeSection(ForgeSection::Backlog),
-            },
-        ];
     }
 
     if forge.snapshot.tasks.is_empty() && forge.snapshot.features.is_empty() {
@@ -321,5 +460,231 @@ fn active_pulsation_steps(
             },
         ]),
         PulsationStatus::Idle | PulsationStatus::Checkpoint => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{AppContext, TestAppContext};
+    use hvc_core::feature_forge::{
+        Feature, FeatureStartBlocker, FeatureStartPreview, FeatureState, TaskDraft, TaskKind, Wave,
+        WorkTask,
+    };
+
+    fn ready_task(id: &str, feature: Option<&str>) -> WorkTask {
+        WorkTask {
+            id: id.into(),
+            project_id: "project".into(),
+            revision: 1,
+            draft: TaskDraft {
+                title: id.into(),
+                kind: TaskKind::Bug,
+                description: "Validate input".into(),
+                criteria: vec![],
+                dependencies: vec![],
+                feature_id: feature.map(str::to_owned),
+            },
+            feature_revision: feature.map(|_| 1),
+            state: "ready".into(),
+            active_pulsation_id: None,
+            completed_pulsation_id: None,
+        }
+    }
+
+    fn approved_feature(id: &str, wave: Option<Wave>) -> Feature {
+        Feature {
+            id: id.into(),
+            project_id: "project".into(),
+            title: id.into(),
+            original_idea: "Validate input".into(),
+            revision: 1,
+            approved_revision: Some(1),
+            state: if wave.is_some() {
+                FeatureState::Planned
+            } else {
+                FeatureState::Approved
+            },
+            brief: Default::default(),
+            evaluation: Default::default(),
+            structural_level: 0,
+            wave,
+            position: 0,
+            archive_reason: None,
+        }
+    }
+
+    fn model(cx: &mut TestAppContext) -> gpui::Entity<AppModel> {
+        let model = cx.new(AppModel::new_for_test);
+        model.update(cx, |model, cx| {
+            model.workspace.update(cx, |workspace, _| {
+                workspace.project_id = Some("project".into())
+            });
+            model.forge.project_id = Some("project".into());
+        });
+        model
+    }
+
+    #[gpui::test]
+    fn an_approved_unplanned_feature_offers_plan_waves_before_compose(cx: &mut TestAppContext) {
+        let model = model(cx);
+        model.update(cx, |model, cx| {
+            model.forge.snapshot.features = vec![approved_feature("feature", None)];
+            model.forge.snapshot.tasks = vec![ready_task("task", Some("feature"))];
+            assert_eq!(next_steps(model, cx)[0].id, "flow-plan-waves");
+        });
+    }
+
+    #[gpui::test]
+    fn blocked_dependencies_and_reservations_never_offer_compose(cx: &mut TestAppContext) {
+        let model = model(cx);
+        model.update(cx, |model, cx| {
+            let mut blocked = ready_task("blocked", None);
+            blocked.draft.dependencies = vec!["missing".into()];
+            let mut reserved = ready_task("reserved", None);
+            reserved.active_pulsation_id = Some("running".into());
+            model.forge.snapshot.tasks = vec![blocked, reserved];
+            assert!(
+                !next_steps(model, cx)
+                    .iter()
+                    .any(|step| step.id == "flow-compose-pulsation")
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn current_revision_batches_and_standalone_tasks_offer_compose(cx: &mut TestAppContext) {
+        let model = model(cx);
+        model.update(cx, |model, cx| {
+            model.forge.snapshot.features = vec![approved_feature("feature", Some(Wave::Current))];
+            let mut dependent = ready_task("dependent", Some("feature"));
+            dependent.draft.dependencies = vec!["first".into()];
+            model.forge.snapshot.tasks = vec![dependent, ready_task("first", None)];
+            assert_eq!(next_steps(model, cx)[0].id, "flow-compose-pulsation");
+            model.forge.snapshot.tasks = vec![ready_task("standalone", None)];
+            model.forge.snapshot.features.clear();
+            assert_eq!(next_steps(model, cx)[0].id, "flow-compose-pulsation");
+        });
+    }
+
+    #[gpui::test]
+    fn stale_feature_tasks_and_dependency_cycles_do_not_look_ready(cx: &mut TestAppContext) {
+        let model = model(cx);
+        model.update(cx, |model, cx| {
+            model.forge.snapshot.features = vec![approved_feature("feature", Some(Wave::Current))];
+            let mut stale = ready_task("stale", Some("feature"));
+            stale.feature_revision = Some(0);
+            let mut one = ready_task("one", None);
+            one.draft.dependencies = vec!["two".into()];
+            let mut two = ready_task("two", None);
+            two.draft.dependencies = vec!["one".into()];
+            model.forge.snapshot.tasks = vec![stale, one, two];
+            assert!(
+                !next_steps(model, cx)
+                    .iter()
+                    .any(|step| step.id == "flow-compose-pulsation")
+            );
+            model
+                .forge
+                .snapshot
+                .tasks
+                .push(ready_task("independent", None));
+            assert_eq!(next_steps(model, cx)[0].id, "flow-compose-pulsation");
+        });
+    }
+
+    #[gpui::test]
+    fn matching_backend_preview_blockers_veto_composition(cx: &mut TestAppContext) {
+        let model = model(cx);
+        model.update(cx, |model, cx| {
+            model.forge.snapshot.features = vec![approved_feature("feature", Some(Wave::Current))];
+            model.forge.snapshot.tasks = vec![ready_task("task", Some("feature"))];
+            model.forge.start_preview = Some(FeatureStartPreview {
+                feature_id: "feature".into(),
+                expected_revision: 1,
+                approved: true,
+                planned: true,
+                blockers: vec![FeatureStartBlocker {
+                    code: "model_configuration".into(),
+                    message: "Configure the model first".into(),
+                }],
+            });
+            assert!(
+                !next_steps(model, cx)
+                    .iter()
+                    .any(|step| step.id == "flow-compose-pulsation")
+            );
+            model.forge.start_preview.as_mut().unwrap().blockers.clear();
+            assert_eq!(next_steps(model, cx)[0].id, "flow-compose-pulsation");
+        });
+    }
+
+    #[gpui::test]
+    fn feature_prerequisites_must_fit_a_schedulable_batch(cx: &mut TestAppContext) {
+        let model = model(cx);
+        model.update(cx, |model, cx| {
+            model.forge.snapshot.features = vec![
+                approved_feature("dependent", Some(Wave::Current)),
+                approved_feature("prerequisite", Some(Wave::Current)),
+            ];
+            model.forge.snapshot.dependencies = vec![hvc_core::feature_forge::FeatureDependency {
+                feature_id: "dependent".into(),
+                prerequisite_id: "prerequisite".into(),
+                rationale: "Required first".into(),
+                origin: Default::default(),
+            }];
+            let mut prerequisite = ready_task("prerequisite-task", Some("prerequisite"));
+            prerequisite.active_pulsation_id = Some("reserved".into());
+            model.forge.snapshot.tasks = vec![
+                ready_task("dependent-task", Some("dependent")),
+                prerequisite,
+            ];
+            assert!(
+                !next_steps(model, cx)
+                    .iter()
+                    .any(|step| step.id == "flow-compose-pulsation")
+            );
+            model.forge.snapshot.tasks[1].active_pulsation_id = None;
+            assert_eq!(next_steps(model, cx)[0].id, "flow-compose-pulsation");
+        });
+    }
+
+    #[gpui::test]
+    fn a_known_reconciliation_block_prevents_compose(cx: &mut TestAppContext) {
+        let model = model(cx);
+        model.update(cx, |model, cx| {
+            model.forge.snapshot.tasks = vec![ready_task("standalone", None)];
+            model.pulsations.update(cx, |pulsations, _| {
+                pulsations.coordination =
+                    Some(hvc_core::orchestration::ProjectCoordinationSnapshot {
+                        pipeline: hvc_core::orchestration::ProjectPipelineState {
+                            project_id: "project".into(),
+                            active_pulsation_id: None,
+                            base_epoch: 1,
+                            base_state: hvc_core::orchestration::BaseState::NeedsReview,
+                            version: 1,
+                            blocking_reason: Some("Review the base".into()),
+                        },
+                        queue: vec![],
+                        owner_candidates: vec![],
+                        publications: vec![],
+                        review_token: "review-token".into(),
+                    });
+            });
+            assert!(
+                !next_steps(model, cx)
+                    .iter()
+                    .any(|step| step.id == "flow-compose-pulsation")
+            );
+            model.pulsations.update(cx, |pulsations, _| {
+                pulsations
+                    .coordination
+                    .as_mut()
+                    .unwrap()
+                    .pipeline
+                    .base_state = hvc_core::orchestration::BaseState::Ready
+            });
+            assert_eq!(next_steps(model, cx)[0].id, "flow-compose-pulsation");
+        });
     }
 }

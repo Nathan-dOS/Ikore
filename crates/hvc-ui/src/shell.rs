@@ -45,6 +45,7 @@ actions!(
         NextSection,
         RunPrimaryFlowStep,
         ToggleContextRail,
+        ToggleCompanionDock,
         FocusNextControl,
         FocusPreviousControl
     ]
@@ -99,7 +100,12 @@ pub(crate) fn register_navigation_keybindings(cx: &mut App) {
         KeyBinding::new("ctrl-shift-[", PreviousSection, None),
         KeyBinding::new("ctrl-shift-]", NextSection, None),
         // Runs the flow engine's primary suggested next step.
-        KeyBinding::new("ctrl-enter", RunPrimaryFlowStep, None),
+        KeyBinding::new(
+            "ctrl-enter",
+            RunPrimaryFlowStep,
+            Some("Shell && !CompanionDock && !NativeTextInput"),
+        ),
+        KeyBinding::new("ctrl-shift-c", ToggleCompanionDock, None),
         KeyBinding::new("ctrl-b", ToggleContextRail, None),
         // Tab walks the controls; the code editor keeps Tab for itself.
         // A bare `!NativeEditor` never matches: GPUI needs a context on the path to test.
@@ -165,6 +171,13 @@ pub fn open_main_window(core: Arc<AppCore>, cx: &mut App) -> anyhow::Result<()> 
 }
 
 fn initial_window_size() -> (f32, f32) {
+    if std::env::var_os("HVC_BENCHMARK_UI_REPORT").is_some()
+        && let Some(size) = std::env::var("HVC_BENCHMARK_UI_WINDOW_SIZE")
+            .ok()
+            .and_then(|value| parse_qa_window_size(&value))
+    {
+        return size;
+    }
     #[cfg(debug_assertions)]
     if let Some(size) = std::env::var("HVC_QA_WINDOW_SIZE")
         .ok()
@@ -175,7 +188,6 @@ fn initial_window_size() -> (f32, f32) {
     (1280.0, 820.0)
 }
 
-#[cfg(any(debug_assertions, test))]
 fn parse_qa_window_size(value: &str) -> Option<(f32, f32)> {
     let (width, height) = value.trim().split_once(['x', 'X'])?;
     let width = width.trim().parse::<f32>().ok()?;
@@ -190,11 +202,12 @@ fn parse_qa_window_size(value: &str) -> Option<(f32, f32)> {
 impl Render for AppModel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.observe_canvas_focus(window, cx);
-        self.observe_performance_frame(window);
+        self.observe_performance_frame(window, cx);
         self.note_window_activation(window.is_window_active(), cx);
         let active = self.active_view();
         let badges = self.sidebar_badges(cx);
         self.collect_notifications(cx);
+        self.observe_companion_dock(cx);
         let unread = self.notifications.queue.unread();
         if self.agents.read(cx).active_model_picker.is_some()
             && matches!(active, AppView::Agents | AppView::Chat)
@@ -274,6 +287,9 @@ impl Render for AppModel {
             .on_action(cx.listener(|model, _: &ToggleContextRail, _, cx| {
                 model.toggle_context_rail(cx);
             }))
+            .on_action(cx.listener(|model, _: &ToggleCompanionDock, _, cx| {
+                model.toggle_companion_dock(cx);
+            }))
             .on_action(cx.listener(|model, _: &FocusNextControl, window, cx| {
                 model.move_keyboard_focus(true, window, cx);
             }))
@@ -314,8 +330,7 @@ impl Render for AppModel {
                                     .border_color(theme::border())
                                     .bg(theme::surface())
                                     .overflow_hidden()
-                                    .child(content_panel(self, active, window, cx))
-                                    .child(crate::resolution_view::chip_stack(self, cx)),
+                                    .child(content_panel(self, active, window, cx)),
                             ),
                     )
                     .when_some(
@@ -325,6 +340,7 @@ impl Render for AppModel {
             )
             .child(status_bar(self, badges, cx))
             .child(self.notification_overlay(window, cx))
+            .child(crate::companion_dock_view::dock(self, window, cx))
             .children(crate::quota_bar::popover(self, window, cx))
             .when_some(self.choice_menu.clone(), |d, menu| {
                 d.child(gpui::deferred(menu).with_priority(20))
@@ -630,7 +646,7 @@ fn nav_rail(
         rail = rail.child(crate::widgets::rail_divider());
         for view in tab.sub_views().iter().copied() {
             let badge = match view {
-                AppView::Pulsations => Some(badges.engine_awaiting_hitl),
+                AppView::Pulsations => Some(badges.engine_pending_decisions),
                 AppView::Agents => Some(badges.agent_failed_runs),
                 AppView::Chat => Some(badges.companion_streaming),
                 AppView::Notes => Some(badges.notes_running),
@@ -943,6 +959,114 @@ mod tests {
         assert_eq!(parse_qa_window_size("1024x639"), None);
         assert_eq!(parse_qa_window_size("NaNx768"), None);
         assert_eq!(parse_qa_window_size("invalid"), None);
+    }
+
+    #[gpui::test]
+    fn pulsation_rail_counts_pending_failures_without_inflating_review_count(
+        cx: &mut TestAppContext,
+    ) {
+        let model = cx.new(crate::layout_tests::fixture);
+        model.update(cx, |model, cx| {
+            model.pulsations.update(cx, |pulsations, _| {
+                pulsations.awaiting_hitl = 0;
+                pulsations.awaiting_failure = 1;
+                pulsations.pulsations[0].status =
+                    hvc_core::persistence_service::PulsationStatus::Checkpoint;
+            });
+        });
+        model.read_with(cx, |model, cx| {
+            let badges = model.sidebar_badges(cx);
+            assert_eq!(badges.engine_awaiting_hitl, 0);
+            assert_eq!(badges.engine_pending_decisions, 1);
+        });
+        model.update(cx, |model, cx| {
+            model.pulsations.update(cx, |pulsations, _| {
+                pulsations
+                    .hitl_checkpoints
+                    .push(hvc_core::persistence_service::HitlCheckpoint {
+                        pulsation_id: pulsations.pulsations[0].id.clone(),
+                        checkpoint_id: "same-pending-pulse".into(),
+                        state_version: 1,
+                    });
+            });
+        });
+        model.read_with(cx, |model, cx| {
+            assert_eq!(model.sidebar_badges(cx).engine_pending_decisions, 1)
+        });
+    }
+
+    #[gpui::test]
+    fn pulsation_rail_counts_projected_description_reviews_and_deduplicates_sources(
+        cx: &mut TestAppContext,
+    ) {
+        use hvc_core::orchestration::decisions::{
+            PendingDecision, PendingDecisionAction, PendingDecisionKind,
+        };
+        let model = cx.new(crate::layout_tests::fixture);
+        model.update(cx, |model, cx| {
+            let (project, pulse) = model.pulsations.update(cx, |pulsations, _| {
+                pulsations.awaiting_hitl = 0;
+                pulsations.awaiting_failure = 0;
+                pulsations.hitl_checkpoints.clear();
+                pulsations.failure_checkpoints.clear();
+                pulsations.pulsations[0].status =
+                    hvc_core::persistence_service::PulsationStatus::Planning;
+                (
+                    pulsations.pulsations[0].project_id.clone(),
+                    pulsations.pulsations[0].id.clone(),
+                )
+            });
+            model
+                .resolution
+                .update(cx, |resolution, _| resolution.chips.clear());
+            model
+                .agents
+                .update(cx, |agents, _| agents.fallbacks.clear());
+            model.workspace.update(cx, |workspace, _| {
+                workspace.project_id = Some(project.clone().into())
+            });
+            let decision = PendingDecision {
+                id: format!("description:{pulse}:1"),
+                project_id: project.clone(),
+                kind: PendingDecisionKind::DescriptionReview,
+                source_id: pulse.clone(),
+                pulsation_id: Some(pulse),
+                checkpoint_id: None,
+                feature_id: None,
+                input_revision: Some(1),
+                state_version: 1,
+                stage: None,
+                title: "Review the prepared description".into(),
+                description: "Confirm the request before Specification.".into(),
+                actions: vec![PendingDecisionAction::OpenFullReview],
+                question_set: None,
+                forge_questions: None,
+            };
+            model.companion_dock.pending = vec![decision.clone(), decision];
+        });
+        model.read_with(cx, |model, cx| {
+            let badges = model.sidebar_badges(cx);
+            assert_eq!(
+                badges.engine_pending_decisions, 1,
+                "two sources for the same waiting pulsation count once"
+            );
+            assert_eq!(
+                badges.engine_awaiting_hitl, 0,
+                "description review is not artifact review"
+            );
+        });
+        model.update(cx, |model, _| {
+            for decision in &mut model.companion_dock.pending {
+                decision.project_id = "another-project".into();
+            }
+        });
+        model.read_with(cx, |model, cx| {
+            assert_eq!(
+                model.sidebar_badges(cx).engine_pending_decisions,
+                0,
+                "late projection from a different project must not count"
+            )
+        });
     }
 
     #[gpui::test]

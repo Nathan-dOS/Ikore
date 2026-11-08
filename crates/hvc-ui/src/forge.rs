@@ -4,8 +4,9 @@ use crate::{
 };
 use gpui::{AppContext, Context, Entity, Subscription};
 use hvc_core::feature_forge::{
-    AcceptanceCriterion, CreateFeatureRequest, CreatePulsationFromTasksRequest, CreateTasksRequest,
-    DependencyOrigin, Feature, FeatureEvaluation, FeatureForgeService, FeatureState, FeatureTurn,
+    AcceptanceCriterion, ApproveAndStartRequest, CreateFeatureRequest,
+    CreatePulsationFromTasksRequest, CreateTasksRequest, DependencyOrigin, Feature,
+    FeatureEvaluation, FeatureForgeService, FeatureStartPreview, FeatureState, FeatureTurn,
     ForgeNavigation, ForgeSnapshot, ForgeViewSnapshot, TaskDraft, TaskKind, TaskSelection,
     TaskService, TurnKind, Wave, WorkTask, failure_actions,
 };
@@ -226,6 +227,7 @@ pub(crate) struct ForgeUi {
     pending_navigation: Option<ForgeNavigation>,
     pub error: Option<String>,
     pub notice: Option<String>,
+    pub start_preview: Option<FeatureStartPreview>,
     pub section: ForgeSection,
     generation: u64,
     pub project_id: Option<String>,
@@ -321,6 +323,7 @@ impl ForgeUi {
             pending_navigation: None,
             error: None,
             notice: None,
+            start_preview: None,
             section: ForgeSection::Backlog,
             generation: 0,
             project_id: None,
@@ -340,6 +343,19 @@ impl ForgeUi {
         self.path_hint_inputs.clear();
         self.batch_title
             .update(cx, |input, cx| input.set_value(String::new(), cx));
+    }
+
+    pub(crate) fn question_turn(&self, feature: &Feature) -> Option<&FeatureTurn> {
+        self.history
+            .iter()
+            .rev()
+            .find(|turn| turn.kind == TurnKind::Discovery)
+            .filter(|turn| {
+                turn.status == "completed"
+                    && turn.feature_id == feature.id
+                    && turn.feature_revision.checked_add(1) == Some(feature.revision)
+                    && !turn.questions.is_empty()
+            })
     }
 
     pub fn is_task_selectable(&self, task: &WorkTask, failed_pulsations: &HashSet<String>) -> bool {
@@ -635,6 +651,8 @@ pub(crate) enum ForgeAction {
     /// Show or hide a failed turn's raw technical detail.
     ToggleFailureDetail(String),
     Approve,
+    ApproveAndStart,
+    ChooseQuestionOption(String, usize, usize),
     Archive,
     Reopen,
     Complete,
@@ -674,6 +692,7 @@ enum Operation {
     Dispatch(String, Vec<TaskSelection>),
     Send(String, u64, String),
     Approve(String, u64),
+    ApproveAndStart(String, u64),
     Archive(String, String),
     Reopen(String),
     Complete(String, u64),
@@ -743,6 +762,37 @@ impl AppModel {
 
     pub(crate) fn forge_action(&mut self, action: ForgeAction, cx: &mut Context<Self>) {
         match action {
+            ForgeAction::ChooseQuestionOption(turn_id, question_index, option_index) => {
+                let answer = self
+                    .forge
+                    .feature()
+                    .and_then(|feature| self.forge.question_turn(feature))
+                    .filter(|turn| turn.id == turn_id)
+                    .and_then(|turn| {
+                        let question = turn.questions.get(question_index)?;
+                        let detail = turn
+                            .question_details
+                            .iter()
+                            .find(|d| d.question_index == question_index)?;
+                        let option = detail.options.get(option_index)?;
+                        Some(format!("{question}: {}", option.label))
+                    });
+                if let Some(answer) = answer {
+                    let previous = self.forge.message.read(cx).value();
+                    let draft = if previous.trim().is_empty() {
+                        answer
+                    } else {
+                        format!("{previous}\n{answer}")
+                    };
+                    if draft.chars().count() <= 20_000 {
+                        self.forge
+                            .message
+                            .update(cx, |input, cx| input.set_value(draft, cx));
+                    }
+                }
+                cx.notify();
+                return;
+            }
             ForgeAction::EditTask(id) => {
                 if let Some(t) = self
                     .forge
@@ -853,6 +903,7 @@ impl AppModel {
             }
             ForgeAction::SelectFeature(id) => {
                 self.forge.selected_feature = Some(id);
+                self.forge.start_preview = None;
                 self.forge.history.clear();
                 self.forge.pending_triage_overwrite = false;
                 self.forge.triage_aside_open = false;
@@ -1134,6 +1185,12 @@ impl AppModel {
                 };
                 Operation::Approve(f.id, f.revision)
             }
+            ForgeAction::ApproveAndStart => {
+                let Some(f) = f else {
+                    return;
+                };
+                Operation::ApproveAndStart(f.id, f.revision)
+            }
             ForgeAction::PreflightAdjust
             | ForgeAction::PreflightProposeAdr
             | ForgeAction::PreflightDismiss => {
@@ -1358,6 +1415,20 @@ impl AppModel {
                                         .into(),
                                 );
                             }
+                            Operation::ApproveAndStart(id, revision) => {
+                                core.runtime_handle().block_on(core.terminals().refresh_stage_discovery(&project))
+                                    .map_err(|error| hvc_core::persistence_service::PersistenceServiceError::Cli {code:error.code().into(),message:error.to_string()})?;
+                                let result = forge.approve_and_start(ApproveAndStartRequest {
+                                    project_id:project.clone(), feature_id:id.clone(), expected_revision:revision,
+                                    request_id:format!("approve-start:{id}:{revision}"),
+                                })?;
+                                notice = Some(if let Some(pulse) = result.pulsation_id {
+                                    navigate = Some(AppView::Pulsations);
+                                    format!("Feature approved and started. Pulsation {pulse} is queued.")
+                                } else {
+                                    format!("{}{}",if result.approved {"Scope approved. "} else {""}, result.blockers.iter().map(|b|b.message.as_str()).collect::<Vec<_>>().join("\n"))
+                                });
+                            }
                             Operation::ResolvePreflight(id, finding, decision) => {
                                 use hvc_core::feature_forge::preflight::PreflightAction;
                                 notice = Some(
@@ -1425,6 +1496,11 @@ impl AppModel {
                     } = forge
                         .view_snapshot(&project, selected.as_deref())
                         .map_err(|e| e.to_string())?;
+                    let start_preview = selected.as_ref().and_then(|id|snapshot.features.iter().find(|f|&f.id==id))
+                        .and_then(|feature|forge.preview_approve_and_start(&ApproveAndStartRequest {
+                            project_id:project.clone(),feature_id:feature.id.clone(),expected_revision:feature.revision,
+                            request_id:format!("approve-start:{}:{}",feature.id,feature.revision),
+                        }).ok());
                     Ok((
                         snapshot,
                         selected,
@@ -1435,6 +1511,7 @@ impl AppModel {
                         accepted_message,
                         clear_batch_composer,
                         error,
+                        start_preview,
                     ))
                 })
                 .await
@@ -1464,6 +1541,7 @@ impl AppModel {
                         accepted_message,
                         clear_batch_composer,
                         error,
+                        start_preview,
                     )) => {
                         if clear_batch_composer {
                             model.forge.clear_batch_composer(cx);
@@ -1490,6 +1568,7 @@ impl AppModel {
                         if model.forge.selected_feature == original_selection {
                             model.forge.selected_feature = selected;
                             model.forge.history = history;
+                            model.forge.start_preview = start_preview;
                         }
                         // Starting an analysis only queues the turn, so the verdict
                         // lands on a later refresh. Reload the form the moment that
@@ -1562,6 +1641,48 @@ mod tests {
     }
 
     #[gpui::test]
+    fn selecting_a_question_option_only_fills_the_composer_for_the_current_turn(
+        cx: &mut TestAppContext,
+    ) {
+        let model = cx.new(AppModel::new_for_test);
+        model.update(cx, |model, cx| {
+            model.forge.snapshot.features = vec![feature()];
+            model.forge.snapshot.features[0].revision = 2;
+            model.forge.selected_feature = Some("feature".into());
+            let mut turn = failed_turn("question-turn", TurnFailureKind::ReplyUnreadable);
+            turn.status = "completed".into();
+            turn.failure = None;
+            turn.questions = vec!["Which format?".into()];
+            turn.question_details = vec![hvc_core::feature_forge::FeatureQuestion {
+                question_index: 0,
+                explanation: "Choose the consumer's format.".into(),
+                options: vec![hvc_core::feature_forge::FeatureQuestionOption {
+                    label: "JSON".into(),
+                    explanation: "Preserves structure.".into(),
+                }],
+                recommended_option: Some(0),
+            }];
+            model.forge.history = vec![turn];
+            model.forge_action(
+                ForgeAction::ChooseQuestionOption("question-turn".into(), 0, 0),
+                cx,
+            );
+            assert_eq!(model.forge.message.read(cx).value(), "Which format?: JSON");
+            assert!(!model.forge.busy);
+            model.forge.snapshot.features[0].revision += 1;
+            model
+                .forge
+                .message
+                .update(cx, |input, cx| input.set_value("Keep this draft", cx));
+            model.forge_action(
+                ForgeAction::ChooseQuestionOption("question-turn".into(), 0, 0),
+                cx,
+            );
+            assert_eq!(model.forge.message.read(cx).value(), "Keep this draft");
+        });
+    }
+
+    #[gpui::test]
     fn message_admission_and_acknowledgement_preserve_newer_drafts(cx: &mut TestAppContext) {
         let model = cx.new(AppModel::new_for_test);
         model.update(cx, |model, cx| {
@@ -1580,7 +1701,7 @@ mod tests {
             forge.busy = true;
             assert!(forge.message_operation(Some("project"), cx).is_none());
             forge.busy = false;
-            forge.history.push(FeatureTurn { id: "turn".into(), feature_id: "feature".into(), feature_revision: 1, status: "running".into(), user_message: "Previous message".into(), assistant_message: None, error: None, suggested_dependencies: vec![], kind: TurnKind::Discovery, failure: None, notices: vec![] });
+            forge.history.push(FeatureTurn { id: "turn".into(), feature_id: "feature".into(), feature_revision: 1, status: "running".into(), user_message: "Previous message".into(), assistant_message: None, error: None, suggested_dependencies: vec![], kind: TurnKind::Discovery, failure: None, notices: vec![], questions:vec![], question_details:vec![] });
             assert!(forge.message_operation(Some("project"), cx).is_none());
             forge.history[0].status = "failed".into();
             assert!(forge.message_operation(Some("project"), cx).is_some());
@@ -1608,6 +1729,8 @@ mod tests {
             kind: TurnKind::Discovery,
             failure: Some(TurnFailure::new(kind, "raw")),
             notices: vec![],
+            questions: vec![],
+            question_details: vec![],
         }
     }
 

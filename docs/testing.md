@@ -106,6 +106,70 @@ cargo run -p hvc-app
 
 ## Complete gate and current evidence
 
+### Companion dock and feature starts
+
+The [2026-11-06 Companion record](../quality/companion-dock-validation-2026-11-06.md)
+tracks qualification of the dock, durable drafts, decision projection and
+Approve and start. Until that record contains executed results, the scenarios
+below describe required coverage, not a passing delivery gate.
+
+- Chat state tests cover simultaneous conversations, inactive-conversation
+  replies, isolated cancellation/error state, non-destructive same-project
+  refresh and stale project/generation results.
+- Flow guidance tests reject stale, reserved, unplanned and dependency-blocked
+  tasks, preserve standalone tasks, honor known backend/reconciliation blockers
+  and select a bounded dependency-ordered batch. Approved features outside the
+  current wave lead to Plan waves rather than a misleading Compose action.
+- Core dock tests cover monotonic layout/draft updates, empty versioned draft
+  tombstones, size boundaries, project/conversation ownership and deletion.
+- Decision tests cover every supported kind, stale identities, project scope,
+  lazy resolution links and read-only projection. Native checks cover opening
+  once without taking focus, badge-only restoration and unchanged guarded
+  domain actions.
+- Forge tests cover read-only composite preview, wave/dependency/model blockers,
+  approval preserved after a later failure, restart/retry recovery, changed
+  request input, stale revisions and concurrent replay producing one pulsation.
+  A deterministic race advances the feature after task selection is frozen:
+  an older start command must neither plan the new revision nor report it as
+  planned, including when the new revision is already in Current.
+  Question tests cover old payloads, bounded option/recommendation references,
+  durable metadata with the same invocation count, and selection that only
+  fills the composer for the current discovery turn.
+  Transaction regressions verify that preflight sees uncommitted route/provider
+  changes on its supplied connection, and that repeated preview reads complete
+  while a worker writes, without a nested-reader/committing-writer lock cycle.
+- Native layout/smoke scenarios use 960x640 and 1440x900 windows, narrow windows
+  and display scaling. Check multiple streams, close/minimize/expand, draft
+  restoration and approval shortcuts while an input has focus.
+  The large-history launcher test sends a complete Space keydown/keyup gesture:
+  keydown alone must not activate, and keyup must close the focused launcher
+  exactly once. Pulsation badges deduplicate checkpoints by pulsation while
+  keeping the artifact-review count separate from failures and clarifications.
+  Composer regressions retain multiline geometry when opening full Chat from
+  navigation or Expand, mount the shared input in one surface, and list only
+  minimized or overflow topics under Reopen. Shutdown coverage delays an
+  admitted Forge answer until closing, then verifies the final empty draft
+  tombstones, newer unsent edits and refused submissions. Chat shutdown retains
+  Send/Create admissions while dropping read/cancel/delete tasks. These flushes
+  remain subject to GPUI's existing 100 ms shutdown deadline.
+
+List before filtering, then run the whole workspace regression suite. The new
+core Forge scenarios can be selected with `approve_and_start`,
+`structured_feature_questions` and `discovery_question_details`; the GPUI
+scenario is `selecting_a_question_option_only_fills_the_composer_for_the_current_turn`.
+Only a complete Stage 7 gate and the separately recorded speed comparison
+qualify delivery. Simulated provider responses do not establish real-model
+quality or end-to-end provider latency.
+
+The speed-report contract has a separate PowerShell 5-compatible regression
+suite: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/tests/gate-speed-tests.ps1`.
+It rejects missing/null/non-finite samples, unequal pairing, incorrect probe/UI
+schemas, incomplete streaming workload, wrong viewport dimensions, empty or
+duplicate fixture observations, non-boolean outcomes and invocation/intervention
+regressions. The full gate measures one frozen composition canary across four
+arms in every paired sample, then checks full held-out correctness/call parity.
+Artifacts are hashed before measurement and checked again afterwards.
+
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/gate-stage7.ps1
 ```

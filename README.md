@@ -198,6 +198,22 @@ Review, status groups, and resizing evidence: [Pulsations and Workspace validati
 
 ## Feature Forge and task batches
 
+The Companion is also available in a floating dock inside the application
+window, with conversation history and unsent drafts kept across restarts.
+Decision cards bring existing reviews, clarification questions and failure
+actions alongside the chat. Opening a card does not spend model tokens;
+asking the Companion for help uses its configured model as usual.
+
+Feature Forge offers **Approve and start** when the feature revision can be
+approved, planned in the current wave and dispatched. Its preview explains
+blocking dependencies, wave capacity, model configuration and other admission
+requirements. If a requirement changes during the operation, completed approval
+and planning are kept and the remaining step can be retried. Questions can include
+explained options and a recommendation; selecting one fills a draft for you to
+review and send. Contract and Test still require human approval in this release.
+See the [qualification record](quality/companion-dock-validation-2026-11-06.md)
+for executed checks and remaining limitations.
+
 Global **Novo** separates multiple backlog tasks from a new feature conversation.
 FeatureAgent refines product scope with the developer; approval creates tasks without
 starting execution. Engine provides Tasks, Feature Forge, Pulsations and Vault.

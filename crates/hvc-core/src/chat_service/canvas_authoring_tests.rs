@@ -42,8 +42,39 @@ fn canvas_terminal_offer_is_explicit_closed_and_keeps_the_read_allowlist() {
         parse_terminal_offer(&response).unwrap().unwrap().text,
         "UI calls Core."
     );
-    assert_eq!(companion_tool_names().len(), 10);
+    assert_eq!(
+        companion_tool_names(),
+        vec![
+            "list_repository_tree",
+            "search_repository",
+            "read_repository_file",
+            "list_agent_runs",
+            "search_agent_outputs",
+            "read_agent_output",
+            "search_cli_models",
+            "summarize_agent_model_performance",
+            "search_pulsations",
+            "read_pulsation",
+            "list_pending_decisions",
+            "read_pending_decision",
+            "read_feature_brief",
+        ]
+    );
     assert!(!is_companion_tool(CANVAS_OFFER_CONTROL));
+    for mutation in [
+        "answer_feature_questions",
+        "approve_and_start",
+        "apply_hitl_decision",
+        "resolve_stage_failure",
+        "grant_scope_and_retry",
+        "write_repository_file",
+        "shell",
+    ] {
+        assert!(
+            !is_companion_tool(mutation),
+            "{mutation} must remain a trusted UI action"
+        );
+    }
     for forbidden in ["approved", "project_id", "session_id", "drawing_id"] {
         let mut forged = response.clone();
         forged.tool_calls[0].arguments[forbidden] = json!(true);

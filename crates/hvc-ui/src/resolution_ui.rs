@@ -13,29 +13,6 @@ use hvc_core::orchestration::{ClarificationAnswerV1, SubmitSpecificationAnswersR
 /// already reads from a submitted answer's `text_answer`.
 const SYNTHESIS_PROMPT: &str = "Based on this conversation, write the final answer to the Specification clarification question. Start with a short prose summary, then list file paths using this exact tag format, one per line: `FILES_NEW:` for files that do not exist yet, `FILES_MOD:` for files that already exist and will change, `FILES:` for a path you have not determined new-vs-modified. Separate multiple paths on the same tag line with commas. Only cite paths you are reasonably confident about.";
 
-/// Host-authored first message for a brand-new resolution conversation: the
-/// chip's question/rationale text is only ever rendered in the modal's own
-/// header, never sent to the Companion on its own, so without this the
-/// Companion has nothing to go on and free-associates "References"/"Handles"
-/// as if they were Obsidian references or domain entities instead of the
-/// pipeline's own file-ownership bookkeeping.
-fn opening_briefing(chip: &hvc_core::orchestration::SpecificationQuestionSet) -> String {
-    let mut message = String::from(
-        "I'm the developer resolving a clarification an automated code-generation pipeline raised while implementing this feature. In this pipeline, \"References table\" and \"Handles\" mean its own internal bookkeeping of which file paths a stage is allowed to read or write -- not Obsidian references, domain entities, or anything else. Here is the open question:\n\n",
-    );
-    for question in &chip.questions {
-        message.push_str("Question: ");
-        message.push_str(&question.question);
-        message.push_str("\nWhy it's asking: ");
-        message.push_str(&question.rationale);
-        message.push_str("\n\n");
-    }
-    message.push_str(
-        "Help me figure out the right file path(s) to confirm. Once we agree, I'll ask you to write the final answer using FILES_NEW:/FILES_MOD:/FILES: tags.",
-    );
-    message
-}
-
 impl AppModel {
     pub(crate) fn refresh_resolution_chips(&mut self, cx: &mut Context<Self>) {
         let Some(backend) = self.pulsations_backend.clone() else {
@@ -83,103 +60,60 @@ impl AppModel {
         }));
     }
 
-    /// Accordion toggle: expanding a chip collapses whichever one was open
-    /// and lazily opens its resolution conversation; expanding the one
-    /// that's already open collapses it instead.
+    /// The historical Pulsations entry now opens the same host decision card as
+    /// the global dock. Opening does not create a conversation or dispatch a model.
     pub(crate) fn toggle_resolution_chip(
         &mut self,
         question_set_id: String,
         cx: &mut Context<Self>,
     ) {
-        let already_expanded =
-            self.resolution.read(cx).expanded.as_deref() == Some(question_set_id.as_str());
-        self.resolution_draft_input
-            .update(cx, |input, cx| input.clear(cx));
-        self.resolution_synthesis_input
-            .update(cx, |input, cx| input.clear(cx));
-        if already_expanded {
-            self.resolution.update(cx, |resolution, _| {
-                resolution.expanded = None;
-                resolution.conversation = None;
-            });
-            cx.notify();
-            return;
-        }
-        self.resolution.update(cx, |resolution, _| {
-            resolution.expanded = Some(question_set_id.clone());
-            resolution.conversation = None;
-        });
-        cx.notify();
-        self.load_resolution_conversation(question_set_id, cx);
-    }
-
-    fn load_resolution_conversation(&mut self, question_set_id: String, cx: &mut Context<Self>) {
-        let Some(pulsations_backend) = self.pulsations_backend.clone() else {
+        let Some(chip) = self.resolution.read(cx).chip(&question_set_id).cloned() else {
             return;
         };
-        let Some(chat_backend) = self.chat_backend.clone() else {
-            return;
-        };
-        let Some(project_id) = self
+        if self
             .workspace
             .read(cx)
             .project_id
             .as_ref()
-            .map(ToString::to_string)
-        else {
+            .map(AsRef::as_ref)
+            != Some(chip.fence.project_id.as_str())
+        {
             return;
-        };
-        self.resolution_conversation_task = Some(cx.spawn(async move |this, cx| {
-            let conversation_id = pulsations_backend
-                .ensure_resolution_conversation(project_id.clone(), question_set_id.clone())
-                .await;
-            let conversation_id = match conversation_id {
-                Ok(id) => id,
-                Err(error) => {
-                    let _ = this.update(cx, |model, cx| {
-                        model.resolution.update(cx, |resolution, _| {
-                            resolution.error = Some(error);
-                        });
-                        cx.notify();
-                    });
-                    return;
-                }
-            };
-            let snapshot = chat_backend
-                .load_conversation(conversation_id.clone())
-                .await;
-            let _ = this.update(cx, |model, cx| {
-                if model.resolution.read(cx).expanded.as_deref() != Some(question_set_id.as_str()) {
-                    return;
-                }
-                let mut needs_briefing = false;
-                match snapshot {
-                    Ok(snapshot) => {
-                        needs_briefing = snapshot.messages.is_empty();
-                        model.resolution.update(cx, |resolution, _| {
-                            resolution.conversation =
-                                Some(crate::resolution::ResolutionConversation {
-                                    conversation_id,
-                                    messages: snapshot.messages,
-                                    synthesized_draft: None,
-                                    pending_synthesis_generation_id: None,
-                                    busy: false,
-                                });
-                            resolution.error = None;
-                        });
-                    }
-                    Err(error) => model.resolution.update(cx, |resolution, _| {
-                        resolution.error = Some(error.presentable());
-                    }),
-                }
-                if needs_briefing
-                    && let Some(chip) = model.resolution.read(cx).chip(&question_set_id).cloned()
-                {
-                    model.send_resolution_content(opening_briefing(&chip), false, cx);
-                }
-                cx.notify();
-            });
-        }));
+        }
+        self.resolution.update(cx, |resolution, _| {
+            resolution.expanded = None;
+            resolution.conversation = None;
+        });
+        let id = format!("checkpoint:{}", chip.checkpoint_id);
+        if !self
+            .companion_dock
+            .pending
+            .iter()
+            .any(|decision| decision.id == id)
+        {
+            self.companion_dock
+                .pending
+                .push(hvc_core::orchestration::decisions::PendingDecision {
+                    id: id.clone(),
+                    project_id: chip.fence.project_id.clone(),
+                    kind: hvc_core::orchestration::decisions::PendingDecisionKind::Clarification,
+                    source_id: chip.checkpoint_id.clone(),
+                    pulsation_id: chip.fence.pulsation_id.clone(),
+                    checkpoint_id: Some(chip.checkpoint_id.clone()),
+                    feature_id: None,
+                    input_revision: chip.fence.input_revision,
+                    state_version: chip.fence.state_version,
+                    stage: Some("specification".into()),
+                    title: "Specification clarification".into(),
+                    description: "Specification needs your answers before it can continue.".into(),
+                    actions: vec![
+                        hvc_core::orchestration::decisions::PendingDecisionAction::AnswerQuestions,
+                    ],
+                    question_set: Some(chip),
+                    forge_questions: None,
+                });
+        }
+        self.open_companion_decision(id, cx);
     }
 
     fn send_resolution_content(

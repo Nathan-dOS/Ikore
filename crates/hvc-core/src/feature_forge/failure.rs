@@ -485,6 +485,8 @@ mod tests {
             kind,
             failure,
             notices: Vec::new(),
+            questions: Vec::new(),
+            question_details: Vec::new(),
         }
     }
 

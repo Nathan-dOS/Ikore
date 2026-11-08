@@ -82,6 +82,21 @@ fn specification_checkpoint_brief_comes_from_the_typed_payload() {
     assert_eq!(visual.units.len(), 1);
     assert_eq!(visual.units[0].criteria, ["ac-1"]);
 
+    let decision = harness
+        .service
+        .read_pending_decision(
+            &harness.project,
+            &format!("checkpoint:{}", checkpoint.checkpoint_id),
+        )
+        .unwrap()
+        .expect("the same checkpoint is pending in the dock");
+    for count in brief.counts.iter().take(8) {
+        assert!(
+            decision.description.contains(count),
+            "dock summary must reuse host Brief counts"
+        );
+    }
+
     // The documents of the same checkpoint are unaffected by the brief read.
     assert!(
         !harness

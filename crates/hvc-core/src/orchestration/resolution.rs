@@ -25,6 +25,57 @@ struct CompanionTarget {
 }
 
 impl PersistenceService {
+    /// Creates a real Companion chat only after a developer asks for help.
+    /// Opening or listing a decision never calls this method.
+    pub fn ensure_decision_conversation(
+        &self,
+        project_id: &str,
+        decision_id: &str,
+    ) -> Result<String, PersistenceServiceError> {
+        let mut db = self.connection()?;
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let decision = crate::orchestration::decisions::read_pending_decision_on(
+            &tx,
+            project_id,
+            decision_id,
+        )?
+        .ok_or_else(|| {
+            invalid("This decision is no longer pending. Refresh before asking about it.")
+        })?;
+        if let Some(id) = tx.query_row(
+            "SELECT d.conversation_id FROM decision_conversations d JOIN chat_conversations c ON c.id=d.conversation_id WHERE d.project_id=?1 AND d.decision_id=?2 AND c.project_id=?1",
+            params![project_id,decision_id],|row|row.get::<_,String>(0),
+        ).optional()? {
+            return Ok(id);
+        }
+        // A clarification may have been opened through the older full-screen
+        // flow since V65. Preserve that exact conversation and all its history.
+        let legacy = if let Some(set) = &decision.question_set {
+            tx.query_row("SELECT r.conversation_id FROM specification_resolution_conversations r JOIN chat_conversations c ON c.id=r.conversation_id WHERE r.question_set_id=?1 AND c.project_id=?2", params![set.id,project_id], |row|row.get::<_,String>(0)).optional()?
+        } else {
+            None
+        };
+        let conversation_id = if let Some(id) = legacy {
+            id
+        } else {
+            let target = Self::companion_default_target(&tx, project_id)?;
+            let id = Uuid::new_v4().to_string();
+            let now = Self::now_iso();
+            tx.execute("INSERT INTO chat_conversations(id,project_id,connection_id,provider_id_snapshot,model_id_snapshot,transport_kind,cli_backend,model_profile,model_source,title,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?11)", params![id,project_id,target.connection_id,target.provider_id,target.model_id,target.transport_kind,target.cli_backend,target.model_profile,target.model_source,format!("Decision: {}",decision.title),now])?;
+            if let Some(set) = &decision.question_set {
+                tx.execute("INSERT INTO specification_resolution_conversations(question_set_id,conversation_id,created_at) VALUES(?1,?2,?3)",params![set.id,id,now])?;
+            }
+            id
+        };
+        let source_kind = serde_json::to_string(&decision.kind)
+            .map_err(|error| invalid(error.to_string()))?
+            .trim_matches('"')
+            .to_owned();
+        tx.execute("INSERT INTO decision_conversations(project_id,decision_id,source_kind,source_id,conversation_id,created_at) VALUES(?1,?2,?3,?4,?5,?6)", params![project_id,decision_id,source_kind,decision.source_id,conversation_id,Self::now_iso()])?;
+        tx.commit()?;
+        Ok(conversation_id)
+    }
+
     /// Returns the `conversation_id` for `question_set_id`'s resolution
     /// conversation, creating one the first time it is opened. The
     /// conversation carries a real provider/model snapshot (never the
@@ -45,12 +96,16 @@ impl PersistenceService {
     ) -> Result<String, PersistenceServiceError> {
         let mut db = self.connection()?;
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let checkpoint: String = tx.query_row(
+            "SELECT q.checkpoint_id FROM specification_question_sets q JOIN pulsations p ON p.id=q.pulsation_id WHERE q.id=?1 AND p.project_id=?2",
+            params![question_set_id,project_id],|row|row.get(0),
+        ).optional()?.ok_or_else(||invalid("The question set does not belong to this project."))?;
         let target = Self::companion_default_target(&tx, project_id)?;
         let now = Self::now_iso();
         if let Some(conversation_id) = tx
             .query_row(
-                "SELECT conversation_id FROM specification_resolution_conversations WHERE question_set_id=?1",
-                [question_set_id],
+                "SELECT r.conversation_id FROM specification_resolution_conversations r JOIN chat_conversations c ON c.id=r.conversation_id WHERE r.question_set_id=?1 AND c.project_id=?2",
+                params![question_set_id,project_id],
                 |r| r.get::<_, String>(0),
             )
             .optional()?
@@ -69,6 +124,7 @@ impl PersistenceService {
                     now
                 ],
             )?;
+            tx.execute("INSERT OR IGNORE INTO decision_conversations(project_id,decision_id,source_kind,source_id,conversation_id,created_at) VALUES(?1,?2,'clarification',?3,?4,?5)",params![project_id,format!("checkpoint:{checkpoint}"),question_set_id,conversation_id,now])?;
             tx.commit()?;
             return Ok(conversation_id);
         }
@@ -93,6 +149,7 @@ impl PersistenceService {
             "INSERT INTO specification_resolution_conversations(question_set_id,conversation_id,created_at) VALUES(?1,?2,?3)",
             params![question_set_id, conversation_id, now],
         )?;
+        tx.execute("INSERT INTO decision_conversations(project_id,decision_id,source_kind,source_id,conversation_id,created_at) VALUES(?1,?2,'clarification',?3,?4,?5)",params![project_id,format!("checkpoint:{checkpoint}"),question_set_id,conversation_id,now])?;
         tx.commit()?;
         Ok(conversation_id)
     }
@@ -126,6 +183,7 @@ impl PersistenceService {
                  FROM chat_conversations c
                  WHERE c.project_id=?1
                    AND NOT EXISTS(SELECT 1 FROM specification_resolution_conversations r WHERE r.conversation_id=c.id)
+                   AND NOT EXISTS(SELECT 1 FROM decision_conversations d WHERE d.conversation_id=c.id)
                    AND (
                      c.transport_kind='cli'
                      OR (c.connection_id IS NOT NULL AND EXISTS(SELECT 1 FROM provider_connections p WHERE p.id=c.connection_id AND p.enabled=1))
@@ -379,6 +437,12 @@ mod tests {
             .unwrap(),
             1
         );
+        assert!(
+            f.service
+                .ensure_resolution_conversation("other-project", "set-a")
+                .is_err()
+        );
+        assert_eq!(db.query_row("SELECT conversation_id FROM decision_conversations WHERE decision_id='checkpoint:checkpoint-for-set-a'",[],|row|row.get::<_,String>(0)).unwrap(),first);
     }
 
     #[test]
@@ -573,11 +637,52 @@ mod tests {
     #[test]
     fn with_no_prior_conversation_and_no_active_connection_fails_clearly() {
         let f = Fixture::new();
+        bare_question_set(&f.service, &f.project, "set-a");
         let error = f
             .service
             .ensure_resolution_conversation(&f.project, "set-a")
             .unwrap_err();
         assert!(error.to_string().contains("provider connection"));
+        assert_eq!(
+            f.service
+                .connection()
+                .unwrap()
+                .query_row(
+                    "SELECT count(*) FROM specification_resolution_conversations",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            f.service
+                .connection()
+                .unwrap()
+                .query_row("SELECT count(*) FROM decision_conversations", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn an_unknown_question_set_is_rejected_before_provider_resolution() {
+        let f = Fixture::new();
+        let error = f
+            .service
+            .ensure_resolution_conversation(&f.project, "missing-set")
+            .unwrap_err();
+        assert!(error.to_string().contains("question set"));
+        assert_eq!(
+            f.service
+                .connection()
+                .unwrap()
+                .query_row("SELECT count(*) FROM chat_conversations", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
     }
 
     #[test]

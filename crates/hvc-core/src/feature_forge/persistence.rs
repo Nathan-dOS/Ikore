@@ -151,8 +151,20 @@ impl PersistenceService {
             }
             result.content
         };
-        let parsed: Value =
+        let mut parsed: Value =
             decode(&output).map_err(|error| RequestError::Unreadable(error.to_string()))?;
+        // Older discovery payloads predate advisory question details. Filling
+        // their empty metadata preserves the existing questions and brief exactly.
+        if schema
+            .get("properties")
+            .and_then(|p| p.get("questionDetails"))
+            .is_some()
+            && let Some(object) = parsed.as_object_mut()
+        {
+            object
+                .entry("questionDetails")
+                .or_insert_with(|| serde_json::json!([]));
+        }
         let validator = jsonschema::validator_for(&schema).map_err(invalid)?;
         validator
             .validate(&parsed)

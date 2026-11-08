@@ -24,6 +24,91 @@ fn latest_migration_version() -> i64 {
 }
 
 #[test]
+fn v64_to_v65_preserves_resolution_history_and_adds_durable_unsent_drafts() {
+    use hvc_core::companion_dock::{CompanionDockItem, CompanionDockLayout, CompanionDraft};
+    let data = tempfile::tempdir().unwrap();
+    let path = data.path().join("hard-vibe-code.db");
+    let mut db = Connection::open(&path).unwrap();
+    cli_migrations::migrations::runner()
+        .set_target(refinery::Target::Version(64))
+        .run(&mut db)
+        .unwrap();
+    db.execute("INSERT INTO projects(id,name,workspace_path,created_at,updated_at) VALUES('dock-project','Preserved','C:/fixture-companion-upgrade','before','before')",[]).unwrap();
+    db.execute("INSERT INTO pulsations(id,project_id,feature_name,stage,status,created_at,updated_at,pipeline_version,input_revision,state_version) VALUES('dock-pulse','dock-project','Fixture','SPECIFICATION','checkpoint','before','before',4,1,1)",[]).unwrap();
+    db.execute("INSERT INTO checkpoints(id,pulsation_id,stage,status,created_at,updated_at,kind,purpose,input_revision,state_version) VALUES('dock-checkpoint','dock-pulse','SPECIFICATION','waiting','before','before','clarification','clarification',1,1)",[]).unwrap();
+    for (id, provider, model) in [
+        ("dock-host", "specification", "host-presented"),
+        ("dock-chat", "fixture", "fixture-model"),
+    ] {
+        db.execute("INSERT INTO chat_conversations(id,project_id,provider_id_snapshot,model_id_snapshot,title,created_at,updated_at) VALUES(?1,'dock-project',?2,?3,'Keep history','before','before')",params![id,provider,model]).unwrap();
+    }
+    db.execute("INSERT INTO specification_question_sets(id,checkpoint_id,pulsation_id,input_revision,generation,state_version,conversation_id,questions_json) VALUES('dock-set','dock-checkpoint','dock-pulse',1,1,1,'dock-host','[]')",[]).unwrap();
+    db.execute("INSERT INTO specification_resolution_conversations(question_set_id,conversation_id,created_at) VALUES('dock-set','dock-chat','before')",[]).unwrap();
+    db.execute("INSERT INTO chat_messages(id,conversation_id,ordinal,role,content,status,created_at,updated_at) VALUES('dock-message','dock-chat',0,'user','Preserve original human content.','completed','before','before')",[]).unwrap();
+    let history: Vec<(i64, String, String)> = db
+        .prepare("SELECT version,name,checksum FROM refinery_schema_history ORDER BY version")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    drop(db);
+    let service = PersistenceService::initialize(data.path()).unwrap();
+    let layout = CompanionDockLayout {
+        open: true,
+        conversations: vec![CompanionDockItem {
+            topic_id: "decision:checkpoint:dock-checkpoint".into(),
+            conversation_id: Some("dock-chat".into()),
+            decision_id: Some("checkpoint:dock-checkpoint".into()),
+            minimized: false,
+        }],
+    };
+    service
+        .save_companion_dock("dock-project", 1, &layout)
+        .unwrap();
+    service
+        .save_companion_draft(
+            "dock-project",
+            &CompanionDraft {
+                topic_id: "dock-chat".into(),
+                conversation_id: Some("dock-chat".into()),
+                revision: 2,
+                content: "Unsent answer 🦀".into(),
+                decision_id: Some("checkpoint:dock-checkpoint".into()),
+                decision_state_version: Some(1),
+            },
+        )
+        .unwrap();
+    drop(service);
+    let service = PersistenceService::initialize(data.path()).unwrap();
+    let snapshot = service.load_companion_dock("dock-project").unwrap();
+    assert_eq!(snapshot.layout, layout);
+    assert_eq!(snapshot.drafts[0].content, "Unsent answer 🦀");
+    let db = Connection::open(path).unwrap();
+    assert_eq!(db.query_row("SELECT conversation_id FROM decision_conversations WHERE decision_id='checkpoint:dock-checkpoint'",[],|row|row.get::<_,String>(0)).unwrap(),"dock-chat");
+    assert_eq!(
+        db.query_row(
+            "SELECT content FROM chat_messages WHERE id='dock-message'",
+            [],
+            |row| row.get::<_, String>(0)
+        )
+        .unwrap(),
+        "Preserve original human content."
+    );
+    let preserved:Vec<(i64,String,String)>=db.prepare("SELECT version,name,checksum FROM refinery_schema_history WHERE version<=64 ORDER BY version").unwrap().query_map([],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).unwrap().collect::<Result<_,_>>().unwrap();
+    assert_eq!(history, preserved);
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM refinery_schema_history WHERE version=65",
+            [],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+}
+
+#[test]
 fn v57_to_v58_adds_canvas_authoring_without_rewriting_drawings_chat_or_history() {
     use hvc_core::companion_drawings::{CanvasSceneV1, CanvasViewportV1};
     let root = tempfile::tempdir().unwrap();

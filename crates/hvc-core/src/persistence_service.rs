@@ -37,6 +37,10 @@ use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+pub use crate::orchestration::decisions::{
+    PendingDecision, PendingDecisionAction, PendingDecisionKind,
+};
+
 use crate::orchestration::brownfield::{
     BrownfieldConsentState, BrownfieldCoverageMetrics, BrownfieldOnboardingStatus,
 };
@@ -4000,9 +4004,9 @@ impl PersistenceService {
             "SELECT COUNT(*)
              FROM pulsations p
              WHERE p.project_id = ?1 AND p.status = 'checkpoint'
-               AND NOT EXISTS(SELECT 1 FROM checkpoints c
+               AND EXISTS(SELECT 1 FROM checkpoints c
                  WHERE c.pulsation_id=p.id AND c.status='waiting'
-                   AND c.purpose='stage_failure')",
+                   AND c.purpose='artifact_review')",
             params![project_id.as_str()],
             |row| row.get(0),
         )?;

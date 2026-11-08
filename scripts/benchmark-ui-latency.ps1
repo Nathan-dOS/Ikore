@@ -2,6 +2,10 @@
 param(
     [string]$BinaryPath = '',
     [string]$OutputPath = '',
+    [ValidateSet('idle', 'dock-closed', 'dock-three-streams')]
+    [string]$Scenario = 'idle',
+    [ValidatePattern('^\d{3,4}x\d{3,4}$')]
+    [string]$WindowSize = '1440x900',
     [ValidateRange(20, 2000)]
     [int]$Samples = 140,
     [ValidateRange(1, 1000)]
@@ -80,6 +84,8 @@ $previousDataDirectory = $env:HVC_DATA_DIR
 $previousReport = $env:HVC_BENCHMARK_UI_REPORT
 $previousSamples = $env:HVC_BENCHMARK_UI_SAMPLES
 $previousWarmup = $env:HVC_BENCHMARK_UI_WARMUP
+$previousScenario = $env:HVC_BENCHMARK_UI_SCENARIO
+$previousWindowSize = $env:HVC_BENCHMARK_UI_WINDOW_SIZE
 $process = $null
 $processMetrics = [System.Collections.Generic.List[object]]::new()
 
@@ -102,6 +108,8 @@ try {
     $env:HVC_BENCHMARK_UI_REPORT = $resolvedOutput
     $env:HVC_BENCHMARK_UI_SAMPLES = $Samples.ToString([System.Globalization.CultureInfo]::InvariantCulture)
     $env:HVC_BENCHMARK_UI_WARMUP = $WarmupSamples.ToString([System.Globalization.CultureInfo]::InvariantCulture)
+    $env:HVC_BENCHMARK_UI_SCENARIO = $Scenario
+    $env:HVC_BENCHMARK_UI_WINDOW_SIZE = $WindowSize
     # Uma janela oculta/minimizada deixa de receber animation frames no backend Win32.
     $process = Start-Process -FilePath $resolvedBinary -PassThru -WindowStyle Normal
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
@@ -160,7 +168,13 @@ try {
     $cpu = @($processMetrics | ForEach-Object { [double]$_.cpuPercentAllCores })
     $workingSet = @($processMetrics | ForEach-Object { [double]$_.workingSetBytes })
     $privateMemory = @($processMetrics | ForEach-Object { [double]$_.privateMemoryBytes })
-    $report | Add-Member -NotePropertyName scenario -NotePropertyValue 'idle' -Force
+    if ($Scenario -eq 'dock-three-streams' -and $report.scenario -ne $Scenario) {
+        throw 'The binary did not execute the requested three-stream fixture.'
+    }
+    $report | Add-Member -NotePropertyName requestedScenario -NotePropertyValue $Scenario -Force
+    if (-not $report.PSObject.Properties['scenario']) {
+        $report | Add-Member -NotePropertyName scenario -NotePropertyValue 'idle'
+    }
     $report | Add-Member -NotePropertyName processMetrics -NotePropertyValue ([pscustomobject]@{
         sampleIntervalMs = 100
         samples = $processMetrics.Count
@@ -200,7 +214,9 @@ finally {
         @{ Name = 'HVC_DATA_DIR'; Value = $previousDataDirectory },
         @{ Name = 'HVC_BENCHMARK_UI_REPORT'; Value = $previousReport },
         @{ Name = 'HVC_BENCHMARK_UI_SAMPLES'; Value = $previousSamples },
-        @{ Name = 'HVC_BENCHMARK_UI_WARMUP'; Value = $previousWarmup }
+        @{ Name = 'HVC_BENCHMARK_UI_WARMUP'; Value = $previousWarmup },
+        @{ Name = 'HVC_BENCHMARK_UI_SCENARIO'; Value = $previousScenario },
+        @{ Name = 'HVC_BENCHMARK_UI_WINDOW_SIZE'; Value = $previousWindowSize }
     )) {
         if ($null -eq $entry.Value) {
             Remove-Item "Env:$($entry.Name)" -ErrorAction SilentlyContinue

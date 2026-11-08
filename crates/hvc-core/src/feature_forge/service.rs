@@ -635,37 +635,7 @@ impl FeatureForgeService {
         let mut db = self.persistence.connection()?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let f = feature(&tx, project, feature_id)?;
-        editable_feature(&tx, &f, f.revision)?;
-        if f.approved_revision != Some(f.revision)
-            || matches!(
-                f.state,
-                FeatureState::Archived
-                    | FeatureState::Done
-                    | FeatureState::Executing
-                    | FeatureState::ReadyForReview
-            )
-        {
-            return Err(invalid(
-                "Approve the feature revision before planning its wave",
-            ));
-        }
-        if wave == Wave::Current {
-            check_feature_prerequisites(&tx, feature_id)?;
-            let limit: u32 = tx
-                .query_row(
-                    "SELECT current_wave_limit FROM forge_project_settings WHERE project_id=?1",
-                    [project],
-                    |r| r.get(0),
-                )
-                .optional()?
-                .unwrap_or(3);
-            let used:u32=tx.query_row("SELECT count(*) FROM forge_features WHERE project_id=?1 AND wave='current' AND state NOT IN ('done','archived') AND id<>?2",params![project,feature_id],|r|r.get(0))?;
-            if used >= limit {
-                return Err(invalid("Current wave capacity reached"));
-            }
-        }
-        tx.execute("UPDATE forge_features SET wave=?2,position=?3,state='planned',updated_at=?4 WHERE id=?1",params![feature_id,enum_string(&wave)?,position,now()])?;
-        let result = feature(&tx, project, feature_id)?;
+        let result = apply_wave_move(&tx, project, &f, wave, position)?;
         tx.commit()?;
         Ok(result)
     }
@@ -1333,6 +1303,51 @@ pub(crate) fn release_failed(db: &Connection, project: &str) -> Result<(), Error
 pub(crate) fn check_feature_prerequisites(db: &Connection, feature_id: &str) -> Result<(), Error> {
     if db.query_row("SELECT EXISTS(SELECT 1 FROM forge_feature_dependencies d JOIN forge_features f ON f.id=d.prerequisite_id WHERE d.feature_id=?1 AND f.state<>'done' AND (f.wave IS NOT 'current' OR f.approved_revision IS NOT f.revision OR f.state='archived'))",[feature_id],|r|r.get::<_,bool>(0))? { return Err(invalid("Plan approved prerequisites in the current wave first")); }
     Ok(())
+}
+
+/// Shared wave guards and mutation. Callers hold the immediate transaction
+/// which supplied `f`; compound commands validate their expected revision first.
+pub(crate) fn apply_wave_move(
+    db: &Connection,
+    project: &str,
+    f: &Feature,
+    wave: Wave,
+    position: i64,
+) -> Result<Feature, Error> {
+    editable_feature(db, f, f.revision)?;
+    if f.approved_revision != Some(f.revision)
+        || matches!(
+            f.state,
+            FeatureState::Archived
+                | FeatureState::Done
+                | FeatureState::Executing
+                | FeatureState::ReadyForReview
+        )
+    {
+        return Err(invalid(
+            "Approve the feature revision before planning its wave",
+        ));
+    }
+    if wave == Wave::Current {
+        check_feature_prerequisites(db, &f.id)?;
+        let limit: u32 = db
+            .query_row(
+                "SELECT current_wave_limit FROM forge_project_settings WHERE project_id=?1",
+                [project],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or(3);
+        let used: u32 = db.query_row("SELECT count(*) FROM forge_features WHERE project_id=?1 AND wave='current' AND state NOT IN ('done','archived') AND id<>?2",params![project,f.id],|row|row.get(0))?;
+        if used >= limit {
+            return Err(invalid("Current wave capacity reached"));
+        }
+    }
+    db.execute(
+        "UPDATE forge_features SET wave=?2,position=?3,state='planned',updated_at=?4 WHERE id=?1",
+        params![f.id, enum_string(&wave)?, position, now()],
+    )?;
+    feature(db, project, &f.id)
 }
 pub(crate) fn check_source(
     db: &Connection,

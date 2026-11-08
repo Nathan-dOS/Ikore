@@ -589,7 +589,10 @@ impl SqliteLlmRepository {
     }
 
     pub fn list_routes(&self) -> Result<Vec<ProviderRoute>, LlmError> {
-        let connection = self.connection()?;
+        self.list_routes_on(&self.connection()?)
+    }
+
+    fn list_routes_on(&self, connection: &Connection) -> Result<Vec<ProviderRoute>, LlmError> {
         let mut statement = connection
             .prepare(
                 "SELECT id, name, strategy, max_attempts, attempt_timeout_ms, route_timeout_ms,
@@ -617,7 +620,7 @@ impl SqliteLlmRepository {
         let mut result = Vec::new();
         for route in routes {
             let mut route = route.map_err(db_error)?;
-            route.targets = self.targets_for_route(&connection, &route.id)?;
+            route.targets = self.targets_for_route(connection, &route.id)?;
             result.push(route);
         }
         Ok(result)
@@ -1021,7 +1024,15 @@ impl SqliteLlmRepository {
     }
 
     pub fn find_resolved_connection(&self, id: &str) -> Result<ResolvedConnection, LlmError> {
-        self.connection()?.query_row(
+        self.find_resolved_connection_on(&self.connection()?, id)
+    }
+
+    fn find_resolved_connection_on(
+        &self,
+        connection: &Connection,
+        id: &str,
+    ) -> Result<ResolvedConnection, LlmError> {
+        connection.query_row(
             "SELECT id,provider_id,credential_ref,endpoint_url,default_model,enabled,state,cooldown_until,backoff_level,max_concurrency
              FROM provider_connections WHERE id=?1",params![id],|row|{
                 Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,row.get::<_,Option<String>>(3)?,row.get::<_,String>(4)?,row.get::<_,bool>(5)?,row.get::<_,String>(6)?,row.get::<_,Option<String>>(7)?,row.get::<_,u32>(8)?,row.get::<_,u32>(9)?))
@@ -1758,16 +1769,16 @@ impl SqliteLlmRepository {
         .map_err(db_error)?;
         Ok(found)
     }
-}
 
-impl LlmRepository for SqliteLlmRepository {
-    fn resolve_route(
+    /// Transaction-aware route resolution. Preflight must not open another
+    /// reader while its caller holds a snapshot and a worker is committing.
+    pub(crate) fn resolve_route_on(
         &self,
+        connection: &Connection,
         project_id: &str,
         role: AgentRole,
         stage: &str,
     ) -> Result<ProviderRoute, LlmError> {
-        let connection = self.connection()?;
         let stage = crate::orchestration::catalog::canonical_stage(stage);
         if stage == "SPECIFICATION" {
             let conflict: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM provider_route_bindings a JOIN provider_route_bindings c ON c.project_id=a.project_id AND c.agent_role=a.agent_role WHERE a.project_id=?1 AND a.agent_role=?2 AND a.stage='Specification' AND c.stage='SPECIFICATION' AND (a.route_id<>c.route_id OR a.enabled<>c.enabled))",params![project_id,role.as_str()],|r|r.get(0)).map_err(db_error)?;
@@ -1782,18 +1793,21 @@ impl LlmRepository for SqliteLlmRepository {
             "SELECT route_id FROM provider_route_bindings WHERE project_id=?1 AND agent_role=?2 AND stage=?3 AND enabled=1",
             params![project_id,role.as_str(),stage],|row|row.get::<_,String>(0)
         ).optional().map_err(db_error)?.unwrap_or_else(||"legacy-default".to_string());
-        self.list_routes()?
+        self.list_routes_on(connection)?
             .into_iter()
             .find(|route| route.id == route_id && route.enabled)
             .ok_or_else(|| LlmError::new(LlmErrorKind::InvalidRequest, "Active route not found."))
     }
 
-    fn resolved_targets(&self, route_id: &str) -> Result<Vec<ResolvedRouteTarget>, LlmError> {
-        let connection = self.connection()?;
-        let targets = self.targets_for_route(&connection, route_id)?;
+    pub(crate) fn resolved_targets_on(
+        &self,
+        connection: &Connection,
+        route_id: &str,
+    ) -> Result<Vec<ResolvedRouteTarget>, LlmError> {
+        let targets = self.targets_for_route(connection, route_id)?;
         let mut result = Vec::new();
         for target in targets.into_iter().filter(|target| target.enabled) {
-            let resolved = self.find_resolved_connection(&target.connection_id)?;
+            let resolved = self.find_resolved_connection_on(connection, &target.connection_id)?;
             let local =
                 profile_by_id(resolved.provider_id.as_str()).is_some_and(|profile| profile.local);
             result.push(ResolvedRouteTarget {
@@ -1803,6 +1817,21 @@ impl LlmRepository for SqliteLlmRepository {
             });
         }
         Ok(result)
+    }
+}
+
+impl LlmRepository for SqliteLlmRepository {
+    fn resolve_route(
+        &self,
+        project_id: &str,
+        role: AgentRole,
+        stage: &str,
+    ) -> Result<ProviderRoute, LlmError> {
+        self.resolve_route_on(&self.connection()?, project_id, role, stage)
+    }
+
+    fn resolved_targets(&self, route_id: &str) -> Result<Vec<ResolvedRouteTarget>, LlmError> {
+        self.resolved_targets_on(&self.connection()?, route_id)
     }
 
     fn decide(

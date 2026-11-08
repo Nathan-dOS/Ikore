@@ -9,6 +9,7 @@ pub mod agent_timeout;
 pub mod app_core;
 pub mod attestation;
 pub mod chat_service;
+pub mod companion_dock;
 pub mod companion_drawings;
 pub mod companion_notes;
 pub mod doc_reconciliation;

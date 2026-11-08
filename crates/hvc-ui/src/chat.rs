@@ -354,6 +354,21 @@ pub(crate) enum ChatEventOutcome {
 /// Messages of the open conversation rendered by default.
 pub(crate) const CHAT_RENDER_WINDOW: usize = 40;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum ChatOperation {
+    Create,
+    Load,
+    Send,
+    Delete,
+    Cancel,
+}
+
+#[derive(Debug, Default)]
+struct ConversationState {
+    operations: HashMap<ChatOperation, u64>,
+    error: Option<UiCommandError>,
+}
+
 #[derive(Debug, Default)]
 pub struct ChatModel {
     pub(crate) tool_activity_open: bool,
@@ -387,6 +402,12 @@ pub struct ChatModel {
     acknowledged_disclosures: HashSet<String>,
     last_sequences: HashMap<String, u64>,
     hydration_generation: u64,
+    hydration_conversation_ids: HashSet<String>,
+    conversation_states: HashMap<String, ConversationState>,
+    operation_generation: u64,
+    project_loading: bool,
+    project_error: Option<UiCommandError>,
+    creating: bool,
 }
 
 impl ChatModel {
@@ -409,27 +430,36 @@ impl ChatModel {
         restored_conversation_id: Option<String>,
     ) -> u64 {
         self.hydration_generation = self.hydration_generation.saturating_add(1);
-        self.project_id = Some(project_id.into());
-        self.connections.clear();
-        self.cli_availability.clear();
-        self.conversations.clear();
-        self.messages_by_conversation.clear();
-        self.tool_calls_by_conversation.clear();
-        self.last_sequences.clear();
-        self.active_conversation = restored_conversation_id.map(Into::into);
-        self.selected_connection_id = None;
-        self.selected_transport = ChatTransportKind::Api;
-        self.selected_cli_backend = CliBackend::Codex;
-        self.selected_cli_model = None;
-        self.selected_cli_model_profile = None;
-        self.selected_cli_model_source = CliModelSelectionSource::Default;
-        self.target_change_pending = false;
-        self.target_change_generation = self.target_change_generation.saturating_add(1);
-        self.pending_delete_conversation_id = None;
-        self.loading = true;
-        self.busy = false;
-        self.streaming = false;
-        self.error = None;
+        if self.project_id.as_ref().map(AsRef::as_ref) != Some(project_id.as_str()) {
+            self.project_id = Some(project_id.into());
+            self.connections.clear();
+            self.cli_availability.clear();
+            self.conversations.clear();
+            self.messages_by_conversation.clear();
+            self.tool_calls_by_conversation.clear();
+            self.conversation_states.clear();
+            self.last_sequences.clear();
+            self.acknowledged_disclosures.clear();
+            self.active_conversation = restored_conversation_id.map(Into::into);
+            self.selected_connection_id = None;
+            self.selected_transport = ChatTransportKind::Api;
+            self.selected_cli_backend = CliBackend::Codex;
+            self.selected_cli_model = None;
+            self.selected_cli_model_profile = None;
+            self.selected_cli_model_source = CliModelSelectionSource::Default;
+            self.target_change_pending = false;
+            self.target_change_generation = self.target_change_generation.saturating_add(1);
+            self.pending_delete_conversation_id = None;
+            self.creating = false;
+        }
+        self.project_loading = true;
+        self.project_error = None;
+        self.hydration_conversation_ids = self
+            .conversations
+            .iter()
+            .map(|conversation| conversation.id.clone())
+            .collect();
+        self.recompute_streaming();
         self.hydration_generation
     }
 
@@ -441,16 +471,33 @@ impl ChatModel {
         }
         self.connections = hydration.connections;
         self.cli_availability = hydration.cli_availability;
-        self.conversations = hydration.conversations;
+        let mut conversations = hydration.conversations;
+        for existing in &self.conversations {
+            if !conversations
+                .iter()
+                .any(|conversation| conversation.id == existing.id)
+                && (!self.hydration_conversation_ids.contains(&existing.id)
+                    || self.is_busy(&existing.id))
+            {
+                conversations.push(existing.clone());
+            }
+        }
+        self.conversations = conversations;
         let selected_connection_id = self
             .eligible_connections()
             .next()
             .map(|connection| SharedString::from(connection.id.clone()));
         self.selected_connection_id = selected_connection_id;
-        self.active_conversation = hydration
-            .selected
-            .as_ref()
-            .map(|snapshot| SharedString::from(snapshot.conversation.id.clone()));
+        if !self.active_conversation.as_ref().is_some_and(|active| {
+            self.conversations
+                .iter()
+                .any(|conversation| conversation.id == active.as_ref())
+        }) {
+            self.active_conversation = hydration
+                .selected
+                .as_ref()
+                .map(|snapshot| SharedString::from(snapshot.conversation.id.clone()));
+        }
         if let Some(target) = &hydration.default_target {
             self.apply_target_to_panel(target);
         }
@@ -458,8 +505,8 @@ impl ChatModel {
             self.store_conversation_snapshot(snapshot);
         }
         self.sync_panel_with_active_conversation();
-        self.loading = false;
-        self.error = None;
+        self.project_loading = false;
+        self.project_error = None;
         self.recompute_streaming();
         true
     }
@@ -468,9 +515,15 @@ impl ChatModel {
         if generation != self.hydration_generation {
             return false;
         }
-        self.loading = false;
-        self.error = Some(error);
+        self.project_loading = false;
+        self.project_error = Some(error);
+        self.recompute_streaming();
         true
+    }
+
+    pub(crate) fn finish_hydration_without_backend(&mut self) {
+        self.project_loading = false;
+        self.recompute_streaming();
     }
 
     pub(crate) fn eligible_connections(&self) -> impl Iterator<Item = &ProviderConnection> {
@@ -502,13 +555,56 @@ impl ChatModel {
             .find(|conversation| conversation.id == active.as_ref())
     }
 
+    pub(crate) fn conversation_target(
+        &self,
+        conversation_id: &str,
+    ) -> Option<ChatExecutionTargetRequest> {
+        let conversation = self
+            .conversations
+            .iter()
+            .find(|conversation| conversation.id == conversation_id)?;
+        match conversation.transport {
+            ChatTransportKind::Api => Some(ChatExecutionTargetRequest::Api {
+                connection_id: conversation.connection_id.clone()?,
+            }),
+            ChatTransportKind::Cli => Some(ChatExecutionTargetRequest::Cli {
+                backend: conversation.cli_backend?,
+                model: (conversation.model_id != "default").then(|| conversation.model_id.clone()),
+                model_profile: conversation.model_profile.clone(),
+            }),
+        }
+    }
+
+    pub(crate) fn composer_available_for(&self, conversation_id: &str) -> bool {
+        self.project_id.is_some()
+            && self.conversations.iter().any(|conversation| {
+                conversation.id == conversation_id && conversation.connection_available
+            })
+            && !(self.active_conversation.as_ref().map(AsRef::as_ref) == Some(conversation_id)
+                && self.target_change_pending)
+    }
+
+    pub(crate) fn streaming_count(&self) -> usize {
+        self.conversations
+            .iter()
+            .filter(|conversation| self.is_streaming(&conversation.id))
+            .count()
+    }
+
     /// The tail of the active conversation that is rendered, and how many earlier messages it
     /// hides. Every frame re-parses each rendered message (markdown, diffs), and streaming
     /// notifies on every token batch, so a long conversation renders a bounded window.
     pub(crate) fn rendered_messages(&self) -> (&[ChatMessage], usize) {
-        let messages = self.active_messages();
-        let expanded =
-            self.history_expanded.is_some() && self.history_expanded == self.active_conversation;
+        self.active_conversation
+            .as_ref()
+            .map(AsRef::as_ref)
+            .map(|id| self.rendered_messages_for(id))
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn rendered_messages_for(&self, conversation_id: &str) -> (&[ChatMessage], usize) {
+        let messages = self.messages_for(conversation_id);
+        let expanded = self.history_expanded.as_ref().map(AsRef::as_ref) == Some(conversation_id);
         let hidden = if expanded {
             0
         } else {
@@ -520,9 +616,100 @@ impl ChatModel {
     pub(crate) fn active_messages(&self) -> &[ChatMessage] {
         self.active_conversation
             .as_ref()
-            .and_then(|id| self.messages_by_conversation.get(id.as_ref()))
+            .map(|id| self.messages_for(id))
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn messages_for(&self, conversation_id: &str) -> &[ChatMessage] {
+        self.messages_by_conversation
+            .get(conversation_id)
             .map(Vec::as_slice)
             .unwrap_or_default()
+    }
+
+    pub(crate) fn is_streaming(&self, conversation_id: &str) -> bool {
+        self.messages_for(conversation_id).iter().any(|message| {
+            message.role == "assistant"
+                && matches!(message.status.as_str(), "pending" | "streaming")
+        })
+    }
+
+    pub(crate) fn is_loading(&self, conversation_id: &str) -> bool {
+        self.conversation_states
+            .get(conversation_id)
+            .is_some_and(|state| state.operations.contains_key(&ChatOperation::Load))
+    }
+
+    pub(crate) fn is_busy(&self, conversation_id: &str) -> bool {
+        self.conversation_states
+            .get(conversation_id)
+            .is_some_and(|state| {
+                state
+                    .operations
+                    .keys()
+                    .any(|operation| *operation != ChatOperation::Load)
+            })
+    }
+
+    pub(crate) fn error_for(&self, conversation_id: &str) -> Option<&UiCommandError> {
+        self.conversation_states
+            .get(conversation_id)
+            .and_then(|state| state.error.as_ref())
+    }
+
+    pub(crate) fn begin_operation(
+        &mut self,
+        conversation_id: &str,
+        operation: ChatOperation,
+    ) -> Option<u64> {
+        let state = self
+            .conversation_states
+            .entry(conversation_id.into())
+            .or_default();
+        if state.operations.contains_key(&operation)
+            || (matches!(operation, ChatOperation::Send | ChatOperation::Delete)
+                && state
+                    .operations
+                    .keys()
+                    .any(|pending| matches!(pending, ChatOperation::Send | ChatOperation::Delete)))
+        {
+            return None;
+        }
+        self.operation_generation = self.operation_generation.saturating_add(1);
+        let generation = self.operation_generation;
+        state.operations.insert(operation, generation);
+        state.error = None;
+        self.recompute_streaming();
+        Some(generation)
+    }
+
+    pub(crate) fn finish_operation(
+        &mut self,
+        project_id: &str,
+        conversation_id: &str,
+        operation: ChatOperation,
+        generation: u64,
+    ) -> bool {
+        if self.project_id.as_ref().map(AsRef::as_ref) != Some(project_id) {
+            return false;
+        }
+        let Some(state) = self.conversation_states.get_mut(conversation_id) else {
+            return false;
+        };
+        if state.operations.get(&operation) != Some(&generation) {
+            return false;
+        }
+        state.operations.remove(&operation);
+        self.recompute_streaming();
+        true
+    }
+
+    pub(crate) fn set_conversation_error(&mut self, conversation_id: &str, error: UiCommandError) {
+        self.conversation_states
+            .entry(conversation_id.into())
+            .or_default()
+            .error = Some(error);
+        self.recompute_streaming();
     }
 
     pub(crate) fn active_tool_calls(&self) -> &[ChatToolCall] {
@@ -533,33 +720,33 @@ impl ChatModel {
             .unwrap_or_default()
     }
 
-    pub(crate) fn composer_available(&self) -> bool {
-        self.project_id.is_some()
-            && self.active_conversation_record().is_some()
-            && !self.target_change_pending
-    }
-
     pub(crate) fn disclosure_required(&self) -> bool {
         self.active_conversation_record().is_some() && self.active_messages().is_empty()
     }
 
     pub(crate) fn disclosure_accepted(&self) -> bool {
-        if !self.disclosure_required() {
-            return true;
-        }
         self.active_conversation
             .as_ref()
-            .is_some_and(|id| self.acknowledged_disclosures.contains(id.as_ref()))
+            .is_none_or(|id| self.disclosure_accepted_for(id))
+    }
+
+    pub(crate) fn disclosure_accepted_for(&self, conversation_id: &str) -> bool {
+        !self.messages_for(conversation_id).is_empty()
+            || self.acknowledged_disclosures.contains(conversation_id)
     }
 
     pub(crate) fn acknowledge_disclosure(&mut self) {
-        if let Some(id) = &self.active_conversation {
-            self.acknowledged_disclosures.insert(id.to_string());
+        if let Some(id) = self.active_conversation.clone() {
+            self.acknowledge_disclosure_for(&id);
         }
     }
 
-    pub(crate) fn active_execution_id(&self) -> Option<String> {
-        self.active_messages()
+    pub(crate) fn acknowledge_disclosure_for(&mut self, conversation_id: &str) {
+        self.acknowledged_disclosures.insert(conversation_id.into());
+    }
+
+    pub(crate) fn execution_id_for(&self, conversation_id: &str) -> Option<String> {
+        self.messages_for(conversation_id)
             .iter()
             .rev()
             .find(|message| {
@@ -581,8 +768,7 @@ impl ChatModel {
         self.target_change_generation = self.target_change_generation.saturating_add(1);
         self.target_change_pending = false;
         self.pending_delete_conversation_id = None;
-        self.loading = true;
-        self.error = None;
+        self.recompute_streaming();
         true
     }
 
@@ -593,15 +779,13 @@ impl ChatModel {
         snapshot: GetChatConversationResponse,
     ) -> bool {
         if self.project_id.as_ref().map(AsRef::as_ref) != Some(project_id)
-            || self.active_conversation.as_ref().map(AsRef::as_ref) != Some(conversation_id)
             || snapshot.conversation.id != conversation_id
+            || snapshot.conversation.project_id != project_id
         {
             return false;
         }
         self.store_conversation_snapshot(snapshot);
         self.sync_panel_with_active_conversation();
-        self.loading = false;
-        self.error = None;
         self.recompute_streaming();
         true
     }
@@ -681,22 +865,29 @@ impl ChatModel {
 
     /// Stores a retargeted conversation; the panel already shows its target.
     pub(crate) fn apply_retargeted(&mut self, snapshot: GetChatConversationResponse) {
+        let conversation_id = snapshot.conversation.id.clone();
         self.store_conversation_snapshot(snapshot);
         self.sync_panel_with_active_conversation();
-        self.error = None;
+        self.conversation_states
+            .entry(conversation_id)
+            .or_default()
+            .error = None;
+        self.recompute_streaming();
     }
 
     pub(crate) fn begin_busy(&mut self) -> bool {
-        if self.busy {
+        if self.creating {
             return false;
         }
-        self.busy = true;
-        self.error = None;
+        self.creating = true;
+        self.project_error = None;
+        self.recompute_streaming();
         true
     }
 
     pub(crate) fn finish_busy(&mut self) {
-        self.busy = false;
+        self.creating = false;
+        self.recompute_streaming();
     }
 
     pub(crate) fn apply_created(&mut self, snapshot: GetChatConversationResponse) {
@@ -715,6 +906,7 @@ impl ChatModel {
             .retain(|conversation| conversation.id != conversation_id);
         self.messages_by_conversation.remove(conversation_id);
         self.tool_calls_by_conversation.remove(conversation_id);
+        self.conversation_states.remove(conversation_id);
         self.acknowledged_disclosures.remove(conversation_id);
         self.pending_delete_conversation_id = None;
         if self.active_conversation.as_ref().map(AsRef::as_ref) == Some(conversation_id) {
@@ -728,6 +920,11 @@ impl ChatModel {
     }
 
     pub(crate) fn store_conversation_snapshot(&mut self, snapshot: GetChatConversationResponse) {
+        if self.project_id.as_ref().map(AsRef::as_ref)
+            != Some(snapshot.conversation.project_id.as_str())
+        {
+            return;
+        }
         let conversation_id = snapshot.conversation.id.clone();
         if let Some(existing) = self
             .conversations
@@ -739,17 +936,48 @@ impl ChatModel {
             self.conversations.insert(0, snapshot.conversation);
         }
         let mut messages = snapshot.messages;
+        // A load or send acknowledgement may race token events or another load. Never
+        // discard a newer generation, message or sequence already observed in the UI.
+        let mut keep_existing_tools = false;
+        if let Some(existing) = self.messages_by_conversation.get(&conversation_id) {
+            for current in existing {
+                match messages.iter_mut().find(|message| message.id == current.id) {
+                    Some(message)
+                        if message.last_sequence < current.last_sequence
+                            || (message.last_sequence == current.last_sequence
+                                && matches!(message.status.as_str(), "pending" | "streaming")
+                                && !matches!(current.status.as_str(), "pending" | "streaming")) =>
+                    {
+                        *message = current.clone();
+                        keep_existing_tools = true;
+                    }
+                    Some(_) => {}
+                    None => {
+                        messages.push(current.clone());
+                        keep_existing_tools = true;
+                    }
+                }
+            }
+        }
         messages.sort_by_key(|message| message.ordinal);
         for message in &messages {
             if let Some(generation_id) = &message.generation_id {
                 self.last_sequences
-                    .insert(generation_id.clone(), message.last_sequence);
+                    .entry(generation_id.clone())
+                    .and_modify(|sequence| *sequence = (*sequence).max(message.last_sequence))
+                    .or_insert(message.last_sequence);
             }
         }
         self.messages_by_conversation
             .insert(conversation_id.clone(), messages);
-        self.tool_calls_by_conversation
-            .insert(conversation_id, snapshot.tool_calls);
+        if !keep_existing_tools
+            || !self
+                .tool_calls_by_conversation
+                .contains_key(&conversation_id)
+        {
+            self.tool_calls_by_conversation
+                .insert(conversation_id, snapshot.tool_calls);
+        }
         self.recompute_streaming();
     }
 
@@ -759,7 +987,14 @@ impl ChatModel {
         generation_id: &str,
         snapshot: GetChatConversationResponse,
     ) -> bool {
-        if self.active_conversation.as_ref().map(AsRef::as_ref) != Some(conversation_id) {
+        if snapshot.conversation.id != conversation_id
+            || self.project_id.as_ref().map(AsRef::as_ref)
+                != Some(snapshot.conversation.project_id.as_str())
+            || !snapshot
+                .messages
+                .iter()
+                .any(|message| message.generation_id.as_deref() == Some(generation_id))
+        {
             return false;
         }
         self.last_sequences
@@ -802,9 +1037,10 @@ impl ChatModel {
             .messages_by_conversation
             .get_mut(&envelope.conversation_id)
             .and_then(|messages| {
-                messages
-                    .iter_mut()
-                    .find(|message| message.id == envelope.assistant_message_id)
+                messages.iter_mut().find(|message| {
+                    message.id == envelope.assistant_message_id
+                        && message.generation_id.as_deref() == Some(envelope.generation_id.as_str())
+                })
             });
         let requires_snapshot = match (&envelope.kind, &envelope.detail, message) {
             (ChatEventKind::TokenDelta, ChatEventDetail::TokenDelta { delta }, Some(message)) => {
@@ -875,22 +1111,34 @@ impl ChatModel {
                 .map(|message| message.last_sequence)
                 .unwrap_or(previous),
         );
-        self.error = None;
+        self.conversation_states
+            .entry(conversation_id.into())
+            .or_default()
+            .error = None;
         self.recompute_streaming();
         true
     }
 
     pub(crate) fn set_error(&mut self, error: UiCommandError) {
-        self.loading = false;
-        self.busy = false;
-        self.error = Some(error);
+        if let Some(id) = self.active_conversation.clone() {
+            self.set_conversation_error(&id, error);
+        } else {
+            self.project_loading = false;
+            self.creating = false;
+            self.project_error = Some(error);
+            self.recompute_streaming();
+        }
     }
 
     fn recompute_streaming(&mut self) {
-        self.streaming = self.active_messages().iter().any(|message| {
-            message.role == "assistant"
-                && matches!(message.status.as_str(), "pending" | "streaming")
-        });
+        let active = self.active_conversation.as_ref().map(AsRef::as_ref);
+        self.streaming = active.is_some_and(|id| self.is_streaming(id));
+        self.loading = self.project_loading || active.is_some_and(|id| self.is_loading(id));
+        self.busy = self.creating || active.is_some_and(|id| self.is_busy(id));
+        self.error = active
+            .and_then(|id| self.error_for(id))
+            .cloned()
+            .or_else(|| self.project_error.clone());
     }
 }
 
@@ -1017,10 +1265,174 @@ mod tests {
         assert_eq!(model.rendered_messages().1, 60 - CHAT_RENDER_WINDOW);
     }
 
+    #[test]
+    fn conversation_operations_and_errors_are_independent() {
+        let mut model = ChatModel::default();
+        let generation = model.begin_hydration("project-1".into(), None);
+        model.apply_hydration(generation, snapshot("project-1", "first", 0));
+        model
+            .conversations
+            .push(conversation("conversation-2", "project-1"));
+        let first = model
+            .begin_operation("conversation-1", ChatOperation::Send)
+            .unwrap();
+        let second = model
+            .begin_operation("conversation-2", ChatOperation::Send)
+            .unwrap();
+        assert!(model.is_busy("conversation-1"));
+        assert!(model.is_busy("conversation-2"));
+        assert!(model.finish_operation("project-1", "conversation-2", ChatOperation::Send, second));
+        model.set_conversation_error("conversation-2", UiCommandError::worker("second failed"));
+        assert!(model.is_busy("conversation-1"));
+        assert!(!model.is_busy("conversation-2"));
+        assert!(model.error_for("conversation-1").is_none());
+        assert!(model.error_for("conversation-2").is_some());
+        assert!(model.finish_operation("project-1", "conversation-1", ChatOperation::Send, first));
+    }
+
+    #[test]
+    fn a_started_turn_is_stored_after_selecting_another_conversation() {
+        let mut model = ChatModel::default();
+        let generation = model.begin_hydration("project-1".into(), None);
+        model.apply_hydration(generation, snapshot("project-1", "first", 0));
+        model
+            .conversations
+            .push(conversation("conversation-2", "project-1"));
+        model.select_conversation_locally("conversation-2");
+        assert!(model.apply_started_snapshot(
+            "conversation-1",
+            "generation-1",
+            snapshot("project-1", "continued", 1).selected.unwrap()
+        ));
+        assert_eq!(model.messages_for("conversation-1")[0].content, "continued");
+        assert_eq!(
+            model.active_conversation.as_ref().map(AsRef::as_ref),
+            Some("conversation-2")
+        );
+        assert!(model.is_streaming("conversation-1"));
+        assert!(!model.is_streaming("conversation-2"));
+    }
+
+    #[test]
+    fn project_refresh_preserves_other_conversations_and_active_work() {
+        let mut model = ChatModel::default();
+        let generation = model.begin_hydration("project-1".into(), None);
+        model.apply_hydration(generation, snapshot("project-1", "first", 0));
+        model
+            .conversations
+            .push(conversation("conversation-2", "project-1"));
+        let mut second = message("second", 2);
+        second.conversation_id = "conversation-2".into();
+        model
+            .messages_by_conversation
+            .insert("conversation-2".into(), vec![second]);
+        let pending = model
+            .begin_operation("conversation-2", ChatOperation::Send)
+            .unwrap();
+        let generation = model.begin_hydration("project-1".into(), None);
+        assert_eq!(model.messages_for("conversation-2")[0].content, "second");
+        assert!(model.is_busy("conversation-2"));
+        let mut refresh = snapshot("project-1", "first", 0);
+        refresh
+            .conversations
+            .push(conversation("conversation-2", "project-1"));
+        model.apply_hydration(generation, refresh);
+        assert_eq!(model.messages_for("conversation-2")[0].content, "second");
+        assert!(model.finish_operation(
+            "project-1",
+            "conversation-2",
+            ChatOperation::Send,
+            pending
+        ));
+    }
+
+    #[test]
+    fn conversation_operations_reject_stale_generation_and_project() {
+        let mut model = ChatModel::default();
+        model.begin_hydration("project-a".into(), None);
+        let first = model
+            .begin_operation("conversation-1", ChatOperation::Load)
+            .unwrap();
+        assert!(!model.finish_operation("project-b", "conversation-1", ChatOperation::Load, first));
+        assert!(model.finish_operation("project-a", "conversation-1", ChatOperation::Load, first));
+        let next = model
+            .begin_operation("conversation-1", ChatOperation::Load)
+            .unwrap();
+        assert!(!model.finish_operation("project-a", "conversation-1", ChatOperation::Load, first));
+        assert!(model.is_loading("conversation-1"));
+        model.begin_hydration("project-b".into(), None);
+        model.begin_hydration("project-a".into(), None);
+        let newest = model
+            .begin_operation("conversation-1", ChatOperation::Load)
+            .unwrap();
+        assert!(newest > next);
+        assert!(!model.finish_operation("project-a", "conversation-1", ChatOperation::Load, next));
+    }
+
+    #[test]
+    fn cancel_operation_does_not_displace_a_load_or_another_conversation() {
+        let mut model = ChatModel::default();
+        model.begin_hydration("project-1".into(), None);
+        let load = model
+            .begin_operation("conversation-1", ChatOperation::Load)
+            .unwrap();
+        let cancel = model
+            .begin_operation("conversation-1", ChatOperation::Cancel)
+            .unwrap();
+        let send = model
+            .begin_operation("conversation-2", ChatOperation::Send)
+            .unwrap();
+        assert!(model.finish_operation(
+            "project-1",
+            "conversation-1",
+            ChatOperation::Cancel,
+            cancel
+        ));
+        assert!(model.is_loading("conversation-1"));
+        assert!(model.is_busy("conversation-2"));
+        assert!(model.finish_operation("project-1", "conversation-1", ChatOperation::Load, load));
+        assert!(model.finish_operation("project-1", "conversation-2", ChatOperation::Send, send));
+    }
+
+    #[test]
+    fn a_stale_snapshot_cannot_rewind_streamed_content() {
+        let mut model = ChatModel::default();
+        let generation = model.begin_hydration("project-1".into(), None);
+        model.apply_hydration(generation, snapshot("project-1", "current", 4));
+        model.store_conversation_snapshot(snapshot("project-1", "old", 1).selected.unwrap());
+        assert_eq!(model.messages_for("conversation-1")[0].content, "current");
+        assert_eq!(model.messages_for("conversation-1")[0].last_sequence, 4);
+    }
+
     /// `ToDoListWebView`, 2026-09-22: the panel showed "Codex" after every visit
     /// while the open conversation kept sending to Claude. The panel now shows
     /// the open conversation's target, and the remembered project target
     /// when none is open.
+    #[test]
+    fn a_refresh_preserves_a_conversation_created_after_its_list_read_started() {
+        let mut model = ChatModel::default();
+        let generation = model.begin_hydration("project-1".into(), None);
+        model.apply_hydration(generation, snapshot("project-1", "original", 1));
+        let refresh = model.begin_hydration("project-1".into(), None);
+        model.apply_created(GetChatConversationResponse {
+            conversation: conversation("conversation-2", "project-1"),
+            messages: Vec::new(),
+            tool_calls: Vec::new(),
+        });
+        assert!(model.apply_hydration(refresh, snapshot("project-1", "original", 1)));
+        assert_eq!(
+            model.active_conversation.as_ref().map(AsRef::as_ref),
+            Some("conversation-2")
+        );
+        assert!(
+            model
+                .conversations
+                .iter()
+                .any(|conversation| conversation.id == "conversation-2")
+        );
+        assert_eq!(model.messages_for("conversation-1")[0].content, "original");
+    }
+
     #[test]
     fn the_panel_mirrors_the_open_conversation_and_restores_the_saved_target() {
         let mut claude = conversation("conversation-1", "project-1");
@@ -1067,6 +1479,11 @@ mod tests {
         assert_eq!(model.selected_transport, ChatTransportKind::Cli);
         assert_eq!(model.selected_cli_backend, CliBackend::Codex);
         assert_eq!(model.selected_cli_model.as_deref(), Some("gpt-5.6-terra"));
+        assert_eq!(
+            model.streaming_count(),
+            0,
+            "removed conversations cannot retain a streaming badge"
+        );
 
         // A retargeted snapshot updates the list row and the panel together.
         let generation = model.begin_hydration("project-1".into(), None);
@@ -1123,14 +1540,14 @@ mod tests {
     #[test]
     fn requires_active_project_before_composer() {
         let mut model = ChatModel::default();
-        assert!(!model.composer_available());
+        assert!(!model.composer_available_for("conversation-1"));
         let generation = model.begin_hydration("project-1".into(), None);
         assert!(model.apply_hydration(generation, snapshot("project-1", "", 0)));
-        assert!(model.composer_available());
+        assert!(model.composer_available_for("conversation-1"));
         model.target_change_pending = true;
-        assert!(!model.composer_available());
+        assert!(!model.composer_available_for("conversation-1"));
         model.target_change_pending = false;
-        assert!(model.composer_available());
+        assert!(model.composer_available_for("conversation-1"));
     }
 
     #[test]
@@ -1270,6 +1687,8 @@ mod tests {
         sent_targets: Mutex<Vec<Option<ChatExecutionTargetRequest>>>,
         cancelled: Mutex<Vec<String>>,
         retargeted: Mutex<Vec<(String, ChatExecutionTargetRequest)>>,
+        send_barriers: Mutex<HashMap<String, tokio::sync::oneshot::Receiver<()>>>,
+        failed_sends: Mutex<HashSet<String>>,
     }
 
     impl RecordingChatBackend {
@@ -1314,19 +1733,37 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push((conversation_id.clone(), content));
             let mut assistant = message("", 0);
+            assistant.id = format!("assistant-started-{conversation_id}");
+            assistant.conversation_id = conversation_id.clone();
+            assistant.ordinal = 3;
             assistant.status = "pending".into();
-            assistant.execution_id = Some("execution-started".into());
-            assistant.generation_id = Some("generation-started".into());
+            let suffix = if conversation_id == "conversation-1" {
+                String::new()
+            } else {
+                format!("-{conversation_id}")
+            };
+            let execution_id = format!("execution-started{suffix}");
+            let generation_id = format!("generation-started{suffix}");
+            assistant.execution_id = Some(execution_id.clone());
+            assistant.generation_id = Some(generation_id.clone());
+            let barrier = self.send_barriers.lock().unwrap().remove(&conversation_id);
+            let failed = self.failed_sends.lock().unwrap().contains(&conversation_id);
             Box::pin(async move {
+                if let Some(barrier) = barrier {
+                    let _ = barrier.await;
+                }
+                if failed {
+                    return Err(UiCommandError::worker("fixture send failure"));
+                }
                 Ok((
                     SendChatMessageResponse {
-                        execution_id: "execution-started".into(),
-                        generation_id: "generation-started".into(),
+                        execution_id,
+                        generation_id,
                         user_message_id: "user-started".into(),
                         assistant_message_id: assistant.id.clone(),
                     },
                     GetChatConversationResponse {
-                        conversation: conversation("conversation-1", "project-1"),
+                        conversation: conversation(&conversation_id, "project-1"),
                         messages: vec![assistant],
                         tool_calls: Vec::new(),
                     },
@@ -1375,6 +1812,197 @@ mod tests {
         fn save_default_target(&self, _: String, _: ChatExecutionTargetRequest) -> ChatFuture<()> {
             Self::unavailable()
         }
+    }
+
+    #[gpui::test]
+    fn concurrent_sends_keep_composers_and_cancellation_independent(cx: &mut TestAppContext) {
+        let backend = Arc::new(RecordingChatBackend::default());
+        let (first_release, first_barrier) = tokio::sync::oneshot::channel();
+        let (second_release, second_barrier) = tokio::sync::oneshot::channel();
+        backend
+            .send_barriers
+            .lock()
+            .unwrap()
+            .insert("conversation-1".into(), first_barrier);
+        backend
+            .send_barriers
+            .lock()
+            .unwrap()
+            .insert("conversation-2".into(), second_barrier);
+        let model_backend: Arc<dyn ChatBackend> = backend.clone();
+        let model = cx.new(|cx| AppModel::new_for_test_with_chat_backend(model_backend, cx));
+        model.update(cx, |model, cx| {
+            let generation = model
+                .chat
+                .update(cx, |chat, _| chat.begin_hydration("project-1".into(), None));
+            model.chat.update(cx, |chat, _| {
+                let mut hydration = snapshot("project-1", "history", 1);
+                hydration.selected.as_mut().unwrap().messages[0].status = "completed".into();
+                chat.apply_hydration(generation, hydration);
+                chat.conversations
+                    .push(conversation("conversation-2", "project-1"));
+                chat.acknowledge_disclosure_for("conversation-2");
+            });
+            for id in ["conversation-1", "conversation-2"] {
+                let input = model.ensure_chat_composer(id, cx);
+                input.update(cx, |input, cx| {
+                    input.set_value(format!("question-{id}"), cx)
+                });
+                model.send_chat_message_to(id.into(), format!("question-{id}"), cx);
+            }
+        });
+        cx.run_until_parked();
+        assert_eq!(backend.sent.lock().unwrap().len(), 2);
+        model.update(cx, |model, cx| {
+            assert!(model.chat.read(cx).is_busy("conversation-1"));
+            assert!(model.chat.read(cx).is_busy("conversation-2"));
+            let first = model.chat_composer_for("conversation-1").unwrap();
+            first.update(cx, |input, cx| input.set_value("a newer draft", cx));
+            model.chat.update(cx, |chat, _| {
+                chat.select_conversation_locally("conversation-2");
+            });
+            model.ensure_chat_composer("conversation-2", cx);
+        });
+        second_release.send(()).unwrap();
+        cx.run_until_parked();
+        model.update(cx, |model, cx| {
+            assert!(model.chat.read(cx).is_busy("conversation-1"));
+            assert!(model.chat.read(cx).is_streaming("conversation-2"));
+            assert!(
+                model
+                    .chat_composer_for("conversation-2")
+                    .unwrap()
+                    .read(cx)
+                    .value()
+                    .is_empty()
+            );
+            model.cancel_chat_turn_for("conversation-2".into(), cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            backend.cancelled.lock().unwrap().as_slice(),
+            &["execution-started-conversation-2"]
+        );
+        first_release.send(()).unwrap();
+        cx.run_until_parked();
+        model.read_with(cx, |model, cx| {
+            assert!(model.chat.read(cx).is_streaming("conversation-1"));
+            assert_eq!(
+                model
+                    .chat
+                    .read(cx)
+                    .active_conversation
+                    .as_ref()
+                    .map(AsRef::as_ref),
+                Some("conversation-2")
+            );
+            assert_eq!(
+                model
+                    .chat_composer_for("conversation-1")
+                    .unwrap()
+                    .read(cx)
+                    .value(),
+                "a newer draft"
+            );
+            assert_eq!(
+                model.chat_draft_input.entity_id(),
+                model
+                    .chat_composer_for("conversation-2")
+                    .unwrap()
+                    .entity_id()
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn shared_composer_restores_a_saved_draft_without_replacing_new_edits(cx: &mut TestAppContext) {
+        let backend: Arc<dyn ChatBackend> = Arc::new(RecordingChatBackend::default());
+        let model = cx.new(|cx| AppModel::new_for_test_with_chat_backend(backend, cx));
+        model.update(cx, |model, cx| {
+            let generation = model
+                .chat
+                .update(cx, |chat, _| chat.begin_hydration("project-1".into(), None));
+            model.chat.update(cx, |chat, _| {
+                chat.apply_hydration(generation, snapshot("project-1", "history", 1));
+            });
+            model
+                .companion_dock
+                .restored_drafts
+                .insert("conversation-1".into(), "saved draft 🦀".into());
+            let input = model.ensure_chat_composer("conversation-1", cx);
+            assert_eq!(input.read(cx).value(), "saved draft 🦀");
+            assert_eq!(input.entity_id(), model.chat_draft_input.entity_id());
+            assert!(
+                !model
+                    .companion_dock
+                    .restored_drafts
+                    .contains_key("conversation-1")
+            );
+            input.update(cx, |input, cx| input.set_value("a newer draft", cx));
+            model
+                .companion_dock
+                .restored_drafts
+                .insert("conversation-1".into(), "stale load".into());
+            let same = model.ensure_chat_composer("conversation-1", cx);
+            assert_eq!(input.entity_id(), same.entity_id());
+            assert_eq!(same.read(cx).value(), "a newer draft");
+        });
+    }
+
+    #[gpui::test]
+    fn rejected_send_preserves_draft_and_does_not_set_another_conversations_error(
+        cx: &mut TestAppContext,
+    ) {
+        let backend = Arc::new(RecordingChatBackend::default());
+        backend
+            .failed_sends
+            .lock()
+            .unwrap()
+            .insert("conversation-1".into());
+        let (release, barrier) = tokio::sync::oneshot::channel();
+        backend
+            .send_barriers
+            .lock()
+            .unwrap()
+            .insert("conversation-1".into(), barrier);
+        let model_backend: Arc<dyn ChatBackend> = backend.clone();
+        let model = cx.new(|cx| AppModel::new_for_test_with_chat_backend(model_backend, cx));
+        model.update(cx, |model, cx| {
+            let generation = model
+                .chat
+                .update(cx, |chat, _| chat.begin_hydration("project-1".into(), None));
+            model.chat.update(cx, |chat, _| {
+                let mut hydration = snapshot("project-1", "history", 1);
+                hydration.selected.as_mut().unwrap().messages[0].status = "completed".into();
+                chat.apply_hydration(generation, hydration);
+                chat.conversations
+                    .push(conversation("conversation-2", "project-1"));
+            });
+            model
+                .chat_draft_input
+                .update(cx, |input, cx| input.set_value("keep this question", cx));
+            model.send_chat_message(cx);
+            model.chat.update(cx, |chat, _| {
+                chat.select_conversation_locally("conversation-2");
+            });
+            model.ensure_chat_composer("conversation-2", cx);
+        });
+        cx.run_until_parked();
+        release.send(()).unwrap();
+        cx.run_until_parked();
+        model.read_with(cx, |model, cx| {
+            assert_eq!(
+                model
+                    .chat_composer_for("conversation-1")
+                    .unwrap()
+                    .read(cx)
+                    .value(),
+                "keep this question"
+            );
+            assert!(model.chat.read(cx).error_for("conversation-1").is_some());
+            assert!(model.chat.read(cx).error_for("conversation-2").is_none());
+            assert!(model.chat.read(cx).error.is_none());
+        });
     }
 
     /// Changing the panel with a conversation open retargets that

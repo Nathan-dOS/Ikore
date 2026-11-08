@@ -25,6 +25,31 @@ fn composed_batch_runs_six_stages_with_one_invocation_each() {
 
     for stage in ["SPECIFICATION", "Contract", "Test", "Integrator"] {
         harness.wait_for_checkpoint(stage);
+        let decisions = harness
+            .service
+            .list_pending_decisions(&harness.project)
+            .unwrap();
+        assert!(
+            decisions
+                .iter()
+                .any(|decision| decision.pulsation_id.as_deref() == Some(harness.pulse.as_str())),
+            "the dock projects the current checkpoint without creating chat state"
+        );
+        for table in [
+            "companion_dock_sessions",
+            "companion_drafts",
+            "decision_conversations",
+        ] {
+            let count: i64 = db
+                .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(
+                count, 0,
+                "ordinary pipeline transitions and decision reads must not write {table}"
+            );
+        }
         harness.approve();
     }
     wait_until(&harness.service, &harness.pulse, |db| {
@@ -35,6 +60,21 @@ fn composed_batch_runs_six_stages_with_one_invocation_each() {
         )
         .unwrap()
     });
+    for table in [
+        "companion_dock_sessions",
+        "companion_drafts",
+        "decision_conversations",
+    ] {
+        let count: i64 = db
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            count, 0,
+            "a completed six-stage pulse must not create {table}"
+        );
+    }
 
     // Exactly one real invocation per stage, in stage order, and no
     // coordination call: the promotion gate for arm B (single unit).

@@ -11,7 +11,7 @@
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
-use crate::llm::{AgentRole, LlmRepository, SqliteLlmRepository, model_family_conflict};
+use crate::llm::{AgentRole, SqliteLlmRepository, model_family_conflict};
 use crate::terminals::{CliAvailability, CliAvailabilityState, CliBackend};
 
 use super::catalog::STAGES;
@@ -140,11 +140,11 @@ fn check_api(
     role: AgentRole,
     stage: &str,
 ) -> Result<Vec<(bool, String)>, rusqlite::Error> {
-    let route = match llm.resolve_route(project_id, role, stage) {
+    let route = match llm.resolve_route_on(db, project_id, role, stage) {
         Ok(route) => route,
         Err(error) => return Ok(vec![(true, format!("its API route is unusable: {error}"))]),
     };
-    let targets = match llm.resolved_targets(&route.id) {
+    let targets = match llm.resolved_targets_on(db, &route.id) {
         Ok(targets) => targets,
         Err(error) => {
             return Ok(vec![(

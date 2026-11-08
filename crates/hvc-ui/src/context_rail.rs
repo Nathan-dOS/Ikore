@@ -544,10 +544,7 @@ fn usage_card(model: &AppModel, cx: &mut Context<AppModel>) -> Option<AnyElement
 /// The folded rail: one icon per card, jumping to the view that owns it.
 fn strip(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
     let badges: TabBadges = model.sidebar_badges(cx);
-    let waiting = badges.engine_awaiting_hitl
-        + model.pulsations.read(cx).awaiting_failure
-        + badges.clarifications
-        + badges.agent_fallbacks;
+    let waiting = badges.engine_pending_decisions;
     let tone = active_status(model, cx).map(|(_, status)| status.tone.color());
     let runtime_attention = health_lines(model, cx)
         .iter()

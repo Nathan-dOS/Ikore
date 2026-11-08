@@ -255,10 +255,14 @@ impl AppModel {
         }
         let state = self.pulsations.read(cx);
         let valid = state.project_id.as_ref().map(ToString::to_string) == project
-            && state
+            && (state
                 .hitl_checkpoints
                 .iter()
                 .any(|c| c.pulsation_id == action.pulsation_id)
+                || state
+                    .failure_checkpoints
+                    .iter()
+                    .any(|c| c.pulsation_id == action.pulsation_id))
             && state.pulsations.iter().any(|p| {
                 p.id == action.pulsation_id
                     && p.status == hvc_core::persistence_service::PulsationStatus::Checkpoint
@@ -555,6 +559,58 @@ mod tests {
             assert_eq!(visual.debug_bounds("agents-cli-scroll").unwrap(), controls);
             assert_eq!(visual.debug_bounds("rail-settings").unwrap(), nav);
         }
+    }
+
+    #[gpui::test]
+    fn failure_notification_opens_the_current_failure_review(cx: &mut gpui::TestAppContext) {
+        let (model, visual) = cx.add_window_view(|_, cx| crate::layout_tests::fixture(cx));
+        model.update(visual, |model, cx| {
+            model.select_view(crate::AppView::Agents, cx);
+            model.pulsations.update(cx, |pulsations, _| {
+                pulsations.project_id = Some("layout-project".into());
+                let pulse = pulsations
+                    .pulsations
+                    .first_mut()
+                    .expect("fixture pulsation");
+                pulse.status = hvc_core::persistence_service::PulsationStatus::Checkpoint;
+                let id = pulse.id.clone();
+                pulsations.hitl_checkpoints.clear();
+                pulsations.failure_checkpoints =
+                    vec![hvc_core::persistence_service::StageFailureCheckpoint {
+                        checkpoint_id: "failure".into(),
+                        pulsation_id: id,
+                        project_id: "layout-project".into(),
+                        feature_name: "Fixture failure".into(),
+                        stage: hvc_core::persistence_service::PulsationStage::Code,
+                        failure_class: "provider_transport".into(),
+                        error_code: "fixture".into(),
+                        diagnostic: "Retry available".into(),
+                        allow_retry: true,
+                        allow_revision: false,
+                        revision_stage: None,
+                        attempts: 1,
+                        state_version: 1,
+                        created_at: "2026-11-06T00:00:00Z".into(),
+                        allowed_revision_targets: Vec::new(),
+                        remaining_extra_invocations: None,
+                        stage_execution_id: None,
+                        scope_request: None,
+                    }];
+            });
+            let id = model.pulsations.read(cx).pulsations[0].id.clone();
+            model.push_actionable_notice(
+                HeaderNoticeKind::Warning,
+                "Failure needs a decision",
+                Some(crate::session::HeaderNoticeAction {
+                    label: "Decide now".into(),
+                    pulsation_id: id,
+                }),
+                cx,
+            );
+            let notice = model.notifications.queue.current().expect("notice").clone();
+            model.activate_notification(&notice, cx);
+            assert_eq!(model.active_view(), crate::AppView::Pulsations);
+        });
     }
 
     #[gpui::test]

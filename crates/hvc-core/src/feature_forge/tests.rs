@@ -1,5 +1,6 @@
 use super::*;
 use crate::feature_forge::AcceptanceCriterion;
+use crate::feature_forge::ApproveAndStartRequest;
 use crate::feature_forge::CreateFeatureRequest;
 use crate::feature_forge::CreateTasksRequest;
 use crate::feature_forge::FeatureAgentResponse;
@@ -22,6 +23,7 @@ use crate::feature_forge::response_schema;
 use crate::feature_forge::response_schema_for_backend;
 use crate::feature_forge::triage_analysis_schema;
 use crate::feature_forge::validate_task;
+use crate::feature_forge::{AnswerFeatureQuestionsRequest, FeatureQuestionAnswer};
 use crate::orchestration::{ContentSha256, RelativeSourcePath, SourceRevision};
 use crate::persistence_service::AgentRuntimeConfig;
 use crate::persistence_service::ApplyHitlDecisionRequest;
@@ -128,6 +130,373 @@ fn criterion() -> AcceptanceCriterion {
         id: "ac-1".into(),
         description: "Reject invalid input and preserve valid results".into(),
     }
+}
+
+#[test]
+fn approve_and_start_preview_is_read_only_and_covers_wave_capacity() {
+    let fixture = Fixture::new();
+    fixture.forge().set_wave_limit(&fixture.project, 1).unwrap();
+    fixture.approved("Occupied wave");
+    let feature = fixture.feature("Preview only");
+    let request = ApproveAndStartRequest {
+        project_id: fixture.project.clone(),
+        feature_id: feature.id.clone(),
+        expected_revision: feature.revision,
+        request_id: "preview-only".into(),
+    };
+    let db = fixture.service.connection().unwrap();
+    let before = db.total_changes();
+    let preview = fixture.forge().preview_approve_and_start(&request).unwrap();
+    assert!(!preview.approved);
+    assert!(preview.blockers.iter().any(|b| b.code == "wave_capacity"));
+    assert_eq!(db.total_changes(), before);
+    assert_eq!(fixture.tasks().list(&fixture.project).unwrap().len(), 1);
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM forge_commands WHERE kind='approve_and_start'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn approve_and_start_never_plans_a_newer_revision_after_freezing_its_selection() {
+    for newer_already_current in [false, true] {
+        let fixture = Fixture::new();
+        let feature = fixture.feature("Original revision");
+        let forge = fixture.forge();
+        let request = ApproveAndStartRequest {
+            project_id: fixture.project.clone(),
+            feature_id: feature.id.clone(),
+            expected_revision: feature.revision,
+            request_id: format!("revision-race-{newer_already_current}"),
+        };
+        let mut newer_snapshot = None;
+        let result = forge
+            .approve_and_start_after_selection(request, || {
+                let mut brief = feature.brief.clone();
+                brief.objective = "Deliver the newer independently approved scope".into();
+                brief.tasks[0].title = "Newer revision task".into();
+                let newer = forge
+                    .revise(&fixture.project, &feature.id, feature.revision, brief)
+                    .unwrap();
+                forge
+                    .approve(&fixture.project, &newer.id, newer.revision)
+                    .unwrap();
+                if newer_already_current {
+                    forge
+                        .move_to_wave(&fixture.project, &newer.id, Wave::Current, 9)
+                        .unwrap();
+                }
+                newer_snapshot = Some((
+                    forge.get(&fixture.project, &newer.id).unwrap(),
+                    fixture.tasks().list(&fixture.project).unwrap(),
+                ));
+            })
+            .unwrap();
+        assert!(
+            result.approved,
+            "the original revision was approved before the race"
+        );
+        assert!(
+            !result.planned,
+            "a newer revision's wave must not count as this request's planning"
+        );
+        assert!(result.pulsation_id.is_none());
+        assert!(
+            result
+                .blockers
+                .iter()
+                .any(|blocker| blocker.code == "stale_revision"),
+            "{:?}",
+            result.blockers
+        );
+        let (newer, tasks) = newer_snapshot.unwrap();
+        assert_eq!(forge.get(&fixture.project, &newer.id).unwrap(), newer);
+        assert_eq!(fixture.tasks().list(&fixture.project).unwrap(), tasks);
+        assert!(
+            fixture
+                .service
+                .list_pulsations(ListPulsationsRequest {
+                    project_id: fixture.project.clone()
+                })
+                .unwrap()
+                .pulsations
+                .is_empty()
+        );
+    }
+}
+
+#[test]
+fn dispatch_preflight_reads_routes_and_connections_from_its_transaction() {
+    let fixture = Fixture::new();
+    let mut db = fixture.service.connection().unwrap();
+    let tx = db
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .unwrap();
+    tx.execute("DELETE FROM provider_route_targets WHERE route_id='legacy-default' AND connection_id='legacy-anthropic'",[]).unwrap();
+    tx.execute("UPDATE provider_connections SET provider_id='gemini',display_name='Transaction Gemini',default_model='gemini-2.5-flash-lite' WHERE id='legacy-openai'",[]).unwrap();
+    let issues = fixture
+        .service
+        .stage_preflight(&tx, &fixture.project)
+        .unwrap();
+    let message = crate::orchestration::stage_preflight::blocking_message(&issues)
+        .expect("the same snapshot sees the incompatible provider/model");
+    assert!(message.contains("Transaction Gemini"), "{message}");
+    assert!(message.contains("gpt-4.1-mini"), "{message}");
+    tx.rollback().unwrap();
+    let db = fixture.service.connection().unwrap();
+    assert!(
+        crate::orchestration::stage_preflight::blocking_message(
+            &fixture
+                .service
+                .stage_preflight(&db, &fixture.project)
+                .unwrap()
+        )
+        .is_none()
+    );
+}
+
+#[test]
+fn start_preview_does_not_block_a_worker_waiting_to_commit() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let fixture = Fixture::new();
+    let feature = fixture.feature("Concurrent preview");
+    let request = ApproveAndStartRequest {
+        project_id: fixture.project.clone(),
+        feature_id: feature.id,
+        expected_revision: feature.revision,
+        request_id: "concurrent-preview".into(),
+    };
+    let writer = fixture.service.connection().unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread = {
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            let mut writes = 0u32;
+            while !stop.load(Ordering::Relaxed) {
+                if writer.execute("INSERT INTO runtime_settings(key,value,updated_at) VALUES('test.preview_writer',?1,'now') ON CONFLICT(key) DO UPDATE SET value=excluded.value",[writes]).is_ok() {writes += 1;}
+            }
+            writes
+        })
+    };
+    let results = (0..20)
+        .map(|_| {
+            let started = std::time::Instant::now();
+            let result = fixture.forge().preview_approve_and_start(&request);
+            (result, started.elapsed())
+        })
+        .collect::<Vec<_>>();
+    stop.store(true, Ordering::Relaxed);
+    assert!(thread.join().unwrap() > 0, "the concurrent writer ran");
+    for (result, elapsed) in results {
+        let preview = result.unwrap();
+        assert!(preview.blockers.is_empty(), "{:?}", preview.blockers);
+        assert!(
+            elapsed < std::time::Duration::from_secs(4),
+            "preview stalled for {elapsed:?}"
+        );
+    }
+}
+
+#[test]
+fn approve_and_start_preserves_approval_and_resumes_the_same_request_after_wave_failure() {
+    let fixture = Fixture::new();
+    fixture.forge().set_wave_limit(&fixture.project, 1).unwrap();
+    fixture.approved("Occupied wave");
+    let feature = fixture.feature("Pending start");
+    let request = ApproveAndStartRequest {
+        project_id: fixture.project.clone(),
+        feature_id: feature.id.clone(),
+        expected_revision: feature.revision,
+        request_id: "resume-start".into(),
+    };
+    let blocked = fixture.forge().approve_and_start(request.clone()).unwrap();
+    assert!(blocked.approved);
+    assert!(!blocked.planned);
+    assert!(blocked.pulsation_id.is_none());
+    assert!(blocked.blockers.iter().any(|b| b.code == "wave_capacity"));
+    fixture.forge().set_wave_limit(&fixture.project, 2).unwrap();
+    let started = fixture.forge().approve_and_start(request.clone()).unwrap();
+    assert!(started.approved && started.planned);
+    assert!(started.pulsation_id.is_some(), "{:?}", started.blockers);
+    let reloaded = FeatureForgeService::new(fixture.service.clone());
+    assert_eq!(reloaded.approve_and_start(request).unwrap(), started);
+    assert_eq!(
+        fixture
+            .service
+            .list_pulsations(ListPulsationsRequest {
+                project_id: fixture.project.clone()
+            })
+            .unwrap()
+            .pulsations
+            .len(),
+        1
+    );
+    assert_eq!(fixture.tasks().list(&fixture.project).unwrap().len(), 2);
+}
+
+#[test]
+fn approve_and_start_rejects_changed_input_and_stale_revision_without_dispatch() {
+    let fixture = Fixture::new();
+    let feature = fixture.feature("Exact revision");
+    let request = ApproveAndStartRequest {
+        project_id: fixture.project.clone(),
+        feature_id: feature.id.clone(),
+        expected_revision: feature.revision - 1,
+        request_id: "exact-request".into(),
+    };
+    assert!(fixture.forge().approve_and_start(request).is_err());
+    let request = ApproveAndStartRequest {
+        project_id: fixture.project.clone(),
+        feature_id: feature.id.clone(),
+        expected_revision: feature.revision,
+        request_id: "exact-request".into(),
+    };
+    fixture.forge().approve_and_start(request.clone()).unwrap();
+    let mut changed = request;
+    changed.expected_revision += 1;
+    assert!(fixture.forge().approve_and_start(changed).is_err());
+}
+
+#[test]
+fn approve_and_start_never_moves_or_dispatches_unfinished_prerequisites() {
+    let fixture = Fixture::new();
+    let prerequisite = fixture.feature("Prerequisite");
+    let feature = fixture.feature("Dependent");
+    fixture
+        .forge()
+        .set_dependency(
+            &fixture.project,
+            &feature.id,
+            &prerequisite.id,
+            Some("Required before this feature"),
+        )
+        .unwrap();
+    let result = fixture
+        .forge()
+        .approve_and_start(ApproveAndStartRequest {
+            project_id: fixture.project.clone(),
+            feature_id: feature.id.clone(),
+            expected_revision: feature.revision,
+            request_id: "dependent-start".into(),
+        })
+        .unwrap();
+    assert!(result.approved && !result.planned);
+    assert!(
+        result
+            .blockers
+            .iter()
+            .any(|b| b.code == "feature_dependencies")
+    );
+    let snapshot = fixture.forge().snapshot(&fixture.project).unwrap();
+    let prerequisite = snapshot
+        .features
+        .iter()
+        .find(|f| f.id == prerequisite.id)
+        .unwrap();
+    assert!(prerequisite.approved_revision.is_none() && prerequisite.wave.is_none());
+}
+
+#[test]
+fn approve_and_start_concurrent_replay_produces_one_pulsation() {
+    let fixture = Fixture::new();
+    let feature = fixture.feature("Concurrent start");
+    let request = ApproveAndStartRequest {
+        project_id: fixture.project.clone(),
+        feature_id: feature.id,
+        expected_revision: feature.revision,
+        request_id: "same-click".into(),
+    };
+    let other = fixture.forge();
+    let duplicate = request.clone();
+    let thread = std::thread::spawn(move || other.approve_and_start(duplicate).unwrap());
+    fixture.forge().approve_and_start(request.clone()).unwrap();
+    thread.join().unwrap();
+    let result = fixture.forge().approve_and_start(request).unwrap();
+    assert!(result.pulsation_id.is_some(), "{:?}", result.blockers);
+    assert_eq!(
+        fixture
+            .service
+            .list_pulsations(ListPulsationsRequest {
+                project_id: fixture.project.clone()
+            })
+            .unwrap()
+            .pulsations
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn approve_and_start_rechecks_model_configuration_and_preserves_partial_progress() {
+    let fixture = Fixture::new();
+    let feature = fixture.feature("Configuration recovery");
+    crate::terminals::TerminalRepository::new(fixture.service.database_path())
+        .ensure_project_configs(&fixture.project, false)
+        .unwrap();
+    let db = fixture.service.connection().unwrap();
+    db.execute("UPDATE cli_agent_configs SET execution_mode='cli_process',backend='custom',custom_executable=NULL WHERE project_id=?1 AND agent_role='test_agent'",[&fixture.project]).unwrap();
+    let request = ApproveAndStartRequest {
+        project_id: fixture.project.clone(),
+        feature_id: feature.id,
+        expected_revision: feature.revision,
+        request_id: "config-recovery".into(),
+    };
+    assert!(
+        fixture
+            .forge()
+            .preview_approve_and_start(&request)
+            .unwrap()
+            .blockers
+            .iter()
+            .any(|b| b.code == "model_configuration")
+    );
+    let blocked = fixture.forge().approve_and_start(request.clone()).unwrap();
+    assert!(blocked.approved && blocked.planned && blocked.pulsation_id.is_none());
+    assert!(blocked.blockers.iter().any(|b| b.code == "dispatch"));
+    db.execute("UPDATE cli_agent_configs SET execution_mode='api_direct' WHERE project_id=?1 AND agent_role='test_agent'",[&fixture.project]).unwrap();
+    assert!(
+        fixture
+            .forge()
+            .approve_and_start(request)
+            .unwrap()
+            .pulsation_id
+            .is_some()
+    );
+}
+
+#[test]
+fn structured_feature_questions_keep_legacy_responses_readable_and_validate_indexes() {
+    let fixture = Fixture::new();
+    let feature = fixture.feature("Question details");
+    let mut value: serde_json::Value =
+        serde_json::from_str(&discovery_reply(&feature, "Choose a format", vec![])).unwrap();
+    value.as_object_mut().unwrap().remove("questionDetails");
+    let legacy: FeatureAgentResponse = serde_json::from_value(value.clone()).unwrap();
+    assert!(legacy.question_details.is_empty());
+    value["questions"] = json!(["Which format?"]);
+    value["questionDetails"] = json!([{
+        "questionIndex": 0, "explanation": "Choose the format consumers can read.",
+        "options": [{"label":"JSON","explanation":"Preserves structured data."},{"label":"CSV","explanation":"Opens in spreadsheets."}],
+        "recommendedOption": 0
+    }]);
+    let response: FeatureAgentResponse = serde_json::from_value(value).unwrap();
+    crate::feature_forge::validate_question_details(&response).unwrap();
+    let mut invalid = response.clone();
+    invalid.question_details[0].recommended_option = Some(2);
+    assert!(crate::feature_forge::validate_question_details(&invalid).is_err());
+    invalid = response.clone();
+    invalid.question_details[0].question_index = 1;
+    assert!(crate::feature_forge::validate_question_details(&invalid).is_err());
+    invalid = response;
+    invalid
+        .question_details
+        .push(invalid.question_details[0].clone());
+    assert!(crate::feature_forge::validate_question_details(&invalid).is_err());
 }
 
 #[test]
@@ -839,6 +1208,7 @@ fn planning_runtime(
         output_language: "en".into(),
         message: "Vamos definir o formato da exportação.".into(),
         questions: vec!["Qual formato você prefere?".into()],
+        question_details: vec![],
         brief,
         evaluation: Default::default(),
         suggested_dependencies: vec![],
@@ -857,6 +1227,138 @@ fn planning_runtime(
     .unwrap();
     runtime.gateway_override = Some(gateway.clone());
     (Arc::new(runtime), gateway)
+}
+
+#[tokio::test]
+async fn discovery_question_details_are_persisted_without_an_additional_model_call() {
+    for legacy in [true, false] {
+        let fixture = Fixture::new();
+        let feature = fixture.feature("Question metadata");
+        let (mut runtime, mut gateway) = planning_runtime(&fixture, &feature);
+        let engine = Arc::get_mut(&mut runtime).unwrap();
+        engine.gateway_override = None;
+        let provider = Arc::get_mut(&mut gateway).unwrap();
+        let mut payload: serde_json::Value = serde_json::from_str(&provider.response).unwrap();
+        if legacy {
+            payload.as_object_mut().unwrap().remove("questionDetails");
+        } else {
+            payload["questionDetails"] = json!([{"questionIndex":0,"explanation":"Choose the consumer's format.","options":[{"label":"JSON","explanation":"Preserves structure."},{"label":"CSV","explanation":"Opens in spreadsheets."}],"recommendedOption":0}]);
+        }
+        provider.response = payload.to_string();
+        provider.release.add_permits(1);
+        engine.gateway_override = Some(gateway.clone());
+        runtime
+            .start(
+                &fixture.project,
+                &feature.id,
+                feature.revision,
+                &id(),
+                "Choose a format",
+            )
+            .unwrap();
+        runtime.wait_for_idle().await;
+        let history = runtime.history(&fixture.project, &feature.id).unwrap();
+        assert_eq!(history[0].status, "completed", "{:?}", history[0].error);
+        assert_eq!(history[0].questions.len(), 1);
+        assert_eq!(history[0].question_details.is_empty(), legacy);
+        let pending = fixture
+            .service
+            .list_pending_decisions(&fixture.project)
+            .unwrap()
+            .into_iter()
+            .find(|decision| decision.feature_id.as_deref() == Some(feature.id.as_str()))
+            .unwrap();
+        let payload = pending.forge_questions.unwrap();
+        assert_eq!(payload.turn_id, history[0].id);
+        assert_eq!(payload.questions, history[0].questions);
+        assert_eq!(payload.question_details, history[0].question_details);
+        assert_eq!(gateway.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+}
+
+#[tokio::test]
+async fn dock_feature_answers_are_revision_fenced_idempotent_and_never_approve_or_dispatch() {
+    let fixture = Fixture::new();
+    let feature = fixture.feature("Answer from the Companion dock");
+    let (runtime, gateway) = planning_runtime(&fixture, &feature);
+    gateway.release.add_permits(1);
+    let source = runtime
+        .start(
+            &fixture.project,
+            &feature.id,
+            feature.revision,
+            &id(),
+            "Choose a format",
+        )
+        .unwrap();
+    runtime.wait_for_idle().await;
+    let current = fixture.forge().get(&fixture.project, &feature.id).unwrap();
+    let decision = fixture
+        .service
+        .list_pending_decisions(&fixture.project)
+        .unwrap()
+        .into_iter()
+        .find(|decision| decision.feature_id.as_deref() == Some(feature.id.as_str()))
+        .unwrap();
+    let questions = decision
+        .forge_questions
+        .expect("current questions are available without a Forge selection");
+    assert_eq!(questions.turn_id, source);
+    assert_eq!(questions.feature_revision, current.revision);
+    assert_eq!(questions.questions.len(), 1);
+    let request = AnswerFeatureQuestionsRequest {
+        project_id: fixture.project.clone(),
+        feature_id: feature.id.clone(),
+        expected_revision: current.revision,
+        expected_turn_id: source.clone(),
+        request_id: id(),
+        answers: vec![FeatureQuestionAnswer {
+            question_index: 0,
+            text_answer: "I prefer JSON and want to review the updated scope.".into(),
+        }],
+    };
+    let mut stale = request.clone();
+    stale.expected_turn_id = "another-turn".into();
+    assert!(runtime.answer_questions(stale).is_err());
+    let mut missing = request.clone();
+    missing.answers.clear();
+    assert!(runtime.answer_questions(missing).is_err());
+    let mut blank = request.clone();
+    blank.answers[0].text_answer = "  ".into();
+    assert!(runtime.answer_questions(blank).is_err());
+    let turn = runtime.answer_questions(request.clone()).unwrap();
+    assert_eq!(runtime.answer_questions(request.clone()).unwrap(), turn);
+    let db = fixture.service.connection().unwrap();
+    let message: String = db
+        .query_row(
+            "SELECT user_message FROM forge_turns WHERE id=?1",
+            [&turn],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(message.contains("I prefer JSON"));
+    assert!(
+        fixture
+            .forge()
+            .get(&fixture.project, &feature.id)
+            .unwrap()
+            .approved_revision
+            .is_none()
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pulsations", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    gateway.release.add_permits(1);
+    runtime.wait_for_idle().await;
+    assert_eq!(gateway.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(
+        runtime.answer_questions(request).unwrap(),
+        turn,
+        "a replay remains the same accepted human action after the next reply"
+    );
 }
 #[tokio::test]
 async fn feature_conversation_is_durable_idempotent_and_separate_from_execution() {
@@ -1276,6 +1778,7 @@ fn feature_discovery_response_schema_is_strictly_compliant_for_cli_adapters() {
         "outputLanguage": "en",
         "message": "Hello",
         "questions": ["Q1?"],
+        "questionDetails": [],
         "brief": {
             "objective": "Obj",
             "audience": "Aud",
@@ -1311,6 +1814,41 @@ fn feature_discovery_response_schema_is_strictly_compliant_for_cli_adapters() {
     });
     assert!(codex_validator.validate(&sample).is_ok());
     assert!(canonical_validator.validate(&sample).is_ok());
+
+    // Strict wire schemas require every declared field. Historical responses
+    // remain readable through Serde's default and the admission normalizer,
+    // rather than weakening the schema sent to a CLI.
+    let mut legacy = sample.clone();
+    legacy.as_object_mut().unwrap().remove("questionDetails");
+    assert!(codex_validator.validate(&legacy).is_err());
+    assert!(canonical_validator.validate(&legacy).is_err());
+    let legacy: FeatureAgentResponse = serde_json::from_value(legacy).unwrap();
+    assert!(legacy.question_details.is_empty());
+
+    let mut rich = sample.clone();
+    rich["questionDetails"] = json!([{
+        "questionIndex": 0,
+        "explanation": "Choose the format the consumer understands.",
+        "options": [
+            {"label":"JSON","explanation":"Preserves structured data."},
+            {"label":"CSV","explanation":"Opens in spreadsheets."}
+        ],
+        "recommendedOption": 0
+    }]);
+    assert!(codex_validator.validate(&rich).is_ok());
+    assert!(canonical_validator.validate(&rich).is_ok());
+    rich["questionDetails"][0]["recommendedOption"] = Value::Null;
+    assert!(codex_validator.validate(&rich).is_ok());
+    assert!(canonical_validator.validate(&rich).is_ok());
+
+    let mut forged = rich.clone();
+    forged["questionDetails"][0]["approved"] = json!(true);
+    assert!(codex_validator.validate(&forged).is_err());
+    assert!(canonical_validator.validate(&forged).is_err());
+    forged = rich;
+    forged["questionDetails"][0]["options"][0]["writeFile"] = json!("src/auth.rs");
+    assert!(codex_validator.validate(&forged).is_err());
+    assert!(canonical_validator.validate(&forged).is_err());
 }
 
 #[test]
@@ -2394,6 +2932,7 @@ fn discovery_reply(feature: &Feature, message: &str, suggested: Vec<FeatureDepen
             output_language: "en".into(),
             message: message.into(),
             questions: vec![],
+            question_details: vec![],
             brief,
             evaluation: Default::default(),
             suggested_dependencies: suggested,

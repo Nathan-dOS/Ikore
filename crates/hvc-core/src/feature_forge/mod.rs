@@ -8,12 +8,14 @@ pub mod preflight;
 mod publication;
 mod runtime;
 pub(crate) mod service;
+mod start;
 
 use crate::orchestration::SourceRevision;
 pub use failure::*;
 pub use runtime::*;
 use serde::{Deserialize, Serialize};
 pub use service::*;
+pub use start::*;
 
 pub const BATCH_PIPELINE_VERSION: u8 = crate::orchestration::PipelineVersion::BATCH.as_u8();
 

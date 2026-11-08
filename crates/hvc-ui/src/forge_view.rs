@@ -984,6 +984,9 @@ fn incubation_main(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) ->
                 ));
         }
     }
+    if let Some(questions) = feature_question_card(model, f, cx) {
+        panel = panel.child(questions);
+    }
     panel = panel.child(
         div()
             .debug_selector(|| "forge-message-composer".into())
@@ -1026,13 +1029,16 @@ fn incubation_aside(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -
             .into_any_element();
     }
     let already_approved = f.approved_revision == Some(f.revision);
-    let mut panel = card().child(brief(f)).child(gated_button(
-        "approve-feature",
-        "Approve scope and create tasks",
-        ForgeAction::Approve,
-        !already_approved,
-        cx,
-    ));
+    let mut panel = card()
+        .child(brief(f))
+        .child(feature_start_card(model, f, cx))
+        .child(gated_button(
+            "approve-feature",
+            "Approve scope and create tasks",
+            ForgeAction::Approve,
+            !already_approved,
+            cx,
+        ));
     if already_approved {
         panel = panel.child(label(
             "This revision is already approved and its tasks exist. Keep talking to the agent to produce a new revision.",
@@ -1042,6 +1048,79 @@ fn incubation_aside(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -
         panel = panel.child(label("Working…"));
     }
     panel.into_any_element()
+}
+
+/// The same current questions can be presented beside the Companion in the dock.
+/// Selecting an option fills an editable developer draft; it never sends a turn.
+pub(crate) fn feature_question_card(
+    model: &AppModel,
+    feature: &Feature,
+    cx: &mut Context<AppModel>,
+) -> Option<Div> {
+    let turn = model.forge.question_turn(feature)?;
+    let mut panel = card()
+        .debug_selector(|| "forge-question-options".into())
+        .child(heading("Feature Agent questions"));
+    for (question_index, question) in turn.questions.iter().enumerate() {
+        panel = panel.child(label(question.clone()));
+        if let Some(detail) = turn
+            .question_details
+            .iter()
+            .find(|d| d.question_index == question_index)
+        {
+            panel = panel.child(label(detail.explanation.clone()));
+            for (option_index, option) in detail.options.iter().enumerate() {
+                let recommended = detail.recommended_option == Some(option_index);
+                panel = panel
+                    .child(button(
+                        format!("forge-question-{}-{question_index}-{option_index}", turn.id),
+                        if recommended {
+                            format!("{} (Recommended)", option.label)
+                        } else {
+                            option.label.clone()
+                        },
+                        ForgeAction::ChooseQuestionOption(
+                            turn.id.clone(),
+                            question_index,
+                            option_index,
+                        ),
+                        cx,
+                    ))
+                    .child(label(option.explanation.clone()));
+            }
+        }
+    }
+    Some(panel.child(label(
+        "Select an option or write your own answer, then send it.",
+    )))
+}
+
+fn feature_start_card(model: &AppModel, feature: &Feature, cx: &mut Context<AppModel>) -> Div {
+    let preview = model
+        .forge
+        .start_preview
+        .as_ref()
+        .filter(|p| p.feature_id == feature.id && p.expected_revision == feature.revision);
+    let approved = feature.approved_revision == Some(feature.revision);
+    let mut panel = div().flex().flex_col().gap_2().child(gated_button(
+        format!("approve-and-start-{}", feature.id),
+        if approved {
+            "Start"
+        } else {
+            "Approve and start"
+        },
+        ForgeAction::ApproveAndStart,
+        !model.forge.busy && preview.is_some_and(|p| p.blockers.is_empty()),
+        cx,
+    ));
+    if let Some(preview) = preview {
+        for blocker in &preview.blockers {
+            panel = panel.child(label(blocker.message.clone()));
+        }
+    } else {
+        panel = panel.child(label("Checking start requirements…"));
+    }
+    panel
 }
 fn brief(f: &Feature) -> Div {
     let mut d = card().child(heading("Proposed specification"));
@@ -1276,6 +1355,7 @@ fn triage_main(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> Any
         // ADR-034 M6: the host refuses an approval the pre-flight blocks.
         let preflight_block = model.forge.preflight_block(f);
         p = p
+            .child(feature_start_card(model, f, cx))
             .child(button(
                 "archive-feature",
                 "Archive with rationale",

@@ -40,12 +40,55 @@ impl SelectableMessage {
 }
 
 struct Selection {
-    source: SharedString,
+    projection: MessageProjection,
     text: String,
     anchor: usize,
     head: usize,
     dragging: bool,
     focus: FocusHandle,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum MessagePart {
+    Markdown(hvc_editor::MarkdownBlock),
+    UnifiedDiff { content: String, file_path: String },
+}
+
+struct MessageProjection {
+    source: SharedString,
+    parts: Rc<Vec<MessagePart>>,
+}
+
+impl MessageProjection {
+    fn new(source: SharedString) -> Self {
+        let mut parts = Vec::new();
+        for part in parse_chat_content(&source) {
+            match part {
+                ChatContentPart::Markdown(markdown) => {
+                    parts.extend(
+                        parse_markdown(&markdown)
+                            .into_iter()
+                            .map(MessagePart::Markdown),
+                    );
+                }
+                ChatContentPart::UnifiedDiff { content, file_path } => {
+                    parts.push(MessagePart::UnifiedDiff { content, file_path });
+                }
+            }
+        }
+        Self {
+            source,
+            parts: Rc::new(parts),
+        }
+    }
+
+    fn refresh(&mut self, source: SharedString) -> bool {
+        if self.source == source {
+            return false;
+        }
+        *self = Self::new(source);
+        true
+    }
 }
 
 impl Selection {
@@ -102,7 +145,7 @@ fn index_at(pieces: &[TextPiece], position: gpui::Point<gpui::Pixels>) -> Option
 impl RenderOnce for SelectableMessage {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let selection = window.use_keyed_state(self.id.clone(), cx, |_, cx| Selection {
-            source: self.content.clone(),
+            projection: MessageProjection::new(self.content.clone()),
             text: String::new(),
             anchor: 0,
             head: 0,
@@ -110,14 +153,14 @@ impl RenderOnce for SelectableMessage {
             focus: cx.focus_handle(),
         });
         selection.update(cx, |state, _| {
-            if state.source != self.content {
-                state.source = self.content.clone();
+            if state.projection.refresh(self.content.clone()) {
                 state.anchor = 0;
                 state.head = 0;
                 state.dragging = false;
             }
         });
         let focus = selection.read(cx).focus.clone();
+        let parsed = selection.read(cx).projection.parts.clone();
         let selected = if focus.is_focused(window) {
             selection.read(cx).range()
         } else {
@@ -158,14 +201,15 @@ impl RenderOnce for SelectableMessage {
                 .into_any_element()
         };
         let mut blocks = Vec::new();
-        for part in parse_chat_content(&self.content) {
+        for part in parsed.iter().cloned() {
             match part {
-                ChatContentPart::Markdown(markdown) => {
-                    blocks.extend(parse_markdown(&markdown).into_iter().map(|block| {
-                        crate::workspace_view::render_markdown_block_with(block, &mut text_element)
-                    }));
+                MessagePart::Markdown(block) => {
+                    blocks.push(crate::workspace_view::render_markdown_block_with(
+                        block,
+                        &mut text_element,
+                    ));
                 }
-                ChatContentPart::UnifiedDiff { content, file_path } => {
+                MessagePart::UnifiedDiff { content, file_path } => {
                     let copy = content.clone();
                     let on_copy = self.on_copy_diff.clone();
                     let diff_id =
@@ -301,6 +345,26 @@ impl RenderOnce for SelectableMessage {
 mod tests {
     use super::*;
     use gpui::{Context, Modifiers, Render, TestAppContext, point, px, size};
+
+    #[test]
+    fn message_projection_reuses_parsing_until_the_message_changes() {
+        let source =
+            "# Heading\n\n```diff\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1 +1 @@\n-old\n+new\n```";
+        let mut projection = MessageProjection::new(source.into());
+        let original = projection.parts.clone();
+        assert!(!projection.refresh(source.to_string().into()));
+        assert!(Rc::ptr_eq(&original, &projection.parts));
+        assert!(projection.parts.iter().any(|part| matches!(part, MessagePart::Markdown(hvc_editor::MarkdownBlock::Heading { text, .. }) if text == "Heading")));
+        assert!(projection.parts.iter().any(|part| matches!(part, MessagePart::UnifiedDiff { file_path, .. } if file_path == "src/a.rs")));
+        assert!(projection.refresh("Updated 🦀".into()));
+        assert!(!Rc::ptr_eq(&original, &projection.parts));
+        assert_eq!(
+            projection.parts.as_ref(),
+            &[MessagePart::Markdown(hvc_editor::MarkdownBlock::Paragraph(
+                "Updated 🦀".into()
+            ))]
+        );
+    }
 
     struct Harness(String);
     impl Render for Harness {

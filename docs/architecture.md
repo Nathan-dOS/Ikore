@@ -36,6 +36,55 @@ uses that same migrated database. See [ADR-031](adr/031-terminal-boundary.md).
 
 ## Execution and review
 
+### Companion dock and feature starts
+
+The Companion dock is a native shell surface sharing the same conversation
+state as the full Chat view. Loading, streaming, cancellation and errors belong
+to a conversation, rather than the selected view. Project hydration has its own
+generation; a result from an old project or operation cannot replace current
+state. Markdown/diff presentation is cached by message content.
+
+A conversation's native composer is mounted in one surface at a time. When its
+full Chat is visible, the dock offers a link back to that surface instead of
+drawing the same input twice. Expand minimizes the corresponding dock topic;
+other conversations, drafts and running turns remain available.
+
+Core stores dock layout and versioned unsent drafts separately from sent chat
+messages. Monotonic revisions prevent delayed saves from restoring an older
+draft after Send. Decision drafts retain their decision identity and state
+version: restoring text never submits it or renews the authority of an old card.
+
+`PendingDecision` is a read-only projection over existing checkpoints, failures,
+clarifications, Forge questions and delivery/reconciliation state. Its identifiers
+and action list are presentation data. Trusted native controls call the existing
+domain commands, which recheck the exact checkpoint, revision and state version.
+The Companion's new decision/brief tools are read-only and project-scoped. Opening
+a card does not start a model request or add a write to a pipeline transition.
+Resolution conversations are created lazily when the developer asks for help.
+
+`FeatureForgeService::preview_approve_and_start` reads approval, wave capacity,
+dependencies, task availability, source freshness, reconciliation state, model
+configuration, destination planning and context budget. It does not approve or
+reserve anything. Route/target/provider and runtime-configuration reads use the
+same supplied SQLite connection as the preview snapshot, avoiding nested readers
+that could deadlock against a worker waiting to commit. The command
+`approve_and_start` repeats the domain guards and
+preserves successful approval and wave placement when a later step is blocked.
+It selects the outstanding tasks of the approved feature revision without moving
+prerequisites or increasing wave capacity. The existing `forge_commands` log
+stores progress and the frozen task selection; a stable child dispatch request
+provides idempotency across double clicks, retries and process restart.
+
+Feature Agent questions keep the existing text list and add bounded explanations,
+options and a recommendation in the same model call. Old stored responses default
+to empty advisory metadata. Choosing an option fills an editable developer draft;
+it neither sends a message nor grants approval.
+
+This release does not enable delegated review or an automatic answer interpreter.
+The six pipeline stages and four human artifact-review checkpoints remain in
+force. Qualification is recorded in the
+[Companion validation record](../quality/companion-dock-validation-2026-11-06.md).
+
 Feature Forge refines scope and produces approved backlog tasks. Starting a
 pulsation freezes the selected task revisions and their approved context.
 The pipeline retains six stages:

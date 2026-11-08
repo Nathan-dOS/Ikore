@@ -3966,6 +3966,8 @@ fn forge_failed_reply_is_explained_once_with_its_actions(cx: &mut TestAppContext
         kind: TurnKind::Discovery,
         failure: Some(TurnFailure::new(kind, "raw technical detail")),
         notices: vec![],
+        questions: vec![],
+        question_details: vec![],
     };
     model.update(visual, |m, cx| {
         m.forge.snapshot.features = vec![Feature {

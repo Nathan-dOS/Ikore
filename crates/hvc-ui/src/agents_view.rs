@@ -543,7 +543,7 @@ fn model_entry_matches(entry: &CliModelCatalogEntry, query: &str) -> bool {
             .any(|value| value.to_lowercase().contains(query))
 }
 
-fn fallback_panel(
+pub(crate) fn fallback_panel(
     fallback: &CliFallbackCheckpoint,
     cancel_armed: bool,
     busy: bool,

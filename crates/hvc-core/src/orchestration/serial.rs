@@ -733,6 +733,38 @@ impl PersistenceService {
         Ok(Some(brief))
     }
 
+    /// Bounded host-only lines for the dock, derived in the caller's current
+    /// decision snapshot. Agent prose and judgement remain in full Review.
+    pub(crate) fn checkpoint_brief_summary_on(
+        db: &Connection,
+        checkpoint: &HitlCheckpoint,
+    ) -> Result<Vec<String>, PersistenceServiceError> {
+        require_current_review(db, checkpoint)?;
+        let Some(inputs) = brief_inputs(
+            db,
+            &checkpoint.checkpoint_id,
+            &checkpoint.pulsation_id,
+            true,
+        )?
+        else {
+            return Ok(Vec::new());
+        };
+        let Some(brief) =
+            review_brief::stage_brief(&inputs.record, &inputs.context()).map_err(invalid)?
+        else {
+            return Ok(Vec::new());
+        };
+        let mut lines = brief.counts.into_iter().take(8).collect::<Vec<_>>();
+        lines.extend(brief.verified.into_iter().take(6));
+        if !brief.judgement.is_empty() {
+            lines.push(format!(
+                "{} item(s) require your judgement in the full review.",
+                brief.judgement.len()
+            ));
+        }
+        Ok(lines)
+    }
+
     /// The classified inputs the Integrator reviewed (ADR-032) for its
     /// still-current checkpoint: `LegacyPipeline` before pipeline v4, `None`
     /// at other stages or when nothing was recorded. Review policy files are

@@ -48,7 +48,7 @@ use crate::agents::{
     AgentIdentifier, AgentsBackend, AgentsDashboardSnapshot, AgentsModel, ApiActivityFilter,
     CliModelPickerState, CliModelPickerTarget, CoreAgentsBackend,
 };
-use crate::chat::{ChatBackend, ChatEventOutcome, ChatModel, CoreChatBackend};
+use crate::chat::{ChatBackend, ChatEventOutcome, ChatModel, ChatOperation, CoreChatBackend};
 use crate::errors::UiCommandError;
 use crate::flow::FlowTarget;
 use crate::icons::Icon;
@@ -294,6 +294,8 @@ const REASON_REQUIRED: &str =
 pub struct TabBadges {
     pub agent_failed_runs: usize,
     pub engine_awaiting_hitl: usize,
+    /// Distinct pulsations waiting for any developer decision.
+    pub engine_pending_decisions: usize,
     pub engine_running_jobs: usize,
     pub companion_streaming: usize,
     /// Notes the Notes Scribe is working on.
@@ -306,6 +308,7 @@ pub struct TabBadges {
 
 pub struct AppModel {
     pub(crate) core: Option<Arc<AppCore>>,
+    pub(crate) companion_dock: crate::companion_dock::CompanionDockUi,
     pub(crate) forge: crate::forge::ForgeUi,
     pub(crate) notes: crate::notes::NotesUi,
     pub(crate) canvas: crate::canvas::CanvasUi,
@@ -389,6 +392,9 @@ pub struct AppModel {
     pub(crate) settings_project_delete_input: Entity<NativeTextInput>,
     pub(crate) settings_embedding_model_input: Entity<NativeTextInput>,
     pub(crate) chat_draft_input: Entity<NativeTextInput>,
+    chat_initial_input: Entity<NativeTextInput>,
+    pub(crate) chat_composer_inputs: HashMap<String, Entity<NativeTextInput>>,
+    chat_composer_subscriptions: HashMap<String, Vec<Subscription>>,
     pub(crate) cli_model_search_input: Entity<NativeTextInput>,
     pub(crate) agent_prompt_inputs: HashMap<hvc_core::llm::AgentRole, Entity<NativeTextInput>>,
     pub(crate) agent_model_inputs: HashMap<hvc_core::llm::AgentRole, Entity<NativeTextInput>>,
@@ -518,9 +524,11 @@ pub struct AppModel {
     model_catalog_task: Option<Task<()>>,
     logs_task: Option<Task<()>>,
     logs_resync_tasks: HashMap<String, Task<()>>,
-    chat_task: Option<Task<()>>,
+    chat_hydration_task: Option<Task<()>>,
+    chat_create_task: Option<Task<()>>,
+    chat_tasks: HashMap<(String, ChatOperation), Task<()>>,
     /// Applying or remembering the Companion panel's target; separate from
-    /// `chat_task` so a conversation load is never cancelled by it.
+    /// project hydration so a conversation load is never cancelled by it.
     chat_target_task: Option<Task<()>>,
     chat_resync_tasks: HashMap<String, Task<()>>,
     session_task: Option<Task<()>>,
@@ -820,10 +828,14 @@ impl AppModel {
             cx.observe(&risk_medium_checks_input, |_, _, cx| cx.notify()),
             cx.observe(&risk_high_checks_input, |_, _, cx| cx.notify()),
             cx.observe(&settings_embedding_model_input, |_, _, cx| cx.notify()),
-            cx.observe(&chat_draft_input, |_, _, cx| cx.notify()),
+            cx.observe(&chat_draft_input, |model, input, cx| {
+                model.chat_composer_changed(input, cx);
+            }),
             cx.subscribe(
                 &chat_draft_input,
-                |model, _, _: &crate::text_input::Submit, cx| model.send_chat_message(cx),
+                |model, input, _: &crate::text_input::Submit, cx| {
+                    model.send_chat_composer_input(input, cx)
+                },
             ),
             cx.observe(&resolution_draft_input, |_, _, cx| cx.notify()),
             cx.subscribe(
@@ -853,6 +865,7 @@ impl AppModel {
         );
         Self {
             core,
+            companion_dock: crate::companion_dock::CompanionDockUi::default(),
             forge: crate::forge::ForgeUi::new(cx),
             notes: crate::notes::NotesUi::new(cx),
             canvas: crate::canvas::CanvasUi::new(cx),
@@ -920,7 +933,10 @@ impl AppModel {
             settings_route_name_input,
             settings_project_delete_input,
             settings_embedding_model_input,
+            chat_initial_input: chat_draft_input.clone(),
             chat_draft_input,
+            chat_composer_inputs: HashMap::new(),
+            chat_composer_subscriptions: HashMap::new(),
             cli_model_search_input,
             agent_prompt_inputs,
             agent_model_inputs,
@@ -1023,7 +1039,9 @@ impl AppModel {
             model_catalog_task: None,
             logs_task: None,
             logs_resync_tasks: HashMap::new(),
-            chat_task: None,
+            chat_hydration_task: None,
+            chat_create_task: None,
+            chat_tasks: HashMap::new(),
             chat_target_task: None,
             chat_resync_tasks: HashMap::new(),
             session_task: None,
@@ -1133,7 +1151,17 @@ impl AppModel {
         self.model_pull_status.as_ref()
     }
 
-    pub(crate) fn observe_performance_frame(&mut self, window: &Window) {
+    pub(crate) fn observe_performance_frame(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if let Some(frame) = self
+            .performance_probe
+            .as_mut()
+            .and_then(|probe| probe.fixture_frame())
+        {
+            let updates = crate::performance::apply_streaming_fixture(self, frame, cx);
+            if let Some(probe) = self.performance_probe.as_mut() {
+                probe.record_fixture_updates(updates);
+            }
+        }
         if self
             .performance_probe
             .as_mut()
@@ -1158,11 +1186,56 @@ impl AppModel {
     pub fn sidebar_badges(&self, cx: &gpui::App) -> TabBadges {
         let pulsations = self.pulsations.read(cx);
         let agents = self.agents.read(cx);
+        let resolution = self.resolution.read(cx);
+        let workspace = self.workspace.read(cx);
+        let project = workspace.project_id.as_ref().map(AsRef::as_ref);
+        let pending: std::collections::HashSet<&str> = pulsations
+            .pulsations
+            .iter()
+            .filter(|pulse| pulse.status == PulsationStatus::Checkpoint)
+            .map(|pulse| pulse.id.as_str())
+            .chain(
+                pulsations
+                    .hitl_checkpoints
+                    .iter()
+                    .map(|checkpoint| checkpoint.pulsation_id.as_str()),
+            )
+            .chain(
+                pulsations
+                    .failure_checkpoints
+                    .iter()
+                    .map(|checkpoint| checkpoint.pulsation_id.as_str()),
+            )
+            .chain(
+                resolution
+                    .chips
+                    .iter()
+                    .filter_map(|questions| questions.fence.pulsation_id.as_deref()),
+            )
+            .chain(
+                agents
+                    .fallbacks
+                    .iter()
+                    .map(|fallback| fallback.pulsation_id.as_str()),
+            )
+            .chain(
+                self.companion_dock
+                    .pending
+                    .iter()
+                    .filter(|decision| Some(decision.project_id.as_str()) == project)
+                    .filter_map(|decision| decision.pulsation_id.as_deref()),
+            )
+            .collect();
         TabBadges {
             agent_failed_runs: agents.failed_agent_count(),
             engine_awaiting_hitl: pulsations.awaiting_hitl,
+            engine_pending_decisions: if pending.is_empty() {
+                pulsations.awaiting_hitl + pulsations.awaiting_failure
+            } else {
+                pending.len()
+            },
             engine_running_jobs: pulsations.running_jobs,
-            companion_streaming: usize::from(self.chat.read(cx).streaming),
+            companion_streaming: self.chat.read(cx).streaming_count(),
             notes_running: self.notes.snapshot.running.len(),
             clarifications: self.resolution.read(cx).chips.len(),
             agent_fallbacks: agents.fallbacks.len(),
@@ -4061,20 +4134,128 @@ impl AppModel {
         cx.notify();
     }
 
+    pub(crate) fn chat_composer_for(
+        &self,
+        conversation_id: &str,
+    ) -> Option<Entity<NativeTextInput>> {
+        self.chat_composer_inputs.get(conversation_id).cloned()
+    }
+
+    pub(crate) fn ensure_chat_composer(
+        &mut self,
+        conversation_id: &str,
+        cx: &mut Context<Self>,
+    ) -> Entity<NativeTextInput> {
+        let input = if let Some(input) = self.chat_composer_inputs.get(conversation_id) {
+            input.clone()
+        } else {
+            let input = if self.chat_composer_inputs.is_empty() {
+                self.chat_initial_input.clone()
+            } else {
+                let input =
+                    cx.new(|cx| NativeTextInput::new("Message to Companion", cx).multiline());
+                let subscriptions = vec![
+                    cx.observe(&input, |model, input, cx| {
+                        model.chat_composer_changed(input, cx)
+                    }),
+                    cx.subscribe(&input, |model, input, _: &crate::text_input::Submit, cx| {
+                        model.send_chat_composer_input(input, cx)
+                    }),
+                ];
+                self.chat_composer_subscriptions
+                    .insert(conversation_id.into(), subscriptions);
+                input
+            };
+            self.chat_composer_inputs
+                .insert(conversation_id.into(), input.clone());
+            input
+        };
+        if self
+            .chat
+            .read(cx)
+            .active_conversation
+            .as_ref()
+            .map(AsRef::as_ref)
+            == Some(conversation_id)
+        {
+            self.chat_draft_input = input.clone();
+        }
+        if let Some(restored) = self.companion_dock.restored_drafts.remove(conversation_id)
+            && input.read(cx).value().is_empty()
+        {
+            input.update(cx, |input, cx| input.set_value(restored, cx));
+        }
+        input
+    }
+
+    fn conversation_for_chat_composer(
+        &self,
+        input: &Entity<NativeTextInput>,
+        cx: &gpui::App,
+    ) -> Option<String> {
+        self.chat_composer_inputs
+            .iter()
+            .find(|(_, composer)| composer.entity_id() == input.entity_id())
+            .map(|(id, _)| id.clone())
+            .or_else(|| {
+                (self.chat_composer_inputs.is_empty()
+                    && self.chat_initial_input.entity_id() == input.entity_id())
+                .then(|| {
+                    self.chat
+                        .read(cx)
+                        .active_conversation
+                        .as_ref()
+                        .map(ToString::to_string)
+                })
+                .flatten()
+            })
+    }
+
+    fn chat_composer_changed(&mut self, input: Entity<NativeTextInput>, cx: &mut Context<Self>) {
+        if let Some(conversation_id) = self.conversation_for_chat_composer(&input, cx) {
+            let content = input.read(cx).value().to_owned();
+            self.companion_draft_changed(conversation_id, content, cx);
+        }
+        cx.notify();
+    }
+
+    fn send_chat_composer_input(&mut self, input: Entity<NativeTextInput>, cx: &mut Context<Self>) {
+        if let Some(conversation_id) = self.conversation_for_chat_composer(&input, cx) {
+            let content = input.read(cx).value().to_owned();
+            self.send_chat_message_to(conversation_id, content, cx);
+        }
+    }
+
     fn hydrate_chat_project(
         &mut self,
         project_id: String,
         restored_conversation_id: Option<String>,
         cx: &mut Context<Self>,
     ) {
+        let changed_project =
+            self.chat.read(cx).project_id.as_ref().map(AsRef::as_ref) != Some(project_id.as_str());
+        if changed_project {
+            self.stage_companion_inputs(cx);
+            self.persist_companion_immediately(cx);
+            self.chat_tasks.clear();
+            self.chat_create_task.take();
+            self.chat_target_task.take();
+            self.chat_resync_tasks.clear();
+            self.chat_composer_subscriptions.clear();
+            self.chat_composer_inputs.clear();
+            self.chat_draft_input = self.chat_initial_input.clone();
+            self.chat_draft_input
+                .update(cx, |input, cx| input.clear(cx));
+        }
         let generation = self.chat.update(cx, |chat, _| {
             chat.begin_hydration(project_id.clone(), restored_conversation_id.clone())
         });
         let Some(backend) = self.chat_backend.clone() else {
-            self.chat.update(cx, |chat, _| chat.loading = false);
+            self.chat
+                .update(cx, |chat, _| chat.finish_hydration_without_backend());
             return;
         };
-        self.chat_task = Some(cx.spawn(async move |this, cx| {
+        self.chat_hydration_task = Some(cx.spawn(async move |this, cx| {
             let result = backend
                 .hydrate(project_id.clone(), restored_conversation_id)
                 .await;
@@ -4088,6 +4269,15 @@ impl AppModel {
                         .update(cx, |chat, _| chat.fail_hydration(generation, error)),
                 };
                 if applied {
+                    if let Some(id) = model
+                        .chat
+                        .read(cx)
+                        .active_conversation
+                        .as_ref()
+                        .map(ToString::to_string)
+                    {
+                        model.ensure_chat_composer(&id, cx);
+                    }
                     model.schedule_session_persistence(cx);
                     model.refresh_canvas_authoring(cx);
                 }
@@ -4097,6 +4287,23 @@ impl AppModel {
     }
 
     pub(crate) fn select_chat_conversation(
+        &mut self,
+        conversation_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.chat.update(cx, |chat, _| {
+            chat.select_conversation_locally(&conversation_id)
+        }) {
+            return;
+        }
+        self.ensure_chat_composer(&conversation_id, cx);
+        self.refresh_canvas_authoring(cx);
+        self.schedule_session_persistence(cx);
+        cx.notify();
+        self.load_chat_conversation(conversation_id, cx);
+    }
+
+    pub(crate) fn load_chat_conversation(
         &mut self,
         conversation_id: String,
         cx: &mut Context<Self>,
@@ -4113,17 +4320,25 @@ impl AppModel {
         else {
             return;
         };
-        if !self.chat.update(cx, |chat, _| {
-            chat.select_conversation_locally(&conversation_id)
-        }) {
+        let Some(generation) = self.chat.update(cx, |chat, _| {
+            chat.begin_operation(&conversation_id, ChatOperation::Load)
+        }) else {
             return;
-        }
-        self.refresh_canvas_authoring(cx);
-        self.schedule_session_persistence(cx);
-        cx.notify();
-        self.chat_task = Some(cx.spawn(async move |this, cx| {
+        };
+        let task_key = (conversation_id.clone(), ChatOperation::Load);
+        let task = cx.spawn(async move |this, cx| {
             let result = backend.load_conversation(conversation_id.clone()).await;
             let _ = this.update(cx, |model, cx| {
+                if !model.chat.update(cx, |chat, _| {
+                    chat.finish_operation(
+                        &project_id,
+                        &conversation_id,
+                        ChatOperation::Load,
+                        generation,
+                    )
+                }) {
+                    return;
+                }
                 match result {
                     Ok(snapshot) => {
                         model.chat.update(cx, |chat, _| {
@@ -4135,11 +4350,14 @@ impl AppModel {
                         });
                         model.refresh_canvas_authoring(cx);
                     }
-                    Err(error) => model.chat.update(cx, |chat, _| chat.set_error(error)),
+                    Err(error) => model.chat.update(cx, |chat, _| {
+                        chat.set_conversation_error(&conversation_id, error)
+                    }),
                 }
                 cx.notify();
             });
-        }));
+        });
+        self.chat_tasks.insert(task_key, task);
     }
 
     pub(crate) fn set_chat_transport(
@@ -4302,10 +4520,26 @@ impl AppModel {
         if !self.chat.update(cx, |chat, _| chat.begin_busy()) {
             return;
         }
+        let Some(generation) = self.chat.update(cx, |chat, _| {
+            chat.begin_operation("", ChatOperation::Create)
+        }) else {
+            return;
+        };
         cx.notify();
-        self.chat_task = Some(cx.spawn(async move |this, cx| {
-            let result = backend.create_conversation(project_id, target).await;
+        self.chat_create_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend
+                .create_conversation(project_id.clone(), target)
+                .await;
             let _ = this.update(cx, |model, cx| {
+                if !model.chat.update(cx, |chat, _| {
+                    chat.finish_operation(&project_id, "", ChatOperation::Create, generation)
+                }) {
+                    return;
+                }
+                let created_id = result
+                    .as_ref()
+                    .ok()
+                    .map(|snapshot| snapshot.conversation.id.clone());
                 model.chat.update(cx, |chat, _| {
                     chat.finish_busy();
                     match result {
@@ -4313,9 +4547,16 @@ impl AppModel {
                         Err(error) => chat.set_error(error),
                     }
                 });
-                model
-                    .chat_draft_input
-                    .update(cx, |input, cx| input.clear(cx));
+                if let Some(id) = model
+                    .chat
+                    .read(cx)
+                    .active_conversation
+                    .as_ref()
+                    .map(ToString::to_string)
+                {
+                    model.ensure_chat_composer(&id, cx);
+                }
+                model.companion_chat_creation_finished(created_id, cx);
                 model.schedule_session_persistence(cx);
                 cx.notify();
             });
@@ -4343,28 +4584,54 @@ impl AppModel {
         let Some(backend) = self.chat_backend.clone() else {
             return;
         };
-        if !self.chat.update(cx, |chat, _| chat.begin_busy()) {
+        let Some(project_id) = self
+            .chat
+            .read(cx)
+            .project_id
+            .as_ref()
+            .map(ToString::to_string)
+        else {
             return;
-        }
+        };
+        let Some(generation) = self.chat.update(cx, |chat, _| {
+            chat.begin_operation(&conversation_id, ChatOperation::Delete)
+        }) else {
+            return;
+        };
         cx.notify();
-        self.chat_task = Some(cx.spawn(async move |this, cx| {
+        let task_key = (conversation_id.clone(), ChatOperation::Delete);
+        let task = cx.spawn(async move |this, cx| {
             let result = backend.delete_conversation(conversation_id.clone()).await;
             let _ = this.update(cx, |model, cx| {
-                let next = model.chat.update(cx, |chat, _| {
-                    chat.finish_busy();
-                    match result {
-                        Ok(true) => chat.apply_deleted(&conversation_id),
-                        Ok(false) => {
-                            chat.set_error(crate::errors::UiCommandError::from_chat_parts(
+                if !model.chat.update(cx, |chat, _| {
+                    chat.finish_operation(
+                        &project_id,
+                        &conversation_id,
+                        ChatOperation::Delete,
+                        generation,
+                    )
+                }) {
+                    return;
+                }
+                if matches!(result, Ok(true)) {
+                    model.chat_composer_inputs.remove(&conversation_id);
+                    model.chat_composer_subscriptions.remove(&conversation_id);
+                }
+                let next = model.chat.update(cx, |chat, _| match result {
+                    Ok(true) => chat.apply_deleted(&conversation_id),
+                    Ok(false) => {
+                        chat.set_conversation_error(
+                            &conversation_id,
+                            crate::errors::UiCommandError::from_chat_parts(
                                 "conversation_not_found",
                                 "Conversation not found.",
-                            ));
-                            None
-                        }
-                        Err(error) => {
-                            chat.set_error(error);
-                            None
-                        }
+                            ),
+                        );
+                        None
+                    }
+                    Err(error) => {
+                        chat.set_conversation_error(&conversation_id, error);
+                        None
                     }
                 });
                 if let Some(next) = next {
@@ -4373,7 +4640,8 @@ impl AppModel {
                 model.schedule_session_persistence(cx);
                 cx.notify();
             });
-        }));
+        });
+        self.chat_tasks.insert(task_key, task);
     }
 
     pub(crate) fn acknowledge_chat_disclosure(&mut self, cx: &mut Context<Self>) {
@@ -4383,83 +4651,147 @@ impl AppModel {
     }
 
     pub(crate) fn send_chat_message(&mut self, cx: &mut Context<Self>) {
+        let Some(conversation_id) = self
+            .chat
+            .read(cx)
+            .active_conversation
+            .as_ref()
+            .map(ToString::to_string)
+        else {
+            return;
+        };
+        let content = self.chat_draft_input.read(cx).value().to_owned();
+        self.send_chat_message_to(conversation_id, content, cx);
+    }
+
+    pub(crate) fn send_chat_message_to(
+        &mut self,
+        conversation_id: String,
+        content: String,
+        cx: &mut Context<Self>,
+    ) {
         let Some(backend) = self.chat_backend.clone() else {
             return;
         };
-        let content = self.chat_draft_input.read(cx).value().trim().to_string();
-        let (conversation_id, expected_target) = {
+        let (project_id, expected_target) = {
             let chat = self.chat.read(cx);
-            if content.is_empty()
-                || !chat.composer_available()
-                || !chat.disclosure_accepted()
-                || chat.streaming
-                || chat
-                    .active_conversation_record()
-                    .is_some_and(|conversation| !conversation.connection_available)
+            if content.trim().is_empty()
+                || !chat.composer_available_for(&conversation_id)
+                || !chat.disclosure_accepted_for(&conversation_id)
+                || chat.is_streaming(&conversation_id)
+                || chat.is_busy(&conversation_id)
             {
                 return;
             }
             (
-                chat.active_conversation.as_ref().map(ToString::to_string),
-                chat.panel_target(),
+                chat.project_id.as_ref().map(ToString::to_string),
+                chat.conversation_target(&conversation_id),
             )
         };
-        let Some(conversation_id) = conversation_id else {
+        let Some(project_id) = project_id else {
             return;
         };
-        if !self.chat.update(cx, |chat, _| chat.begin_busy()) {
+        let Some(generation) = self.chat.update(cx, |chat, _| {
+            chat.begin_operation(&conversation_id, ChatOperation::Send)
+        }) else {
             return;
-        }
-        self.chat_draft_input
-            .update(cx, |input, cx| input.clear(cx));
+        };
+        let input = self.ensure_chat_composer(&conversation_id, cx);
         cx.notify();
-        self.chat_task = Some(cx.spawn(async move |this, cx| {
+        let task_key = (conversation_id.clone(), ChatOperation::Send);
+        let task = cx.spawn(async move |this, cx| {
             let result = backend
-                .send_message(conversation_id.clone(), content.clone(), expected_target)
+                .send_message(
+                    conversation_id.clone(),
+                    content.trim().to_owned(),
+                    expected_target,
+                )
                 .await;
             let _ = this.update(cx, |model, cx| {
-                model.chat.update(cx, |chat, _| {
-                    chat.finish_busy();
+                let accepted = model.chat.update(cx, |chat, _| {
+                    if !chat.finish_operation(
+                        &project_id,
+                        &conversation_id,
+                        ChatOperation::Send,
+                        generation,
+                    ) {
+                        return false;
+                    }
                     match result {
-                        Ok((started, snapshot)) => {
-                            chat.apply_started_snapshot(
-                                &conversation_id,
-                                &started.generation_id,
-                                snapshot,
-                            );
+                        Ok((started, snapshot)) => chat.apply_started_snapshot(
+                            &conversation_id,
+                            &started.generation_id,
+                            snapshot,
+                        ),
+                        Err(error) => {
+                            chat.set_conversation_error(&conversation_id, error);
+                            false
                         }
-                        Err(error) => chat.set_error(error),
                     }
                 });
-                if model.chat.read(cx).error.is_some()
-                    && model.chat_draft_input.read(cx).value().is_empty()
-                {
-                    model
-                        .chat_draft_input
-                        .update(cx, |input, cx| input.set_value(content, cx));
+                if accepted && input.read(cx).value() == content {
+                    input.update(cx, |input, cx| input.clear(cx));
+                    model.companion_draft_changed(conversation_id.clone(), String::new(), cx);
                 }
                 model.schedule_session_persistence(cx);
                 cx.notify();
             });
-        }));
+        });
+        self.chat_tasks.insert(task_key, task);
     }
 
     pub(crate) fn cancel_chat_turn(&mut self, cx: &mut Context<Self>) {
+        if let Some(conversation_id) = self
+            .chat
+            .read(cx)
+            .active_conversation
+            .as_ref()
+            .map(ToString::to_string)
+        {
+            self.cancel_chat_turn_for(conversation_id, cx);
+        }
+    }
+
+    pub(crate) fn cancel_chat_turn_for(&mut self, conversation_id: String, cx: &mut Context<Self>) {
         let Some(backend) = self.chat_backend.clone() else {
             return;
         };
-        let Some(execution_id) = self.chat.read(cx).active_execution_id() else {
+        let Some(project_id) = self
+            .chat
+            .read(cx)
+            .project_id
+            .as_ref()
+            .map(ToString::to_string)
+        else {
             return;
         };
-        self.chat_task = Some(cx.spawn(async move |this, cx| {
+        let Some(execution_id) = self.chat.read(cx).execution_id_for(&conversation_id) else {
+            return;
+        };
+        let Some(generation) = self.chat.update(cx, |chat, _| {
+            chat.begin_operation(&conversation_id, ChatOperation::Cancel)
+        }) else {
+            return;
+        };
+        let task_key = (conversation_id.clone(), ChatOperation::Cancel);
+        let task = cx.spawn(async move |this, cx| {
             let result = backend.cancel_turn(execution_id).await;
             let _ = this.update(cx, |model, cx| {
-                if let Err(error) = result {
-                    model.chat.update(cx, |chat, _| chat.set_error(error));
-                }
+                model.chat.update(cx, |chat, _| {
+                    if chat.finish_operation(
+                        &project_id,
+                        &conversation_id,
+                        ChatOperation::Cancel,
+                        generation,
+                    ) && let Err(error) = result
+                    {
+                        chat.set_conversation_error(&conversation_id, error);
+                    }
+                });
                 cx.notify();
             });
-        }));
+        });
+        self.chat_tasks.insert(task_key, task);
     }
 
     pub(crate) fn copy_chat_diff(&mut self, diff: String, cx: &mut Context<Self>) {
@@ -4533,7 +4865,12 @@ impl AppModel {
                             model.refresh_canvas_authoring(cx);
                         }
                     }
-                    Err(error) => model.chat.update(cx, |chat, _| chat.set_error(error)),
+                    Err(error) => model.chat.update(cx, |chat, _| {
+                        if chat.project_id.as_ref().map(AsRef::as_ref) == Some(project_id.as_str())
+                        {
+                            chat.set_conversation_error(&conversation_id, error);
+                        }
+                    }),
                 }
                 cx.notify();
             });
@@ -8233,7 +8570,20 @@ impl AppModel {
         })
     }
 
+    pub(crate) fn take_chat_admissions_for_shutdown(&mut self) -> Vec<Task<()>> {
+        let mut admissions = self
+            .chat_tasks
+            .drain()
+            .filter_map(|((_, operation), task)| (operation == ChatOperation::Send).then_some(task))
+            .collect::<Vec<_>>();
+        if let Some(create) = self.chat_create_task.take() {
+            admissions.push(create);
+        }
+        admissions
+    }
+
     fn flush_pending_session(&mut self, cx: &mut Context<Self>) -> Task<()> {
+        let companion = self.flush_companion_for_shutdown(cx);
         self.lifecycle.dispose();
         self.event_task.take();
         self.llm_delta_task.take();
@@ -8266,7 +8616,9 @@ impl AppModel {
         self.model_catalog_task.take();
         self.logs_task.take();
         self.logs_resync_tasks.clear();
-        self.chat_task.take();
+        self.chat_hydration_task.take();
+        self.chat_create_task.take();
+        self.chat_tasks.clear();
         self.chat_target_task.take();
         self.chat_resync_tasks.clear();
         self.resolution_chips_task.take();
@@ -8286,6 +8638,7 @@ impl AppModel {
         let persistence = self.session_persistence.clone();
         cx.spawn(async move |this, cx| {
             // UI-originated confirmations/publications retain ownership through close as well.
+            companion.await;
             if let Some(task) = hitl {
                 task.await;
             }
@@ -8923,6 +9276,38 @@ mod tests {
     use crate::vault::VaultFuture;
     use crate::workspace::{WorkspaceFileSnapshot, WorkspaceFuture, WorkspaceOperationError};
 
+    #[gpui::test]
+    async fn shutdown_retains_only_chat_send_and_create_admissions(cx: &mut TestAppContext) {
+        let completed = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let model = cx.new(AppModel::new_for_test);
+        let admissions = model.update(cx, |model, cx| {
+            for (operation, label) in [
+                (ChatOperation::Load, "load"),
+                (ChatOperation::Delete, "delete"),
+                (ChatOperation::Cancel, "cancel"),
+                (ChatOperation::Send, "send"),
+            ] {
+                let completed = completed.clone();
+                let task = cx.spawn(async move |_, _| completed.borrow_mut().push(label));
+                model.chat_tasks.insert((label.into(), operation), task);
+            }
+            let completed = completed.clone();
+            model.chat_create_task =
+                Some(cx.spawn(async move |_, _| completed.borrow_mut().push("create")));
+            let admissions = model.take_chat_admissions_for_shutdown();
+            assert_eq!(admissions.len(), 2);
+            assert!(model.chat_tasks.is_empty());
+            assert!(model.chat_create_task.is_none());
+            admissions
+        });
+        for admission in admissions {
+            admission.await;
+        }
+        let mut completed = completed.borrow().clone();
+        completed.sort_unstable();
+        assert_eq!(completed, ["create", "send"]);
+    }
+
     #[derive(Default)]
     struct RecordingSessionPersistence {
         requests: Arc<Mutex<Vec<SaveUiSessionRequest>>>,
@@ -9079,7 +9464,6 @@ mod tests {
         snapshot: Arc<Mutex<PulsationRuntimeSnapshot>>,
         artifacts: Arc<Mutex<Vec<Artifact>>>,
         resolution_chips: Arc<Mutex<Vec<hvc_core::orchestration::SpecificationQuestionSet>>>,
-        resolution_conversations: Arc<Mutex<HashMap<String, String>>>,
     }
 
     impl RecordingPulsationsBackend {
@@ -9111,7 +9495,6 @@ mod tests {
                 })),
                 artifacts: Arc::new(Mutex::new(vec![test_artifact("Plan")])),
                 resolution_chips: Arc::new(Mutex::new(Vec::new())),
-                resolution_conversations: Arc::new(Mutex::new(HashMap::new())),
             }
         }
     }
@@ -9202,21 +9585,6 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone();
             Box::pin(async move { Ok(chips) })
-        }
-
-        fn ensure_resolution_conversation(
-            &self,
-            _project_id: String,
-            question_set_id: String,
-        ) -> PulsationsFuture<String> {
-            let conversation_id = self
-                .resolution_conversations
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .entry(question_set_id)
-                .or_insert_with(|| uuid::Uuid::new_v4().to_string())
-                .clone();
-            Box::pin(async move { Ok(conversation_id) })
         }
 
         fn cancel_jobs(&self, pulsation_id: String) -> PulsationsFuture<usize> {
@@ -10709,18 +11077,44 @@ mod tests {
     }
 
     #[gpui::test]
-    fn resolution_chip_workflow_loads_synthesizes_and_confirms_an_answer(cx: &mut TestAppContext) {
+    fn the_pulsations_resolution_entry_opens_a_dock_card_without_a_conversation_or_model_call(
+        cx: &mut TestAppContext,
+    ) {
+        let backend = Arc::new(RecordingPulsationsBackend::new());
+        let chat_backend = Arc::new(RecordingResolutionChatBackend::new("unused", "unused"));
+        let model = cx.new(|cx| {
+            AppModel::new_for_test_with_resolution_backends(backend, chat_backend.clone(), cx)
+        });
+        model.update(cx, |model, cx| {
+            model.workspace.update(cx, |workspace, _| {
+                workspace.project_id = Some("project-1".into())
+            });
+            model.resolution.update(cx, |resolution, _| {
+                resolution.apply_chips(vec![test_question_set("set-a", "pulse-a")])
+            });
+            model.toggle_resolution_chip("set-a".into(), cx);
+            model.toggle_resolution_chip("set-a".into(), cx);
+            assert!(model.resolution.read(cx).expanded.is_none());
+            assert!(model.resolution.read(cx).conversation.is_none());
+            assert_eq!(model.companion_dock.windows.len(), 1);
+            assert_eq!(
+                model.companion_dock.windows[0].decision_id.as_deref(),
+                Some("checkpoint:checkpoint-set-a")
+            );
+            assert!(model.companion_dock.windows[0].conversation_id.is_none());
+        });
+        cx.run_until_parked();
+        assert!(chat_backend.sent.lock().unwrap().is_empty());
+    }
+
+    #[gpui::test]
+    fn explicit_resolution_synthesis_preserves_guarded_answer_submission(cx: &mut TestAppContext) {
         let pulsations_backend = Arc::new(RecordingPulsationsBackend::new());
         pulsations_backend
             .resolution_chips
             .lock()
             .unwrap()
             .push(test_question_set("set-a", "pulse-a"));
-        pulsations_backend
-            .resolution_conversations
-            .lock()
-            .unwrap()
-            .insert("set-a".into(), "resolution-conversation-1".into());
         let chat_backend = Arc::new(RecordingResolutionChatBackend::new(
             "resolution-conversation-1",
             "Prose summary.\nFILES_NEW: src/new_module.rs",
@@ -10745,21 +11139,34 @@ mod tests {
 
         model.update(cx, |m, cx| m.toggle_resolution_chip("set-a".into(), cx));
         cx.run_until_parked();
-        {
-            let sent = chat_backend.sent.lock().unwrap();
-            assert_eq!(
-                sent.len(),
-                1,
-                "opening a brand-new conversation must auto-send exactly one \
-                 host-authored briefing (question + rationale) so the Companion \
-                 isn't guessing what \"References\"/\"Handles\" means from nothing"
-            );
+        assert!(
+            chat_backend.sent.lock().unwrap().is_empty(),
+            "opening a resolution conversation must not synthesize a human message or call a model"
+        );
+        model.update(cx, |model, cx| {
+            assert!(model.resolution.read(cx).expanded.is_none());
             assert!(
-                sent[0].1.contains("Where should this file live?"),
-                "the briefing must include the chip's question text: {:?}",
-                sent[0].1
+                model
+                    .companion_dock
+                    .windows
+                    .iter()
+                    .any(|window| window.decision_id.as_deref()
+                        == Some("checkpoint:checkpoint-set-a")
+                        && window.conversation_id.is_none())
             );
-        }
+            // Exercise the existing explicit synthesis and guarded submission separately
+            // from opening a decision. The dock's opening path never creates a turn.
+            model.resolution.update(cx, |resolution, _| {
+                resolution.expanded = Some("set-a".into());
+                resolution.conversation = Some(crate::resolution::ResolutionConversation {
+                    conversation_id: "resolution-conversation-1".into(),
+                    messages: Vec::new(),
+                    synthesized_draft: None,
+                    pending_synthesis_generation_id: None,
+                    busy: false,
+                });
+            });
+        });
         model.read_with(cx, |m, cx| {
             let resolution = m.resolution.read(cx);
             assert_eq!(resolution.expanded.as_deref(), Some("set-a"));

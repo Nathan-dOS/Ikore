@@ -2,91 +2,10 @@
 //! one per open Specification clarification checkpoint across the whole
 //! project, and an accordion conversation with the Companion used to turn a
 //! question into a confirmable `FILES_NEW:`/`FILES_MOD:`/`FILES:` answer.
-use crate::sizing::{StyledExt, text_area};
+use crate::sizing::text_area;
 use crate::widgets::{ButtonVariant, btn, empty_state};
 use crate::{AppModel, theme};
 use gpui::{AnyElement, Context, deferred, div, prelude::*, px, relative};
-
-/// The floating chip stack, always visible whenever a clarification
-/// checkpoint is open anywhere in the project -- independent of which view
-/// the developer is currently looking at.
-pub(crate) fn chip_stack(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
-    let resolution = model.resolution.read(cx);
-    let chips = resolution.chips.clone();
-    let expanded = resolution.expanded.clone();
-    if chips.is_empty() {
-        return div().into_any_element();
-    }
-    let mut stack = div()
-        .debug_selector(|| "resolution-chip-stack".into())
-        .absolute()
-        .bottom(px(16.0))
-        .right(px(16.0))
-        .flex()
-        .flex_col()
-        .items_end()
-        .gap_2();
-    for chip in &chips {
-        let id = chip.id.clone();
-        let is_expanded = expanded.as_deref() == Some(id.as_str());
-        let question_count = chip.questions.len();
-        let title = chip
-            .questions
-            .first()
-            .map(|question| question.question.clone())
-            .unwrap_or_else(|| "Specification needs a file path".into());
-        stack = stack.child(
-            div()
-                .id(gpui::SharedString::from(format!(
-                    "resolution-chip-{}",
-                    chip.id
-                )))
-                .self_start()
-                .max_w(px(320.0))
-                .p_2()
-                .rounded_lg()
-                .border_1()
-                .border_color(if is_expanded {
-                    theme::accent()
-                } else {
-                    theme::border()
-                })
-                .bg(theme::surface_raised())
-                .cursor_pointer()
-                .flex()
-                .items_center()
-                .gap_2()
-                .hover(|style| style.border_color(theme::accent()))
-                .on_click(cx.listener(move |model, _, _, cx| {
-                    model.toggle_resolution_chip(id.clone(), cx);
-                }))
-                .child(
-                    div()
-                        .min_w(px(20.0))
-                        .h(px(20.0))
-                        .px_1()
-                        .rounded_full()
-                        .bg(theme::accent_soft())
-                        .text_color(theme::accent())
-                        .text_xs()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(question_count.to_string()),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_xs()
-                        .text_color(theme::text_muted())
-                        .child(title),
-                )
-                .into_any_element(),
-        );
-    }
-    deferred(stack).with_priority(10).into_any_element()
-}
 
 /// The expanded accordion card, rendered as a modal above every other overlay
 /// (`with_priority(25)`) once a chip has been toggled open.
