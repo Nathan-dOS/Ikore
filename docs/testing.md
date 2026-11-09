@@ -59,6 +59,10 @@ the linked-version check and advisory audit enforce the patched engine.
 Unsigned revision/counter coverage retains `fallible_uint` conversions, tests
 zero and the largest signed SQLite integer, and rejects negative reads and
 overflowing unsigned writes instead of wrapping them.
+Migration-fixture coverage verifies that every supported V1-V13 target stops
+at exactly the requested version with no later migrations, and rejects zero,
+unsupported and overflowing targets before converting to the migrator's signed
+version type. Existing application upgrade tests still run in the full suite.
 The [Companion record](../quality/companion-dock-validation-2026-11-06.md)
 records executed results and the complete regression gate.
 

@@ -74,7 +74,9 @@ impl IsolatedTestEnvironment {
         let db_path = self.data_dir.join("hard-vibe-code.db");
         let mut connection = Connection::open(db_path).expect("fixture database should open");
         embedded::migrations::runner()
-            .set_target(Target::Version(version.get()))
+            .set_target(Target::Version(
+                i32::try_from(version.get()).expect("V1-V13 fixture version fits the migrator"),
+            ))
             .run(&mut connection)
             .expect("fixture migrations should apply");
     }
@@ -192,6 +194,32 @@ mod tests {
     use hvc_core::llm::{Clock, CredentialStore};
 
     use super::*;
+
+    #[test]
+    fn fixture_migrations_stop_at_every_supported_version() {
+        for version in 1..=13 {
+            let environment = IsolatedTestEnvironment::new();
+            environment.prepare_database(DatabaseVersion::new(version));
+            let connection =
+                Connection::open(environment.data_dir().join("hard-vibe-code.db")).unwrap();
+            let (maximum, count): (u32, u32) = connection
+                .query_row(
+                    "SELECT max(version),count(*) FROM refinery_schema_history",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(maximum, version);
+            assert_eq!(count, version);
+        }
+    }
+
+    #[test]
+    fn fixture_versions_reject_zero_future_and_overflow_targets() {
+        for version in [0, 14, u32::MAX] {
+            assert!(std::panic::catch_unwind(|| DatabaseVersion::new(version)).is_err());
+        }
+    }
 
     #[test]
     fn harness_uses_isolated_data_and_in_memory_dependencies() {
