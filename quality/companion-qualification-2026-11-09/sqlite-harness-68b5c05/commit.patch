@@ -1,0 +1,63 @@
+diff --git a/crates/hvc-test-support/src/core_harness.rs b/crates/hvc-test-support/src/core_harness.rs
+index f5d015b..7cb6142 100644
+--- a/crates/hvc-test-support/src/core_harness.rs
++++ b/crates/hvc-test-support/src/core_harness.rs
+@@ -74,7 +74,9 @@ impl IsolatedTestEnvironment {
+         let db_path = self.data_dir.join("hard-vibe-code.db");
+         let mut connection = Connection::open(db_path).expect("fixture database should open");
+         embedded::migrations::runner()
+-            .set_target(Target::Version(version.get()))
++            .set_target(Target::Version(
++                i32::try_from(version.get()).expect("V1-V13 fixture version fits the migrator"),
++            ))
+             .run(&mut connection)
+             .expect("fixture migrations should apply");
+     }
+@@ -193,6 +195,32 @@ mod tests {
+ 
+     use super::*;
+ 
++    #[test]
++    fn fixture_migrations_stop_at_every_supported_version() {
++        for version in 1..=13 {
++            let environment = IsolatedTestEnvironment::new();
++            environment.prepare_database(DatabaseVersion::new(version));
++            let connection =
++                Connection::open(environment.data_dir().join("hard-vibe-code.db")).unwrap();
++            let (maximum, count): (u32, u32) = connection
++                .query_row(
++                    "SELECT max(version),count(*) FROM refinery_schema_history",
++                    [],
++                    |row| Ok((row.get(0)?, row.get(1)?)),
++                )
++                .unwrap();
++            assert_eq!(maximum, version);
++            assert_eq!(count, version);
++        }
++    }
++
++    #[test]
++    fn fixture_versions_reject_zero_future_and_overflow_targets() {
++        for version in [0, 14, u32::MAX] {
++            assert!(std::panic::catch_unwind(|| DatabaseVersion::new(version)).is_err());
++        }
++    }
++
+     #[test]
+     fn harness_uses_isolated_data_and_in_memory_dependencies() {
+         let harness = CoreTestHarness::new();
+diff --git a/docs/testing.md b/docs/testing.md
+index 31f4f8d..b6f94c2 100644
+--- a/docs/testing.md
++++ b/docs/testing.md
+@@ -59,6 +59,10 @@ the linked-version check and advisory audit enforce the patched engine.
+ Unsigned revision/counter coverage retains `fallible_uint` conversions, tests
+ zero and the largest signed SQLite integer, and rejects negative reads and
+ overflowing unsigned writes instead of wrapping them.
++Migration-fixture coverage verifies that every supported V1-V13 target stops
++at exactly the requested version with no later migrations, and rejects zero,
++unsupported and overflowing targets before converting to the migrator's signed
++version type. Existing application upgrade tests still run in the full suite.
+ The [Companion record](../quality/companion-dock-validation-2026-11-06.md)
+ records executed results and the complete regression gate.
+ 

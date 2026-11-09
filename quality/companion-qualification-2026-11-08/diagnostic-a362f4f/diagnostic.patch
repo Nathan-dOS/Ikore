@@ -1,0 +1,464 @@
+diff --git a/crates/hvc-terminal/src/terminals.rs b/crates/hvc-terminal/src/terminals.rs
+index 7affaec..66869d3 100644
+--- a/crates/hvc-terminal/src/terminals.rs
++++ b/crates/hvc-terminal/src/terminals.rs
+@@ -43,6 +43,24 @@ pub use model_catalog::{validate_catalog_effort, validate_catalog_model_selectio
+ pub use observation_report::{
+     CliObservationGroup, CliObservationRun, ObservationOutcome, PulsationTimeBreakdown,
+ };
++
++#[cfg(debug_assertions)]
++mod hvc_diagnostic {
++    use std::{sync::{Mutex,OnceLock,atomic::{AtomicU64,Ordering}},time::{Instant,SystemTime,UNIX_EPOCH}};
++    use serde::Serialize;
++    #[derive(Serialize)]
++    struct Event {label:&'static str, id:u64, phase:&'static str, epoch_ns:u64, elapsed_ns:u64}
++    static EVENTS:Mutex<Vec<Event>>=Mutex::new(Vec::new());
++    static NEXT:AtomicU64=AtomicU64::new(1);
++    fn enabled()->bool{static ENABLED:OnceLock<bool>=OnceLock::new();*ENABLED.get_or_init(||std::env::var_os("HVC_DIAGNOSTIC_TRACE").is_some())}
++    fn record(label:&'static str,id:u64,phase:&'static str,elapsed_ns:u64){if enabled(){let mut events=EVENTS.lock().unwrap();if events.len()<2048{events.push(Event{label,id,phase,epoch_ns:SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos() as u64,elapsed_ns});}}}
++    pub struct Span(Option<(&'static str,u64,Instant)>);
++    pub fn span(label:&'static str)->Span{if enabled(){let id=NEXT.fetch_add(1,Ordering::Relaxed);record(label,id,"start",0);Span(Some((label,id,Instant::now())))}else{Span(None)}}
++    impl Drop for Span{fn drop(&mut self){if let Some((label,id,start))=self.0{record(label,id,"end",start.elapsed().as_nanos() as u64);}}}
++    pub fn snapshot()->serde_json::Value{serde_json::to_value(&*EVENTS.lock().unwrap()).unwrap()}
++}
++#[cfg(debug_assertions)]
++pub fn hvc_diagnostic_terminal_snapshot()->serde_json::Value{hvc_diagnostic::snapshot()}
+ pub(crate) use plan_usage::read_codex_app_server_usage;
+ pub use plan_usage::{CliConnectionStatus, CliConnectionsSnapshot};
+ 
+@@ -4671,6 +4689,8 @@ impl TerminalService {
+     /// Plan usage of every metered CLI. Discovery comes from its cache (rescanned after its
+     /// TTL); `force` re-probes the CLIs and skips the meter's cache, as the Refresh button does.
+     pub async fn quota_overview(&self, force: bool) -> crate::quota::QuotaOverview {
++        #[cfg(debug_assertions)]
++        let _diagnostic_quota=hvc_diagnostic::span("quota_overview");
+         let discovery = self.discovery(force).await;
+         self.quota
+             .refresh(&discovery, self.discovery_observed_at(), force)
+@@ -4928,9 +4948,15 @@ impl TerminalService {
+     where
+         F: std::future::Future<Output = Vec<CliAvailability>>,
+     {
++        #[cfg(debug_assertions)]
++        let _diagnostic_discovery=hvc_diagnostic::span("discovery");
+         if !force && let Some(items) = self.cache_if_fresh() {
++            #[cfg(debug_assertions)]
++            let _diagnostic_hit=hvc_diagnostic::span("discovery_cache_hit");
+             return items;
+         }
++        #[cfg(debug_assertions)]
++        let _diagnostic_scan=hvc_diagnostic::span("discovery_scan");
+         let items = discover().await;
+         store_cli_discovery(&self.discovery_cache, items.clone());
+         items
+diff --git a/crates/hvc-ui/src/app_model.rs b/crates/hvc-ui/src/app_model.rs
+index 167a29d..3a78d95 100644
+--- a/crates/hvc-ui/src/app_model.rs
++++ b/crates/hvc-ui/src/app_model.rs
+@@ -1158,6 +1158,8 @@ impl AppModel {
+             .and_then(|probe| probe.fixture_frame())
+         {
+             let updates = crate::performance::apply_streaming_fixture(self, frame, cx);
++            #[cfg(debug_assertions)]
++            gpui::hvc_frame_trace::mark_fixture(frame,updates);
+             if let Some(probe) = self.performance_probe.as_mut() {
+                 probe.record_fixture_updates(updates);
+             }
+@@ -1167,10 +1169,17 @@ impl AppModel {
+             .as_mut()
+             .is_some_and(|probe| probe.observe_render(window))
+         {
++            #[cfg(debug_assertions)]
++            gpui::hvc_frame_trace::finish_after_present(hvc_core::terminals::hvc_diagnostic_terminal_snapshot());
+             self.performance_probe = None;
+         }
+     }
+ 
++    #[cfg(debug_assertions)]
++    pub(crate) fn hvc_diagnostic_flags(&self) {
++        gpui::hvc_frame_trace::flags(self.hydrating,self.quota.loading);
++    }
++
+     pub fn context_rail_collapsed(&self, cx: &gpui::App) -> bool {
+         self.navigation.read(cx).context_rail_collapsed
+     }
+@@ -8258,6 +8267,8 @@ impl AppModel {
+     }
+ 
+     fn restore_last_session(&mut self, cx: &mut Context<Self>) {
++        #[cfg(debug_assertions)]
++        gpui::hvc_frame_trace::event("restore_scheduled");
+         let Some(core) = self.core.clone() else {
+             return;
+         };
+@@ -8291,6 +8302,8 @@ impl AppModel {
+         restored: Result<Result<Option<RestoredSession>, String>, tokio::task::JoinError>,
+         cx: &mut Context<Self>,
+     ) {
++        #[cfg(debug_assertions)]
++        gpui::hvc_frame_trace::event("restore_finished");
+         self.canvas_project_switching = false;
+         match restored {
+             Ok(Ok(Some(restored))) => self.apply_restored_session(restored, cx),
+diff --git a/crates/hvc-ui/src/quota_bar.rs b/crates/hvc-ui/src/quota_bar.rs
+index 6db2f8c..28ef81e 100644
+--- a/crates/hvc-ui/src/quota_bar.rs
++++ b/crates/hvc-ui/src/quota_bar.rs
+@@ -110,9 +110,13 @@ impl AppModel {
+             return;
+         };
+         self.quota.loading = true;
++        #[cfg(debug_assertions)]
++        gpui::hvc_frame_trace::event("quota_ui_start");
+         cx.notify();
+         self.quota.task = Some(cx.spawn(async move |this, cx| {
+             let result = backend.quota_overview(force).await;
++            #[cfg(debug_assertions)]
++            gpui::hvc_frame_trace::event("quota_ui_end");
+             let _ = this.update(cx, |model, cx| {
+                 model.quota.loading = false;
+                 if let Ok(overview) = result {
+diff --git a/crates/hvc-ui/src/selectable_message.rs b/crates/hvc-ui/src/selectable_message.rs
+index ccbd94f..c066313 100644
+--- a/crates/hvc-ui/src/selectable_message.rs
++++ b/crates/hvc-ui/src/selectable_message.rs
+@@ -62,8 +62,12 @@ struct CachedTextPiece {
+ impl CachedTextPiece {
+     fn for_text(previous: Option<&Self>, text: &str) -> Self {
+         if let Some(previous) = previous.filter(|piece| piece.text.as_ref() == text) {
++            #[cfg(debug_assertions)]
++            gpui::hvc_frame_trace::count("piece_reused",1);
+             return previous.clone();
+         }
++        #[cfg(debug_assertions)]
++        gpui::hvc_frame_trace::count("piece_created",1);
+         let text = SharedString::from(text.to_owned());
+         Self {
+             state: Rc::new(RefCell::new(CachedTextState::new(text.clone(), 0..0))),
+@@ -121,6 +125,8 @@ impl CachedTextState {
+     }
+ 
+     fn prepare(&mut self, style: &TextStyle, rem_size: Pixels) -> bool {
++        #[cfg(debug_assertions)]
++        gpui::hvc_frame_trace::count("piece_layout_requests",1);
+         // TextLayout caches geometry and decoration, so the entire inherited
+         // style matters, including color and the resolved size of a rem.
+         let reset = !self.selected.is_empty()
+@@ -129,6 +135,8 @@ impl CachedTextState {
+                 .as_ref()
+                 .is_some_and(|(old_style, old_rem)| old_style != style || *old_rem != rem_size);
+         if reset {
++            #[cfg(debug_assertions)]
++            gpui::hvc_frame_trace::count(if self.selected.is_empty(){"piece_style_reset"}else{"piece_selected_reset"},1);
+             self.styled = Self::styled(&self.text, self.selected.clone());
+         }
+         if self
+@@ -175,6 +183,8 @@ impl Element for CachedTextElement {
+     ) -> (LayoutId, ()) {
+         let mut state = self.state.borrow_mut();
+         state.prepare(&window.text_style(), window.rem_size());
++        #[cfg(debug_assertions)]
++        state.styled.layout().hvc_diagnostic_mark_message();
+         state.styled.request_layout(id, inspector_id, window, cx)
+     }
+ 
+@@ -232,6 +242,13 @@ struct MessageProjection {
+ 
+ impl MessageProjection {
+     fn new(source: SharedString) -> Self {
++        #[cfg(debug_assertions)]
++        let _diagnostic_parse = gpui::hvc_frame_trace::scope("message_parse");
++        #[cfg(debug_assertions)]
++        {
++            gpui::hvc_frame_trace::count("parse_calls",1);
++            gpui::hvc_frame_trace::count("parse_source_bytes",source.len() as u64);
++        }
+         let mut parts = Vec::new();
+         for part in parse_chat_content(&source) {
+             match part {
+@@ -247,10 +264,9 @@ impl MessageProjection {
+                 }
+             }
+         }
+-        Self {
+-            source,
+-            parts: Rc::new(parts),
+-        }
++        #[cfg(debug_assertions)]
++        gpui::hvc_frame_trace::count("parsed_blocks",parts.len() as u64);
++        Self {source,parts: Rc::new(parts)}
+     }
+ 
+     fn refresh(&mut self, source: SharedString) -> bool {
+@@ -323,6 +339,8 @@ fn index_at(pieces: &[TextPiece], position: gpui::Point<gpui::Pixels>) -> Option
+ 
+ impl RenderOnce for SelectableMessage {
+     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
++        #[cfg(debug_assertions)]
++        let _diagnostic_build = gpui::hvc_frame_trace::scope("message_build_including_parse");
+         let selection = window.use_keyed_state(self.id.clone(), cx, |_, cx| Selection {
+             projection: MessageProjection::new(self.content.clone()),
+             text_cache: Vec::new(),
+diff --git a/crates/hvc-ui/src/shell.rs b/crates/hvc-ui/src/shell.rs
+index 30d79dd..9352c62 100644
+--- a/crates/hvc-ui/src/shell.rs
++++ b/crates/hvc-ui/src/shell.rs
+@@ -203,7 +203,11 @@ impl Render for AppModel {
+     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+         self.observe_canvas_focus(window, cx);
+         self.observe_performance_frame(window, cx);
++        #[cfg(debug_assertions)]
++        let _diagnostic_shell = gpui::hvc_frame_trace::scope("shell_build");
+         self.note_window_activation(window.is_window_active(), cx);
++        #[cfg(debug_assertions)]
++        self.hvc_diagnostic_flags();
+         let active = self.active_view();
+         let badges = self.sidebar_badges(cx);
+         self.collect_notifications(cx);
+diff --git a/third_party/gpui/src/elements/text.rs b/third_party/gpui/src/elements/text.rs
+index 9de3048..d6bbb87 100644
+--- a/third_party/gpui/src/elements/text.rs
++++ b/third_party/gpui/src/elements/text.rs
+@@ -323,6 +323,11 @@ struct TextLayoutInner {
+ }
+ 
+ impl TextLayout {
++    /// Marks this layout as message text for a temporary debug diagnostic.
++    #[cfg(debug_assertions)]
++    pub fn hvc_diagnostic_mark_message(&self) {
++        crate::hvc_frame_trace::mark_layout(Rc::as_ptr(&self.0) as usize);
++    }
+     fn layout(
+         &self,
+         text: SharedString,
+@@ -372,6 +377,11 @@ impl TextLayout {
+                         (None, "".into())
+                     };
+ 
++                #[cfg(debug_assertions)]
++                let diagnostic_old = element_state.0.borrow().as_ref().map(|old| (
++                    old.wrap_width.map(f32::from), old.truncate_width.map(f32::from)
++                ));
++
+                 if let Some(text_layout) = element_state.0.borrow().as_ref()
+                     && text_layout.size.is_some()
+                     // HVC-GPUI-006: an intrinsic measurement must not reuse
+@@ -382,9 +392,14 @@ impl TextLayout {
+                     // ellipsis and let the text overflow its box.
+                     && truncate_width == text_layout.truncate_width
+                 {
++                    #[cfg(debug_assertions)]
++                    crate::hvc_frame_trace::measure(Rc::as_ptr(&element_state.0) as usize,diagnostic_old,wrap_width.map(f32::from),truncate_width.map(f32::from),true,text.len());
+                     return text_layout.size.unwrap();
+                 }
+ 
++                #[cfg(debug_assertions)]
++                crate::hvc_frame_trace::measure(Rc::as_ptr(&element_state.0) as usize,diagnostic_old,wrap_width.map(f32::from),truncate_width.map(f32::from),false,text.len());
++
+                 let mut line_wrapper = cx.text_system().line_wrapper(text_style.font(), font_size);
+                 // HVC-GPUI-004 follow-up: this closure runs once per measurement; truncate a
+                 // copy so `runs` still describes the whole text next time.
+@@ -466,6 +481,14 @@ impl TextLayout {
+             .with_context(|| format!("prepaint has not been performed on {text}"))
+             .unwrap();
+ 
++        #[cfg(debug_assertions)]
++        {
++            let mask = window.content_mask().bounds;
++            let outside = bounds.right() <= mask.left() || bounds.left() >= mask.right()
++                || bounds.bottom() <= mask.top() || bounds.top() >= mask.bottom();
++            crate::hvc_frame_trace::paint(Rc::as_ptr(&self.0) as usize, outside);
++        }
++
+         let line_height = element_state.line_height;
+         let mut line_origin = bounds.origin;
+         let text_style = window.text_style();
+diff --git a/third_party/gpui/src/gpui.rs b/third_party/gpui/src/gpui.rs
+index 805dbbd..285aee6 100644
+--- a/third_party/gpui/src/gpui.rs
++++ b/third_party/gpui/src/gpui.rs
+@@ -45,6 +45,9 @@ mod text_system;
+ mod util;
+ mod view;
+ mod window;
++/// Temporary debug-only rendering trace.
++#[cfg(debug_assertions)]
++pub mod hvc_frame_trace;
+ 
+ #[cfg(doc)]
+ pub mod _ownership_and_data_flow;
+diff --git a/third_party/gpui/src/text_system/line.rs b/third_party/gpui/src/text_system/line.rs
+index 189a3e8..c280b0c 100644
+--- a/third_party/gpui/src/text_system/line.rs
++++ b/third_party/gpui/src/text_system/line.rs
+@@ -433,6 +433,14 @@ fn paint_line_background(
+     window: &mut Window,
+     cx: &mut App,
+ ) -> Result<()> {
++    #[cfg(debug_assertions)]
++    {
++        crate::hvc_frame_trace::count("bg_calls",1);
++        if decoration_runs.iter().all(|run|run.background_color.is_none()) {
++            crate::hvc_frame_trace::count("bg_calls_no_color",1);
++            crate::hvc_frame_trace::count("bg_glyphs_no_color",layout.runs.iter().map(|run|run.glyphs.len() as u64).sum());
++        }
++    }
+     let line_bounds = Bounds::new(
+         origin,
+         size(
+diff --git a/third_party/gpui/src/window.rs b/third_party/gpui/src/window.rs
+index 7ba5474..b67807e 100644
+--- a/third_party/gpui/src/window.rs
++++ b/third_party/gpui/src/window.rs
+@@ -1928,6 +1928,10 @@ impl Window {
+     /// the contents of the new [`Scene`], use [`Self::present`].
+     #[profiling::function]
+     pub fn draw(&mut self, cx: &mut App) -> ArenaClearNeeded {
++        #[cfg(debug_assertions)]
++        crate::hvc_frame_trace::begin_frame();
++        #[cfg(debug_assertions)]
++        let diagnostic_draw_start = std::time::Instant::now();
+         self.invalidate_entities();
+         cx.entities.clear_accessed();
+         debug_assert!(self.rendered_entity_stack.is_empty());
+@@ -1993,6 +1997,11 @@ impl Window {
+         self.invalidator.set_phase(DrawPhase::None);
+         self.needs_present.set(true);
+ 
++        #[cfg(debug_assertions)]
++        {
++            crate::hvc_frame_trace::count("draw_ns", diagnostic_draw_start.elapsed().as_nanos() as u64);
++            crate::hvc_frame_trace::end_frame();
++        }
+         ArenaClearNeeded
+     }
+ 
+@@ -2021,9 +2030,13 @@ impl Window {
+ 
+     #[profiling::function]
+     fn present(&self) {
++        #[cfg(debug_assertions)]
++        let diagnostic_present_start = std::time::Instant::now();
+         self.platform_window.draw(&self.rendered_frame.scene);
+         self.needs_present.set(false);
+         profiling::finish_frame!();
++        #[cfg(debug_assertions)]
++        crate::hvc_frame_trace::finish_present(diagnostic_present_start.elapsed().as_nanos() as u64);
+     }
+ 
+     fn draw_roots(&mut self, cx: &mut App) {
+@@ -2050,7 +2063,11 @@ impl Window {
+ 
+         // Layout all root elements.
+         let mut root_element = self.root.as_ref().unwrap().clone().into_any();
++        #[cfg(debug_assertions)]
++        let diagnostic_layout = crate::hvc_frame_trace::scope("root_layout_prepaint");
+         root_element.prepaint_as_root(Point::default(), root_size.into(), self, cx);
++        #[cfg(debug_assertions)]
++        drop(diagnostic_layout);
+ 
+         #[cfg(any(feature = "inspector", debug_assertions))]
+         let inspector_element = self.prepaint_inspector(_inspector_width, cx);
+@@ -2081,6 +2098,8 @@ impl Window {
+         self.mouse_hit_test = self.next_frame.hit_test(self.mouse_position);
+ 
+         // Now actually paint the elements.
++        #[cfg(debug_assertions)]
++        let _diagnostic_paint = crate::hvc_frame_trace::scope("paint");
+         self.invalidator.set_phase(DrawPhase::Paint);
+         root_element.paint(self, cx);
+ 
+diff --git a/third_party/gpui/src/hvc_frame_trace.rs b/third_party/gpui/src/hvc_frame_trace.rs
+new file mode 100644
+--- /dev/null
++++ b/third_party/gpui/src/hvc_frame_trace.rs
+@@ -0,0 +1,88 @@
++//! Temporary debug-only rendering diagnostics. Removed after the diagnostic run.
++#![allow(missing_docs)]
++
++use std::{cell::RefCell, collections::{BTreeMap, HashSet}, path::PathBuf, sync::{Mutex, OnceLock,atomic::{AtomicBool,Ordering}}, time::{Instant, SystemTime, UNIX_EPOCH}};
++use serde::Serialize;
++use serde_json::{Value, json};
++
++static COMPLETE: AtomicBool = AtomicBool::new(false);
++const MAX_FRAMES:usize=2048;
++const MAX_EVENTS:usize=2048;
++const MAX_LAYOUT_TAGS:usize=16384;
++pub fn enabled() -> bool {
++    static ENABLED: OnceLock<bool> = OnceLock::new();
++    *ENABLED.get_or_init(|| std::env::var_os("HVC_DIAGNOSTIC_TRACE").is_some()) && !COMPLETE.load(Ordering::Relaxed)
++}
++fn epoch_ns() -> u64 { SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos() as u64 }
++static EVENTS: Mutex<Vec<Value>> = Mutex::new(Vec::new());
++pub fn event(label: &'static str) {
++    if enabled() { let mut events=EVENTS.lock().unwrap();if events.len()<MAX_EVENTS {events.push(json!({"label":label,"epochNs":epoch_ns()}));} }
++}
++#[derive(Default, Serialize)]
++struct Measures {
++    calls:u64, hits:u64, cold:u64, wrap_changed:u64, truncate_changed:u64, other_miss:u64,
++    hit_none:u64, hit_some:u64, miss_none:u64, miss_some:u64,
++    none_to_some:u64, some_to_none:u64, some_to_other:u64, bytes:u64,
++    paint_calls:u64, paint_outside_mask:u64,
++}
++impl Measures {
++    fn measure(&mut self, old:Option<(Option<f32>,Option<f32>)>, wrap:Option<f32>, truncate:Option<f32>, hit:bool, bytes:usize) {
++        self.calls+=1; self.bytes+=bytes as u64;
++        if hit { self.hits+=1; if wrap.is_none(){self.hit_none+=1}else{self.hit_some+=1}; return; }
++        if wrap.is_none(){self.miss_none+=1}else{self.miss_some+=1};
++        match old {
++            None=>self.cold+=1,
++            Some((old_wrap,old_truncate))=> {
++                if old_wrap!=wrap { self.wrap_changed+=1; match(old_wrap,wrap){(None,Some(_))=>self.none_to_some+=1,(Some(_),None)=>self.some_to_none+=1,(Some(_),Some(_))=>self.some_to_other+=1,_=>{}} }
++                else if old_truncate!=truncate {self.truncate_changed+=1} else {self.other_miss+=1}
++            }
++        }
++    }
++}
++#[derive(Default, Serialize)]
++struct Frame {
++    index:u64, epoch_ns:u64, interval_ns:u64, fixture_frame:Option<u64>, fixture_updates:usize,
++    hydrating:bool, quota_loading:bool, counts:BTreeMap<&'static str,u64>, scope_ns:BTreeMap<&'static str,u64>,
++    all:Measures, message:Measures,
++}
++struct Trace {
++    path:PathBuf, frames:Vec<Frame>, current:Frame, tagged:HashSet<usize>, previous:Option<Instant>, finish:bool, terminal:Value,
++}
++thread_local! { static TRACE: RefCell<Option<Trace>> = const {RefCell::new(None)}; }
++fn with_trace(f:impl FnOnce(&mut Trace)) {
++    if !enabled(){return;}
++    TRACE.with_borrow_mut(|slot| {
++        let trace=slot.get_or_insert_with(|| Trace{path:std::env::var_os("HVC_DIAGNOSTIC_TRACE").unwrap().into(),frames:Vec::with_capacity(145),current:Frame::default(),tagged:HashSet::with_capacity(512),previous:None,finish:false,terminal:Value::Null});
++        f(trace)
++    });
++}
++pub fn begin_frame() {
++    with_trace(|s| {
++        let now=Instant::now();
++        s.current=Frame{index:s.frames.len() as u64,epoch_ns:epoch_ns(),interval_ns:s.previous.map_or(0,|p|now.duration_since(p).as_nanos() as u64),..Frame::default()};
++        s.previous=Some(now); s.tagged.clear();
++    });
++}
++pub fn end_frame() { with_trace(|s| {if s.frames.len()<MAX_FRAMES{s.frames.push(std::mem::take(&mut s.current));}else{s.finish=true;}}); }
++pub fn mark_fixture(frame:u64,updates:usize) {with_trace(|s| {s.current.fixture_frame=Some(frame);s.current.fixture_updates=updates;});}
++pub fn flags(hydrating:bool,quota_loading:bool){with_trace(|s|{s.current.hydrating=hydrating;s.current.quota_loading=quota_loading;});}
++pub fn mark_layout(id:usize){with_trace(|s|{if s.tagged.len()<MAX_LAYOUT_TAGS{s.tagged.insert(id);}});}
++pub fn count(label:&'static str, amount:u64){with_trace(|s|{*s.current.counts.entry(label).or_default()+=amount;});}
++pub fn measure(id:usize,old:Option<(Option<f32>,Option<f32>)>,wrap:Option<f32>,truncate:Option<f32>,hit:bool,bytes:usize){
++    with_trace(|s|{s.current.all.measure(old,wrap,truncate,hit,bytes);if s.tagged.contains(&id){s.current.message.measure(old,wrap,truncate,hit,bytes);}});
++}
++pub fn paint(id:usize,outside:bool){with_trace(|s|{s.current.all.paint_calls+=1;s.current.all.paint_outside_mask+=u64::from(outside);if s.tagged.contains(&id){s.current.message.paint_calls+=1;s.current.message.paint_outside_mask+=u64::from(outside);}});}
++pub struct Scope(Option<(Instant,&'static str)>);
++pub fn scope(label:&'static str)->Scope {Scope(enabled().then(||(Instant::now(),label)))}
++impl Drop for Scope {fn drop(&mut self){if let Some((start,label))=self.0 {with_trace(|s|{*s.current.scope_ns.entry(label).or_default()+=start.elapsed().as_nanos() as u64;});}}}
++pub fn finish_after_present(terminal:Value){with_trace(|s|{s.finish=true;s.terminal=terminal;});}
++pub fn finish_present(ns:u64){with_trace(|s| {
++    if let Some(last)=s.frames.last_mut(){last.scope_ns.insert("present",ns);}
++    if s.finish {
++        let report=json!({"diagnosticOnly":true,"releaseGate":false,"sourceCommit":"a362f4f","frames":s.frames,"events":*EVENTS.lock().unwrap(),"terminal":s.terminal});
++        if let Some(parent)=s.path.parent(){let _=std::fs::create_dir_all(parent);}
++        let _=std::fs::write(&s.path,serde_json::to_vec_pretty(&report).unwrap());
++        s.finish=false;
++        COMPLETE.store(true,Ordering::Relaxed);
++    }
++});}

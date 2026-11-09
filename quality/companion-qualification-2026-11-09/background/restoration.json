@@ -1,0 +1,34 @@
+{
+  "capturedAtUtc": "2026-11-09T14:16:30.525480+00:00",
+  "files": [
+    {
+      "path": "Cargo.toml",
+      "temporarySha256": "0db6ba8abc8a93ed979eaf794c657ad0f6620bc6731b53b35b5c335426c3430d",
+      "restoredSha256": "45084da2cbd126b4abe0be92cac1a6fb054cac4476ae68726ce9acb109ed3c28",
+      "backupSha256": "45084da2cbd126b4abe0be92cac1a6fb054cac4476ae68726ce9acb109ed3c28",
+      "byteExact": true
+    },
+    {
+      "path": "Cargo.lock",
+      "temporarySha256": "7055aaa25a2df8615da2a76e4508022811f90ddc12f9a4ea71bc4f1a7d8b387d",
+      "restoredSha256": "ba72237f26f1090c65c1ec5b009475f1d51cb0e637f2e2c30d707d0b0ec9695a",
+      "backupSha256": "ba72237f26f1090c65c1ec5b009475f1d51cb0e637f2e2c30d707d0b0ec9695a",
+      "byteExact": true
+    },
+    {
+      "path": "third_party/gpui/Cargo.toml",
+      "temporarySha256": "7fe2cf734b19a3ea3be40abf94f8cca41db85a3358b8c7c40f11e50956f8d556",
+      "restoredSha256": "bdbdf8c6340c387eea3c0a6ed0d880edbbbacf64062cd4fd5b04cac6afdf44cb",
+      "backupSha256": "bdbdf8c6340c387eea3c0a6ed0d880edbbbacf64062cd4fd5b04cac6afdf44cb",
+      "byteExact": true
+    }
+  ],
+  "temporaryHarnessActive": false,
+  "manifestLockGitDiffEmpty": true,
+  "productionSource": {
+    "path": "third_party/gpui/src/text_system/line.rs",
+    "sha256": "8db9faf989f682116d7c6bfa461d9fdfaea668d18133fb6c4148299dd53e8fd7"
+  },
+  "releaseBuildPerformed": false,
+  "cargoActive": false
+}

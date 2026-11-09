@@ -1,0 +1,113 @@
+{
+  "schemaVersion": 1,
+  "capturedAtUtc": "2026-11-09T14:47:49.881994+00:00",
+  "sourceCommit": "d71a5733ac73443992ffce5cadab3330f9289783",
+  "scope": "One exact-PID CPU diagnostic; does not replace archived official preflight FAIL",
+  "diagnosticOnly": true,
+  "applicationExecutions": 1,
+  "allCopiedHashesMatch": true,
+  "files": [
+    {
+      "source": "target\\companion-final\\thread-diagnostic-d71a573-2026-11-09\\after-run-integrity.json",
+      "artifact": "thread-diagnostic-d71a573\\after-run-integrity.json",
+      "bytes": 339,
+      "sha256": "73d14f73d026ceb12b1a28ac2861df10a4d9c54b4afea98de9fe7b620f01e2bb"
+    },
+    {
+      "source": "target\\companion-final\\thread-diagnostic-d71a573-2026-11-09\\analysis-output.txt",
+      "artifact": "thread-diagnostic-d71a573\\analysis-output.txt",
+      "bytes": 5752,
+      "sha256": "e0ff10792b7939fc27ae30f415dc3ec402772f7ed4608340925cec1e6baa42d8"
+    },
+    {
+      "source": "target\\companion-final\\thread-diagnostic-d71a573-2026-11-09\\analysis-summary.json",
+      "artifact": "thread-diagnostic-d71a573\\analysis-summary.json",
+      "bytes": 24536,
+      "sha256": "bc9928a5c16f489f64f982ae2bb03d729910a720fe56b27c00b4a88ce6d87798"
+    },
+    {
+      "source": "target\\companion-final\\thread-diagnostic-d71a573-2026-11-09\\analyze-thread-cpu.py",
+      "artifact": "thread-diagnostic-d71a573\\analyze-thread-cpu.py",
+      "bytes": 8847,
+      "sha256": "b362d968fd56feb5a473590298f9c8ab99212cc4de1359d87173b8e27b503451"
+    },
+    {
+      "source": "target\\companion-final\\thread-diagnostic-d71a573-2026-11-09\\before-run-integrity.json",
+      "artifact": "thread-diagnostic-d71a573\\before-run-integrity.json",
+      "bytes": 314,
+      "sha256": "937018b5e435ad57c18b4e2b562d16af2763c81da8603440ef77460580d702df"
+    },
+    {
+      "source": "target\\companion-final\\thread-diagnostic-d71a573-2026-11-09\\benchmark-ui-latency.diagnostic.ps1",
+      "artifact": "thread-diagnostic-d71a573\\benchmark-ui-latency.diagnostic.ps1",
+      "bytes": 10990,
+      "sha256": "6e3a9038050fa30d35b624464e350b8bd869232ab2f83d7c592f9637576dad37"
+    },
+    {
+      "source": "target\\companion-final\\thread-diagnostic-d71a573-2026-11-09\\benchmark-ui-latency.original.ps1",
+      "artifact": "thread-diagnostic-d71a573\\benchmark-ui-latency.original.ps1",
+      "bytes": 10353,
+      "sha256": "83d0555c3cca098d8577132dae13bdb83ea034a886cbbe46361c1f4de9de9f47"
+    },
+    {
+      "source": "target\\companion-final\\thread-diagnostic-d71a573-2026-11-09\\build-diagnostic.py",
+      "artifact": "thread-diagnostic-d71a573\\build-diagnostic.py",
+      "bytes": 3483,
+      "sha256": "dfe907b66ee84da2460c8e1f2956947d5e8fc9d86700691e91163a0573be1e7d"
+    },
+    {
+      "source": "target\\companion-final\\thread-diagnostic-d71a573-2026-11-09\\cpu-intervals.csv",
+      "artifact": "thread-diagnostic-d71a573\\cpu-intervals.csv",
+      "bytes": 6830,
+      "sha256": "f82af4b597ee0ff2bd4017962d03892d6f36e1c88250398066bb854a07360fea"
+    },
+    {
+      "source": "target\\companion-final\\thread-diagnostic-d71a573-2026-11-09\\derivation.json",
+      "artifact": "thread-diagnostic-d71a573\\derivation.json",
+      "bytes": 757,
+      "sha256": "0b87833428d5b79ac3206efe1f247601c6b4358c57962c5a492e0dae58c10df7"
+    },
+    {
+      "source": "target\\companion-final\\thread-diagnostic-d71a573-2026-11-09\\diagnostic-latency.json",
+      "artifact": "thread-diagnostic-d71a573\\diagnostic-latency.json",
+      "bytes": 2904,
+      "sha256": "3a6a1aa05d9f33a24f727259bbadd970ea1da4431133fb1a93901e53d92783ae"
+    },
+    {
+      "source": "target\\companion-final\\thread-diagnostic-d71a573-2026-11-09\\diagnostic-script.patch",
+      "artifact": "thread-diagnostic-d71a573\\diagnostic-script.patch",
+      "bytes": 3228,
+      "sha256": "95a81817396c96206df5058a1d67d651ea8ce271ae14a888b3174a1cd8294edf"
+    },
+    {
+      "source": "target\\companion-final\\thread-diagnostic-d71a573-2026-11-09\\README.md",
+      "artifact": "thread-diagnostic-d71a573\\README.md",
+      "bytes": 2487,
+      "sha256": "a9e75bf4fbe2e258b1f8c8ec5e6efc8ed74cbc03b0c095bc03bccfebcf3eef78"
+    },
+    {
+      "source": "target\\companion-final\\thread-diagnostic-d71a573-2026-11-09\\RESULTADO.md",
+      "artifact": "thread-diagnostic-d71a573\\RESULTADO.md",
+      "bytes": 3844,
+      "sha256": "772aaf39438db1f9080f3c159426a126e399084be0761a112945eb3465e10c9f"
+    },
+    {
+      "source": "target\\companion-final\\thread-diagnostic-d71a573-2026-11-09\\run-report.json",
+      "artifact": "thread-diagnostic-d71a573\\run-report.json",
+      "bytes": 2904,
+      "sha256": "3a6a1aa05d9f33a24f727259bbadd970ea1da4431133fb1a93901e53d92783ae"
+    },
+    {
+      "source": "target\\companion-final\\thread-diagnostic-d71a573-2026-11-09\\thread-cpu.json",
+      "artifact": "thread-diagnostic-d71a573\\thread-cpu.json",
+      "bytes": 539658,
+      "sha256": "255c5cfb1b72112042847a6e95a13a1cd1188b0351870e79bc71968c5e15acbd"
+    },
+    {
+      "source": "target\\companion-final\\thread-diagnostic-d71a573-2026-11-09\\ThreadSampler.cs",
+      "artifact": "thread-diagnostic-d71a573\\ThreadSampler.cs",
+      "bytes": 11047,
+      "sha256": "bf3da3cf8243fd64bd54fdd8daa669061ab06197dd9820a0c1521f4e62898a07"
+    }
+  ]
+}

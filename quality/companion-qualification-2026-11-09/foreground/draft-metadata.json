@@ -1,0 +1,12 @@
+{
+  "draftOnly": true,
+  "sourceFile": "third_party/gpui/src/text_system/line.rs",
+  "baseSha256": "121b9d36329f39c5d3dc05cd1bf8fe499020e3d6e585c112fd6547a855166564",
+  "sourceUnchangedAfterGeneration": true,
+  "testsExecuted": false,
+  "cargoExecuted": false,
+  "stages": [
+    "RED glyph-visit counter and observable tests",
+    "Guard plus pure envelope tests"
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "sourceCommit": "fd43c7e51a573297dcb6a959a1dcbb63211fec75",
+  "capturedAtUtc": "2026-11-08T18:40:45.600308+00:00",
+  "scope": "First failed preflight after persistent text-piece cache. Historical failure; no full paired gate or complete regression gate claimed for this source.",
+  "artifacts": {
+    "source": {
+      "path": "<home>\\Documents\\Nathan\\HardVibeCode\\.worktrees\\companion-decision-dock\\quality\\companion-qualification-2026-11-08\\source-fd43c7e.json",
+      "bytes": 241438,
+      "sha256": "03d26919f0f5b86169d817142c391ba3d69ab6da1285ecca913b02110beea963"
+    },
+    "binary": {
+      "path": "<home>\\Documents\\Nathan\\HardVibeCode\\.worktrees\\companion-decision-dock\\target\\release\\hard-vibe-code.exe",
+      "bytes": 38057472,
+      "sha256": "28dbc83c04db2ec15158b2e8f16ba92ea33f581b4ec1b12676f78b0ea182e1b1"
+    },
+    "releaseBuild": {
+      "path": "<home>\\Documents\\Nathan\\HardVibeCode\\.worktrees\\companion-decision-dock\\quality\\companion-qualification-2026-11-08\\release-fd43c7e-build.log",
+      "bytes": 696,
+      "sha256": "2ffe77e5934988aaeb3e11882d8acf68759f3c196f5b5004f441600d3251151a"
+    },
+    "preflight": {
+      "path": "<home>\\Documents\\Nathan\\HardVibeCode\\.worktrees\\companion-decision-dock\\quality\\companion-qualification-2026-11-08\\three-streams-fd43c7e-preflight.json",
+      "bytes": 5328,
+      "sha256": "5592dec84dcd2726f24c103a4a0622f2f1f5e9676f97d25d37a2183ba6dfb0ba"
+    },
+    "focusedTests": {
+      "path": "<home>\\Documents\\Nathan\\HardVibeCode\\.worktrees\\companion-decision-dock\\quality\\companion-qualification-2026-11-08\\text-layout-fd43c7e-tests.log",
+      "bytes": 2325,
+      "sha256": "68b29512ec3f5fd8621b52ce171b548253090e9a3a4b2302178e89434fd0708c"
+    }
+  }
+}

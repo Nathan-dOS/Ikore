@@ -1,0 +1,43 @@
+{
+  "capturedAtUtc": "2026-11-09T09:35:58.750284+00:00",
+  "sourceBase": "42219bb7abdab2b4ac71f8ff18e5e5cc8b695251",
+  "patch": "HVC-GPUI-008; uncommitted production guard plus six private tests",
+  "command": "cargo test --offline --locked -p gpui --lib --no-default-features --features test-support,windows-manifest text_system::line::tests -- --test-threads=2",
+  "red": {
+    "passed": 5,
+    "failed": 1,
+    "ignored": 0,
+    "filtered": 70
+  },
+  "green": {
+    "passed": 6,
+    "failed": 0,
+    "ignored": 0,
+    "filtered": 70
+  },
+  "selectedTestsAreOutsideDefaultWorkspaceSuite": true,
+  "sourceFiles": {
+    "red": {
+      "path": "line.red.rs",
+      "sha256": "2ec9830c88c331e6f5da31d97e065c22175e7d9970eb71d4bce921ad54c7a9d9"
+    },
+    "green": {
+      "path": "line.green.rs",
+      "sha256": "121b9d36329f39c5d3dc05cd1bf8fe499020e3d6e585c112fd6547a855166564"
+    }
+  },
+  "executedBinary": {
+    "path": "<home>\\Documents\\Nathan\\HardVibeCode\\.worktrees\\companion-decision-dock\\target\\debug\\deps\\gpui-24fe41aed0a10818.exe",
+    "sha256": "b0bb77d10253d29dff52891b5c77d5c511ee25619d8b1f5765489ab3cafc6e99"
+  },
+  "temporaryHarness": {
+    "activeByRootRequest": false,
+    "restorationRequiredBeforeDeliveryChecks": true,
+    "packageIdentitiesPreserved": 794,
+    "lockProof": "temporary-lock-proof.json",
+    "preciseDiff": "temporary-harness.patch",
+    "restoredByteExactly": true,
+    "restorationRecord": "restoration.json"
+  },
+  "releaseOrSpeedQualified": false
+}

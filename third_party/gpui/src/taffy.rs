@@ -46,6 +46,12 @@ impl TaffyLayoutEngine {
         }
     }
 
+    /// Number of nodes currently retained by the real Taffy tree, for tests.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn total_node_count(&self) -> usize {
+        self.taffy.total_node_count()
+    }
+
     pub fn clear(&mut self) {
         self.taffy.clear();
         self.absolute_layout_bounds.clear();

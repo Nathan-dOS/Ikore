@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "sourceCommit": "42219bb7abdab2b4ac71f8ff18e5e5cc8b695251",
+  "capturedAtUtc": "2026-11-09T09:17:59.921093+00:00",
+  "scope": "Failed first release preflight after bounded constraint cache. Not a complete or paired speed gate.",
+  "artifacts": {
+    "source": {
+      "path": "<home>\\Documents\\Nathan\\HardVibeCode\\.worktrees\\companion-decision-dock\\quality\\companion-qualification-2026-11-08\\source-42219bb.json",
+      "bytes": 241438,
+      "sha256": "5769c0a28ecd5ebc7e3397a32d00434834707cd3ad6029a16b60ea7edb308757"
+    },
+    "binary": {
+      "path": "<home>\\Documents\\Nathan\\HardVibeCode\\.worktrees\\companion-decision-dock\\target\\release\\hard-vibe-code.exe",
+      "bytes": 38056960,
+      "sha256": "f3ded55f7a6b8a489fbeacbe63239d574d1e213c30497777c66f0df9b414de94"
+    },
+    "build": {
+      "path": "<home>\\Documents\\Nathan\\HardVibeCode\\.worktrees\\companion-decision-dock\\quality\\companion-qualification-2026-11-08\\release-42219bb-build.log",
+      "bytes": 960,
+      "sha256": "0d433de21acd84a3c0c3d2108c528da1a1c77d5fc45eb5ecb9d97840e7f95841"
+    },
+    "preflight": {
+      "path": "<home>\\Documents\\Nathan\\HardVibeCode\\.worktrees\\companion-decision-dock\\quality\\companion-qualification-2026-11-08\\three-streams-42219bb-preflight.json",
+      "bytes": 5281,
+      "sha256": "6dbdc780ae87f4396974d300992119cc9c233a30441bdc66d3d74dcd861d99c9"
+    }
+  }
+}

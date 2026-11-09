@@ -1,0 +1,196 @@
+{
+  "schemaVersion": 1,
+  "createdAtUtc": "2026-11-09T20:13:26.967757+00:00",
+  "sourceCommit": "5111c6117da219248f72e4844f3ebc593235ff33",
+  "sourceSnapshot": "quality/companion-qualification-2026-11-09/source-5111c61.json",
+  "sourceSnapshotSha256": "0ce36427c195c5534306ef2a9f1fb236ca878c644b8f7b95cfecddbb31428dfe",
+  "sourceSnapshotFiles": 966,
+  "sourceDiffEmptyAtRootCapture": true,
+  "doesNotClaimPostGateSourceVerification": false,
+  "focalCommand": "cargo test --locked -p hvc-core --lib sqlite_runtime_tests -- --test-threads=2",
+  "validRed": {
+    "passed": 1,
+    "failed": 1,
+    "ignored": 0,
+    "filtered": 1200
+  },
+  "green": {
+    "passed": 3,
+    "failed": 0,
+    "ignored": 0,
+    "filtered": 1200,
+    "durationSeconds": 2.4
+  },
+  "advisoryAudit": {
+    "schemaVersion": 1,
+    "auditedAt": "2026-11-09T20:11:11.6778930Z",
+    "cargoAuditExitCode": 0,
+    "cargoVulnerabilities": 0,
+    "cargoInformationalWarnings": {
+      "unmaintained": 15,
+      "unsound": 2,
+      "yanked": 1
+    },
+    "rustSecLastCommit": "d9cb059f3217db87aeccd190b81eaffe8cc29cb9",
+    "passed": true
+  },
+  "resolvedDependencies": [
+    {
+      "name": "libsqlite3-sys",
+      "version": "0.39.1",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "14a5f01b87b92705d07b433c06f96cbc764637d81a0bffb5734ce17cf0f9a2b3"
+    },
+    {
+      "name": "refinery",
+      "version": "0.10.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "8e48a123dfddb4e33b888a233e3dd8f428d0dadbe8a2302177fcad504b9fb0e3"
+    },
+    {
+      "name": "refinery-core",
+      "version": "0.10.1",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "07f0a6b2d031aec7903f7ce81c723bbe7d3d8667441012b2a4388af0f3a70ef3"
+    },
+    {
+      "name": "refinery-macros",
+      "version": "0.10.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "623c53cdc704ababffe5361be8cb726f874fcd4e97b945741aa69b15d0406f36"
+    },
+    {
+      "name": "rusqlite",
+      "version": "0.41.1",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "da9bba6f3506135e120a6586df05be18b48d18896600646a4bec8f993d91a594"
+    }
+  ],
+  "cargoLockSha256": "d407d9ed76b768b7be5762473de789c95d389c3a28f691bbb770cb27aea1b3c7",
+  "fullGateStatus": "failed/incomplete at Clippy compile check; Rust tests and later checks not started",
+  "qualificationStatus": "in progress; speed and full qualification pending",
+  "files": [
+    {
+      "path": "target-companion-sqlite-audit-2026-11-09.log",
+      "source": "target-companion-sqlite-audit-2026-11-09.log",
+      "bytes": 485,
+      "sha256": "cdf830b0ba170d78251b58ad9f9fc0c23883249bcfb47ef263bb7d9d1454e61d",
+      "classification": "standalone advisory audit passed, 0 vulnerabilities; informational warnings remain"
+    },
+    {
+      "path": "target-companion-sqlite-fmt-2026-11-09.log",
+      "source": "target-companion-sqlite-fmt-2026-11-09.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "classification": "empty output from successful formatting check, result reported by root"
+    },
+    {
+      "path": "target-companion-sqlite-runtime-green-2026-11-09.log",
+      "source": "target-companion-sqlite-runtime-green-2026-11-09.log",
+      "bytes": 22322,
+      "sha256": "af61d92af1eb19a282db554a42d5470b6ca75029398fc89b366aa189868c25bd",
+      "classification": "compile diagnostic: rusqlite fallible_uint feature initially absent, 23 E0277 errors; no runtime tests executed"
+    },
+    {
+      "path": "target-companion-sqlite-runtime-green-compatible-2026-11-09.log",
+      "source": "target-companion-sqlite-runtime-green-compatible-2026-11-09.log",
+      "bytes": 1023,
+      "sha256": "2e5176fe9ca250fd3335659f5e232e58e84358cdb4b7e9a58340cce43f7f6ddd",
+      "classification": "valid GREEN after retaining fallible_uint: 3 passed, 0 failed, 0 ignored, 1200 filtered; 2.40 seconds"
+    },
+    {
+      "path": "target-companion-sqlite-runtime-red-2026-11-09.log",
+      "source": "target-companion-sqlite-runtime-red-2026-11-09.log",
+      "bytes": 2108,
+      "sha256": "e4efc4f4242772098479b02413ea68fc8a4bd2e9e0d8079b65a192c407093452",
+      "classification": "initial RED attempt: security-floor failure plus invalid fixture table using reserved sqlite_ prefix; not two application regressions"
+    },
+    {
+      "path": "target-companion-sqlite-runtime-red-corrected-2026-11-09.log",
+      "source": "target-companion-sqlite-runtime-red-corrected-2026-11-09.log",
+      "bytes": 1313,
+      "sha256": "93ac55de07788a9bdeb1d1aaf02c4aca76608b3c69473611546923b78c38ba36",
+      "classification": "valid RED: WAL behavior passed; linked SQLite 3.48.0 failed security floor; 1 passed, 1 failed, 0 ignored, 1200 filtered"
+    },
+    {
+      "path": "target-companion-sqlite-update-2026-11-09.log",
+      "source": "target-companion-sqlite-update-2026-11-09.log",
+      "bytes": 488,
+      "sha256": "1b10825a9092c6ad2b6e4addf12226b4bda12f237317e1bcbbe483a4fe77c804",
+      "classification": "dependency-resolution diagnostic: refinery ^0.10.1 unavailable; not a runtime test"
+    },
+    {
+      "path": "target-companion-sqlite-update-resolved-2026-11-09.log",
+      "source": "target-companion-sqlite-update-resolved-2026-11-09.log",
+      "bytes": 441,
+      "sha256": "9bfb0804c970e7e35695f4d287ac9c3c5409553984bbb7696eae69d4f36838c4",
+      "classification": "successful dependency resolution, versions pinned by Cargo.lock"
+    },
+    {
+      "path": "advisories/cargo-audit.json",
+      "source": "target/companion-final/sqlite-advisories-2026-11-09/cargo-audit.json",
+      "bytes": 27944,
+      "sha256": "ac1f428b165274b1a5f0edf4884edbec36f1e066732248325584f15a75e0c0e7"
+    },
+    {
+      "path": "advisories/summary.json",
+      "source": "target/companion-final/sqlite-advisories-2026-11-09/summary.json",
+      "bytes": 488,
+      "sha256": "541b8f26767824fc0c080c3d658b2ffa5846f4ffc7e6df39f736dbe4434373e4"
+    },
+    {
+      "path": "target-companion-stage7-5111c61-2026-11-09.log",
+      "source": "target-companion-stage7-5111c61-2026-11-09.log",
+      "bytes": 6266,
+      "sha256": "51085bf1b110b66e136d6a4dab1316b1c1476caa0d7c739c1299527e1017cd74",
+      "classification": "failed/incomplete full-gate attempt: first three checks passed, Clippy compile error in core_harness Target::Version u32/i32; test suite and later checks did not run"
+    },
+    {
+      "path": "stage7-timings-5111c61-2026-11-09.json",
+      "source": "target/companion-final/stage7-timings-5111c61-2026-11-09.json",
+      "bytes": 1133,
+      "sha256": "8d631d5d33e1f9df252dfe955ef00c318a1a105cf33f661db873ff4f1ea053f6",
+      "classification": "failed/incomplete full-gate attempt: first three checks passed, Clippy compile error in core_harness Target::Version u32/i32; test suite and later checks did not run"
+    }
+  ],
+  "fullGateTimings": {
+    "schemaVersion": 1,
+    "startedAt": "2026-11-09T20:12:03.1591532Z",
+    "finishedAt": "2026-11-09T20:13:22.1046531Z",
+    "durationSeconds": 78.94,
+    "passed": false,
+    "steps": [
+      {
+        "name": "estrutura exclusivamente GPUI/Rust",
+        "durationSeconds": 1.991,
+        "passed": true,
+        "exitCode": 0
+      },
+      {
+        "name": "crate dependency boundaries",
+        "durationSeconds": 0.193,
+        "passed": true,
+        "exitCode": 0
+      },
+      {
+        "name": "cargo fmt",
+        "durationSeconds": 5.579,
+        "passed": true,
+        "exitCode": 0
+      },
+      {
+        "name": "Clippy",
+        "durationSeconds": 71.07,
+        "passed": false,
+        "exitCode": 101
+      }
+    ]
+  },
+  "sourceVerificationAfterGate": {
+    "verifiedAtUtc": "2026-11-09T20:14:41.247560+00:00",
+    "sourceCommit": "5111c6117da219248f72e4844f3ebc593235ff33",
+    "checkedFiles": 966,
+    "zeroDrift": true,
+    "mismatches": []
+  }
+}

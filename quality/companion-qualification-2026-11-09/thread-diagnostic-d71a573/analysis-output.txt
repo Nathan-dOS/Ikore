@@ -1,0 +1,218 @@
+{
+  "processId": 19556,
+  "uiThreadIds": [
+    28244
+  ],
+  "latency": {
+    "scenario": "dock-three-streams",
+    "fixtureFrames": 141,
+    "updatedConversations": 423,
+    "fixtureReady": true,
+    "viewportWidth": 1440.0,
+    "viewportHeight": 900.0,
+    "samples": 120,
+    "warmupSamples": 20,
+    "p50Ms": 6.2829,
+    "p95Ms": 9.5315,
+    "p99Ms": 12.306700000000001,
+    "passed": false,
+    "displayRefreshRatesHz": null
+  },
+  "sampling": {
+    "points": 58,
+    "rows": 3177,
+    "threads": 73,
+    "firstVisibleMs": 882.7066,
+    "elapsedMs": 1829.9417,
+    "queryErrors": 0,
+    "droppedThreads": 0,
+    "saturated": false,
+    "intervalMsP50": 31.35450000000003,
+    "intervalMsP95": 34.94849999999997,
+    "collectionMsTotal": 53.16820000000029,
+    "collectionMsP50": 0.8039999999999736,
+    "collectionMsP95": 1.2037000000000262,
+    "collectionMsMax": 6.348999999999999
+  },
+  "phaseCpu": {
+    "pre-window": {
+      "wallMs": 850.1831999999999,
+      "processCpuMs": 1140.625,
+      "capturedThreadCpuMs": 1078.125,
+      "uiCpuMs": 312.5,
+      "uiUserMs": 187.5,
+      "uiKernelMs": 125.0,
+      "nonUiUserMs": 484.375,
+      "nonUiKernelMs": 281.25,
+      "newThreadInitialCpuMs": 125.0,
+      "intervals": 27,
+      "nonUiCapturedCpuMs": 765.625,
+      "uiPercentOneCore": 36.75678371438062,
+      "processEquivalentCores": 1.3416226055748925
+    },
+    "visibility-transition": {
+      "wallMs": 30.539800000000014,
+      "processCpuMs": 187.5,
+      "capturedThreadCpuMs": 187.5,
+      "uiCpuMs": 15.625,
+      "uiUserMs": 0.0,
+      "uiKernelMs": 15.625,
+      "nonUiUserMs": 93.75,
+      "nonUiKernelMs": 78.125,
+      "newThreadInitialCpuMs": 0.0,
+      "intervals": 1,
+      "nonUiCapturedCpuMs": 171.875,
+      "uiPercentOneCore": 51.16274500815328,
+      "processEquivalentCores": 6.139529400978392
+    },
+    "window-visible": {
+      "wallMs": 920.0920000000001,
+      "processCpuMs": 1562.5,
+      "capturedThreadCpuMs": 1578.125,
+      "uiCpuMs": 781.25,
+      "uiUserMs": 656.25,
+      "uiKernelMs": 125.0,
+      "nonUiUserMs": 531.25,
+      "nonUiKernelMs": 265.625,
+      "newThreadInitialCpuMs": 15.625,
+      "intervals": 29,
+      "nonUiCapturedCpuMs": 796.875,
+      "uiPercentOneCore": 84.90998726214333,
+      "processEquivalentCores": 1.6981997452428668
+    }
+  },
+  "integrity": {
+    "checkedFiles": 965,
+    "allMatch": true,
+    "mismatches": [],
+    "officialScriptSha256": "83d0555c3cca098d8577132dae13bdb83ea034a886cbbe46361c1f4de9de9f47",
+    "officialScriptUnchanged": true,
+    "binarySha256": "56c4ef95c818bf77caae37ddc90ecd0816f64681b6d336e201197c50e7827b45",
+    "binaryUnchanged": true,
+    "isolatedRuntimeEmpty": true
+  }
+}
+Top visible CPU threads:
+[
+  {
+    "threadIndex": 0,
+    "threadId": 28244,
+    "description": "",
+    "descriptionStatus": "unnamed",
+    "uiThread": true,
+    "preWindowCpuMs": 312.5,
+    "visibleCpuMs": 781.25,
+    "transitionCpuMs": 15.625,
+    "totalCapturedDeltaMs": 1109.375
+  },
+  {
+    "threadIndex": 48,
+    "threadId": 30332,
+    "description": "hvc-runtime",
+    "descriptionStatus": "known-static",
+    "uiThread": false,
+    "preWindowCpuMs": 15.625,
+    "visibleCpuMs": 265.625,
+    "transitionCpuMs": 0.0,
+    "totalCapturedDeltaMs": 281.25
+  },
+  {
+    "threadIndex": 54,
+    "threadId": 25312,
+    "description": "hvc-runtime",
+    "descriptionStatus": "known-static",
+    "uiThread": false,
+    "preWindowCpuMs": 0.0,
+    "visibleCpuMs": 218.75,
+    "transitionCpuMs": 0.0,
+    "totalCapturedDeltaMs": 218.75
+  },
+  {
+    "threadIndex": 49,
+    "threadId": 29976,
+    "description": "hvc-runtime",
+    "descriptionStatus": "known-static",
+    "uiThread": false,
+    "preWindowCpuMs": 31.25,
+    "visibleCpuMs": 140.625,
+    "transitionCpuMs": 15.625,
+    "totalCapturedDeltaMs": 187.5
+  },
+  {
+    "threadIndex": 15,
+    "threadId": 30372,
+    "description": "hvc-runtime",
+    "descriptionStatus": "known-static",
+    "uiThread": false,
+    "preWindowCpuMs": 0.0,
+    "visibleCpuMs": 93.75,
+    "transitionCpuMs": 0.0,
+    "totalCapturedDeltaMs": 93.75
+  },
+  {
+    "threadIndex": 12,
+    "threadId": 29716,
+    "description": "hvc-runtime",
+    "descriptionStatus": "known-static",
+    "uiThread": false,
+    "preWindowCpuMs": 0.0,
+    "visibleCpuMs": 15.625,
+    "transitionCpuMs": 0.0,
+    "totalCapturedDeltaMs": 15.625
+  },
+  {
+    "threadIndex": 33,
+    "threadId": 20500,
+    "description": "",
+    "descriptionStatus": "unnamed",
+    "uiThread": false,
+    "preWindowCpuMs": 0.0,
+    "visibleCpuMs": 15.625,
+    "transitionCpuMs": 0.0,
+    "totalCapturedDeltaMs": 15.625
+  },
+  {
+    "threadIndex": 62,
+    "threadId": 21732,
+    "description": "",
+    "descriptionStatus": "unnamed",
+    "uiThread": false,
+    "preWindowCpuMs": 0.0,
+    "visibleCpuMs": 15.625,
+    "transitionCpuMs": 0.0,
+    "totalCapturedDeltaMs": 15.625
+  }
+]
+Approximate visible-window bins:
+{
+  "0": {
+    "wallMs": 188.53359999999998,
+    "uiCpuMs": 125.0,
+    "nonUiCapturedCpuMs": 421.875,
+    "processCpuMs": 546.875
+  },
+  "1": {
+    "wallMs": 187.6210000000001,
+    "uiCpuMs": 140.625,
+    "nonUiCapturedCpuMs": 359.375,
+    "processCpuMs": 500.0
+  },
+  "2": {
+    "wallMs": 201.33320000000003,
+    "uiCpuMs": 203.125,
+    "nonUiCapturedCpuMs": 15.625,
+    "processCpuMs": 218.75
+  },
+  "3": {
+    "wallMs": 217.81099999999992,
+    "uiCpuMs": 187.5,
+    "nonUiCapturedCpuMs": 0.0,
+    "processCpuMs": 171.875
+  },
+  "4": {
+    "wallMs": 124.79320000000007,
+    "uiCpuMs": 125.0,
+    "nonUiCapturedCpuMs": 0.0,
+    "processCpuMs": 125.0
+  }
+}

@@ -1,0 +1,512 @@
+diff --git a/docs/testing.md b/docs/testing.md
+index 6214a19..8a16b48 100644
+--- a/docs/testing.md
++++ b/docs/testing.md
+@@ -175,6 +175,21 @@ below describe required coverage, not a passing delivery gate.
+   limit and LRU eviction. Wrapping and truncation widths are independent keys;
+   restored states retain Unicode text, hit testing and ellipsis geometry, while
+   style/rem changes discard every retained state.
++  HVC-GPUI-008 also has six private vendor paint tests in
++  `text_system::line::tests`. They inspect Scene operations and the private
++  font-metric cache to prove no-color backgrounds skip the font backend while
++  preserving empty layers, colored/transparent backgrounds, wrapped Unicode,
++  foreground decorations and overlapping order/replay. They are separate from
++  `cargo test-all`, since the vendored dependency is not a workspace member.
++  The recorded test-only harness temporarily adds GPUI membership, omits three
++  unused development-dependency blocks and resolves only existing lock edges;
++  all package names/versions/sources/checksums remain identical. The command is
++  `cargo test --offline --locked -p gpui --lib --no-default-features --features
++  test-support,windows-manifest text_system::line::tests -- --test-threads=2`.
++  Backups, the precise harness diff and RED/GREEN logs are in
++  `target/companion-final/no-background-2026-11-09/`. Restore manifests and the
++  lock byte for byte before normal delivery checks; these test-support features
++  do not qualify the production release build.
+   Shutdown coverage delays an
+   admitted Forge answer until closing, then verifies the final empty draft
+   tombstones, newer unsent edits and refused submissions. Chat shutdown retains
+diff --git a/quality/stage7-report.md b/quality/stage7-report.md
+index d6d6abf..123f9d6 100644
+--- a/quality/stage7-report.md
++++ b/quality/stage7-report.md
+@@ -129,6 +129,44 @@ Disposition: **deferred for integration**, pending strict checks, the complete
+ regression gate and unchanged-workload release speed comparison. Debug trace
+ timings and focused functional tests do not establish that gate.
+ 
++## No-color text background follow-up — 2026-11-09
++
++HVC-GPUI-008 skips unused font-metric queries and glyph traversal only when all
++decoration backgrounds are `None`. The guard remains inside `paint_layer`,
++preserving its bounds, empty layer operations and draw-order/replay behavior.
++Any `Some` background, including transparent colors, keeps the original path;
++foreground text, underline and strikethrough are unaffected. No workload,
++readiness, warmup or latency limit changed.
++
++Six private GPUI tests were written first. The RED run passed five and failed
++only the no-color font-metric assertion. The GREEN run passed all six, zero
++failed/ignored and 70 filtered. The same real paint tests cover colored and
++transparent quads, mixed ranges, wrapped Unicode, foreground decorations,
++overlapping primitive order, exact Scene replay and a balanced layer stack.
++Logs are `target/companion-final/no-background-2026-11-09/red-tests-resolved.log`
++and `green-private-tests.log`.
++
++The normal `-p gpui` selection cannot execute a non-member's development tests.
++A temporary harness therefore adds GPUI membership, omits the unused
++`env_logger`, `pretty_assertions` and Lyon-extra development blocks, and resolves
++offline only missing dependency edges. Programmatic comparison preserves all
++794 package identities (name, version, source and checksum); no package was
++added, removed or upgraded. Precise diff, no-use search, metadata and proof are
++archived beside the logs. Initial selection/DNS/resolution failures were setup
++failures, not the behavioral RED result.
++
++Exact selected command:
++
++```powershell
++cargo test --offline --locked -p gpui --lib --no-default-features --features test-support,windows-manifest text_system::line::tests -- --test-threads=2
++```
++
++These six vendor tests are outside the default workspace-suite count. The
++temporary harness remains active only for the pending follow-up tests and must
++be restored byte for byte before normal delivery checks. No release build,
++complete regression gate or speed qualification is claimed for HVC-GPUI-008.
++Disposition: **deferred for integration** pending those checks.
++
+ ## Distribuição
+ 
+ O executável release está tecnicamente operável, mas distribuição externa não
+diff --git a/third_party/gpui/HVC-PATCHES.md b/third_party/gpui/HVC-PATCHES.md
+index 37b6da3..0971fb2 100644
+--- a/third_party/gpui/HVC-PATCHES.md
++++ b/third_party/gpui/HVC-PATCHES.md
+@@ -140,11 +140,36 @@ with actual repeated measurements before the implementation changed. Current
+ results and remaining qualification are recorded in
+ [`quality/stage7-report.md`](../../quality/stage7-report.md).
+ 
++## HVC-GPUI-008 — skip background work when every decoration has no color
++
++File: `src/text_system/line.rs`
++
++Local correction (2026-11-09); no upstream backport provenance is claimed.
++
++`paint_line_background` returns successfully inside the existing `paint_layer`
++closure when every decoration run has `background_color: None`, including an
++empty run slice. The layer still records the same bounds, draw ordering and
++replay operations. Only the unused font-metric queries and glyph walk are
++skipped. Any `Some` background, including a transparent color, follows the
++unchanged painting path. Foreground, underline and strikethrough are unchanged.
++
++Six private vendor tests exercise the actual paint path and Scene. The new
++no-color test failed first because the synthetic font's metrics were loaded;
++the same selection passed after the guard. Coverage includes mixed/transparent
++backgrounds, wrapped Unicode, foreground decorations, overlapping order, exact
++Scene replay and a balanced layer stack. No public test-only API was added.
++
++The vendor is not a normal workspace member. The tests use the temporary,
++offline/locked harness documented in the validation record; default workspace
++tests do not run these six private tests. Focused success does not qualify
++release speed or the complete delivery gate. See
++[`quality/stage7-report.md`](../../quality/stage7-report.md).
++
+ ## Integridade
+ 
+ - Versão-base: `gpui` 0.2.2.
+ - Fonte-base: crates.io.
+-- Functional patches are maintained in `src/platform/windows/directx_devices.rs` (HVC-GPUI-001), `src/platform/windows/window.rs` (HVC-GPUI-002) and `src/elements/text.rs` (HVC-GPUI-004, HVC-GPUI-006, HVC-GPUI-007), plus `src/window.rs` and `src/elements/div.rs` (HVC-GPUI-005).
++- Functional patches are maintained in `src/platform/windows/directx_devices.rs` (HVC-GPUI-001), `src/platform/windows/window.rs` (HVC-GPUI-002) and `src/elements/text.rs` (HVC-GPUI-004, HVC-GPUI-006, HVC-GPUI-007), plus `src/window.rs` and `src/elements/div.rs` (HVC-GPUI-005) and `src/text_system/line.rs` (HVC-GPUI-008).
+ - Ajuste adicional em `src/taffy.rs` explicita literais `f32` exigidos pelo
+   Rust 1.98; ele não altera comportamento nem desempenho.
+ - Mudanças futuras devem receber um identificador `HVC-GPUI-NNN` e registrar
+diff --git a/third_party/gpui/src/text_system/line.rs b/third_party/gpui/src/text_system/line.rs
+index 189a3e8..146ff2e 100644
+--- a/third_party/gpui/src/text_system/line.rs
++++ b/third_party/gpui/src/text_system/line.rs
+@@ -441,6 +441,15 @@ fn paint_line_background(
+         ),
+     );
+     window.paint_layer(line_bounds, |window| {
++        // Keep the empty layer's ordering and replay operations, but avoid
++        // querying font metrics or walking glyphs when no background can paint.
++        if decoration_runs
++            .iter()
++            .all(|run| run.background_color.is_none())
++        {
++            return Ok(());
++        }
++
+         let mut decoration_runs = decoration_runs.iter();
+         let mut wraps = wrap_boundaries.iter().peekable();
+         let mut run_end = 0;
+@@ -589,3 +598,374 @@ fn aligned_origin_x(
+         TextAlign::Right => origin.x + align_width - line_width,
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::{
++        AvailableSpace, Background, FontId, GlyphId, PaintOperation, Primitive, Scene, ShapedGlyph,
++        ShapedRun, TestAppContext, TextRun, canvas, font, rgb,
++    };
++
++    fn paint_in_window(
++        cx: &mut TestAppContext,
++        paint: impl FnOnce(&mut Window, &mut App) + 'static,
++    ) {
++        cx.add_empty_window().draw(
++            Point::default(),
++            size(
++                AvailableSpace::Definite(px(500.)),
++                AvailableSpace::Definite(px(400.)),
++            ),
++            move |_, _| canvas(|_, _, _| (), move |_, (), window, cx| paint(window, cx)),
++        );
++    }
++
++    fn run(len: usize, background_color: Option<Hsla>) -> TextRun {
++        TextRun {
++            len,
++            font: font(".SystemUIFont"),
++            color: rgb(0x112233).into(),
++            background_color,
++            underline: None,
++            strikethrough: None,
++        }
++    }
++
++    fn synthetic_line(font_id: FontId) -> LineLayout {
++        LineLayout {
++            font_size: px(16.),
++            width: px(10.),
++            ascent: px(12.),
++            descent: px(4.),
++            runs: vec![ShapedRun {
++                font_id,
++                glyphs: vec![ShapedGlyph {
++                    id: GlyphId(1),
++                    position: Point::default(),
++                    index: 0,
++                    is_emoji: false,
++                }],
++            }],
++            len: 1,
++        }
++    }
++
++    fn decoration(background_color: Option<Hsla>) -> DecorationRun {
++        DecorationRun {
++            len: 1,
++            color: black(),
++            background_color,
++            underline: None,
++            strikethrough: None,
++        }
++    }
++
++    fn operation_kinds(scene: &Scene) -> Vec<&'static str> {
++        scene
++            .paint_operations
++            .iter()
++            .map(|operation| match operation {
++                PaintOperation::StartLayer(_) => "start",
++                PaintOperation::EndLayer => "end",
++                PaintOperation::Primitive(Primitive::Quad(_)) => "quad",
++                PaintOperation::Primitive(Primitive::Underline(_)) => "underline",
++                PaintOperation::Primitive(_) => "other",
++            })
++            .collect()
++    }
++
++    fn assert_bounds_close(
++        actual: Bounds<crate::ScaledPixels>,
++        expected: Bounds<crate::ScaledPixels>,
++    ) {
++        for (actual, expected) in [
++            (actual.origin.x.0, expected.origin.x.0),
++            (actual.origin.y.0, expected.origin.y.0),
++            (actual.size.width.0, expected.size.width.0),
++            (actual.size.height.0, expected.size.height.0),
++        ] {
++            assert!((actual - expected).abs() < 0.001, "{actual} != {expected}");
++        }
++    }
++
++    #[crate::test]
++    fn background_without_colors_skips_font_metrics_but_preserves_layers(cx: &mut TestAppContext) {
++        paint_in_window(cx, |window, cx| {
++            for (index, decorations) in [vec![], vec![decoration(None)]].into_iter().enumerate() {
++                // The test text system accepts synthetic IDs. Its metrics cache exposes
++                // whether background painting unnecessarily consulted the font backend.
++                let font_id = FontId(500_000 + index);
++                assert!(!cx.text_system().font_metrics.read().contains_key(&font_id));
++                let operations = window.next_frame.scene.len();
++                let quads = window.next_frame.scene.quads.len();
++                paint_line_background(
++                    point(px(40.), px(40.)),
++                    &synthetic_line(font_id),
++                    px(24.),
++                    TextAlign::Left,
++                    None,
++                    &decorations,
++                    &[],
++                    window,
++                    cx,
++                )
++                .unwrap();
++                assert!(
++                    !cx.text_system().font_metrics.read().contains_key(&font_id),
++                    "a line without background colors must not request font metrics"
++                );
++                assert_eq!(window.next_frame.scene.quads.len(), quads);
++                assert_eq!(window.next_frame.scene.len(), operations + 2);
++                assert!(matches!(
++                    window.next_frame.scene.paint_operations[operations],
++                    PaintOperation::StartLayer(_)
++                ));
++                assert!(matches!(
++                    window.next_frame.scene.paint_operations[operations + 1],
++                    PaintOperation::EndLayer
++                ));
++            }
++        });
++    }
++
++    #[crate::test]
++    fn colored_and_transparent_backgrounds_still_measure_and_paint(cx: &mut TestAppContext) {
++        paint_in_window(cx, |window, cx| {
++            for (index, color) in [rgb(0x44aa66).into(), Hsla::transparent_black()]
++                .into_iter()
++                .enumerate()
++            {
++                let font_id = FontId(600_000 + index);
++                let start = window.next_frame.scene.quads.len();
++                paint_line_background(
++                    point(px(40.), px(40.)),
++                    &synthetic_line(font_id),
++                    px(24.),
++                    TextAlign::Left,
++                    None,
++                    &[decoration(Some(color))],
++                    &[],
++                    window,
++                    cx,
++                )
++                .unwrap();
++                assert!(cx.text_system().font_metrics.read().contains_key(&font_id));
++                let painted = &window.next_frame.scene.quads[start..];
++                assert_eq!(painted.len(), 1);
++                assert_eq!(painted[0].background, Background::from(color));
++                assert_bounds_close(
++                    painted[0].bounds,
++                    Bounds::new(point(px(40.), px(40.)), size(px(10.), px(24.)))
++                        .scale(window.scale_factor()),
++                );
++            }
++        });
++    }
++
++    #[crate::test]
++    fn mixed_background_runs_keep_exact_colored_ranges(cx: &mut TestAppContext) {
++        paint_in_window(cx, |window, cx| {
++            let red: Hsla = rgb(0xaa3344).into();
++            let blue: Hsla = rgb(0x3355aa).into();
++            let transparent = Hsla::transparent_black();
++            let line = window.text_system().shape_line(
++                "abCDxyEFzz".into(),
++                px(16.),
++                &[
++                    run(2, None),
++                    run(2, Some(red)),
++                    run(2, None),
++                    run(2, Some(transparent)),
++                    run(2, Some(blue)),
++                ],
++                None,
++            );
++            let start = window.next_frame.scene.quads.len();
++            let origin = point(px(40.), px(40.));
++            line.paint_background(origin, px(24.), window, cx).unwrap();
++            let quads = &window.next_frame.scene.quads[start..];
++            assert_eq!(quads.len(), 3);
++            for (quad, (range, color)) in
++                quads
++                    .iter()
++                    .zip([(2..4, red), (6..8, transparent), (8..10, blue)])
++            {
++                assert_eq!(quad.background, Background::from(color));
++                assert_bounds_close(
++                    quad.bounds,
++                    Bounds::new(
++                        origin + point(line.x_for_index(range.start), px(0.)),
++                        size(
++                            line.x_for_index(range.end) - line.x_for_index(range.start),
++                            px(24.),
++                        ),
++                    )
++                    .scale(window.scale_factor()),
++                );
++            }
++        });
++    }
++
++    #[crate::test]
++    fn wrapped_unicode_backgrounds_keep_each_line_segment(cx: &mut TestAppContext) {
++        paint_in_window(cx, |window, cx| {
++            let text = "office e\u{301} \u{1f600} \u{4e2d}\u{6587} marker";
++            let color: Hsla = rgb(0x338855).into();
++            let lines = window
++                .text_system()
++                .shape_text(
++                    text.into(),
++                    px(16.),
++                    &[run(text.len(), Some(color))],
++                    Some(px(54.)),
++                    None,
++                )
++                .unwrap();
++            assert_eq!(lines.len(), 1);
++            let line = &lines[0];
++            assert!(!line.wrap_boundaries.is_empty());
++            assert_eq!(line.text.as_ref(), text);
++            let mut ends: Vec<_> = line
++                .wrap_boundaries
++                .iter()
++                .map(|boundary| {
++                    line.unwrapped_layout.runs[boundary.run_ix].glyphs[boundary.glyph_ix]
++                        .position
++                        .x
++                })
++                .collect();
++            ends.push(line.unwrapped_layout.width);
++            let start = window.next_frame.scene.quads.len();
++            let origin = point(px(40.), px(40.));
++            line.paint_background(origin, px(24.), TextAlign::Left, None, window, cx)
++                .unwrap();
++            let quads = &window.next_frame.scene.quads[start..];
++            assert_eq!(quads.len(), ends.len());
++            let mut previous_end = px(0.);
++            for (index, (quad, end)) in quads.iter().zip(ends).enumerate() {
++                assert_eq!(quad.background, Background::from(color));
++                assert_bounds_close(
++                    quad.bounds,
++                    Bounds::new(
++                        origin + point(px(0.), px(24.) * index as f32),
++                        size(end - previous_end, px(24.)),
++                    )
++                    .scale(window.scale_factor()),
++                );
++                previous_end = end;
++            }
++        });
++    }
++
++    #[crate::test]
++    fn plain_background_preserves_foreground_underline_and_strikethrough(cx: &mut TestAppContext) {
++        paint_in_window(cx, |window, cx| {
++            let mut text_run = run(5, None);
++            text_run.underline = Some(UnderlineStyle {
++                thickness: px(1.),
++                color: Some(rgb(0xaa3344).into()),
++                wavy: false,
++            });
++            text_run.strikethrough = Some(StrikethroughStyle {
++                thickness: px(2.),
++                color: Some(rgb(0x3355aa).into()),
++            });
++            let font_size = px(19.123);
++            let line =
++                window
++                    .text_system()
++                    .shape_line("plain".into(), font_size, &[text_run], None);
++            let origin = point(px(40.), px(40.));
++            let before = window.next_frame.scene.underlines.len();
++            line.paint_background(origin, px(28.), window, cx).unwrap();
++            assert_eq!(window.next_frame.scene.underlines.len(), before);
++            line.paint(origin, px(28.), window, cx).unwrap();
++            let underlines = &window.next_frame.scene.underlines[before..];
++            assert_eq!(underlines.len(), 2);
++            assert!(
++                underlines
++                    .iter()
++                    .all(|underline| underline.bounds.size.width
++                        > px(0.).scale(window.scale_factor()))
++            );
++            assert!(
++                cx.text_system()
++                    .raster_bounds
++                    .read()
++                    .keys()
++                    .any(|params| params.font_size == font_size)
++            );
++        });
++    }
++
++    #[crate::test]
++    fn empty_background_layers_preserve_overlapping_order_and_scene_replay(
++        cx: &mut TestAppContext,
++    ) {
++        paint_in_window(cx, |window, cx| {
++            let red: Hsla = rgb(0xaa3344).into();
++            let green: Hsla = rgb(0x338855).into();
++            let blue: Hsla = rgb(0x3355aa).into();
++            let bounds = Bounds::new(point(px(40.), px(40.)), size(px(100.), px(48.)));
++            window.paint_layer(bounds, |window| window.paint_quad(fill(bounds, red)));
++            let line =
++                window
++                    .text_system()
++                    .shape_line("layer".into(), px(16.), &[run(5, None)], None);
++            let start = window.next_frame.scene.len();
++            line.paint_background(bounds.origin, px(24.), window, cx)
++                .unwrap();
++            assert_eq!(window.next_frame.scene.len(), start + 2);
++            let mut highlighted_run = run(5, Some(green));
++            highlighted_run.underline = Some(UnderlineStyle {
++                thickness: px(1.),
++                color: Some(green),
++                wavy: false,
++            });
++            let highlighted =
++                window
++                    .text_system()
++                    .shape_line("layer".into(), px(16.), &[highlighted_run], None);
++            highlighted
++                .paint_background(bounds.origin, px(24.), window, cx)
++                .unwrap();
++            highlighted
++                .paint(bounds.origin, px(24.), window, cx)
++                .unwrap();
++            window.paint_layer(bounds, |window| window.paint_quad(fill(bounds, blue)));
++            let source = &window.next_frame.scene;
++            let quads = &source.quads[source.quads.len() - 3..];
++            assert!(quads[0].order < quads[1].order && quads[1].order < quads[2].order);
++            assert_eq!(quads[0].background, Background::from(red));
++            assert_eq!(quads[1].background, Background::from(green));
++            assert_eq!(quads[2].background, Background::from(blue));
++            let foreground = source.underlines.last().unwrap();
++            assert!(quads[1].order < foreground.order && foreground.order < quads[2].order);
++            let mut replay = Scene::default();
++            replay.replay(0..source.len(), source);
++            replay.finish();
++            assert_eq!(operation_kinds(&replay), operation_kinds(source));
++            assert_eq!(replay.quads.len(), source.quads.len());
++            for (actual, expected) in replay.quads.iter().zip(&source.quads) {
++                assert_eq!(
++                    (actual.order, actual.bounds, actual.background),
++                    (expected.order, expected.bounds, expected.background)
++                );
++            }
++            assert_eq!(replay.underlines.len(), source.underlines.len());
++            for (actual, expected) in replay.underlines.iter().zip(&source.underlines) {
++                assert_eq!(
++                    (actual.order, actual.bounds, actual.color),
++                    (expected.order, expected.bounds, expected.color)
++                );
++            }
++            let last_order = replay.quads.last().unwrap().order;
++            replay.insert_primitive(quads[2].clone());
++            assert!(
++                replay.quads.last().unwrap().order > last_order,
++                "replaying every layer must leave the stack balanced"
++            );
++        });
++    }
++}

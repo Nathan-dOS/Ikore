@@ -1,0 +1,96 @@
+{
+  "schemaVersion": 1,
+  "createdAtUtc": "2026-11-09T21:01:57.772935+00:00",
+  "sourceCommit": "68b5c0522fa642664f114e4bbdf8628c81db41c0",
+  "technicalGate": {
+    "passed": true,
+    "passedSteps": 9,
+    "totalSteps": 9,
+    "durationSeconds": 2617.72
+  },
+  "tests": {
+    "targets": 61,
+    "passed": 2163,
+    "failed": 0,
+    "ignored": 23,
+    "measured": 0,
+    "filtered": 0
+  },
+  "includedSubsets": {
+    "core": {
+      "passed": 1196,
+      "ignored": 7,
+      "durationSeconds": 714.63
+    },
+    "ui": {
+      "passed": 486,
+      "ignored": 0,
+      "durationSeconds": 115.77
+    },
+    "hvcTestSupportLib": {
+      "passed": 24,
+      "ignored": 0,
+      "durationSeconds": 15.78
+    }
+  },
+  "sourceSnapshot": "quality/companion-qualification-2026-11-09/source-68b5c05.json",
+  "sourceSnapshotSha256": "36886e17c3849b1ed90ad12c4a1c8fb22539f8e473cdb434adac2ff4a60d16ec",
+  "sourceVerificationAfterGate": {
+    "checkedFiles": 966,
+    "zeroDrift": true,
+    "mismatches": []
+  },
+  "releaseArtifact": {
+    "path": "target/release/hard-vibe-code.exe",
+    "bytes": 37889024,
+    "sha256": "a788a0f42e85ff26caa0ba0d53489092c9c71507c97ce9190d80821d0de10852"
+  },
+  "advisoryAudit": {
+    "schemaVersion": 1,
+    "auditedAt": "2026-11-09T21:00:45.3308739Z",
+    "cargoAuditExitCode": 0,
+    "cargoVulnerabilities": 0,
+    "cargoInformationalWarnings": {
+      "unmaintained": 15,
+      "unsound": 2,
+      "yanked": 1
+    },
+    "rustSecLastCommit": "d9cb059f3217db87aeccd190b81eaffe8cc29cb9",
+    "passed": true
+  },
+  "oldProfileNativeCompatibility": "pending; no claim until explicit native before/after result",
+  "speedQualification": "pending; d71a573 official preflight failure preserved; no speed result attributed to 68b5c05",
+  "deliveryQualification": "in progress",
+  "files": [
+    {
+      "path": "target-companion-stage7-68b5c05-2026-11-09.log",
+      "source": "target-companion-stage7-68b5c05-2026-11-09.log",
+      "bytes": 244157,
+      "sha256": "c1416459325b3d954d3a7a094fdcd6e0c543ef42ddc8dcf257c5fe7943998749"
+    },
+    {
+      "path": "stage7-timings-68b5c05-2026-11-09.json",
+      "source": "target/companion-final/stage7-timings-68b5c05-2026-11-09.json",
+      "bytes": 2257,
+      "sha256": "636da161c24c8649aaf782bfb2f35cbb1c976f740fd0f50412aac2b7409466d5"
+    },
+    {
+      "path": "supply-chain.json",
+      "source": "target/stage7/supply-chain.json",
+      "bytes": 1931,
+      "sha256": "36f9836c80fcfd33dedff803157be892627083978300a4003eadd5dbc557be5d"
+    },
+    {
+      "path": "summary.json",
+      "source": "target/stage7/advisories/summary.json",
+      "bytes": 488,
+      "sha256": "8c8b2ed9e3801c7db14ceefde5217b8b21b9fe9a7ca8faf2f53b9d0da5fc627a"
+    },
+    {
+      "path": "cargo-audit.json",
+      "source": "target/stage7/advisories/cargo-audit.json",
+      "bytes": 27944,
+      "sha256": "ac1f428b165274b1a5f0edf4884edbec36f1e066732248325584f15a75e0c0e7"
+    }
+  ]
+}

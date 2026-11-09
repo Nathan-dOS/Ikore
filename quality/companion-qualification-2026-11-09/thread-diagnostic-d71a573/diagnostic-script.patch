@@ -1,0 +1,75 @@
+--- original
++++ diagnostic
+@@ -16,12 +16,12 @@
+ )
+ 
+ $ErrorActionPreference = 'Stop'
+-$repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
++$repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..\..')).Path
+ if ([string]::IsNullOrWhiteSpace($BinaryPath)) {
+     $BinaryPath = Join-Path $repositoryRoot 'target\release\hard-vibe-code.exe'
+ }
+ if ([string]::IsNullOrWhiteSpace($OutputPath)) {
+-    $OutputPath = Join-Path $repositoryRoot 'target\stage6\ui-latency.json'
++    $OutputPath = Join-Path $PSScriptRoot 'diagnostic-latency.json'
+ }
+ $resolvedBinary = (Resolve-Path -LiteralPath $BinaryPath).Path
+ $resolvedOutput = [System.IO.Path]::GetFullPath($OutputPath)
+@@ -72,8 +72,8 @@
+ '@
+ }
+ 
+-$stageRoot = Join-Path $repositoryRoot 'target\stage6'
+-$runtimeRoot = Join-Path $stageRoot 'ui-latency-runtime'
++$stageRoot = $PSScriptRoot
++$runtimeRoot = Join-Path $stageRoot 'isolated-runtime'
+ New-Item -ItemType Directory -Path $runtimeRoot -Force | Out-Null
+ $runtimeDirectory = Join-Path $runtimeRoot ([guid]::NewGuid().ToString('N'))
+ New-Item -ItemType Directory -Path $runtimeDirectory | Out-Null
+@@ -87,6 +87,12 @@
+ $previousScenario = $env:HVC_BENCHMARK_UI_SCENARIO
+ $previousWindowSize = $env:HVC_BENCHMARK_UI_WINDOW_SIZE
+ $process = $null
++$threadSampler = $null
++$threadSnapshotWritten = $false
++$threadOutput = Join-Path $PSScriptRoot 'thread-cpu.json'
++if ($null -eq ('HvcThreadDiagnostic.Sampler' -as [type])) {
++    Add-Type -Path (Join-Path $PSScriptRoot 'ThreadSampler.cs')
++}
+ $processMetrics = [System.Collections.Generic.List[object]]::new()
+ 
+ function Get-NearestRankPercentile {
+@@ -112,6 +118,7 @@
+     $env:HVC_BENCHMARK_UI_WINDOW_SIZE = $WindowSize
+     # Uma janela oculta/minimizada deixa de receber animation frames no backend Win32.
+     $process = Start-Process -FilePath $resolvedBinary -PassThru -WindowStyle Normal
++    $threadSampler = [HvcThreadDiagnostic.Sampler]::new($process.Id)
+     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+     $lastSampleAt = [DateTime]::UtcNow
+     $process.Refresh()
+@@ -155,6 +162,10 @@
+         throw "O relatório de latência não foi concluído em $TimeoutSeconds segundos (status: $lastStatus)."
+     }
+ 
++    # Diagnostic only: stop before CIM and graceful shutdown; this does not qualify the gate.
++    $threadSampler.StopAndSnapshot() | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $threadOutput -Encoding utf8
++    $threadSnapshotWritten = $true
++
+     $displayRefreshRates = try {
+         @(Get-CimInstance Win32_VideoController -ErrorAction Stop |
+             Where-Object { $null -ne $_.CurrentRefreshRate -and $_.CurrentRefreshRate -gt 0 } |
+@@ -206,6 +217,14 @@
+     }
+ }
+ finally {
++    try {
++        if ($null -ne $threadSampler -and -not $threadSnapshotWritten) {
++            $threadSampler.StopAndSnapshot() | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $threadOutput -Encoding utf8
++        }
++    }
++    catch {
++        Write-Warning 'Diagnostic snapshot failed; the original process/environment cleanup continues.'
++    }
+     if ($null -ne $process -and -not $process.HasExited) {
+         Stop-Process -Id $process.Id -Force
+         $process.WaitForExit()

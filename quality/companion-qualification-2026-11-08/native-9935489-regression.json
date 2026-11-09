@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "sourceCommit": "9935489635ea894d86755d7f58cd26c34de812c8",
+  "status": "interrupted_after_visual_regression",
+  "reason": "Ctrl+Shift+C closes a dock with focused history control but cannot reopen until focus returns to a visible host control.",
+  "cliFailedTestsReported": 0,
+  "gateLog": "target-companion-stage7-9935489-2026-11-08.log",
+  "gateLogSha256": "a8c20ea66c053bc81a7fd6a527099e688660937682b669e7a1093a947efb0497",
+  "nativeBinarySha256": "fed8f91fd0c56d2d5478f21b294a4d9c9666bdc2ccc99035c2c6823ffe3e9707",
+  "passedVisualCases": [
+    "legacy alias restoration",
+    "history reuses canonical decision window",
+    "decision identity and Unicode draft preserved",
+    "three windows at requested1440x900",
+    "two windows plus recoverable overflow at requested960x640",
+    "decision card scroll",
+    "Expand keeps exact draft in full Chat",
+    "graceful close and restart"
+  ],
+  "failedVisualCase": "two shortcut gestures with no intervening click",
+  "focusRecoveryConfirmed": "clicking the existing Pulsations navigation control allows the shortcut to reopen",
+  "completedGate": false,
+  "capturedAtUtc": "2026-11-08T11:01:35.289737+00:00"
+}

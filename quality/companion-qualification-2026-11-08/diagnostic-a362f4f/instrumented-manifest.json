@@ -1,0 +1,62 @@
+[
+  {
+    "path": "third_party/gpui/src/gpui.rs",
+    "sha256": "720c88ee35f54fd4c179b9cda0b04b5e54dadb4a26dc65e467e4ec7ed3943842",
+    "bytes": 9405,
+    "original": true
+  },
+  {
+    "path": "third_party/gpui/src/window.rs",
+    "sha256": "1c166cfbcc1f346fc98df179cb46264041487c07ffb796c5a7dc2bba2738b02f",
+    "bytes": 195424,
+    "original": true
+  },
+  {
+    "path": "third_party/gpui/src/elements/text.rs",
+    "sha256": "0b092236a9eddf27836c1a514a740322f0b7f38e8789b220988953a111a3293b",
+    "bytes": 34910,
+    "original": true
+  },
+  {
+    "path": "crates/hvc-ui/src/selectable_message.rs",
+    "sha256": "93ab9b9c61658e19c3a90c671e970ea9dd0d6c9bab7711fef6aef90c2389d6e2",
+    "bytes": 40679,
+    "original": true
+  },
+  {
+    "path": "crates/hvc-ui/src/shell.rs",
+    "sha256": "22010d108acabb115353db49dae8d5d18c10287a0a2fddf4bd466be075507f02",
+    "bytes": 45898,
+    "original": true
+  },
+  {
+    "path": "crates/hvc-ui/src/app_model.rs",
+    "sha256": "88d947a2452e519bbb16a56d733fb45e6af04e4774947bcf136aba37c3e9bbd6",
+    "bytes": 470231,
+    "original": true
+  },
+  {
+    "path": "crates/hvc-ui/src/quota_bar.rs",
+    "sha256": "c7b22895bac541934b31b63bce7bf2dcd9bc88d26948371614671fb2225e9ba9",
+    "bytes": 34648,
+    "original": true
+  },
+  {
+    "path": "crates/hvc-terminal/src/terminals.rs",
+    "sha256": "52e96eeecd79302a758dfec5e49710522cc312ef1b86cd1adfc017e892b0ce1d",
+    "bytes": 367389,
+    "original": true
+  },
+  {
+    "path": "third_party/gpui/src/text_system/line.rs",
+    "sha256": "00ff323350d167ba7fc45c60e08a4c85c6772bd891c1548da33f797e157686f0",
+    "bytes": 22524,
+    "original": true
+  },
+  {
+    "path": "third_party/gpui/src/hvc_frame_trace.rs",
+    "sha256": "56a86cebde9abad1fa8c1c52223f78d462223664ad97a47462bb7e81763fa9ac",
+    "bytes": 5506,
+    "original": false
+  }
+]

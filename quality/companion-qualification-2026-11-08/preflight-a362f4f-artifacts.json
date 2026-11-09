@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "sourceCommit": "a362f4f8adb79cd172ea7c2b9198c3f146ff4c33",
+  "capturedAtUtc": "2026-11-08T18:54:03.302669+00:00",
+  "scope": "Failed first three-stream preflight and separate closed-dock diagnostic; not a complete or paired gate.",
+  "artifacts": {
+    "source": {
+      "path": "<home>\\Documents\\Nathan\\HardVibeCode\\.worktrees\\companion-decision-dock\\quality\\companion-qualification-2026-11-08\\source-a362f4f.json",
+      "bytes": 241438,
+      "sha256": "fe674a466dd0bc813b8ec7225426eaa08ff1fd010902815dffbbc5832298ddb5"
+    },
+    "binary": {
+      "path": "<home>\\Documents\\Nathan\\HardVibeCode\\.worktrees\\companion-decision-dock\\target\\release\\hard-vibe-code.exe",
+      "bytes": 38055936,
+      "sha256": "b83420e241baadfc4d1814a81de6984b513e66751a3a4ee71af88ad4f66df265"
+    },
+    "build": {
+      "path": "<home>\\Documents\\Nathan\\HardVibeCode\\.worktrees\\companion-decision-dock\\quality\\companion-qualification-2026-11-08\\release-a362f4f-build.log",
+      "bytes": 571,
+      "sha256": "36ee792829a510d34096d64507242aaceee8d969304ab87501255e157b669ccb"
+    },
+    "preflight": {
+      "path": "<home>\\Documents\\Nathan\\HardVibeCode\\.worktrees\\companion-decision-dock\\quality\\companion-qualification-2026-11-08\\three-streams-a362f4f-preflight.json",
+      "bytes": 5244,
+      "sha256": "6a71b9ef62e4d39c667eaa0bbe06ea10681a3a3ce67b8fa252341b86486db305"
+    },
+    "closedDiagnostic": {
+      "path": "<home>\\Documents\\Nathan\\HardVibeCode\\.worktrees\\companion-decision-dock\\quality\\companion-qualification-2026-11-08\\closed-a362f4f-diagnostic.json",
+      "bytes": 5241,
+      "sha256": "6bbaf55456acf9d07a05d7f242be279dfc70b73237a377fcfb2bc2e29f419403"
+    }
+  }
+}

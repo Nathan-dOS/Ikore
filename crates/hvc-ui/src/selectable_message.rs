@@ -1179,4 +1179,339 @@ mod tests {
             });
         }
     }
+
+    // Test-only reference: keep the legacy Paragraph tree literal. Do not route
+    // this arm through the production renderer or a shared paragraph style builder.
+    #[derive(Clone, Copy, Debug)]
+    enum ParagraphArm { Production, LegacyLiteral }
+
+    #[derive(Clone, Copy, Debug)]
+    enum ParagraphParent { FlexColumn, Block, Assistant, User85 }
+
+    #[derive(Default)]
+    struct ParagraphProbeOutput {
+        nodes: usize,
+        bounds: Option<Bounds<Pixels>>,
+    }
+
+    // Delegates the child's LayoutId: this observes real Taffy nodes, adding none.
+    struct ParagraphProbe {
+        child: gpui::AnyElement,
+        output: Rc<RefCell<ParagraphProbeOutput>>,
+    }
+
+    impl IntoElement for ParagraphProbe {
+        type Element = Self;
+        fn into_element(self) -> Self { self }
+    }
+
+    impl Element for ParagraphProbe {
+        type RequestLayoutState = ();
+        type PrepaintState = ();
+        fn id(&self) -> Option<ElementId> { None }
+        fn source_location(&self) -> Option<&'static core::panic::Location<'static>> { None }
+        fn request_layout(
+            &mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>,
+            window: &mut Window, cx: &mut App,
+        ) -> (LayoutId, ()) {
+            let before = window.layout_node_count().expect("layout engine available");
+            let layout = self.child.request_layout(window, cx);
+            self.output.borrow_mut().nodes = window.layout_node_count()
+                .expect("layout engine available").checked_sub(before).unwrap();
+            (layout, ())
+        }
+        fn prepaint(
+            &mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>,
+            bounds: Bounds<Pixels>, _: &mut (), window: &mut Window, cx: &mut App,
+        ) {
+            self.output.borrow_mut().bounds = Some(bounds);
+            let _ = self.child.prepaint(window, cx);
+        }
+        fn paint(
+            &mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>,
+            _: Bounds<Pixels>, _: &mut (), _: &mut (), window: &mut Window, cx: &mut App,
+        ) { self.child.paint(window, cx); }
+    }
+
+    fn paragraph_parent(parent: ParagraphParent, message: gpui::AnyElement) -> gpui::Div {
+        match parent {
+            ParagraphParent::FlexColumn => div().min_w_0().flex().flex_col().child(message),
+            ParagraphParent::Block => div().child(message),
+            // Geometric structure of chat_view: avatar/gap, flexible body and metadata.
+            ParagraphParent::Assistant => div().w_full().flex().items_start().gap_3()
+                .child(div().flex_shrink_0().size(px(28.0)))
+                .child(div().flex_1().min_w_0().flex().flex_col().gap_1()
+                    .child(div().h(px(14.0)))
+                    .child(div().min_w_0().flex().flex_col().child(message))),
+            ParagraphParent::User85 => div().w_full().flex().flex_col().items_end().gap_1()
+                .child(div().max_w(gpui::relative(0.85)).min_w_0().px_4().py_3()
+                    .child(div().min_w_0().flex().flex_col().child(message)))
+                .child(div().h(px(14.0))),
+        }
+    }
+
+    #[derive(Debug, PartialEq)]
+    struct ParagraphCaretSnapshot {
+        index: usize,
+        position: Option<gpui::Point<Pixels>>,
+        hit: Option<Result<usize, usize>>,
+    }
+
+    #[derive(Debug, PartialEq)]
+    struct ParagraphLeafSnapshot {
+        bounds: Bounds<Pixels>,
+        text: String,
+        line_height: Pixels,
+        style: Option<(TextStyle, Pixels)>,
+        // Preserve Option/Result exactly: an internal ligature/combining byte
+        // need not have a distinct caret, and hit-testing can return an edge Err.
+        carets: Vec<ParagraphCaretSnapshot>,
+    }
+
+    #[derive(Debug, PartialEq)]
+    struct ParagraphGeometry {
+        container: Bounds<Pixels>,
+        blocks: Vec<Bounds<Pixels>>,
+        leaves: Vec<ParagraphLeafSnapshot>,
+    }
+
+    struct ParagraphFrame {
+        geometry: ParagraphGeometry,
+        subtree_nodes: usize,
+        paragraph_nodes: Vec<usize>,
+    }
+
+    struct ParagraphCorpus {
+        texts: Vec<String>,
+        pieces: Vec<CachedTextPiece>,
+    }
+
+    impl ParagraphCorpus {
+        fn new(texts: &[String]) -> Self {
+            Self {
+                texts: texts.to_vec(),
+                pieces: texts.iter().map(|text| CachedTextPiece::for_text(None, text)).collect(),
+            }
+        }
+    }
+
+    fn draw_paragraph_arm(
+        corpus: &ParagraphCorpus,
+        arm: ParagraphArm,
+        parent: ParagraphParent,
+        width: gpui::AvailableSpace,
+        mono: bool,
+        visual: &mut gpui::VisualTestContext,
+    ) -> ParagraphFrame {
+        let root = Rc::new(RefCell::new(ParagraphProbeOutput::default()));
+        let blocks: Vec<_> = corpus.texts.iter()
+            .map(|_| Rc::new(RefCell::new(ParagraphProbeOutput::default()))).collect();
+        let root_output = root.clone();
+        visual.draw(
+            point(px(11.3), px(17.7)),
+            size(width, gpui::AvailableSpace::MaxContent),
+            |_, _| {
+                let paragraphs = corpus.texts.iter().zip(&corpus.pieces).zip(&blocks)
+                    .enumerate().map(|(index, ((text, cached), output))| {
+                        let block = match arm {
+                            ParagraphArm::Production => crate::workspace_view::render_markdown_block_with(
+                                &hvc_editor::MarkdownBlock::Paragraph(text.clone()),
+                                &mut |borrowed| {
+                                    assert_eq!(borrowed, cached.text.as_ref());
+                                    div().debug_selector(move || format!("fusion-text-{index}"))
+                                        .min_w_0().child(cached.element(0..0)).into_any_element()
+                                },
+                            ),
+                            ParagraphArm::LegacyLiteral => div().mb_3().text_sm().line_height(px(22.0))
+                                .child(div().debug_selector(move || format!("fusion-text-{index}"))
+                                    .min_w_0().child(cached.element(0..0)))
+                                .into_any_element(),
+                        };
+                        ParagraphProbe { child: block, output: output.clone() }
+                    });
+                let message = match parent {
+                    ParagraphParent::Block => div().children(paragraphs),
+                    _ => div().min_w_0().flex().flex_col().children(paragraphs),
+                };
+                let inherited_font = gpui::Font {
+                    features: if mono { gpui::FontFeatures::disable_ligatures() } else { gpui::FontFeatures::default() },
+                    weight: if mono { gpui::FontWeight::BOLD } else { gpui::FontWeight::NORMAL },
+                    ..gpui::font(if mono { theme::FONT_MONO } else { theme::FONT_UI })
+                };
+                ParagraphProbe {
+                    child: paragraph_parent(parent, message.into_any_element())
+                        .font(inherited_font).text_color(theme::text()).into_any_element(),
+                    output: root_output,
+                }
+            },
+        );
+        let leaves = corpus.pieces.iter().map(|piece| {
+            let state = piece.state.borrow();
+            let layout = state.styled.layout();
+            assert_eq!(layout.text(), piece.text.as_ref());
+            assert!(layout.retained_measurement_count() <= 4);
+            let carets = piece.text.char_indices().map(|(index, _)| index)
+                .chain(std::iter::once(piece.text.len())).map(|index| {
+                    let position = layout.position_for_index(index);
+                    ParagraphCaretSnapshot { index, position,
+                        hit: position.map(|position| layout.index_for_position(position)) }
+                }).collect();
+            ParagraphLeafSnapshot {
+                bounds: layout.bounds(), text: layout.text(), line_height: layout.line_height(),
+                style: state.style.clone(), carets,
+            }
+        }).collect();
+        let root = root.borrow();
+        ParagraphFrame {
+            geometry: ParagraphGeometry {
+                container: root.bounds.unwrap(),
+                blocks: blocks.iter().map(|block| block.borrow().bounds.unwrap()).collect(),
+                leaves,
+            },
+            subtree_nodes: root.nodes,
+            paragraph_nodes: blocks.iter().map(|block| block.borrow().nodes).collect(),
+        }
+    }
+
+    fn paragraph_test_dpi(visual: &mut gpui::VisualTestContext, scale: f32, rem: f32) {
+        let viewport = size(px(840.0), px(700.0));
+        visual.simulate_resize(viewport);
+        visual.simulate_scale_factor(scale);
+        visual.run_until_parked();
+        visual.update(|window, _| {
+            assert_eq!(window.scale_factor(), scale, "must exercise real Window scale");
+            assert_eq!(window.viewport_size(), viewport);
+            window.set_rem_size(px(rem));
+        });
+    }
+
+    #[gpui::test]
+    fn paragraph_fusion_removes_one_real_taffy_node_per_paragraph(cx: &mut TestAppContext) {
+        let (_, visual) = cx.add_window_view(|_, _| Harness(String::new()));
+        paragraph_test_dpi(visual, 1.25, 19.75);
+        let texts: Vec<_> = (0..16).map(|index| format!("Paragraph {index}: caf\u{e9} \u{1f980}")).collect();
+        let production = ParagraphCorpus::new(&texts);
+        let legacy = ParagraphCorpus::new(&texts);
+        let width = gpui::AvailableSpace::Definite(px(280.25));
+        let actual = draw_paragraph_arm(&production, ParagraphArm::Production, ParagraphParent::FlexColumn, width, false, visual);
+        let before = draw_paragraph_arm(&legacy, ParagraphArm::LegacyLiteral, ParagraphParent::FlexColumn, width, false, visual);
+        assert_eq!(actual.geometry, before.geometry);
+        assert!(before.paragraph_nodes.iter().all(|nodes| *nodes == 3));
+        // Behavioral RED on the frozen renderer: actual currently has 3, not 2.
+        assert!(actual.paragraph_nodes.iter().all(|nodes| *nodes == 2));
+        assert_eq!(before.subtree_nodes, actual.subtree_nodes + texts.len());
+    }
+
+    #[gpui::test]
+    fn paragraph_fusion_keeps_exact_geometry_carets_and_style_at_real_dpi(cx: &mut TestAppContext) {
+        use gpui::AvailableSpace::{Definite, MaxContent, MinContent};
+        let (_, visual) = cx.add_window_view(|_, _| Harness(String::new()));
+        let texts: Vec<String> = ["", " ", "a", "office affine", "a\u{e7}\u{e3}o e\u{301} \u{1f980} \u{4e2d}\u{6587}",
+            "soft\nline\nhard", "two words near a wrap boundary", "a_very_long_unbroken_word_without_spaces"]
+            .into_iter().map(str::to_owned).collect();
+        // Cover every real scale, while pairing typography variants instead of
+        // taking a large product of every style, parent and constraint.
+        for (scale, rem, mono) in [(1.0,16.0,false),(1.25,19.75,true),(1.5,16.0,false),(1.75,19.75,true),(2.0,16.0,false)] {
+            paragraph_test_dpi(visual, scale, rem);
+            for parent in [ParagraphParent::FlexColumn, ParagraphParent::Block, ParagraphParent::Assistant, ParagraphParent::User85] {
+                let production = ParagraphCorpus::new(&texts);
+                let legacy = ParagraphCorpus::new(&texts);
+                let widths = match parent {
+                    ParagraphParent::Assistant => vec![Definite(px(280.25)), Definite(px(81.3))],
+                    ParagraphParent::Block => vec![Definite(px(280.25)), MinContent, MaxContent],
+                    _ => vec![Definite(px(280.25)), MinContent, MaxContent, Definite(px(81.3)), Definite(px(280.25))],
+                };
+                // Revisit a width after intrinsic constraints where that is meaningful.
+                for width in widths {
+                    let actual = draw_paragraph_arm(&production, ParagraphArm::Production, parent, width, mono, visual);
+                    let before = draw_paragraph_arm(&legacy, ParagraphArm::LegacyLiteral, parent, width, mono, visual);
+                    assert_eq!(actual.geometry, before.geometry, "scale={scale}, rem={rem}, parent={parent:?}, width={width:?}");
+                }
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn paragraph_fusion_has_no_accumulated_height_drift_or_wrap_threshold_change(cx: &mut TestAppContext) {
+        use gpui::AvailableSpace::{Definite, MaxContent};
+        let (_, visual) = cx.add_window_view(|_, _| Harness(String::new()));
+        let texts: Vec<_> = (0..256).map(|index| format!("Line {index}: office caf\u{e9} \u{1f980} final")).collect();
+        for scale in [1.0, 1.25, 1.5, 1.75, 2.0] {
+            paragraph_test_dpi(visual, scale, 19.75);
+            let production = ParagraphCorpus::new(&texts);
+            let legacy = ParagraphCorpus::new(&texts);
+            for parent in [ParagraphParent::FlexColumn, ParagraphParent::User85] {
+                let actual = draw_paragraph_arm(&production, ParagraphArm::Production, parent, Definite(px(214.3)), false, visual);
+                let before = draw_paragraph_arm(&legacy, ParagraphArm::LegacyLiteral, parent, Definite(px(214.3)), false, visual);
+                assert_eq!(actual.geometry, before.geometry, "accumulated geometry at scale {scale}, {parent:?}");
+                assert_eq!(actual.geometry.blocks.last(), before.geometry.blocks.last());
+            }
+            // Derive a threshold from the native measured text, not a guessed character width.
+            let threshold_text = vec!["office caf\u{e9} final word".to_owned()];
+            let production = ParagraphCorpus::new(&threshold_text);
+            let legacy = ParagraphCorpus::new(&threshold_text);
+            draw_paragraph_arm(&production, ParagraphArm::Production, ParagraphParent::FlexColumn, MaxContent, false, visual);
+            let layout = production.pieces[0].state.borrow().styled.layout().clone();
+            let advance = layout.position_for_index(threshold_text[0].len()).unwrap().x
+                - layout.position_for_index(0).unwrap().x;
+            let mut heights = Vec::new();
+            for width in [advance - px(1.0 / scale), advance, advance + px(1.0 / scale)] {
+                let actual = draw_paragraph_arm(&production, ParagraphArm::Production, ParagraphParent::FlexColumn, Definite(width), false, visual);
+                let before = draw_paragraph_arm(&legacy, ParagraphArm::LegacyLiteral, ParagraphParent::FlexColumn, Definite(width), false, visual);
+                assert_eq!(actual.geometry, before.geometry, "measured threshold at scale {scale}");
+                heights.push(actual.geometry.leaves[0].bounds.size.height);
+            }
+            assert!(heights[0] > heights[2], "the test must cross an actual wrap threshold");
+        }
+    }
+
+    struct ParagraphCopyHarness { content: String, parent: ParagraphParent }
+    impl Render for ParagraphCopyHarness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            paragraph_parent(self.parent, SelectableMessage::new("fusion-copy", self.content.clone()).into_any_element())
+        }
+    }
+
+    #[gpui::test]
+    fn paragraph_fusion_keeps_actual_message_selection_and_complete_clipboard(cx: &mut TestAppContext) {
+        cx.update(crate::text_input::register_text_input_keybindings);
+        let first = "a\u{e7}\u{e3}o \u{1f980}";
+        let second = "segunda linha";
+        // Expected text is the literal reference projection; no copy/selection logic is reimplemented.
+        let literal_projection = format!("{first}\n\n{second}");
+        let legacy = ParagraphCorpus::new(&[first.to_owned(), second.to_owned()]);
+        let (harness, visual) = cx.add_window_view(|_, _| ParagraphCopyHarness {
+            content: literal_projection.clone(), parent: ParagraphParent::User85,
+        });
+        for scale in [1.0, 1.25, 1.5, 1.75, 2.0] {
+            paragraph_test_dpi(visual, scale, 19.75);
+            for parent in [ParagraphParent::Assistant, ParagraphParent::User85] {
+                harness.update(visual, |h, cx| { h.parent = parent; cx.notify(); });
+                for width in [420.0, 180.0, 600.0] {
+                    visual.simulate_resize(size(px(width), px(700.0)));
+                    visual.run_until_parked();
+                    let reference = draw_paragraph_arm(&legacy, ParagraphArm::LegacyLiteral, parent,
+                        gpui::AvailableSpace::Definite(px(width)), false, visual);
+                    let reference_projection = reference.geometry.leaves.iter()
+                        .map(|leaf| leaf.text.as_str()).collect::<Vec<_>>().join("\n\n");
+                    assert_eq!(reference_projection, literal_projection);
+                    visual.run_until_parked();
+                    let a = visual.debug_bounds("fusion-copy:text:0").unwrap();
+                    let b = visual.debug_bounds("fusion-copy:text:1").unwrap();
+                    let start = a.origin + point(px(0.0), px(2.0));
+                    let end = b.bottom_right() - point(px(0.1), px(2.0));
+                    for (from, to) in [(start, end), (end, start)] {
+                        visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+                        visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+                        visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+                        visual.simulate_keystrokes("ctrl-c");
+                        visual.update(|_, cx| assert_eq!(cx.read_from_clipboard().unwrap().text().as_deref(), Some(reference_projection.as_str())));
+                    }
+                    visual.simulate_keystrokes("ctrl-a ctrl-c");
+                    visual.update(|_, cx| assert_eq!(cx.read_from_clipboard().unwrap().text().as_deref(), Some(reference_projection.as_str())));
+                }
+            }
+        }
+    }
+
 }

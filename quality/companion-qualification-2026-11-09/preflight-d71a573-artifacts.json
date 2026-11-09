@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "sourceCommit": "d71a5733ac73443992ffce5cadab3330f9289783",
+  "capturedAtUtc": "2026-11-09T14:37:21.469404+00:00",
+  "scope": "Failed first release preflight after painting corrections; not a complete or paired gate.",
+  "artifacts": {
+    "source": {
+      "path": "<home>\\Documents\\Nathan\\HardVibeCode\\.worktrees\\companion-decision-dock\\quality\\companion-qualification-2026-11-09\\source-d71a573.json",
+      "bytes": 241439,
+      "sha256": "452ca787119708fb74fb7b0fc74628421d02ad9be9235d06f95981d3783c48e1"
+    },
+    "binary": {
+      "path": "<home>\\Documents\\Nathan\\HardVibeCode\\.worktrees\\companion-decision-dock\\target\\release\\hard-vibe-code.exe",
+      "bytes": 38057472,
+      "sha256": "56c4ef95c818bf77caae37ddc90ecd0816f64681b6d336e201197c50e7827b45"
+    },
+    "build": {
+      "path": "<home>\\Documents\\Nathan\\HardVibeCode\\.worktrees\\companion-decision-dock\\quality\\companion-qualification-2026-11-09\\release-d71a573-build.log",
+      "bytes": 696,
+      "sha256": "8d1209b0730aa7e2cb40442e965d3f2b3650226d3aedc8b2cd1596b284745717"
+    },
+    "preflight": {
+      "path": "<home>\\Documents\\Nathan\\HardVibeCode\\.worktrees\\companion-decision-dock\\quality\\companion-qualification-2026-11-09\\three-streams-d71a573-preflight.json",
+      "bytes": 5342,
+      "sha256": "a6ebbd9539e4773d8604cfe94a3a433cce362b91b5b600944d217128b2e7f28c"
+    },
+    "preflightLog": {
+      "path": "<home>\\Documents\\Nathan\\HardVibeCode\\.worktrees\\companion-decision-dock\\quality\\companion-qualification-2026-11-09\\three-streams-d71a573-preflight.log",
+      "bytes": 5899,
+      "sha256": "fd60b3129384b19d70a95a190b3f5e8297cc8b6b0fd730e60eefb90ef50c06f1"
+    }
+  }
+}

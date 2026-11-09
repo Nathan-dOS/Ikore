@@ -1,0 +1,345 @@
+{
+  "frames": 141,
+  "sampled": 120,
+  "fixture": [
+    141,
+    423,
+    true,
+    1440.0,
+    900.0
+  ],
+  "flags": {
+    "hydrating": 2,
+    "quotaLoading": 141
+  },
+  "timesMs": {
+    "draw_ns": {
+      "mean": 70.586,
+      "p50": 66.8858,
+      "p95": 101.0198,
+      "max": 120.2626
+    },
+    "root_layout_prepaint": {
+      "mean": 55.9967,
+      "p50": 53.3882,
+      "p95": 84.0359,
+      "max": 97.1629
+    },
+    "message_build_including_parse": {
+      "mean": 2.0997,
+      "p50": 2.0338,
+      "p95": 3.2305,
+      "max": 4.2498
+    },
+    "message_parse": {
+      "mean": 1.1552,
+      "p50": 1.1554,
+      "p95": 1.79,
+      "max": 2.489
+    },
+    "shell_build": {
+      "mean": 0.622,
+      "p50": 0.5923,
+      "p95": 0.8308,
+      "max": 1.1711
+    },
+    "paint": {
+      "mean": 10.8924,
+      "p50": 10.5131,
+      "p95": 16.2495,
+      "max": 18.4316
+    },
+    "present": {
+      "mean": 0.2694,
+      "p50": 0.2619,
+      "p95": 0.3657,
+      "max": 0.4842
+    }
+  },
+  "allMeasures": {
+    "calls": 372480,
+    "hits": 189120,
+    "cold": 4440,
+    "wrap_changed": 178920,
+    "truncate_changed": 0,
+    "other_miss": 0,
+    "hit_none": 13080,
+    "hit_some": 176040,
+    "miss_none": 63360,
+    "miss_some": 120000,
+    "none_to_some": 60840,
+    "some_to_none": 59280,
+    "some_to_other": 58800,
+    "bytes": 12297516,
+    "paint_calls": 33420,
+    "paint_outside_mask": 25020
+  },
+  "messageMeasures": {
+    "calls": 352080,
+    "hits": 176040,
+    "cold": 360,
+    "wrap_changed": 175680,
+    "truncate_changed": 0,
+    "other_miss": 0,
+    "hit_none": 0,
+    "hit_some": 176040,
+    "miss_none": 58680,
+    "miss_some": 117360,
+    "none_to_some": 58680,
+    "some_to_none": 58680,
+    "some_to_other": 58320,
+    "bytes": 11958516,
+    "paint_calls": 29340,
+    "paint_outside_mask": 25020
+  },
+  "counts": {
+    "piece_created": 360,
+    "bg_calls": 33420,
+    "parse_calls": 360,
+    "parsed_blocks": 29340,
+    "parse_source_bytes": 1231263,
+    "piece_reused": 28980,
+    "piece_layout_requests": 29340,
+    "bg_glyphs_no_color": 989343,
+    "bg_calls_no_color": 33420
+  },
+  "sampleRows": [
+    {
+      "frame": 0,
+      "drawMs": 57.474,
+      "parseMs": 0.164,
+      "buildMs": 0.32,
+      "layoutPrepaintMs": 29.604,
+      "paintMs": 26.456,
+      "presentMs": 0.0,
+      "messageMeasure": {
+        "calls": 36,
+        "hits": 18,
+        "cold": 3,
+        "wrap_changed": 15,
+        "truncate_changed": 0,
+        "other_miss": 0,
+        "hit_none": 0,
+        "hit_some": 18,
+        "miss_none": 6,
+        "miss_some": 12,
+        "none_to_some": 6,
+        "some_to_none": 6,
+        "some_to_other": 3,
+        "bytes": 1188,
+        "paint_calls": 3,
+        "paint_outside_mask": 0
+      },
+      "counts": {
+        "bg_calls": 37,
+        "bg_calls_no_color": 37,
+        "bg_glyphs_no_color": 524,
+        "draw_ns": 57473600,
+        "parse_calls": 3,
+        "parse_source_bytes": 123,
+        "parsed_blocks": 3,
+        "piece_created": 3,
+        "piece_layout_requests": 3
+      }
+    },
+    {
+      "frame": 20,
+      "drawMs": 29.174,
+      "parseMs": 0.326,
+      "buildMs": 0.623,
+      "layoutPrepaintMs": 18.971,
+      "paintMs": 8.243,
+      "presentMs": 0.244,
+      "messageMeasure": {
+        "calls": 756,
+        "hits": 378,
+        "cold": 3,
+        "wrap_changed": 375,
+        "truncate_changed": 0,
+        "other_miss": 0,
+        "hit_none": 0,
+        "hit_some": 378,
+        "miss_none": 126,
+        "miss_some": 252,
+        "none_to_some": 126,
+        "some_to_none": 126,
+        "some_to_other": 123,
+        "bytes": 25344,
+        "paint_calls": 63,
+        "paint_outside_mask": 27
+      },
+      "counts": {
+        "bg_calls": 97,
+        "bg_calls_no_color": 97,
+        "bg_glyphs_no_color": 2415,
+        "draw_ns": 29173700,
+        "parse_calls": 3,
+        "parse_source_bytes": 2616,
+        "parsed_blocks": 63,
+        "piece_created": 3,
+        "piece_layout_requests": 63,
+        "piece_reused": 60
+      }
+    },
+    {
+      "frame": 21,
+      "drawMs": 36.426,
+      "parseMs": 0.422,
+      "buildMs": 0.794,
+      "layoutPrepaintMs": 23.203,
+      "paintMs": 10.592,
+      "presentMs": 0.286,
+      "messageMeasure": {
+        "calls": 792,
+        "hits": 396,
+        "cold": 3,
+        "wrap_changed": 393,
+        "truncate_changed": 0,
+        "other_miss": 0,
+        "hit_none": 0,
+        "hit_some": 396,
+        "miss_none": 132,
+        "miss_some": 264,
+        "none_to_some": 132,
+        "some_to_none": 132,
+        "some_to_other": 129,
+        "bytes": 26568,
+        "paint_calls": 66,
+        "paint_outside_mask": 30
+      },
+      "counts": {
+        "bg_calls": 100,
+        "bg_calls_no_color": 100,
+        "bg_glyphs_no_color": 2511,
+        "draw_ns": 36426300,
+        "parse_calls": 3,
+        "parse_source_bytes": 2742,
+        "parsed_blocks": 66,
+        "piece_created": 3,
+        "piece_layout_requests": 66,
+        "piece_reused": 63
+      }
+    },
+    {
+      "frame": 70,
+      "drawMs": 58.706,
+      "parseMs": 0.931,
+      "buildMs": 1.747,
+      "layoutPrepaintMs": 46.288,
+      "paintMs": 9.265,
+      "presentMs": 0.221,
+      "messageMeasure": {
+        "calls": 2556,
+        "hits": 1278,
+        "cold": 3,
+        "wrap_changed": 1275,
+        "truncate_changed": 0,
+        "other_miss": 0,
+        "hit_none": 0,
+        "hit_some": 1278,
+        "miss_none": 426,
+        "miss_some": 852,
+        "none_to_some": 426,
+        "some_to_none": 426,
+        "some_to_other": 423,
+        "bytes": 86544,
+        "paint_calls": 213,
+        "paint_outside_mask": 177
+      },
+      "counts": {
+        "bg_calls": 247,
+        "bg_calls_no_color": 247,
+        "bg_glyphs_no_color": 7215,
+        "draw_ns": 58706400,
+        "parse_calls": 3,
+        "parse_source_bytes": 8916,
+        "parsed_blocks": 213,
+        "piece_created": 3,
+        "piece_layout_requests": 213,
+        "piece_reused": 210
+      }
+    },
+    {
+      "frame": 140,
+      "drawMs": 104.536,
+      "parseMs": 1.89,
+      "buildMs": 3.391,
+      "layoutPrepaintMs": 86.844,
+      "paintMs": 12.635,
+      "presentMs": 0.284,
+      "messageMeasure": {
+        "calls": 5076,
+        "hits": 2538,
+        "cold": 3,
+        "wrap_changed": 2535,
+        "truncate_changed": 0,
+        "other_miss": 0,
+        "hit_none": 0,
+        "hit_some": 2538,
+        "miss_none": 846,
+        "miss_some": 1692,
+        "none_to_some": 846,
+        "some_to_none": 846,
+        "some_to_other": 843,
+        "bytes": 173700,
+        "paint_calls": 423,
+        "paint_outside_mask": 387
+      },
+      "counts": {
+        "bg_calls": 457,
+        "bg_calls_no_color": 457,
+        "bg_glyphs_no_color": 14058,
+        "draw_ns": 104536300,
+        "parse_calls": 3,
+        "parse_source_bytes": 17859,
+        "parsed_blocks": 423,
+        "piece_created": 3,
+        "piece_layout_requests": 423,
+        "piece_reused": 420
+      }
+    }
+  ],
+  "events": [
+    {
+      "label": "restore_scheduled",
+      "epochNs": 1794182199942886400,
+      "offsetMs": -1.238
+    },
+    {
+      "label": "quota_ui_start",
+      "epochNs": 1794182199951099200,
+      "offsetMs": 6.974
+    },
+    {
+      "label": "restore_finished",
+      "epochNs": 1794182200030688700,
+      "offsetMs": 86.564
+    }
+  ],
+  "terminal": [
+    {
+      "label": "quota_overview",
+      "id": 1,
+      "phase": "start",
+      "epoch_ns": 1794182200004658400,
+      "elapsed_ns": 0,
+      "offsetMs": 60.533
+    },
+    {
+      "label": "discovery",
+      "id": 2,
+      "phase": "start",
+      "epoch_ns": 1794182200004693900,
+      "elapsed_ns": 0,
+      "offsetMs": 60.569
+    },
+    {
+      "label": "discovery_scan",
+      "id": 3,
+      "phase": "start",
+      "epoch_ns": 1794182200004702200,
+      "elapsed_ns": 0,
+      "offsetMs": 60.577
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "purpose": "Temporary gpui workspace membership for private vendor regression tests only; restore exact manifests before final checks.",
+  "originals": [
+    {
+      "path": "Cargo.toml",
+      "backup": "<home>\\Documents\\Nathan\\HardVibeCode\\.worktrees\\companion-decision-dock\\target\\companion-final\\no-background-2026-11-09\\Cargo.toml.before",
+      "sha256": "45084da2cbd126b4abe0be92cac1a6fb054cac4476ae68726ce9acb109ed3c28",
+      "bytes": 1742
+    },
+    {
+      "path": "Cargo.lock",
+      "backup": "<home>\\Documents\\Nathan\\HardVibeCode\\.worktrees\\companion-decision-dock\\target\\companion-final\\no-background-2026-11-09\\Cargo.lock.before",
+      "sha256": "ba72237f26f1090c65c1ec5b009475f1d51cb0e637f2e2c30d707d0b0ec9695a",
+      "bytes": 200637
+    },
+    {
+      "path": "third_party/gpui/Cargo.toml",
+      "backup": "<home>\\Documents\\Nathan\\HardVibeCode\\.worktrees\\companion-decision-dock\\target\\companion-final\\no-background-2026-11-09\\gpui.Cargo.toml.before",
+      "sha256": "bdbdf8c6340c387eea3c0a6ed0d880edbbbacf64062cd4fd5b04cac6afdf44cb",
+      "bytes": 16267
+    }
+  ],
+  "temporaryManifestSha256": "0db6ba8abc8a93ed979eaf794c657ad0f6620bc6731b53b35b5c335426c3430d",
+  "temporaryVendorManifestSha256": "7fe2cf734b19a3ea3be40abf94f8cca41db85a3358b8c7c40f11e50956f8d556",
+  "temporaryOmittedDevDependencyBlocks": [
+    "env_logger",
+    "pretty_assertions",
+    "lyon (extra feature only; normal lyon dependency unchanged)"
+  ],
+  "temporaryLockSha256": "2973d63e19eb134c60c416480a14271a03afe0cab083bc7bbf2fa6be5df649e2",
+  "temporaryLockChange": "Only gpui -> unicode-segmentation, already resolved at 1.13.3. No package/version/checksum changes."
+}

@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "sourceCommit": "29ed69a346feccdf4d7302bb27811ca0fab7c0d1",
+  "status": "passed",
+  "capturedAtUtc": "2026-11-08T15:22:07.981271+00:00",
+  "binarySha256": "6870c566b2e5c192cc0c8804f38bdd48b9170506e8fb05efbc2c4f7636735954",
+  "requestedWindowSize": "960x640",
+  "cases": [
+    "history focused: close and reopen shortcut without intervening click",
+    "composer focused: close and reopen shortcut with exact Unicode draft preserved",
+    "minimize focused topic: shortcut remains available",
+    "close focused topic: shortcut remains available",
+    "full Chat focus remains visible when hiding and reopening dock",
+    "graceful close"
+  ],
+  "modelCountsUnchanged": {
+    "chat_conversations": 3,
+    "chat_messages": 6,
+    "llm_route_executions": 2,
+    "decision_conversations": 0
+  },
+  "exactDraftPreserved": true,
+  "stderrEmpty": true,
+  "limits": [
+    "Current physical display scale only.",
+    "Asynchronous control replacement and inactive window recovery are covered by simulated GPUI regression tests, without a real provider call."
+  ]
+}

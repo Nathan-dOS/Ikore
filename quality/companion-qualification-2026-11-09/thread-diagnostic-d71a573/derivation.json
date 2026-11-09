@@ -1,0 +1,21 @@
+{
+  "purpose": "diagnostic only; does not replace the d71a573 preflight FAIL",
+  "original": "scripts\\benchmark-ui-latency.ps1",
+  "originalSha256": "83d0555c3cca098d8577132dae13bdb83ea034a886cbbe46361c1f4de9de9f47",
+  "sourceUnchanged": true,
+  "sourceCommit": "d71a5733ac73443992ffce5cadab3330f9289783",
+  "requiredInvocation": {
+    "Scenario": "dock-three-streams",
+    "Samples": 140,
+    "WarmupSamples": 20,
+    "WindowSize": "1440x900",
+    "TimeoutSeconds": 30,
+    "EnforceThresholds": false
+  },
+  "changes": [
+    "root rebased for target-only derivative",
+    "isolated runtime under diagnostic target directory",
+    "bounded exact-PID CPU thread sampler",
+    "no changes to fixture, readiness, cadence, limits or threshold evaluation"
+  ]
+}

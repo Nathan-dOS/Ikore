@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "sourceCommit": "68b5c0522fa642664f114e4bbdf8628c81db41c0",
+  "capturedAtUtc": "2026-11-09T21:02:11.616330+00:00",
+  "binarySha256": "a788a0f42e85ff26caa0ba0d53489092c9c71507c97ce9190d80821d0de10852",
+  "previousSqlite": "3.48.0",
+  "currentSqlite": "3.54.1",
+  "countsBefore": {
+    "chat_conversations": 3,
+    "chat_messages": 6,
+    "llm_route_executions": 2,
+    "decision_conversations": 0
+  },
+  "countsAfter": {
+    "chat_conversations": 3,
+    "chat_messages": 6,
+    "llm_route_executions": 2,
+    "decision_conversations": 0
+  },
+  "countsEqual": true,
+  "draftRows": 1,
+  "draftRowsSha256Before": "a33261e8e3bb82c4e0682c34cb0866046af7f3cad968256a522927125687de88",
+  "draftRowsSha256After": "a33261e8e3bb82c4e0682c34cb0866046af7f3cad968256a522927125687de88",
+  "draftRowsExactlyEqual": true,
+  "migrationRows": 64,
+  "migrationHistorySha256Before": "13e7eb66824db3771791c75a199103fda5fb9f1b35c62261ef72a097312f2a0c",
+  "migrationHistorySha256After": "13e7eb66824db3771791c75a199103fda5fb9f1b35c62261ef72a097312f2a0c",
+  "migrationHistoryExactlyEqual": true,
+  "integrity": "ok",
+  "brokenForeignKeys": 0,
+  "originalProfileUnchanged": true,
+  "exitCode": 0,
+  "windowClosedObserved": true,
+  "stderrBytes": 0,
+  "visualObservations": [
+    "Three conversations and the existing formatted history rendered",
+    "Existing durable Unicode draft visible in full Chat",
+    "Guarded review remained waiting; no message or decision submitted"
+  ],
+  "limits": [
+    "Default 1280x820 client viewport and current physical display scale",
+    "No IME or real model request",
+    "Existing profile file reopened; not an old-engine live WAL pair"
+  ]
+}

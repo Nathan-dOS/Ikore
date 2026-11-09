@@ -1,0 +1,245 @@
+{
+  "schemaVersion": 1,
+  "capturedAtUtc": "2026-11-09T14:20:15.172382+00:00",
+  "baseCommit": "42219bb7abdab2b4ac71f8ff18e5e5cc8b695251",
+  "scope": "Private vendor painting tests; application workspace gate and release speed remain pending.",
+  "focused": {
+    "passed": 12,
+    "failed": 0,
+    "ignored": 0,
+    "filtered": 70
+  },
+  "vendorLib": {
+    "passed": 82,
+    "failed": 0,
+    "ignored": 0,
+    "filtered": 0
+  },
+  "focusedIncludedInVendorLib": true,
+  "allThreeManifestsRestoredByteForByte": true,
+  "rawCargoMetadataOmitted": "Redundant graph dump; both lock snapshots, exact harness diff and 794-package identity proof retained.",
+  "files": [
+    {
+      "source": "target\\companion-final\\no-background-2026-11-09\\Cargo.lock.before",
+      "artifact": "background\\Cargo.lock.before",
+      "bytes": 200637,
+      "sha256": "ba72237f26f1090c65c1ec5b009475f1d51cb0e637f2e2c30d707d0b0ec9695a"
+    },
+    {
+      "source": "target\\companion-final\\no-background-2026-11-09\\Cargo.lock.temporary",
+      "artifact": "background\\Cargo.lock.temporary",
+      "bytes": 200728,
+      "sha256": "7055aaa25a2df8615da2a76e4508022811f90ddc12f9a4ea71bc4f1a7d8b387d"
+    },
+    {
+      "source": "target\\companion-final\\no-background-2026-11-09\\Cargo.toml.before",
+      "artifact": "background\\Cargo.toml.before",
+      "bytes": 1742,
+      "sha256": "45084da2cbd126b4abe0be92cac1a6fb054cac4476ae68726ce9acb109ed3c28"
+    },
+    {
+      "source": "target\\companion-final\\no-background-2026-11-09\\Cargo.toml.temporary",
+      "artifact": "background\\Cargo.toml.temporary",
+      "bytes": 1767,
+      "sha256": "0db6ba8abc8a93ed979eaf794c657ad0f6620bc6731b53b35b5c335426c3430d"
+    },
+    {
+      "source": "target\\companion-final\\no-background-2026-11-09\\gpui.Cargo.toml.before",
+      "artifact": "background\\gpui.Cargo.toml.before",
+      "bytes": 16267,
+      "sha256": "bdbdf8c6340c387eea3c0a6ed0d880edbbbacf64062cd4fd5b04cac6afdf44cb"
+    },
+    {
+      "source": "target\\companion-final\\no-background-2026-11-09\\gpui.Cargo.toml.temporary",
+      "artifact": "background\\gpui.Cargo.toml.temporary",
+      "bytes": 16066,
+      "sha256": "7fe2cf734b19a3ea3be40abf94f8cca41db85a3358b8c7c40f11e50956f8d556"
+    },
+    {
+      "source": "target\\companion-final\\no-background-2026-11-09\\green-private-tests.log",
+      "artifact": "background\\green-private-tests.log",
+      "bytes": 1574,
+      "sha256": "c9c5b741868b15ee4a8da121b4b918ca4f5cccbdaae317342065f357d7d1f484"
+    },
+    {
+      "source": "target\\companion-final\\no-background-2026-11-09\\HVC-GPUI-008.patch",
+      "artifact": "background\\HVC-GPUI-008.patch",
+      "bytes": 23232,
+      "sha256": "f5aa781902862d40e91b2ba0c7249d29bac7cfbb352f332973f44d492f95e534"
+    },
+    {
+      "source": "target\\companion-final\\no-background-2026-11-09\\red-manifest-tests.log",
+      "artifact": "background\\red-manifest-tests.log",
+      "bytes": 657,
+      "sha256": "b8f1a284ae9b82d0a002f02dc707c9146ce236f05aa3e543b916e45990c931a5"
+    },
+    {
+      "source": "target\\companion-final\\no-background-2026-11-09\\red-member-offline-tests.log",
+      "artifact": "background\\red-member-offline-tests.log",
+      "bytes": 716,
+      "sha256": "cc33c06a476396071b61ff4ef387c988dc4ec1a71538fc965df4cfc1415311d9"
+    },
+    {
+      "source": "target\\companion-final\\no-background-2026-11-09\\red-member-tests.log",
+      "artifact": "background\\red-member-tests.log",
+      "bytes": 47398,
+      "sha256": "65fc5b3a7a28e94baf917b62633bf6c211d53f85a6d6f843ac2f8f29230ff772"
+    },
+    {
+      "source": "target\\companion-final\\no-background-2026-11-09\\red-private-sorted-lock.log",
+      "artifact": "background\\red-private-sorted-lock.log",
+      "bytes": 611,
+      "sha256": "952b71f69b9999b63958bd66ffef04b63d41c75a28c9bff5e89a98cbc2fcf958"
+    },
+    {
+      "source": "target\\companion-final\\no-background-2026-11-09\\red-private-tests.log",
+      "artifact": "background\\red-private-tests.log",
+      "bytes": 611,
+      "sha256": "952b71f69b9999b63958bd66ffef04b63d41c75a28c9bff5e89a98cbc2fcf958"
+    },
+    {
+      "source": "target\\companion-final\\no-background-2026-11-09\\red-supported-harness.log",
+      "artifact": "background\\red-supported-harness.log",
+      "bytes": 611,
+      "sha256": "952b71f69b9999b63958bd66ffef04b63d41c75a28c9bff5e89a98cbc2fcf958"
+    },
+    {
+      "source": "target\\companion-final\\no-background-2026-11-09\\red-tests-resolved.log",
+      "artifact": "background\\red-tests-resolved.log",
+      "bytes": 5937,
+      "sha256": "11ad3e272b3012528be5dba01d94a92cf6cb7e4eb73ded2bae0b4f0ecf92d2bf"
+    },
+    {
+      "source": "target\\companion-final\\no-background-2026-11-09\\red-tests.log",
+      "artifact": "background\\red-tests.log",
+      "bytes": 66,
+      "sha256": "1ba3ceeecf09b4536cdea2cab95fee46b641a8223e0b0a51ba522690d31d69b1"
+    },
+    {
+      "source": "target\\companion-final\\no-background-2026-11-09\\red-vendor-tests.log",
+      "artifact": "background\\red-vendor-tests.log",
+      "bytes": 114,
+      "sha256": "c8944657a9376f320f1c5a6107ffbaab45701b376804cdb6f9100424dc7474f8"
+    },
+    {
+      "source": "target\\companion-final\\no-background-2026-11-09\\restoration.json",
+      "artifact": "background\\restoration.json",
+      "bytes": 1441,
+      "sha256": "2f60c19c2339a8584457a9f0c1e6a6139f069fd7e7413df6026d47faae0c2401"
+    },
+    {
+      "source": "target\\companion-final\\no-background-2026-11-09\\temporary-harness.patch",
+      "artifact": "background\\temporary-harness.patch",
+      "bytes": 1502,
+      "sha256": "08e6935626daa3d066306b778c46e45d22dc0ef6d49d92bbf19788fa2e74c0b3"
+    },
+    {
+      "source": "target\\companion-final\\no-background-2026-11-09\\temporary-lock-proof.json",
+      "artifact": "background\\temporary-lock-proof.json",
+      "bytes": 914,
+      "sha256": "0f6a585de298a007eb8e2f9459a85ef210307321a94b02b42ef2b325fddd2c74"
+    },
+    {
+      "source": "target\\companion-final\\no-background-2026-11-09\\temporary-membership.json",
+      "artifact": "background\\temporary-membership.json",
+      "bytes": 1761,
+      "sha256": "15e8703dd203e597bc158e68e4b2c8601d6008495f311fe888c1353f38610d96"
+    },
+    {
+      "source": "target\\companion-final\\no-background-2026-11-09\\temporary-metadata.log",
+      "artifact": "background\\temporary-metadata.log",
+      "bytes": 324,
+      "sha256": "845bcc5667af6644378d53759c631c59d0464521805bb5b9cd4ac7e15d69269b"
+    },
+    {
+      "source": "target\\companion-final\\no-background-2026-11-09\\test-qualification.json",
+      "artifact": "background\\test-qualification.json",
+      "bytes": 1550,
+      "sha256": "efd3bd5d02e92be82d55be1a3511783ccd4c257e083f49ad4d53c0cc493567c3"
+    },
+    {
+      "source": "target\\companion-final\\no-background-2026-11-09\\unused-dev-dependencies-rg.log",
+      "artifact": "background\\unused-dev-dependencies-rg.log",
+      "bytes": 153,
+      "sha256": "f379e7b3669ff96549e6f9a926f6dfc10d0f448c0ac32f09c81c9908f79b5824"
+    },
+    {
+      "source": "target\\companion-final\\vertical-culling-2026-11-09\\01-red-counter-and-tests.patch",
+      "artifact": "foreground\\01-red-counter-and-tests.patch",
+      "bytes": 7731,
+      "sha256": "79680d1bb923a0dcc1815c0bc50489b90cabe40f4ae594205852865945abb0e4"
+    },
+    {
+      "source": "target\\companion-final\\vertical-culling-2026-11-09\\02-vertical-guard.patch",
+      "artifact": "foreground\\02-vertical-guard.patch",
+      "bytes": 6112,
+      "sha256": "57a209d63158db48d0da7f177d1c7f0f57790131cd0aa35af6240b688f2bd2b1"
+    },
+    {
+      "source": "target\\companion-final\\vertical-culling-2026-11-09\\all-vendor-list.log",
+      "artifact": "foreground\\all-vendor-list.log",
+      "bytes": 5889,
+      "sha256": "26924aa2001e1a8064c896fafcf44655843929322036a2cf277d5e5d1ccadd00"
+    },
+    {
+      "source": "target\\companion-final\\vertical-culling-2026-11-09\\all-vendor-tests.log",
+      "artifact": "foreground\\all-vendor-tests.log",
+      "bytes": 6365,
+      "sha256": "8312fa3fdc2bb5438801275682589fdbff240661dd6be4b963d43c231c235b61"
+    },
+    {
+      "source": "target\\companion-final\\vertical-culling-2026-11-09\\combined-review.patch",
+      "artifact": "foreground\\combined-review.patch",
+      "bytes": 13549,
+      "sha256": "4f2380fa529261f84e54d3ee8e9469693ddff8b881802caea786b133d96cfb53"
+    },
+    {
+      "source": "target\\companion-final\\vertical-culling-2026-11-09\\draft-metadata.json",
+      "artifact": "foreground\\draft-metadata.json",
+      "bytes": 380,
+      "sha256": "dffaf61c34c8c5ef5bdfffb8585e96cf5227fc28b03ccb2a71762bccdecbc216"
+    },
+    {
+      "source": "target\\companion-final\\vertical-culling-2026-11-09\\green-private-tests.log",
+      "artifact": "foreground\\green-private-tests.log",
+      "bytes": 2216,
+      "sha256": "816edf7de3cb8b35a2b9bdb9c47add4cd769102bc332ec9297098e70a1dd92bb"
+    },
+    {
+      "source": "target\\companion-final\\vertical-culling-2026-11-09\\HVC-GPUI-008-009.patch",
+      "artifact": "foreground\\HVC-GPUI-008-009.patch",
+      "bytes": 44553,
+      "sha256": "981c4f9813365dd26da53188a6d6a1a281ed68365ed8bd83c7988fe9110a0d4a"
+    },
+    {
+      "source": "target\\companion-final\\vertical-culling-2026-11-09\\red-private-tests.log",
+      "artifact": "foreground\\red-private-tests.log",
+      "bytes": 3541,
+      "sha256": "1ca6e937b1cda7939a140a7c223b933ad85a0407563a25e38fac38ef8e121e40"
+    },
+    {
+      "source": "target\\companion-final\\vertical-culling-2026-11-09\\restoration.json",
+      "artifact": "foreground\\restoration.json",
+      "bytes": 1441,
+      "sha256": "2f60c19c2339a8584457a9f0c1e6a6139f069fd7e7413df6026d47faae0c2401"
+    },
+    {
+      "source": "target\\companion-final\\vertical-culling-2026-11-09\\test-qualification.json",
+      "artifact": "foreground\\test-qualification.json",
+      "bytes": 1660,
+      "sha256": "6f62b50dfed4d44022408d77c801f816e85d712f59d3cb25387edec08d4d45e5"
+    },
+    {
+      "source": "target\\companion-final\\vertical-culling-2026-11-09\\validation.json",
+      "artifact": "foreground\\validation.json",
+      "bytes": 712,
+      "sha256": "854c37f852bc64adc78cfea6c91d1ce261569bcb69e07d8163c94089b13d3abe"
+    },
+    {
+      "source": "third_party\\gpui\\src\\text_system\\line.rs",
+      "artifact": "paint-executed-source.txt",
+      "bytes": 52167,
+      "sha256": "8db9faf989f682116d7c6bfa461d9fdfaea668d18133fb6c4148299dd53e8fd7"
+    }
+  ]
+}

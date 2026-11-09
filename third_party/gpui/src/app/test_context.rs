@@ -331,6 +331,12 @@ impl TestAppContext {
         self.test_window(window_handle).simulate_resize(size);
     }
 
+    /// Simulates a DPI change without changing the logical viewport size.
+    pub fn simulate_window_scale_factor(&self, window_handle: AnyWindowHandle, scale_factor: f32) {
+        self.test_window(window_handle)
+            .simulate_scale_factor(scale_factor);
+    }
+
     /// Causes the given sources to be returned if the application queries for screen
     /// capture sources.
     pub fn set_screen_capture_sources(&self, sources: Vec<TestScreenCaptureSource>) {
@@ -805,6 +811,11 @@ impl VisualTestContext {
         self.simulate_window_resize(self.window, size)
     }
 
+    /// Simulates a DPI change through the platform window's resize callback.
+    pub fn simulate_scale_factor(&self, scale_factor: f32) {
+        self.simulate_window_scale_factor(self.window, scale_factor)
+    }
+
     /// debug_bounds returns the bounds of the element with the given selector.
     pub fn debug_bounds(&mut self, selector: &'static str) -> Option<Bounds<Pixels>> {
         self.update(|window, _| window.rendered_frame.debug_bounds.get(selector).copied())
@@ -1043,5 +1054,129 @@ impl AnyWindowHandle {
     ) -> Entity<V> {
         self.update(cx, |_, window, cx| cx.new(|cx| build_view(window, cx)))
             .unwrap()
+    }
+}
+
+#[cfg(test)]
+mod dpi_and_layout_tests {
+    use super::*;
+    use crate::{AvailableSpace, Style, div, point, prelude::*, px, size};
+    use std::{
+        cell::Cell,
+        panic::{AssertUnwindSafe, catch_unwind},
+        rc::Rc,
+    };
+
+    #[crate::test]
+    fn simulated_scale_factor_updates_the_real_window_and_preserves_viewport(
+        cx: &mut TestAppContext,
+    ) {
+        let visual = cx.add_empty_window();
+        let viewport = size(px(640.0), px(480.0));
+        visual.simulate_resize(viewport);
+        visual.run_until_parked();
+        let rem_size = visual.update(|window, _| {
+            assert_eq!(window.scale_factor(), 2.0);
+            assert_eq!(window.viewport_size(), viewport);
+            window.rem_size()
+        });
+
+        for scale_factor in [1.0, 1.25, 1.5, 1.75, 2.0] {
+            visual.simulate_scale_factor(scale_factor);
+            visual.run_until_parked();
+            visual.update(|window, _| {
+                // Window caches this field; changing only TestWindow state would fail.
+                assert_eq!(window.scale_factor(), scale_factor);
+                assert_eq!(window.viewport_size(), viewport);
+                assert_eq!(window.rem_size(), rem_size);
+            });
+
+            let resized = size(px(641.0), px(481.0));
+            visual.simulate_resize(resized);
+            visual.run_until_parked();
+            visual.update(|window, _| {
+                assert_eq!(window.scale_factor(), scale_factor);
+                assert_eq!(window.viewport_size(), resized);
+            });
+            visual.simulate_resize(viewport);
+            visual.run_until_parked();
+        }
+    }
+
+    #[crate::test]
+    fn invalid_simulated_scale_factors_leave_window_state_unchanged(cx: &mut TestAppContext) {
+        let visual = cx.add_empty_window();
+        let viewport = size(px(640.0), px(480.0));
+        visual.simulate_resize(viewport);
+        visual.simulate_scale_factor(1.25);
+        visual.run_until_parked();
+
+        for invalid in [
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            0.0,
+            -0.0,
+            -1.0,
+        ] {
+            assert!(
+                catch_unwind(AssertUnwindSafe(|| visual.simulate_scale_factor(invalid))).is_err()
+            );
+            visual.update(|window, _| {
+                assert_eq!(window.scale_factor(), 1.25);
+                assert_eq!(window.viewport_size(), viewport);
+            });
+        }
+        // The resize callback must still be present after every rejected call.
+        visual.simulate_scale_factor(1.75);
+        visual.run_until_parked();
+        visual.update(|window, _| {
+            assert_eq!(window.scale_factor(), 1.75);
+            assert_eq!(window.viewport_size(), viewport);
+        });
+    }
+
+    #[crate::test]
+    fn layout_node_count_reads_real_frame_nodes_and_marks_active_measurement_unavailable(
+        cx: &mut TestAppContext,
+    ) {
+        let visual = cx.add_empty_window();
+        visual.run_until_parked();
+        let before = visual.update(|window, _| {
+            window.layout_node_count().expect("layout engine available")
+        });
+        assert_eq!(before, 0);
+        let during_measurement = Rc::new(Cell::new(None));
+        let observed = during_measurement.clone();
+        let during_prepaint = Rc::new(Cell::new(None));
+        let prepaint_output = during_prepaint.clone();
+
+        visual.draw(
+            point(px(0.0), px(0.0)),
+            size(
+                AvailableSpace::Definite(px(320.0)),
+                AvailableSpace::Definite(px(200.0)),
+            ),
+            move |window, cx| {
+                let measured = window.request_measured_layout(
+                    Style::default(),
+                    move |_, _, window, _| {
+                        observed.set(Some(window.layout_node_count()));
+                        size(px(8.0), px(8.0))
+                    },
+                );
+                window.compute_layout(measured, size(px(20.0), px(20.0)).into(), cx);
+                div()
+                    .on_children_prepainted(move |_, window, _| {
+                        prepaint_output.set(window.layout_node_count());
+                    })
+                    .child("native text node")
+            },
+        );
+        assert_eq!(during_measurement.get(), Some(None));
+        // One explicitly measured node, one Div, and the real text leaf.
+        assert_eq!(during_prepaint.get(), Some(before + 3));
+        // TestAppContext flushes the dirty window at the end of draw's update.
+        assert_eq!(visual.update(|window, _| window.layout_node_count()), Some(0));
     }
 }

@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 1,
+  "sourceCommit": "d71a5733ac73443992ffce5cadab3330f9289783",
+  "capturedAtUtc": "2026-11-09T15:04:07.354442+00:00",
+  "debugBinarySha256Before": "f27a0382b74f1de87056eaa1d4ad2323f97be3311b0c9b180c7554a4d680cfb0",
+  "debugBinarySha256After": "f27a0382b74f1de87056eaa1d4ad2323f97be3311b0c9b180c7554a4d680cfb0",
+  "sameDebugBinaryAfter": true,
+  "countsBefore": {
+    "chat_conversations": 3,
+    "chat_messages": 6,
+    "llm_route_executions": 2,
+    "decision_conversations": 0
+  },
+  "countsAfter": {
+    "chat_conversations": 3,
+    "chat_messages": 6,
+    "llm_route_executions": 2,
+    "decision_conversations": 0
+  },
+  "draftsBefore": [
+    {
+      "topic_id": "chat:qa-companion-0",
+      "conversation_id": "qa-companion-0",
+      "project_id": "018f15f6-b01a-4162-81bf-7dd70870c27b",
+      "revision": 1,
+      "content": "Durable draft \u2014 a\u00e7\u00e3o \ud83c\udf9b\ufe0f 2026-11-07",
+      "decision_id": null,
+      "decision_state_version": null,
+      "updated_at": "2026-11-07T23:33:33.264050300+00:00"
+    }
+  ],
+  "draftsAfter": [
+    {
+      "topic_id": "chat:qa-companion-0",
+      "conversation_id": "qa-companion-0",
+      "project_id": "018f15f6-b01a-4162-81bf-7dd70870c27b",
+      "revision": 1,
+      "content": "Durable draft \u2014 a\u00e7\u00e3o \ud83c\udf9b\ufe0f 2026-11-07",
+      "decision_id": null,
+      "decision_state_version": null,
+      "updated_at": "2026-11-07T23:33:33.264050300+00:00"
+    }
+  ],
+  "draftRowsExactlyEqual": true,
+  "qaExit960": 0,
+  "qaExit1440": null,
+  "windowClosed1440Observed": true,
+  "stderr1440Bytes": 0,
+  "stderr960Bytes": 0,
+  "requestedClientSizes": [
+    [
+      1440,
+      900
+    ],
+    [
+      960,
+      640
+    ]
+  ],
+  "visibleTopicWindows": [
+    3,
+    2
+  ],
+  "observedPasses": [
+    "Formatted-block selection with accents and arrow",
+    "Three simultaneous topics at1440",
+    "Decision content scrolling reveals native actions",
+    "CtrlShiftC hide/reopen without click at1440",
+    "Restart preserves Unicode draft",
+    "Two topics at960 with recoverable overflow",
+    "Expand minimizes matching topic and shares draft in full Chat"
+  ],
+  "noMessageSubmitted": true,
+  "limits": [
+    "Current physical display scale only",
+    "IME not exercised",
+    "No real provider request",
+    "Visual/functional inspection, not latency measurement"
+  ]
+}

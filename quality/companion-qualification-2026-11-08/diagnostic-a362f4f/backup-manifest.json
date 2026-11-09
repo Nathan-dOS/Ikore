@@ -1,0 +1,47 @@
+[
+  {
+    "path": "third_party/gpui/src/gpui.rs",
+    "sha256": "63d49ec133cddeb580e523b7efb7838ab31168a0c4df82b8f7395b9bb29b641e",
+    "backupSha256": "63d49ec133cddeb580e523b7efb7838ab31168a0c4df82b8f7395b9bb29b641e"
+  },
+  {
+    "path": "third_party/gpui/src/window.rs",
+    "sha256": "c6c40de1098d5f3b39ba1e5c1882539d28f27260f80c736e87fc02e33913bcc4",
+    "backupSha256": "c6c40de1098d5f3b39ba1e5c1882539d28f27260f80c736e87fc02e33913bcc4"
+  },
+  {
+    "path": "third_party/gpui/src/elements/text.rs",
+    "sha256": "35647009989f218243120ea19b1e132216b50e9c3c18ba9d2b94ba222b22c9bc",
+    "backupSha256": "35647009989f218243120ea19b1e132216b50e9c3c18ba9d2b94ba222b22c9bc"
+  },
+  {
+    "path": "crates/hvc-ui/src/selectable_message.rs",
+    "sha256": "af04baa49615f2a0278ffd9b5860d6a85bcef8dae37a43e7ae7895d790d64bed",
+    "backupSha256": "af04baa49615f2a0278ffd9b5860d6a85bcef8dae37a43e7ae7895d790d64bed"
+  },
+  {
+    "path": "crates/hvc-ui/src/shell.rs",
+    "sha256": "67188db63f85f77fcfbc3905eb90e856c54e0644bbe98b84c5a9eda0601af694",
+    "backupSha256": "67188db63f85f77fcfbc3905eb90e856c54e0644bbe98b84c5a9eda0601af694"
+  },
+  {
+    "path": "crates/hvc-ui/src/app_model.rs",
+    "sha256": "468d77820a42b813990278ce1ded9a682d673ab980ac29ef724287b3a7598982",
+    "backupSha256": "468d77820a42b813990278ce1ded9a682d673ab980ac29ef724287b3a7598982"
+  },
+  {
+    "path": "crates/hvc-ui/src/quota_bar.rs",
+    "sha256": "fcb838813ae63357d0bfe39f60d1cbecc189a49304c00d0632adf179c8c19939",
+    "backupSha256": "fcb838813ae63357d0bfe39f60d1cbecc189a49304c00d0632adf179c8c19939"
+  },
+  {
+    "path": "crates/hvc-terminal/src/terminals.rs",
+    "sha256": "1cd8ac6819c3180d79b26f81d9de77c17051e85ab1c23670309887d1cd18f8cb",
+    "backupSha256": "1cd8ac6819c3180d79b26f81d9de77c17051e85ab1c23670309887d1cd18f8cb"
+  },
+  {
+    "path": "third_party/gpui/src/text_system/line.rs",
+    "sha256": "6d26a0ed9449d9144df3158e510125f08bf14a4334050ab220a972f7b63205f2",
+    "backupSha256": "6d26a0ed9449d9144df3158e510125f08bf14a4334050ab220a972f7b63205f2"
+  }
+]

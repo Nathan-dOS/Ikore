@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "createdAtUtc": "2026-11-09T20:18:13.805772+00:00",
+  "sourceCommit": "68b5c0522fa642664f114e4bbdf8628c81db41c0",
+  "sourceSnapshot": "quality/companion-qualification-2026-11-09/source-68b5c05.json",
+  "sourceSnapshotSha256": "36886e17c3849b1ed90ad12c4a1c8fb22539f8e473cdb434adac2ff4a60d16ec",
+  "sourceSnapshotFiles": 966,
+  "sourceDiffEmptyAtRootCapture": true,
+  "command": "cargo test --locked -p hvc-test-support --lib core_harness::tests -- --test-threads=2",
+  "result": {
+    "passed": 4,
+    "failed": 0,
+    "ignored": 0,
+    "measured": 0,
+    "filtered": 20,
+    "durationSeconds": 2.25,
+    "newTestsIncluded": 2,
+    "existingTestsIncluded": 2
+  },
+  "formatCheck": "root reported passed; raw log empty",
+  "scope": "checked i32 migration target conversion; retains DatabaseVersion 1..13; actual migration endpoint/count at each supported version; rejects 0,14,u32::MAX",
+  "fullGateStatus": "running; final result pending",
+  "qualificationStatus": "in progress; full gate and speed qualification pending",
+  "files": [
+    {
+      "path": "target-companion-sqlite-harness-2026-11-09.log",
+      "source": "target-companion-sqlite-harness-2026-11-09.log",
+      "bytes": 898,
+      "sha256": "84723e55d6dcd3bbcab7dcc92ee8777eb3c82c7dc0139e101b53af35c4318c26"
+    },
+    {
+      "path": "target-companion-sqlite-harness-fmt-2026-11-09.log",
+      "source": "target-companion-sqlite-harness-fmt-2026-11-09.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "commit.patch",
+      "source": "git diff 68b5c05^ 68b5c05 -- crates/hvc-test-support/src/core_harness.rs docs/testing.md",
+      "bytes": 2863,
+      "sha256": "aaca3bdc09b00ee28adb3e1242b17e63a8aa08259b085e59b94206e797f3facf"
+    }
+  ]
+}

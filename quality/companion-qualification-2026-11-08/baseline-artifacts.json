@@ -1,0 +1,412 @@
+{
+  "schemaVersion": 1,
+  "capturedAtUtc": "2026-11-07T23:40:17.604819Z",
+  "purpose": "Baseline artifact identity and evidence for the Companion speed comparison; not certification of a passing complete baseline gate.",
+  "source": {
+    "root": "<repo>",
+    "head": "ef2879a6ecc161f5910c6ee4402aea1206d644f8",
+    "clean": true,
+    "statusPorcelain": "",
+    "equivalentBaselineCommit": "c42f2a77dafd30ee0023b342f9a5f4bd7f28cef2",
+    "rustAndCargoDiffEmpty": true,
+    "changedPaths": [],
+    "gitObjects": [
+      {
+        "path": "crates",
+        "baselineObject": "5c35fbc65f71785045a47cf1d015a6287df80a31",
+        "equivalentObject": "5c35fbc65f71785045a47cf1d015a6287df80a31"
+      },
+      {
+        "path": "Cargo.toml",
+        "baselineObject": "7ac45c85cb389296d56e7899e36fbf9792157a72",
+        "equivalentObject": "7ac45c85cb389296d56e7899e36fbf9792157a72"
+      },
+      {
+        "path": "Cargo.lock",
+        "baselineObject": "7f2d7eedb22803418d7f3cbc2d02542b6e0ae20d",
+        "equivalentObject": "7f2d7eedb22803418d7f3cbc2d02542b6e0ae20d"
+      },
+      {
+        "path": ".cargo/config.toml",
+        "baselineObject": "4a96074c9f8b8de5e84ec057644ee8d586f00afd",
+        "equivalentObject": "4a96074c9f8b8de5e84ec057644ee8d586f00afd"
+      },
+      {
+        "path": "rust-toolchain.toml",
+        "baselineObject": "a866dcb591b370cb890dcc8176659069a2357369",
+        "equivalentObject": "a866dcb591b370cb890dcc8176659069a2357369"
+      }
+    ],
+    "lockfileSha256": "407657322bae7494125ec2ccde1e3f56fcf85600336d834d410e628f6d0dd7b4"
+  },
+  "toolchain": {
+    "pinnedFile": "<repo>\\rust-toolchain.toml",
+    "pinnedText": "[toolchain]\r\nchannel = \"1.98.0\"\r\ncomponents = [\"clippy\", \"rustfmt\"]\r\n",
+    "rustcCachePath": "<repo>\\target\\.rustc_info.json",
+    "rustcCacheSha256": "16c72fbde9d30848c2edc219492387b636bcace0a7fb06d5c3529b38d441687d",
+    "cachedCompilerOutput": "rustc 1.98.0 (88d9e12ae 2026-08-18)\nbinary: rustc\ncommit-hash: 88d9e12ae178fab0fb5cc050a94da85685d449ea\ncommit-date: 2026-08-18\nhost: x86_64-pc-windows-msvc\nrelease: 1.98.0\nLLVM version: 22.1.8\n",
+    "origin": "Existing target rustc metadata first recorded before the separate standalone composition build; cache hash rechecked unchanged after that build. No release rebuild or full test rerun was performed."
+  },
+  "gate": {
+    "logPath": "<repo>\\target\\companion-baseline-gate-unsandboxed.log",
+    "logSha256": "6d3aef260cfe8b76ecd14061ea0b42653ac6312f0a93b8f8d1c6eebc751f89c8",
+    "timingsPath": "<repo>\\target\\companion-baseline\\stage7-timings.json",
+    "timingsSha256": "ac679ccc06258dbf0e5a759b1f34c36aa888f944a9b02ffa10466fb06bc124d6",
+    "timings": {
+      "schemaVersion": 1,
+      "startedAt": "2026-11-06T23:24:00.452851Z",
+      "finishedAt": "2026-11-06T23:52:26.4508233Z",
+      "durationSeconds": 1705.968,
+      "passed": false,
+      "steps": [
+        {
+          "name": "estrutura exclusivamente GPUI/Rust",
+          "durationSeconds": 0.753,
+          "passed": true,
+          "exitCode": 0
+        },
+        {
+          "name": "crate dependency boundaries",
+          "durationSeconds": 0.13,
+          "passed": true,
+          "exitCode": 0
+        },
+        {
+          "name": "cargo fmt",
+          "durationSeconds": 5.285,
+          "passed": true,
+          "exitCode": 0
+        },
+        {
+          "name": "Clippy",
+          "durationSeconds": 1.781,
+          "passed": true,
+          "exitCode": 0
+        },
+        {
+          "name": "testes Rust",
+          "durationSeconds": 1164.309,
+          "passed": true,
+          "exitCode": 0
+        },
+        {
+          "name": "build release GPUI",
+          "durationSeconds": 525.171,
+          "passed": true,
+          "exitCode": 0
+        },
+        {
+          "name": "smoke Windows GPUI",
+          "durationSeconds": 1.866,
+          "passed": true,
+          "exitCode": 0
+        },
+        {
+          "name": "licenças e fontes Rust",
+          "durationSeconds": 1.423,
+          "passed": true,
+          "exitCode": 0
+        },
+        {
+          "name": "advisories Rust",
+          "durationSeconds": 5.132,
+          "passed": false,
+          "exitCode": 1
+        }
+      ]
+    },
+    "passingSteps": 8,
+    "totalSteps": 9,
+    "completeGatePassed": false,
+    "recordedFailure": "Existing RUSTSEC-2026-0433 in pulldown-cmark 0.13.5; advisory stage failed. No failure suppressed.",
+    "testTargets": 61,
+    "testsPassed": 2059,
+    "testsFailed": 0,
+    "testsIgnored": 23,
+    "testsFiltered": 0
+  },
+  "artifacts": {
+    "core": {
+      "path": "<repo>\\target\\debug\\deps\\hvc_core-b3ff09f63410ebf4.exe",
+      "sha256": "efd5638ef0881df0f72ef6c18b0a8d374511f893fafece5163b02bcdf0c59e3f",
+      "bytes": 77668864,
+      "modifiedAtUtc": "2026-11-02T17:18:58.8186891Z",
+      "profile": "debug",
+      "logEvidence": "Running unittests src\\lib.rs (target\\debug\\deps\\hvc_core-b3ff09f63410ebf4.exe)",
+      "qualification": "Exact core library binary executed by the logged workspace suite; preexisting cached binary reused by Cargo.",
+      "fingerprint": {
+        "rustc": 6728126329342245928,
+        "features": "[\"default\", \"quota-credential-collectors\"]",
+        "declared_features": "[\"default\", \"quota-credential-collectors\"]",
+        "target": 15478591064592608281,
+        "profile": 11210029956904455165,
+        "path": 3452404229797067220,
+        "deps": [
+          [
+            310359321821557790,
+            "regex",
+            false,
+            15721074188055845616
+          ],
+          [
+            1821923722828794727,
+            "futures",
+            false,
+            834845370512963778
+          ],
+          [
+            1957009224993739128,
+            "thiserror",
+            false,
+            2887722702104565094
+          ],
+          [
+            3062523621461665808,
+            "globset",
+            false,
+            1244689910399734691
+          ],
+          [
+            3856855545079023475,
+            "hvc_contracts",
+            false,
+            4156829161020826226
+          ],
+          [
+            4091053499939819895,
+            "sha2",
+            false,
+            1096783838796612152
+          ],
+          [
+            5491919304041016563,
+            "ring",
+            false,
+            7144438766712409288
+          ],
+          [
+            5567724367627455053,
+            "tree_sitter_typescript",
+            false,
+            16350654987843989697
+          ],
+          [
+            5896420435641259341,
+            "tree_sitter",
+            false,
+            16597043097352689079
+          ],
+          [
+            6557439603276904804,
+            "serde",
+            false,
+            1289045810704518008
+          ],
+          [
+            7083911787883131640,
+            "keyring",
+            false,
+            7898465959843395471
+          ],
+          [
+            8128303468064674118,
+            "fs2",
+            false,
+            11953714852120210913
+          ],
+          [
+            8160210889872729633,
+            "serde_json",
+            false,
+            5583071582972404954
+          ],
+          [
+            8468608609134601547,
+            "tokio_util",
+            false,
+            13882123627502721107
+          ],
+          [
+            8505545365707334581,
+            "ignore",
+            false,
+            17293502624333702321
+          ],
+          [
+            8965365795984555791,
+            "uuid",
+            false,
+            13340607593376448746
+          ],
+          [
+            9187326884009377539,
+            "zeroize",
+            false,
+            7255668915044756654
+          ],
+          [
+            9614479274285663593,
+            "serde_yaml",
+            false,
+            14378954223966032279
+          ],
+          [
+            9723370144619655183,
+            "tempfile",
+            false,
+            4729383746417068325
+          ],
+          [
+            10364619138950789809,
+            "anyhow",
+            false,
+            8273417547369801470
+          ],
+          [
+            11728890212631496564,
+            "notify",
+            false,
+            15672526521348763974
+          ],
+          [
+            12572957649427186868,
+            "rusqlite",
+            false,
+            9746099428660988245
+          ],
+          [
+            12802692491395381056,
+            "hvc_terminal",
+            false,
+            14796141371767820199
+          ],
+          [
+            13077212702700853852,
+            "base64",
+            false,
+            5865600448151718141
+          ],
+          [
+            14024183713851126284,
+            "tree_sitter_rust",
+            false,
+            6398873538881842141
+          ],
+          [
+            15271898103425950885,
+            "toml",
+            false,
+            2848019917794099768
+          ],
+          [
+            15622660310229662834,
+            "walkdir",
+            false,
+            17596228825677382227
+          ],
+          [
+            15670562223590248940,
+            "jsonschema",
+            false,
+            5320403832004881453
+          ],
+          [
+            15891782057733230026,
+            "hvc_voice",
+            false,
+            1889941013003710096
+          ],
+          [
+            16117757646811882223,
+            "chrono",
+            false,
+            2445965777140011103
+          ],
+          [
+            16803018495069340595,
+            "icu_normalizer",
+            false,
+            11864906435287791014
+          ],
+          [
+            17325453097244291330,
+            "reqwest",
+            false,
+            5103460768487244601
+          ],
+          [
+            17366169130784663563,
+            "refinery",
+            false,
+            4596008588086029883
+          ],
+          [
+            17866805608252134857,
+            "tokio",
+            false,
+            16280123518680412199
+          ]
+        ],
+        "local": [
+          {
+            "CheckDepInfo": {
+              "dep_info": "debug\\.fingerprint\\hvc-core-b3ff09f63410ebf4\\dep-test-lib-hvc_core",
+              "checksum": false
+            }
+          }
+        ],
+        "rustflags": [],
+        "config": 9396254390672932401,
+        "compile_kind": 0
+      }
+    },
+    "composition": {
+      "path": "<repo>\\target\\debug\\examples\\composition_benchmark.exe",
+      "sha256": "cd1b60805ac03b49eaef66bc8ef2ba4a4599af4e9bb940680f848c47c057dcfb",
+      "bytes": 50095616,
+      "modifiedAtUtc": "2026-11-07T23:37:40.270792Z",
+      "profile": "debug",
+      "logEvidence": [
+        "     Running tests\\composition_benchmark.rs (target\\debug\\deps\\composition_benchmark-2f5cd5f4bba3c75d.exe)"
+      ],
+      "standaloneExecutableBuildExplicitInSuppliedLog": false,
+      "qualification": "Standalone example successfully rebuilt with --locked from clean original ef2879a under the pinned toolchain; separate build log, command and resulting artifact hash recorded. Original gate log qualification remains separate and does not claim this example was run there.",
+      "separateBuildEvidence": {
+        "command": "cargo build --locked -p hvc-test-support --example composition_benchmark",
+        "workingDirectory": "<repo>",
+        "headBefore": "ef2879a6ecc161f5910c6ee4402aea1206d644f8",
+        "cleanBefore": true,
+        "headAfter": "ef2879a6ecc161f5910c6ee4402aea1206d644f8",
+        "cleanAfter": true,
+        "exitCode": 0,
+        "logPath": "<repo>\\target\\companion-speed-baseline-build.log",
+        "logSha256": "b0243dce23da14599e582af6dc414500a66442d6d5671a458f0d395e4edf67e7",
+        "logModifiedAtUtc": "2026-11-07T23:37:40.653934Z",
+        "logEvidence": "Finished `dev` profile [unoptimized + debuginfo] target(s) in 23.20s",
+        "warning": "Existing hvc-terminal incremental cache hard-link warning; compiler copied cache files instead.",
+        "runtimeMeasurement": false,
+        "rebuildScope": "Only the standalone composition_benchmark example was requested; no release build or baseline test suite was requested.",
+        "pinnedToolchainFile": "<repo>\\rust-toolchain.toml",
+        "pinnedToolchainSha256": "5f4171f8ceec40332f2902de2c444316f0cf3ba9fea6644c71ef2b3d65835620",
+        "rustcCacheSha256": "16c72fbde9d30848c2edc219492387b636bcace0a7fb06d5c3529b38d441687d"
+      }
+    },
+    "ui": {
+      "path": "<repo>\\target\\release\\hard-vibe-code.exe",
+      "sha256": "024e10d90ee80e8f364b3b43751d1cc11a3f15194aa84db2d954fe549509938d",
+      "bytes": 37499392,
+      "modifiedAtUtc": "2026-11-06T23:52:16.9729522Z",
+      "profile": "release",
+      "logEvidence": [
+        "    Finished `release` profile [optimized] target(s) in 8m 45s",
+        "{\"binary\":\"<repo>\\\\target\\\\release\\\\hard-vibe-code.exe\",\"database\":\"<repo>\\\\target\\\\smoke-data\\\\d8a9e2f5a87844cea3afb63f48c2509e\\\\hard-vibe-code.db\",\"windowHandle\":854430,\"gracefulShutdown\":true,\"exitCode\":0}"
+      ],
+      "qualification": "Release build completion and successful graceful Windows smoke for this exact executable path are explicit in the gate log."
+    }
+  },
+  "limits": [
+    "Artifact SHA-256 hashes identify the current bytes and must be checked at speed-gate start/end.",
+    "The standalone composition example was independently rebuilt successfully after the original gate; no new performance measurements or full baseline test/release runs were performed for this qualification.",
+    "An empty Rust/Cargo diff establishes source equivalence between ef2879a and c42f2a; it does not turn the failed advisory gate into a passing one."
+  ]
+}

@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "sourceCommit": "d71a5733ac73443992ffce5cadab3330f9289783",
+  "sourceFilesVerified": 965,
+  "drift": [],
+  "counts": {
+    "passed": 2158,
+    "failed": 0,
+    "ignored": 23,
+    "filtered": 0,
+    "targets": 61
+  },
+  "gatePassed": false,
+  "checksPassed": 8,
+  "checksTotal": 9,
+  "files": [
+    {
+      "source": "target-companion-stage7-d71a573-2026-11-09.log",
+      "archived": "quality/companion-qualification-2026-11-09/stage7-d71a573/target-companion-stage7-d71a573-2026-11-09.log",
+      "bytes": 239412,
+      "sha256": "2f6d9c58063d52522db77584284618b7bcc430e51f2956673b81394383520bea"
+    },
+    {
+      "source": "target/companion-final/stage7-timings-d71a573-2026-11-09.json",
+      "archived": "quality/companion-qualification-2026-11-09/stage7-d71a573/stage7-timings-d71a573-2026-11-09.json",
+      "bytes": 2258,
+      "sha256": "40825a6e039e3647318cd253e5de894dc1e79b0c1c0d78a985373a542cd50ca3"
+    },
+    {
+      "source": "target/stage7/supply-chain.json",
+      "archived": "quality/companion-qualification-2026-11-09/stage7-d71a573/supply-chain.json",
+      "bytes": 1931,
+      "sha256": "ba88fa5d9236e6b33a49aa7cd433a5f402ee17cfa9d1248b68f226ad5c69e5bd"
+    },
+    {
+      "source": "target/stage7/advisories/cargo-audit.json",
+      "archived": "quality/companion-qualification-2026-11-09/stage7-d71a573/cargo-audit.json",
+      "bytes": 30851,
+      "sha256": "0652848c16be89911e352d0989aef405b1f55c29c21280ce0bb51f73e449f906"
+    },
+    {
+      "source": "target/stage7/advisories/summary.json",
+      "archived": "quality/companion-qualification-2026-11-09/stage7-d71a573/summary.json",
+      "bytes": 489,
+      "sha256": "36ed63020324549904214173d42a123762ccfe73ae56ed2cd194b4654133bdaa"
+    }
+  ]
+}

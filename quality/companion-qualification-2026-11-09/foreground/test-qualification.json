@@ -1,0 +1,45 @@
+{
+  "capturedAtUtc": "2026-11-09T14:16:30.527030+00:00",
+  "sourceBase": "42219bb7abdab2b4ac71f8ff18e5e5cc8b695251",
+  "patch": "HVC-GPUI-008 and HVC-GPUI-009; uncommitted source",
+  "focusedCommand": "cargo test --offline --locked -p gpui --lib --no-default-features --features test-support,windows-manifest text_system::line::tests -- --test-threads=2",
+  "completeLibCommand": "cargo test --offline --locked -p gpui --lib --no-default-features --features test-support,windows-manifest -- --test-threads=2",
+  "inventoryCommandSuffix": "-- --list",
+  "red": {
+    "passed": 7,
+    "failed": 3,
+    "ignored": 0,
+    "filtered": 70
+  },
+  "green": {
+    "passed": 12,
+    "failed": 0,
+    "ignored": 0,
+    "filtered": 70
+  },
+  "completeVendorLib": {
+    "passed": 82,
+    "failed": 0,
+    "ignored": 0,
+    "filtered": 0
+  },
+  "completeVendorLibIncludedFocusedTests": true,
+  "vendorTestsAreOutsideDefaultWorkspaceSuite": true,
+  "temporaryHarnessRestored": true,
+  "packageIdentitiesPreserved": 794,
+  "sourceFiles": {
+    "red": {
+      "path": "line.red-executed.rs",
+      "sha256": "3ac34379d15b60ceb8f857c687e6ea5db7decf2ebc76ffc93f14bc898e6434a2"
+    },
+    "completeLib": {
+      "path": "line.green-executed.rs",
+      "sha256": "8db9faf989f682116d7c6bfa461d9fdfaea668d18133fb6c4148299dd53e8fd7"
+    }
+  },
+  "executedBinary": {
+    "path": "<home>\\Documents\\Nathan\\HardVibeCode\\.worktrees\\companion-decision-dock\\target\\debug\\deps\\gpui-24fe41aed0a10818.exe",
+    "sha256": "3caf2b8f2c7fe526ac4f3bcd094cd5acafc6930bb9a589ba93369d2e872fc5c2"
+  },
+  "releaseOrSpeedQualified": false
+}

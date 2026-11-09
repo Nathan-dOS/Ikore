@@ -1,0 +1,43 @@
+{
+  "baselineHead": "ef2879a6ecc161f5910c6ee4402aea1206d644f8",
+  "baselineClean": true,
+  "verifiedArtifacts": [
+    {
+      "name": "core",
+      "path": "<repo>\\target\\debug\\deps\\hvc_core-b3ff09f63410ebf4.exe",
+      "sha256": "efd5638ef0881df0f72ef6c18b0a8d374511f893fafece5163b02bcdf0c59e3f"
+    },
+    {
+      "name": "composition",
+      "path": "<repo>\\target\\debug\\examples\\composition_benchmark.exe",
+      "sha256": "cd1b60805ac03b49eaef66bc8ef2ba4a4599af4e9bb940680f848c47c057dcfb"
+    },
+    {
+      "name": "ui",
+      "path": "<repo>\\target\\release\\hard-vibe-code.exe",
+      "sha256": "024e10d90ee80e8f364b3b43751d1cc11a3f15194aa84db2d954fe549509938d"
+    }
+  ],
+  "coreInventoryNewestFirst": [
+    {
+      "name": "hvc_core-b3ff09f63410ebf4.exe",
+      "modifiedAtUtc": "2026-11-02T17:18:58.818689+00:00"
+    },
+    {
+      "name": "hvc_core-b1f5e8f6183fa1de.exe",
+      "modifiedAtUtc": "2026-11-02T16:52:23.321384+00:00"
+    },
+    {
+      "name": "hvc_core-698a918f608b5f51.exe",
+      "modifiedAtUtc": "2026-10-29T10:51:21.760336+00:00"
+    },
+    {
+      "name": "hvc_core-ca8135f78dbcb67d.exe",
+      "modifiedAtUtc": "2026-10-28T22:20:35.614809+00:00"
+    },
+    {
+      "name": "hvc_core-9563fb16dacbb367.exe",
+      "modifiedAtUtc": "2026-10-26T17:44:21.011645+00:00"
+    }
+  ]
+}

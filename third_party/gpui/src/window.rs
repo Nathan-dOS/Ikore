@@ -3295,6 +3295,18 @@ impl Window {
         self.layout_engine = Some(layout_engine);
     }
 
+    /// Number of nodes in the current frame's real layout tree, for tests.
+    ///
+    /// Returns `None` while `compute_layout` has temporarily taken the engine.
+    /// The tree is cleared after a complete window frame. Read during prepaint
+    /// to compare widget trees; this does not retain layouts or instrument them.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn layout_node_count(&self) -> Option<usize> {
+        self.layout_engine
+            .as_ref()
+            .map(|engine| engine.total_node_count())
+    }
+
     /// Obtain the bounds computed for the given LayoutId relative to the window. This method will usually be invoked by
     /// GPUI itself automatically in order to pass your element its `Bounds` automatically.
     ///

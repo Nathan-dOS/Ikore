@@ -1,0 +1,33 @@
+{
+  "checks": [
+    {
+      "name": "combined-review.patch",
+      "exitCode": 0,
+      "diagnostic": ""
+    },
+    {
+      "name": "01-red-counter-and-tests.patch",
+      "exitCode": 0,
+      "diagnostic": ""
+    },
+    {
+      "name": "02-vertical-guard.patch",
+      "exitCode": 0,
+      "diagnostic": ""
+    },
+    {
+      "name": "syntax-only line.red-draft.rs",
+      "exitCode": 0,
+      "diagnostic": ""
+    },
+    {
+      "name": "syntax-only line.hvc009-draft.rs",
+      "exitCode": 0,
+      "diagnostic": ""
+    }
+  ],
+  "sourceSha256AfterChecks": "121b9d36329f39c5d3dc05cd1bf8fe499020e3d6e585c112fd6547a855166564",
+  "sourceMatchesBaseline": true,
+  "testsExecuted": false,
+  "cargoExecuted": false
+}

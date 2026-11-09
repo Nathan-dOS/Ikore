@@ -1,0 +1,63 @@
+﻿{
+    "schemaVersion":  1,
+    "startedAt":  "2026-11-08T09:48:14.9216642Z",
+    "finishedAt":  "2026-11-08T10:29:40.5232171Z",
+    "durationSeconds":  2485.599,
+    "passed":  true,
+    "steps":  [
+                  {
+                      "name":  "estrutura exclusivamente GPUI/Rust",
+                      "durationSeconds":  0.664,
+                      "passed":  true,
+                      "exitCode":  0
+                  },
+                  {
+                      "name":  "crate dependency boundaries",
+                      "durationSeconds":  0.189,
+                      "passed":  true,
+                      "exitCode":  0
+                  },
+                  {
+                      "name":  "cargo fmt",
+                      "durationSeconds":  5.323,
+                      "passed":  true,
+                      "exitCode":  0
+                  },
+                  {
+                      "name":  "Clippy",
+                      "durationSeconds":  36.444,
+                      "passed":  true,
+                      "exitCode":  0
+                  },
+                  {
+                      "name":  "testes Rust",
+                      "durationSeconds":  1726.871,
+                      "passed":  true,
+                      "exitCode":  0
+                  },
+                  {
+                      "name":  "build release GPUI",
+                      "durationSeconds":  707.654,
+                      "passed":  true,
+                      "exitCode":  0
+                  },
+                  {
+                      "name":  "smoke Windows GPUI",
+                      "durationSeconds":  1.793,
+                      "passed":  true,
+                      "exitCode":  0
+                  },
+                  {
+                      "name":  "licenças e fontes Rust",
+                      "durationSeconds":  2.067,
+                      "passed":  true,
+                      "exitCode":  0
+                  },
+                  {
+                      "name":  "advisories Rust",
+                      "durationSeconds":  4.415,
+                      "passed":  true,
+                      "exitCode":  0
+                  }
+              ]
+}

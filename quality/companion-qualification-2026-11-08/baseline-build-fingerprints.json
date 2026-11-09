@@ -1,0 +1,191 @@
+{
+  "schemaVersion": 1,
+  "capturedAtUtc": "2026-11-08T18:27:22.307425+00:00",
+  "purpose": "Baseline-only build fingerprint summary, linked to the three previously approved executable hashes. No candidate artifact is captured by this record.",
+  "baselineSource": {
+    "root": "<repo>",
+    "head": "ef2879a6ecc161f5910c6ee4402aea1206d644f8",
+    "clean": true,
+    "statusPorcelain": "",
+    "equivalentBaselineCommit": "c42f2a77dafd30ee0023b342f9a5f4bd7f28cef2",
+    "sourceEquivalenceEvidence": [
+      {
+        "path": "crates",
+        "baselineObject": "5c35fbc65f71785045a47cf1d015a6287df80a31",
+        "equivalentObject": "5c35fbc65f71785045a47cf1d015a6287df80a31"
+      },
+      {
+        "path": "Cargo.toml",
+        "baselineObject": "7ac45c85cb389296d56e7899e36fbf9792157a72",
+        "equivalentObject": "7ac45c85cb389296d56e7899e36fbf9792157a72"
+      },
+      {
+        "path": "Cargo.lock",
+        "baselineObject": "7f2d7eedb22803418d7f3cbc2d02542b6e0ae20d",
+        "equivalentObject": "7f2d7eedb22803418d7f3cbc2d02542b6e0ae20d"
+      },
+      {
+        "path": ".cargo/config.toml",
+        "baselineObject": "4a96074c9f8b8de5e84ec057644ee8d586f00afd",
+        "equivalentObject": "4a96074c9f8b8de5e84ec057644ee8d586f00afd"
+      },
+      {
+        "path": "rust-toolchain.toml",
+        "baselineObject": "a866dcb591b370cb890dcc8176659069a2357369",
+        "equivalentObject": "a866dcb591b370cb890dcc8176659069a2357369"
+      }
+    ],
+    "changedPathsBetweenCommits": [
+      ".github/dependabot.yml",
+      ".github/workflows/ci.yml",
+      ".github/workflows/nightly.yml",
+      ".github/workflows/security.yml",
+      "CONTRIBUTING.md",
+      "README.md",
+      "docs/testing.md"
+    ]
+  },
+  "referenceRecords": {
+    "approvedArtifactsPath": "<home>\\Documents\\Nathan\\HardVibeCode\\.worktrees\\companion-decision-dock\\quality\\companion-qualification-2026-11-08\\baseline-artifacts.json",
+    "approvedArtifactsSha256": "cbd601d06a1b9495bfaa3d47cb6358c5fa9632f0f7509d88754e0d7dee3b50c2",
+    "preSpeedVerificationPath": "<home>\\Documents\\Nathan\\HardVibeCode\\.worktrees\\companion-decision-dock\\quality\\companion-qualification-2026-11-08\\baseline-pre-speed-verification.json",
+    "preSpeedVerificationSha256": "df22d2205a61bca68fbf4047cbfbe6f64d12f8c6c0c7eb73695d8365bd32c53a"
+  },
+  "toolchain": {
+    "pinnedFile": "<repo>\\rust-toolchain.toml",
+    "pinnedFileSha256": "5f4171f8ceec40332f2902de2c444316f0cf3ba9fea6644c71ef2b3d65835620",
+    "pinnedText": "[toolchain]\r\nchannel = \"1.98.0\"\r\ncomponents = [\"clippy\", \"rustfmt\"]\r\n",
+    "rustcCachePath": "<repo>\\target\\.rustc_info.json",
+    "rustcCacheSha256": "16c72fbde9d30848c2edc219492387b636bcace0a7fb06d5c3529b38d441687d",
+    "cachedCompilerOutput": "rustc 1.98.0 (88d9e12ae 2026-08-18)\nbinary: rustc\ncommit-hash: 88d9e12ae178fab0fb5cc050a94da85685d449ea\ncommit-date: 2026-08-18\nhost: x86_64-pc-windows-msvc\nrelease: 1.98.0\nLLVM version: 22.1.8\n",
+    "compilerEvidenceSource": "Existing metadata and approved build records; rustc and Cargo were not invoked for this summary."
+  },
+  "artifacts": {
+    "core": {
+      "binaryPath": "<repo>\\target\\debug\\deps\\hvc_core-b3ff09f63410ebf4.exe",
+      "profileName": "debug",
+      "approvedSha256": "efd5638ef0881df0f72ef6c18b0a8d374511f893fafece5163b02bcdf0c59e3f",
+      "verifiedSha256": "efd5638ef0881df0f72ef6c18b0a8d374511f893fafece5163b02bcdf0c59e3f",
+      "bytes": 77668864,
+      "fingerprintPath": "<repo>\\target\\debug\\.fingerprint\\hvc-core-b3ff09f63410ebf4\\test-lib-hvc_core.json",
+      "fingerprintSha256": "fa3e2a59829eec5982c53c3fb14dbfa15a4fa1a66258e56d6f8818dc1248eaf1",
+      "fingerprintFields": {
+        "rustc": 6728126329342245928,
+        "features": "[\"default\", \"quota-credential-collectors\"]",
+        "declared_features": "[\"default\", \"quota-credential-collectors\"]",
+        "target": 15478591064592608281,
+        "profile": 11210029956904455165,
+        "path": 3452404229797067220,
+        "local": [
+          {
+            "CheckDepInfo": {
+              "dep_info": "debug\\.fingerprint\\hvc-core-b3ff09f63410ebf4\\dep-test-lib-hvc_core",
+              "checksum": false
+            }
+          }
+        ],
+        "rustflags": [],
+        "config": 9396254390672932401,
+        "compile_kind": 0
+      },
+      "provenanceQualification": "Exact core library binary executed by the logged workspace suite; preexisting cached binary reused by Cargo.",
+      "logEvidence": "Running unittests src\\lib.rs (target\\debug\\deps\\hvc_core-b3ff09f63410ebf4.exe)",
+      "gateLogPath": "<repo>\\target\\companion-baseline-gate-unsandboxed.log",
+      "approvedGateLogSha256": "6d3aef260cfe8b76ecd14061ea0b42653ac6312f0a93b8f8d1c6eebc751f89c8"
+    },
+    "composition": {
+      "binaryPath": "<repo>\\target\\debug\\examples\\composition_benchmark.exe",
+      "profileName": "debug",
+      "approvedSha256": "cd1b60805ac03b49eaef66bc8ef2ba4a4599af4e9bb940680f848c47c057dcfb",
+      "verifiedSha256": "cd1b60805ac03b49eaef66bc8ef2ba4a4599af4e9bb940680f848c47c057dcfb",
+      "bytes": 50095616,
+      "fingerprintPath": "<repo>\\target\\debug\\.fingerprint\\hvc-test-support-3b4c6d15a172cb96\\example-composition_benchmark.json",
+      "fingerprintSha256": "dcf0c99cdb897dd1ed3785fec93ab78016f786665528b9d80e1bec1155a040f4",
+      "fingerprintFields": {
+        "rustc": 6728126329342245928,
+        "features": "[]",
+        "declared_features": "[]",
+        "target": 12173013903719439314,
+        "profile": 12615065149452638216,
+        "path": 15644833489447302030,
+        "local": [
+          {
+            "CheckDepInfo": {
+              "dep_info": "debug\\.fingerprint\\hvc-test-support-3b4c6d15a172cb96\\dep-example-composition_benchmark",
+              "checksum": false
+            }
+          }
+        ],
+        "rustflags": [],
+        "config": 9396254390672932401,
+        "compile_kind": 0
+      },
+      "provenanceQualification": "Standalone example successfully rebuilt with --locked from clean original ef2879a under the pinned toolchain; separate build log, command and resulting artifact hash recorded. Original gate log qualification remains separate and does not claim this example was run there.",
+      "logEvidence": [
+        "     Running tests\\composition_benchmark.rs (target\\debug\\deps\\composition_benchmark-2f5cd5f4bba3c75d.exe)"
+      ],
+      "separateBuildEvidence": {
+        "command": "cargo build --locked -p hvc-test-support --example composition_benchmark",
+        "workingDirectory": "<repo>",
+        "headBefore": "ef2879a6ecc161f5910c6ee4402aea1206d644f8",
+        "cleanBefore": true,
+        "headAfter": "ef2879a6ecc161f5910c6ee4402aea1206d644f8",
+        "cleanAfter": true,
+        "exitCode": 0,
+        "logPath": "<repo>\\target\\companion-speed-baseline-build.log",
+        "logSha256": "b0243dce23da14599e582af6dc414500a66442d6d5671a458f0d395e4edf67e7",
+        "logModifiedAtUtc": "2026-11-07T23:37:40.653934Z",
+        "logEvidence": "Finished `dev` profile [unoptimized + debuginfo] target(s) in 23.20s",
+        "warning": "Existing hvc-terminal incremental cache hard-link warning; compiler copied cache files instead.",
+        "runtimeMeasurement": false,
+        "rebuildScope": "Only the standalone composition_benchmark example was requested; no release build or baseline test suite was requested.",
+        "pinnedToolchainFile": "<repo>\\rust-toolchain.toml",
+        "pinnedToolchainSha256": "5f4171f8ceec40332f2902de2c444316f0cf3ba9fea6644c71ef2b3d65835620",
+        "rustcCacheSha256": "16c72fbde9d30848c2edc219492387b636bcace0a7fb06d5c3529b38d441687d"
+      }
+    },
+    "ui": {
+      "binaryPath": "<repo>\\target\\release\\hard-vibe-code.exe",
+      "profileName": "release",
+      "approvedSha256": "024e10d90ee80e8f364b3b43751d1cc11a3f15194aa84db2d954fe549509938d",
+      "verifiedSha256": "024e10d90ee80e8f364b3b43751d1cc11a3f15194aa84db2d954fe549509938d",
+      "bytes": 37499392,
+      "fingerprintPath": "<repo>\\target\\release\\.fingerprint\\hvc-app-a17204fdc6beb68d\\bin-hard-vibe-code.json",
+      "fingerprintSha256": "8ef3072ddca1fe5124fa4fb7596c845d61b27206f931eb620e87fc3d17303f66",
+      "fingerprintFields": {
+        "rustc": 6728126329342245928,
+        "features": "[\"default\", \"quota-credential-collectors\"]",
+        "declared_features": "[\"default\", \"quota-credential-collectors\"]",
+        "target": 9133603289547208269,
+        "profile": 2500809432665998947,
+        "path": 10153279826194601681,
+        "local": [
+          {
+            "CheckDepInfo": {
+              "dep_info": "release\\.fingerprint\\hvc-app-a17204fdc6beb68d\\dep-bin-hard-vibe-code",
+              "checksum": false
+            }
+          }
+        ],
+        "rustflags": [],
+        "config": 9396254390672932401,
+        "compile_kind": 0
+      },
+      "provenanceQualification": "Release build completion and successful graceful Windows smoke for this exact executable path are explicit in the gate log.",
+      "logEvidence": [
+        "    Finished `release` profile [optimized] target(s) in 8m 45s",
+        "{\"binary\":\"<repo>\\\\target\\\\release\\\\hard-vibe-code.exe\",\"database\":\"<repo>\\\\target\\\\smoke-data\\\\d8a9e2f5a87844cea3afb63f48c2509e\\\\hard-vibe-code.db\",\"windowHandle\":854430,\"gracefulShutdown\":true,\"exitCode\":0}"
+      ],
+      "gateLogPath": "<repo>\\target\\companion-baseline-gate-unsandboxed.log",
+      "approvedGateLogSha256": "6d3aef260cfe8b76ecd14061ea0b42653ac6312f0a93b8f8d1c6eebc751f89c8"
+    }
+  },
+  "processLimits": [
+    "Only the three named baseline executables and small provenance files were hashed. No Cargo command, build, benchmark, executable invocation or candidate capture was performed.",
+    "The source checkout is clean at ef2879a; c42f2a differs only in the recorded documentation and CI paths. Existing cached core execution, the release build/smoke, and the separate locked standalone example build retain their distinct provenance.",
+    "This file is evidence for operational checks before and after a speed run, not a gate-enforced artifact allowlist. Get-CoreBinary still selects dynamically by modification time and exact probe inventory.",
+    "Immediately before the speed gate, the operator must verify that its selected baseline trio and SHA-256 values match these approved artifacts; the resulting report must be checked afterwards as well.",
+    "A later candidate must be captured separately after its build completes and compared by relevant compiler/profile/feature/flag fields. This record makes no claim about the in-progress candidate build.",
+    "The historical baseline gate passed eight of nine checks and failed its advisory check. This record does not convert it into a passing complete baseline gate."
+  ]
+}
