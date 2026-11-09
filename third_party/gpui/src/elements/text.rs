@@ -309,7 +309,58 @@ impl IntoElement for StyledText {
 
 /// The Layout for TextElement. This can be used to map indices to pixels and vice versa.
 #[derive(Default, Clone)]
-pub struct TextLayout(Rc<RefCell<Option<TextLayoutInner>>>);
+pub struct TextLayout(Rc<RefCell<TextLayoutCache>>);
+
+#[derive(Default)]
+struct TextLayoutCache {
+    current: Option<Box<TextLayoutInner>>,
+    // HVC-GPUI-007: oldest to newest, excluding the current (MRU) state.
+    // Allocated lazily. Boxed states avoid moving inline glyph decorations.
+    saved: Vec<Box<TextLayoutInner>>,
+    #[cfg(any(test, feature = "test-support"))]
+    measurement_count: usize,
+}
+
+impl TextLayoutCache {
+    fn cached_size(
+        &mut self,
+        wrap_width: Option<Pixels>,
+        truncate_width: Option<Pixels>,
+    ) -> Option<Size<Pixels>> {
+        let matches = |state: &TextLayoutInner| {
+            state.size.is_some()
+                // HVC-GPUI-006: intrinsic and constrained measurements differ.
+                && state.wrap_width == wrap_width
+                // HVC-GPUI-004: nowrap still has a truncation-width key.
+                && state.truncate_width == truncate_width
+        };
+        if let Some(current) = self.current.as_mut().filter(|state| matches(state)) {
+            current.bounds = None;
+            return current.size;
+        }
+        let index = self.saved.iter().position(|state| matches(state))?;
+        let mut restored = self.saved.remove(index);
+        restored.bounds = None;
+        if let Some(mut previous) = self.current.replace(restored) {
+            previous.bounds = None;
+            self.saved.push(previous);
+        }
+        self.current.as_ref().and_then(|state| state.size)
+    }
+
+    fn record(&mut self, state: TextLayoutInner) {
+        if let Some(mut previous) = self.current.replace(Box::new(state)) {
+            previous.bounds = None;
+            if self.saved.len() == 3 {
+                self.saved.remove(0);
+            }
+            if self.saved.capacity() == 0 {
+                self.saved.reserve_exact(3);
+            }
+            self.saved.push(previous);
+        }
+    }
+}
 
 struct TextLayoutInner {
     len: usize,
@@ -323,6 +374,18 @@ struct TextLayoutInner {
 }
 
 impl TextLayout {
+    /// Number of cache misses that required measurement, for test assertions only.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn measurement_count(&self) -> usize {
+        self.0.borrow().measurement_count
+    }
+
+    /// Number of measured constraint states retained, including the active state.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn retained_measurement_count(&self) -> usize {
+        let cache = self.0.borrow();
+        usize::from(cache.current.is_some()) + cache.saved.len()
+    }
     fn layout(
         &self,
         text: SharedString,
@@ -372,17 +435,17 @@ impl TextLayout {
                         (None, "".into())
                     };
 
-                if let Some(text_layout) = element_state.0.borrow().as_ref()
-                    && text_layout.size.is_some()
-                    // HVC-GPUI-006: an intrinsic measurement must not reuse
-                    // lines that were wrapped to a previous definite width.
-                    && wrap_width == text_layout.wrap_width
-                    // HVC-GPUI-004: single-line text is measured first without a width (no
-                    // truncation); reusing that size once the width is known dropped the
-                    // ellipsis and let the text overflow its box.
-                    && truncate_width == text_layout.truncate_width
+                if let Some(size) = element_state
+                    .0
+                    .borrow_mut()
+                    .cached_size(wrap_width, truncate_width)
                 {
-                    return text_layout.size.unwrap();
+                    return size;
+                }
+
+                #[cfg(any(test, feature = "test-support"))]
+                {
+                    element_state.0.borrow_mut().measurement_count += 1;
                 }
 
                 let mut line_wrapper = cx.text_system().line_wrapper(text_style.font(), font_size);
@@ -412,7 +475,7 @@ impl TextLayout {
                     )
                     .log_err()
                 else {
-                    element_state.0.borrow_mut().replace(TextLayoutInner {
+                    element_state.0.borrow_mut().record(TextLayoutInner {
                         lines: Default::default(),
                         len: 0,
                         line_height,
@@ -431,7 +494,7 @@ impl TextLayout {
                     size.width = size.width.max(line_size.width).ceil();
                 }
 
-                element_state.0.borrow_mut().replace(TextLayoutInner {
+                element_state.0.borrow_mut().record(TextLayoutInner {
                     lines,
                     len,
                     line_height,
@@ -449,6 +512,7 @@ impl TextLayout {
     fn prepaint(&self, bounds: Bounds<Pixels>, text: &str) {
         let mut element_state = self.0.borrow_mut();
         let element_state = element_state
+            .current
             .as_mut()
             .with_context(|| format!("measurement has not been performed on {text}"))
             .unwrap();
@@ -458,6 +522,7 @@ impl TextLayout {
     fn paint(&self, text: &str, window: &mut Window, cx: &mut App) {
         let element_state = self.0.borrow();
         let element_state = element_state
+            .current
             .as_ref()
             .with_context(|| format!("measurement has not been performed on {text}"))
             .unwrap();
@@ -496,6 +561,7 @@ impl TextLayout {
     pub fn index_for_position(&self, mut position: Point<Pixels>) -> Result<usize, usize> {
         let element_state = self.0.borrow();
         let element_state = element_state
+            .current
             .as_ref()
             .expect("measurement has not been performed");
         let bounds = element_state
@@ -530,6 +596,7 @@ impl TextLayout {
     pub fn position_for_index(&self, index: usize) -> Option<Point<Pixels>> {
         let element_state = self.0.borrow();
         let element_state = element_state
+            .current
             .as_ref()
             .expect("measurement has not been performed");
         let bounds = element_state
@@ -561,6 +628,7 @@ impl TextLayout {
     pub fn line_layout_for_index(&self, index: usize) -> Option<Arc<WrappedLineLayout>> {
         let element_state = self.0.borrow();
         let element_state = element_state
+            .current
             .as_ref()
             .expect("measurement has not been performed");
         let bounds = element_state
@@ -589,23 +657,24 @@ impl TextLayout {
 
     /// The bounds of this layout.
     pub fn bounds(&self) -> Bounds<Pixels> {
-        self.0.borrow().as_ref().unwrap().bounds.unwrap()
+        self.0.borrow().current.as_ref().unwrap().bounds.unwrap()
     }
 
     /// The line height for this layout.
     pub fn line_height(&self) -> Pixels {
-        self.0.borrow().as_ref().unwrap().line_height
+        self.0.borrow().current.as_ref().unwrap().line_height
     }
 
     /// The UTF-8 length of the underlying text.
     pub fn len(&self) -> usize {
-        self.0.borrow().as_ref().unwrap().len
+        self.0.borrow().current.as_ref().unwrap().len
     }
 
     /// The text for this layout.
     pub fn text(&self) -> String {
         self.0
             .borrow()
+            .current
             .as_ref()
             .unwrap()
             .lines
@@ -618,7 +687,7 @@ impl TextLayout {
     /// The text for this layout (with soft-wraps as newlines)
     pub fn wrapped_text(&self) -> String {
         let mut lines = Vec::new();
-        for wrapped in self.0.borrow().as_ref().unwrap().lines.iter() {
+        for wrapped in self.0.borrow().current.as_ref().unwrap().lines.iter() {
             let mut seen = 0;
             for boundary in wrapped.layout.wrap_boundaries.iter() {
                 let index = wrapped.layout.unwrapped_layout.runs[boundary.run_ix].glyphs

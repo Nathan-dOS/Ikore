@@ -740,6 +740,171 @@ mod tests {
         font_rems: f32,
     }
 
+    fn measure_piece_at(
+        piece: &CachedTextPiece,
+        width: Option<f32>,
+        visual: &mut gpui::VisualTestContext,
+    ) -> gpui::Size<Pixels> {
+        use gpui::AvailableSpace;
+        visual.draw(
+            point(px(11.0), px(17.0)),
+            size(
+                width.map_or(AvailableSpace::MaxContent, |width| {
+                    AvailableSpace::Definite(px(width))
+                }),
+                AvailableSpace::MaxContent,
+            ),
+            |_, _| piece.element(0..0),
+        );
+        piece.state.borrow().styled.layout().bounds().size
+    }
+
+    #[gpui::test]
+    fn four_constraints_reuse_measurements_and_keep_unicode_hit_testing(cx: &mut TestAppContext) {
+        let source = "Several words with Unicode \u{e9} \u{1f980} and a final word";
+        let piece = CachedTextPiece::for_text(None, source);
+        let (_, visual) = cx.add_window_view(|_, _| Harness(String::new()));
+        let widths = [Some(60.0), Some(120.0), None, Some(280.0)];
+        let sizes = widths.map(|width| measure_piece_at(&piece, width, visual));
+        let initial = piece.state.borrow().styled.layout().measurement_count();
+        assert!(initial > 0);
+        for _ in 0..3 {
+            for (width, expected) in widths.into_iter().zip(sizes) {
+                assert_eq!(measure_piece_at(&piece, width, visual), expected);
+                let state = piece.state.borrow();
+                let layout = state.styled.layout();
+                assert_eq!(layout.text(), source);
+                assert_eq!(layout.len(), source.len());
+                let start = layout.position_for_index(0).unwrap();
+                assert_eq!(
+                    layout
+                        .index_for_position(start)
+                        .unwrap_or_else(|index| index),
+                    0
+                );
+                let after = layout.bounds().bottom_right() + point(px(1.0), px(1.0));
+                assert_eq!(
+                    layout
+                        .index_for_position(after)
+                        .unwrap_or_else(|index| index),
+                    source.len()
+                );
+                assert!(layout.retained_measurement_count() <= 4);
+            }
+        }
+        assert_eq!(
+            piece.state.borrow().styled.layout().measurement_count(),
+            initial,
+            "revisiting retained constraints must not measure the unchanged text again"
+        );
+        assert!(sizes[2].width > sizes[0].width);
+        assert!(sizes[2].height < sizes[0].height);
+        let mut state = piece.state.borrow_mut();
+        let changed_style = gpui::TextStyle {
+            font_weight: gpui::FontWeight::BOLD,
+            ..gpui::TextStyle::default()
+        };
+        assert!(state.prepare(&changed_style, px(24.0)));
+        assert_eq!(state.styled.layout().measurement_count(), 0);
+        assert_eq!(state.styled.layout().retained_measurement_count(), 0);
+    }
+
+    #[gpui::test]
+    fn fifth_constraint_evicts_the_least_recently_used_measurement(cx: &mut TestAppContext) {
+        let piece = CachedTextPiece::for_text(None, "A full Unicode \u{1f980} sentence that wraps");
+        let (_, visual) = cx.add_window_view(|_, _| Harness(String::new()));
+        for width in [60.0, 120.0, 180.0, 240.0] {
+            measure_piece_at(&piece, Some(width), visual);
+        }
+        let initial = piece.state.borrow().styled.layout().measurement_count();
+        measure_piece_at(&piece, Some(60.0), visual);
+        assert_eq!(
+            piece.state.borrow().styled.layout().measurement_count(),
+            initial
+        );
+        measure_piece_at(&piece, Some(300.0), visual);
+        let fifth = piece.state.borrow().styled.layout().measurement_count();
+        assert!(fifth > initial);
+        assert_eq!(
+            piece
+                .state
+                .borrow()
+                .styled
+                .layout()
+                .retained_measurement_count(),
+            4
+        );
+        measure_piece_at(&piece, Some(60.0), visual);
+        assert_eq!(
+            piece.state.borrow().styled.layout().measurement_count(),
+            fifth
+        );
+        measure_piece_at(&piece, Some(120.0), visual);
+        assert!(piece.state.borrow().styled.layout().measurement_count() > fifth);
+        assert_eq!(
+            piece
+                .state
+                .borrow()
+                .styled
+                .layout()
+                .retained_measurement_count(),
+            4
+        );
+    }
+
+    #[gpui::test]
+    fn retained_truncation_constraints_restore_complete_unicode_runs(cx: &mut TestAppContext) {
+        use gpui::AvailableSpace;
+        let source = "Unicode \u{e9} \u{1f980} with a complete long label";
+        let piece = CachedTextPiece::for_text(None, source);
+        let (_, visual) = cx.add_window_view(|_, _| Harness(String::new()));
+        let mut measure = |width: Option<f32>| {
+            visual.draw(
+                point(px(11.0), px(17.0)),
+                size(
+                    width.map_or(AvailableSpace::MaxContent, |width| {
+                        AvailableSpace::Definite(px(width))
+                    }),
+                    AvailableSpace::MaxContent,
+                ),
+                |_, _| {
+                    div()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .child(piece.element(0..0))
+                },
+            );
+            let state = piece.state.borrow();
+            let layout = state.styled.layout();
+            assert_eq!(layout.len(), layout.text().len());
+            (layout.bounds().size, layout.text())
+        };
+        let widths = [Some(60.0), None, Some(180.0)];
+        let expected = widths.map(&mut measure);
+        assert_eq!(expected[1].1, source);
+        assert!(expected[0].1.ends_with('\u{2026}'));
+        assert_ne!(expected[0].1, expected[2].1);
+        let initial = piece.state.borrow().styled.layout().measurement_count();
+        for _ in 0..3 {
+            for (width, expected) in widths.into_iter().zip(&expected) {
+                assert_eq!(&measure(width), expected);
+            }
+        }
+        assert_eq!(
+            piece.state.borrow().styled.layout().measurement_count(),
+            initial
+        );
+        assert!(
+            piece
+                .state
+                .borrow()
+                .styled
+                .layout()
+                .retained_measurement_count()
+                <= 4
+        );
+    }
+
     #[gpui::test]
     fn cached_text_remeasures_when_wrapping_becomes_unconstrained(cx: &mut TestAppContext) {
         use gpui::{AvailableSpace, Styled};

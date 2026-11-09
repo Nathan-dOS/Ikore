@@ -104,6 +104,31 @@ Disposition: **deferred for integration** pending the release speed comparison
 and complete delivery gate. The earlier Stage 7 results above do not certify
 this follow-up.
 
+## Bounded text measurement follow-up — 2026-11-08
+
+HVC-GPUI-007 replaces the single text measurement with a current state plus
+three LRU states, keyed by exact wrapping/truncation constraints. A debug-only
+trace established repeated constraint misses; the instrumented sources were
+then restored byte for byte to all 965 qualified source hashes before this
+implementation began. No diagnostic instrumentation remains in production.
+
+Test-support-only helpers were added first to the single-state implementation.
+The new behavioral tests reproduced four-constraint measurements growing from
+4 to 16, truncation measurements growing from 3 to 12, and a missed LRU revisit;
+the 13 existing message tests still passed. Logs:
+`target/companion-final/lru-red-tests-complete.log`.
+
+The focused green rerun passed 16/16 after formatting, with zero failed/ignored
+and 470 filtered. The three new cases prove retained measurements stop growing
+after warming their exact constraints, enforce the four-state/LRU bound and
+preserve truncation/Unicode geometry. Existing style/rem, selection and complete
+table/diff-copy scenarios also passed. Log:
+`target/companion-final/lru-green-tests.log`.
+
+Disposition: **deferred for integration**, pending strict checks, the complete
+regression gate and unchanged-workload release speed comparison. Debug trace
+timings and focused functional tests do not establish that gate.
+
 ## Distribuição
 
 O executável release está tecnicamente operável, mas distribuição externa não

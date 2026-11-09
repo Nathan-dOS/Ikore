@@ -109,11 +109,42 @@ table and diff copy. Current test results and qualification disposition are
 recorded in [`quality/stage7-report.md`](../../quality/stage7-report.md);
 speed and complete-gate qualification are tracked separately.
 
+## HVC-GPUI-007 — bounded text measurement states
+
+File: `src/elements/text.rs`
+
+Local correction (2026-11-08); no upstream backport provenance is claimed.
+
+A temporary debug trace of the unchanged three-stream workload observed 12
+measurement requests per message piece and six cache misses. Almost every
+miss changed wrapping constraints on an existing piece. A single active
+measurement therefore discarded useful intrinsic and constrained states.
+The trace establishes repeated work; its debug timings do not qualify release
+performance.
+
+`TextLayout` now retains at most four complete measurement states: the current
+state and three lazily allocated LRU entries. Lookup uses exact wrapping and
+truncation widths, including `None`, preserving HVC-GPUI-004 and HVC-GPUI-006.
+Promotion moves boxed states without cloning lines or inline decorations.
+Activating or saving a state clears its old bounds; prepaint always installs
+the current position. Text and style identity remain the owner's responsibility:
+Companion replaces the entire layout when text, inherited style, rem size or
+selection styling changes.
+
+Read-only `measurement_count` and `retained_measurement_count` helpers and the
+counter exist only under `test`/`test-support`, with no release field or API.
+The GPUI-consuming UI tests assert repeated-constraint cache hits, four-state
+capacity, LRU eviction, intrinsic geometry, Unicode hit testing, truncation and
+complete copy/selection behavior. They failed against the single-state cache
+with actual repeated measurements before the implementation changed. Current
+results and remaining qualification are recorded in
+[`quality/stage7-report.md`](../../quality/stage7-report.md).
+
 ## Integridade
 
 - Versão-base: `gpui` 0.2.2.
 - Fonte-base: crates.io.
-- Functional patches are maintained in `src/platform/windows/directx_devices.rs` (HVC-GPUI-001), `src/platform/windows/window.rs` (HVC-GPUI-002) and `src/elements/text.rs` (HVC-GPUI-004, HVC-GPUI-006), plus `src/window.rs` and `src/elements/div.rs` (HVC-GPUI-005).
+- Functional patches are maintained in `src/platform/windows/directx_devices.rs` (HVC-GPUI-001), `src/platform/windows/window.rs` (HVC-GPUI-002) and `src/elements/text.rs` (HVC-GPUI-004, HVC-GPUI-006, HVC-GPUI-007), plus `src/window.rs` and `src/elements/div.rs` (HVC-GPUI-005).
 - Ajuste adicional em `src/taffy.rs` explicita literais `f32` exigidos pelo
   Rust 1.98; ele não altera comportamento nem desempenho.
 - Mudanças futuras devem receber um identificador `HVC-GPUI-NNN` e registrar

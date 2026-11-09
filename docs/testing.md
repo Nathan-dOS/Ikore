@@ -170,6 +170,11 @@ below describe required coverage, not a passing delivery gate.
   omitting any blocks or clipboard content. The separate owned renderer still
   moves its original string storage; parity tests compare block geometry for
   headings, paragraphs, tables, labelled/unlabelled code, quotes, lists and rules.
+  Measurement-cache tests use test-support-only miss/retention counters to
+  verify repeated exact constraints reuse complete measurements, the four-state
+  limit and LRU eviction. Wrapping and truncation widths are independent keys;
+  restored states retain Unicode text, hit testing and ellipsis geometry, while
+  style/rem changes discard every retained state.
   Shutdown coverage delays an
   admitted Forge answer until closing, then verifies the final empty draft
   tombstones, newer unsent edits and refused submissions. Chat shutdown retains
