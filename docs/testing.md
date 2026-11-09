@@ -46,6 +46,22 @@ Aliases already contain `--`; use `cargo test-ui --list` without adding a second
 separator. Keep each checkout's own `target/`. Compare timings only with the
 same selection, toolchain, cache conditions and concurrency.
 
+## SQLite security and compatibility
+
+The `persistence_service::sqlite_runtime_tests` selection checks the linked
+engine against SQLite 3.54.0, the security floor for RUSTSEC-2026-0459. A
+separate behavioral test uses 512, 4096 and 65536 byte pages with real WAL
+files, multiline Unicode payloads, reader snapshots, committed writes and
+rollback. It runs the application's migrations while the WAL is live, reopens
+the database and checks content, unchanged migration history, integrity and
+foreign keys. It does not claim to reproduce the crafted-file memory leak;
+the linked-version check and advisory audit enforce the patched engine.
+Unsigned revision/counter coverage retains `fallible_uint` conversions, tests
+zero and the largest signed SQLite integer, and rejects negative reads and
+overflowing unsigned writes instead of wrapping them.
+The [Companion record](../quality/companion-dock-validation-2026-11-06.md)
+records executed results and the complete regression gate.
+
 ## Isolation
 
 Automatic Codex calls confined to host-selected context must retain the local

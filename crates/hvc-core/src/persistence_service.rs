@@ -6660,6 +6660,10 @@ fn brownfield_consent_key(project_id: &str) -> String {
 }
 
 #[cfg(test)]
+#[path = "sqlite_runtime_tests.rs"]
+mod sqlite_runtime_tests;
+
+#[cfg(test)]
 mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
