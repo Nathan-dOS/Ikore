@@ -48,6 +48,11 @@ at most four exact wrapping/truncation measurements, evicting the least recently
 used state. Inherited text style and rem size invalidate the cache; selection
 highlights and current hit-testing bounds remain frame-specific.
 
+Text painting preserves scene layers when skipping a background with no colors
+or foreground glyphs proven outside the existing vertical visibility guard.
+Full text layout, selection and copy remain available; decorated foreground
+runs retain the original painting path.
+
 A conversation's native composer is mounted in one surface at a time. When its
 full Chat is visible, the dock offers a link back to that surface instead of
 drawing the same input twice. Expand minimizes the corresponding dock topic;

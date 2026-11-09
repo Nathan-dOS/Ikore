@@ -129,6 +129,79 @@ Disposition: **deferred for integration**, pending strict checks, the complete
 regression gate and unchanged-workload release speed comparison. Debug trace
 timings and focused functional tests do not establish that gate.
 
+## No-color text background follow-up — 2026-11-09
+
+HVC-GPUI-008 skips unused font-metric queries and glyph traversal only when all
+decoration backgrounds are `None`. The guard remains inside `paint_layer`,
+preserving its bounds, empty layer operations and draw-order/replay behavior.
+Any `Some` background, including transparent colors, keeps the original path;
+foreground text, underline and strikethrough are unaffected. No workload,
+readiness, warmup or latency limit changed.
+
+Six private GPUI tests were written first. The RED run passed five and failed
+only the no-color font-metric assertion. The GREEN run passed all six, zero
+failed/ignored and 70 filtered. The same real paint tests cover colored and
+transparent quads, mixed ranges, wrapped Unicode, foreground decorations,
+overlapping primitive order, exact Scene replay and a balanced layer stack.
+Logs are `target/companion-final/no-background-2026-11-09/red-tests-resolved.log`
+and `green-private-tests.log`.
+
+The normal `-p gpui` selection cannot execute a non-member's development tests.
+A temporary harness therefore adds GPUI membership, omits the unused
+`env_logger`, `pretty_assertions` and Lyon-extra development blocks, and resolves
+offline only missing dependency edges. Programmatic comparison preserves all
+794 package identities (name, version, source and checksum); no package was
+added, removed or upgraded. Precise diff, no-use search, metadata and proof are
+archived beside the logs. Initial selection/DNS/resolution failures were setup
+failures, not the behavioral RED result.
+
+Exact selected command:
+
+```powershell
+cargo test --offline --locked -p gpui --lib --no-default-features --features test-support,windows-manifest text_system::line::tests -- --test-threads=2
+```
+
+These six vendor tests are outside the default workspace-suite count. The
+temporary harness was retained for the following foreground tests, then
+restored byte for byte before handoff. No release build,
+complete regression gate or speed qualification is claimed for HVC-GPUI-008.
+Disposition: **deferred for integration** pending those checks.
+
+## Foreground vertical visibility follow-up — 2026-11-09
+
+HVC-GPUI-009 keeps the foreground paint layer and permits an early return only
+when every underline/strikethrough is `None` and the old vertical glyph-guard
+predicate cannot intersect the content mask. The envelope repeats Y additions
+for every wrap and includes the maximum height of the same font bounds.
+Invalid/non-finite values and every `Some` decoration fall through unchanged.
+No simple line-bounds rejection, horizontal culling, cadence or fixture change
+was introduced.
+
+Stage 1 applied only a private test counter and four behavioral tests. The RED
+selection executed ten cases: seven passed and three failed with one or two
+unnecessary glyph visits where zero were expected. The `Some` fallback and all
+six background cases passed. Stage 2 added the guard and two property/fallback
+cases. The GREEN selection passed 12/12, zero failed/ignored and 70 filtered.
+It covers overhang/subpixel boundaries, partially visible emoji/wrapped rows,
+multiple font heights, decoration fallback, invalid inputs and exact Scene
+order/replay. The counter is `cfg(test)` only and creates no release API/state.
+
+The complete vendor lib inventory was then listed: 82 tests. The unfiltered run
+passed all 82 with zero failed, ignored or filtered. It includes the 12 focused
+cases, so these counts are not additive and remain separate from `test-all`.
+Exact complete command, after listing with `-- --list`:
+
+```powershell
+cargo test --offline --locked -p gpui --lib --no-default-features --features test-support,windows-manifest -- --test-threads=2
+```
+
+Logs, executed source and qualification data are in
+`target/companion-final/vertical-culling-2026-11-09/`. The temporary harness
+retained the same 794 package identities; after the tests, the root manifest,
+vendor manifest and lock were restored to their byte-exact backups. No release
+build, full application gate or speed acceptance is claimed for this source.
+Disposition: **deferred for integration** pending those checks.
+
 ## Distribuição
 
 O executável release está tecnicamente operável, mas distribuição externa não

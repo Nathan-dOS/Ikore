@@ -140,11 +140,66 @@ with actual repeated measurements before the implementation changed. Current
 results and remaining qualification are recorded in
 [`quality/stage7-report.md`](../../quality/stage7-report.md).
 
+## HVC-GPUI-008 — skip background work when every decoration has no color
+
+File: `src/text_system/line.rs`
+
+Local correction (2026-11-09); no upstream backport provenance is claimed.
+
+`paint_line_background` returns successfully inside the existing `paint_layer`
+closure when every decoration run has `background_color: None`, including an
+empty run slice. The layer still records the same bounds, draw ordering and
+replay operations. Only the unused font-metric queries and glyph walk are
+skipped. Any `Some` background, including a transparent color, follows the
+unchanged painting path. Foreground, underline and strikethrough are unchanged.
+
+Six private vendor tests exercise the actual paint path and Scene. The new
+no-color test failed first because the synthetic font's metrics were loaded;
+the same selection passed after the guard. Coverage includes mixed/transparent
+backgrounds, wrapped Unicode, foreground decorations, overlapping order, exact
+Scene replay and a balanced layer stack. No public test-only API was added.
+
+The vendor is not a normal workspace member. The tests use the temporary,
+offline/locked harness documented in the validation record; default workspace
+tests do not run these six private tests. Focused success does not qualify
+release speed or the complete delivery gate. See
+[`quality/stage7-report.md`](../../quality/stage7-report.md).
+
+## HVC-GPUI-009 — conservative foreground vertical visibility guard
+
+File: `src/text_system/line.rs`
+
+Local correction (2026-11-09); no upstream backport provenance is claimed.
+
+Inside the existing foreground paint layer, the guard skips glyph traversal
+only when every underline/strikethrough is `None` and no glyph can satisfy the
+existing vertical `max_glyph_bounds.intersects(mask)` predicate. It repeats
+the original per-wrap Y additions, bounds every row and uses the largest
+finite non-negative height of the same per-font bounding boxes. Invalid or
+non-finite inputs retain the original path. Every `Some` decoration, including
+transparent, zero-thickness and zero-length runs, also retains that path.
+This bounds the old predicate; it does not substitute the simpler line bounds
+or claim to model physical raster bounds. Layer/order/replay operations remain.
+
+A private `cfg(test)` glyph-visit counter first demonstrated three behavioral
+failures (7 passed/3 failed) before the guard. The combined foreground/background
+selection then passed 12/12, covering overhang, subpixel edge contact, partially
+visible wrapped emoji, multiple font heights, decoration fallback, invalid
+inputs, exact Scene replay/order and repeated-addition enumeration. All 82
+non-ignored vendor library tests subsequently passed, with zero failures,
+ignored or filtered. The counter has no release state or public API.
+
+The tests used the same temporary offline/locked harness as HVC-GPUI-008;
+its three manifest/lock files were restored byte for byte afterwards. No
+workload, warmup, readiness or latency limit changed. Release speed and the
+complete application delivery gate remain pending. See
+[`quality/stage7-report.md`](../../quality/stage7-report.md).
+
 ## Integridade
 
 - Versão-base: `gpui` 0.2.2.
 - Fonte-base: crates.io.
-- Functional patches are maintained in `src/platform/windows/directx_devices.rs` (HVC-GPUI-001), `src/platform/windows/window.rs` (HVC-GPUI-002) and `src/elements/text.rs` (HVC-GPUI-004, HVC-GPUI-006, HVC-GPUI-007), plus `src/window.rs` and `src/elements/div.rs` (HVC-GPUI-005).
+- Functional patches are maintained in `src/platform/windows/directx_devices.rs` (HVC-GPUI-001), `src/platform/windows/window.rs` (HVC-GPUI-002) and `src/elements/text.rs` (HVC-GPUI-004, HVC-GPUI-006, HVC-GPUI-007), plus `src/window.rs` and `src/elements/div.rs` (HVC-GPUI-005) and `src/text_system/line.rs` (HVC-GPUI-008, HVC-GPUI-009).
 - Ajuste adicional em `src/taffy.rs` explicita literais `f32` exigidos pelo
   Rust 1.98; ele não altera comportamento nem desempenho.
 - Mudanças futuras devem receber um identificador `HVC-GPUI-NNN` e registrar

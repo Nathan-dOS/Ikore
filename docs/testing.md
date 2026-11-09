@@ -175,6 +175,31 @@ below describe required coverage, not a passing delivery gate.
   limit and LRU eviction. Wrapping and truncation widths are independent keys;
   restored states retain Unicode text, hit testing and ellipsis geometry, while
   style/rem changes discard every retained state.
+  HVC-GPUI-008 also has six private vendor paint tests in
+  `text_system::line::tests`. They inspect Scene operations and the private
+  font-metric cache to prove no-color backgrounds skip the font backend while
+  preserving empty layers, colored/transparent backgrounds, wrapped Unicode,
+  foreground decorations and overlapping order/replay. They are separate from
+  `cargo test-all`, since the vendored dependency is not a workspace member.
+  The recorded test-only harness temporarily adds GPUI membership, omits three
+  unused development-dependency blocks and resolves only existing lock edges;
+  all package names/versions/sources/checksums remain identical. The command is
+  `cargo test --offline --locked -p gpui --lib --no-default-features --features
+  test-support,windows-manifest text_system::line::tests -- --test-threads=2`.
+  Backups, the precise harness diff and RED/GREEN logs are in
+  `target/companion-final/no-background-2026-11-09/`. Restore manifests and the
+  lock byte for byte before normal delivery checks; these test-support features
+  do not qualify the production release build.
+  HVC-GPUI-009 extends that private selection to 12 cases. A private `cfg(test)`
+  visit counter proves off-envelope lines avoid the old glyph loop; tests also
+  retain overhang, subpixel/strict boundary contact, a partially visible wrapped
+  emoji and taller font, every `Some` decoration, invalid-input fallback and
+  exact Scene order/replay. Enumeration checks the envelope against the old
+  row predicate using repeated floating-point additions. After the focused
+  GREEN, all 82 vendor library tests were listed and passed with the same
+  offline/locked features, without a test-name filter. Their logs are in
+  `target/companion-final/vertical-culling-2026-11-09/`. The 12 cases are included
+  in those 82; neither count is part of the default workspace-suite count.
   Shutdown coverage delays an
   admitted Forge answer until closing, then verifies the final empty draft
   tombstones, newer unsent edits and refused submissions. Chat shutdown retains
