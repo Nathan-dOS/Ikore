@@ -44,14 +44,29 @@ while ($pendingIds.Count -gt 0) {
     }
 }
 $rustPackages = @($metadata.packages | Where-Object { $activeIds.Contains($_.id) })
-$rustDenied = @($rustPackages | Where-Object { $_.license -match '(?<!L)GPL-|AGPL-|SSPL-' })
+# Workspace crates carry the project license; third-party packages are judged
+# for compatibility with it.
+$projectLicense = [string]$policy.publicationScopes.source.license
+if ([string]::IsNullOrWhiteSpace($projectLicense)) {
+    throw 'The policy does not declare publicationScopes.source.license.'
+}
+$workspaceIds = [System.Collections.Generic.HashSet[string]]::new([string[]]@($metadata.workspace_members))
+$workspacePackages = @($rustPackages | Where-Object { $workspaceIds.Contains($_.id) })
+$thirdPartyPackages = @($rustPackages | Where-Object { -not $workspaceIds.Contains($_.id) })
+$workspaceLicenseMismatch = @($workspacePackages | Where-Object { $_.license -ne $projectLicense })
+# GPL-3.0-or-later can include permissive, LGPL, MPL-2.0 and GPL-3.0 code, but
+# not GPL-2.0-only code. AGPL and SSPL stay denied by policy.
+$rustDenied = @($thirdPartyPackages | Where-Object {
+    $_.license -match '(?<![AL])GPL-2\.0(-only)?(?![-+\w])|AGPL-|SSPL-'
+})
 $rustMissing = @($rustPackages | Where-Object { [string]::IsNullOrWhiteSpace($_.license) })
 $rustSourceReview = @($rustPackages | Where-Object {
     $null -ne $_.source -and $_.source -notin $policy.allowedRegistrySources
 })
-$rustNotice = @($rustPackages | Where-Object { $_.license -match 'LGPL-|MPL-|CDDL-|EPL-' })
+$rustNotice = @($thirdPartyPackages | Where-Object { $_.license -match 'LGPL-|MPL-|CDDL-|EPL-' })
 
 $technicalPassed = (
+    $workspaceLicenseMismatch.Count -eq 0 -and
     $rustDenied.Count -eq 0 -and
     $rustMissing.Count -eq 0 -and
     $rustSourceReview.Count -eq 0
@@ -66,6 +81,8 @@ $report = [ordered]@{
     target = $TargetTriple
     rust = [ordered]@{
         resolvedPackages = $rustPackages.Count
+        projectLicense = $projectLicense
+        workspaceLicenseMismatch = @($workspaceLicenseMismatch | Select-Object name, version, license)
         deniedLicenses = @($rustDenied | Select-Object name, version, license, source)
         missingLicenseMetadata = @($rustMissing | Select-Object name, version, source)
         sourceReview = @($rustSourceReview | Select-Object name, version, license, source)

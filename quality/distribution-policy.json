@@ -7,8 +7,9 @@
     "source": {
       "status": "approved",
       "decidedAt": "2026-10-17",
-      "license": "Apache-2.0",
-      "note": "Publishing the Hard Vibe Code source repository under Apache-2.0 is approved. The pinned Windows dependency graph must keep passing scripts/audit-supply-chain.ps1 without denied licenses."
+      "license": "GPL-3.0-or-later",
+      "licenseDecidedAt": "2026-11-10",
+      "note": "Publishing the Hard Vibe Code source repository is approved. On 2026-11-10 the maintainer changed its license from Apache-2.0 to GPL-3.0-or-later, before the first public release. Every workspace crate must declare this license, and the pinned Windows dependency graph must keep passing scripts/audit-supply-chain.ps1 without denied licenses."
     },
     "binary": {
       "status": "blocked",

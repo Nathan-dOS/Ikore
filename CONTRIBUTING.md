@@ -138,9 +138,8 @@ keyring.
 
 On its own, GitHub Actions only checks formatting and audits dependencies. The
 complete workspace suite on Windows, the integration tests and the headless
-Linux harness in Docker run only when a maintainer dispatches them by hand,
-because hosted Windows minutes are too expensive while the repository is
-private. These local checks are the real gate for your pull request:
+Linux harness in Docker run only when a maintainer dispatches them by hand.
+These local checks are the real gate for your pull request:
 
 ```powershell
 # 1. Formatting
@@ -255,6 +254,18 @@ Scopes already used in the history: `core`, `ui`, `brownfield`, `terminals`,
    - Time-sensitive tests must tolerate CI runners that are slower than your
      machine. Prefer synchronizing on events over short fixed deadlines.
 
+8. **Rust style**
+   - The seven application packages inherit selected workspace lints: unwrap
+     usage, wildcard imports, documentation Markdown and undocumented unsafe
+     blocks. CI retains `-D warnings`. `clippy.toml` permits unwraps in test
+     functions/modules; test-only harness allowances have an explicit reason.
+     Production I/O failures still require a `Result`, not a replacement
+     `expect`.
+   - Use the existing formatter defaults. Do not introduce a global formatting
+     configuration or reformat vendored GPUI as part of an application
+     cleanup. Keep exhaustive internal event matches and justify each public
+     API change separately.
+
 ---
 
 ## 6. AI-assisted contributions
@@ -298,22 +309,12 @@ The pull request template includes these items:
 
 ## 8. License
 
-Hard Vibe Code is licensed under the [Apache License 2.0](LICENSE). By
-submitting a contribution, you agree that it is licensed under the same terms
-(Apache-2.0, section 5). The vendored code in `third_party/gpui` keeps its own
-Apache-2.0 license and notices.
+Hard Vibe Code is free software, licensed under the
+[GNU General Public License v3.0 or later](LICENSE) (`GPL-3.0-or-later`). By
+submitting a contribution, you agree that it is licensed under the same terms.
+The vendored code in `third_party/gpui` keeps its own Apache-2.0 license and
+notices, and the Lucide icons in `crates/hvc-ui/assets/icons` keep their ISC
+license.
 
 Source code is published; binary releases are not available yet. See
 `quality/distribution-policy.json` for the current distribution policy.
-
-## Rust style checks
-
-The seven application packages inherit selected workspace lints: unwrap usage,
-wildcard imports, documentation Markdown and undocumented unsafe blocks. CI
-retains `-D warnings`. `clippy.toml` permits unwraps in test functions/modules;
-test-only harness allowances have an explicit reason. Production I/O failures
-still require a `Result`, not a replacement `expect`.
-
-Use the existing formatter defaults. Do not introduce a global formatting
-configuration or reformat vendored GPUI as part of an application cleanup. Keep
-exhaustive internal event matches and justify each public API change separately.

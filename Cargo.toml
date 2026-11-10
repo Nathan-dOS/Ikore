@@ -16,7 +16,7 @@ default-members = ["crates/hvc-app"]
 version = "0.1.0"
 edition = "2024"
 authors = ["Nathan"]
-license = "Apache-2.0"
+license = "GPL-3.0-or-later"
 
 [workspace.dependencies]
 anyhow = "1"
@@ -52,6 +52,7 @@ panic = "abort"
 strip = true
 
 [patch.crates-io]
-# GPUI 0.2.2 vendorizado para manter o backport Windows descrito em
-# third_party/gpui/HVC-PATCHES.md reproduzível e auditável.
+# GPUI 0.2.2 is vendored so the Windows backport described in
+# third_party/gpui/HVC-PATCHES.md stays reproducible and auditable.
+# The vendored code keeps its own Apache-2.0 license.
 gpui = { path = "third_party/gpui" }
