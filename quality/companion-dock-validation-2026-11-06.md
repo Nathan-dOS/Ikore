@@ -1,16 +1,16 @@
 # Companion dock, decisions and feature starts — 2026-11-06
 
 Status: implementation M0–M5 is qualified for `ba9bf15`: technical gate 9/9,
-native inspection and the unchanged-workload speed gate passed. Integration
-awaits developer confirmation; independent evidence audit passed without
-blocking findings.
+native inspection and the unchanged-workload speed gate passed. Integration,
+push and cleanup completed on 2026-11-10 after developer confirmation;
+the independent evidence audit passed without blocking findings.
 Earlier dispositions below record each historical source, not current status.
 
 ## Source and scope
 
-- Current branch: `perf/companion-paragraph-layout` in the primary checkout.
-- Current candidate: `ba9bf15b5945e369ecb0ab8d9d97a5a364f80070`.
-- Measured baseline: detached `ef2879a6ecc161f5910c6ee4402aea1206d644f8`.
+- Current branch: `main` in the primary checkout; integration recorded below.
+- Qualified source: `ba9bf15b5945e369ecb0ab8d9d97a5a364f80070`.
+- Measured baseline source: `ef2879a6ecc161f5910c6ee4402aea1206d644f8`.
   Its source is equivalent to the documented `c42f2a7` baseline; the latter
   adds documentation/CI changes to that source.
 - First delivery: corrected notifications/counts, per-conversation chat state,
@@ -623,13 +623,25 @@ the 82-sample order, 80-observation parity, six executable identities and 966
 source files. The median-delta/A/A-noise rule passed; this does not establish
 statistical significance or universal speedup, and transition tolerances are
 large relative to the measured deltas. No required qualification gate remains
-pending; integration awaits the developer's confirmation.
+pending; integration and cleanup completed as recorded below.
 
 ## Integration and cleanup
 
-M0–M5 implementation is qualified at `ba9bf15`; merge, push and cleanup await
-the developer's explicit confirmation. The candidate is in the primary checkout
-on `perf/companion-paragraph-layout`, with no candidate worktree to remove.
-After approval, clean the detached `../.worktrees/companion-speed-baseline`
-worktree and this delivery's temporary branches, preserving preexisting branches
-and Cérebro edits. External binary distribution remains legally blocked.
+After the developer's explicit confirmation, merge, push and cleanup completed
+on 2026-11-10. HARD-VC integrated the delivery through merge
+`f4f8a66a6e45efd696e48388039bdcbc57d3b97d`; Cérebro integrated its qualification
+documents through merge `d1ef42f84a7315f3e23a5bb4e4316178bb6dce73`.
+Both integration commits were verified on their respective `origin/main`.
+These hashes identify integration milestones; the qualified source remains
+`ba9bf15`. All 966 frozen source hashes matched after integration, with no code
+change from that qualified source.
+
+The detached `../.worktrees/companion-speed-baseline` worktree was removed,
+releasing 189,041,768 bytes across 1,144 files. The delivery used the primary
+checkout, so no candidate worktree required removal. Local branches
+`perf/companion-paragraph-layout` and `docs/companion-paragraph-qualification`
+were deleted; remote checks confirmed neither branch remained. Preexisting
+branches and both preexisting Cérebro user files were preserved. Both primary
+checkouts remain on `main`. The [integration receipt](companion-qualification-2026-11-09/integration-2026-11-10/receipt.json)
+records authorization, source identity, pushes and cleanup evidence.
+External binary distribution remains legally blocked.

@@ -310,9 +310,15 @@ passed without blocking findings: all eight metrics were recalculated, with
 files checked. Passing the median-delta/A/A-noise rule establishes neither
 statistical significance nor universal speedup; transition tolerances are large
 relative to measured deltas. No required qualification gate remains pending.
-Merge/push and cleanup await developer confirmation on
-`perf/companion-paragraph-layout` in the primary checkout; only the detached
-baseline worktree needs removal.
+After explicit developer confirmation, integration, push and cleanup completed
+on 2026-11-10. HARD-VC merge `f4f8a66a6e45efd696e48388039bdcbc57d3b97d` was
+verified on `origin/main`; `ba9bf15` remains the qualified source, with all 966
+source hashes unchanged after integration. Both primary checkouts are on `main`;
+the detached baseline worktree and the delivery's two local branches were
+removed, and remote checks confirmed those branches were absent. Preexisting
+branches and Cérebro user files were preserved. The
+[integration receipt](companion-qualification-2026-11-09/integration-2026-11-10/receipt.json)
+records both repository integration milestones and cleanup evidence.
 
 ## Distribuição
 
