@@ -76,6 +76,10 @@ selection in both directions. The test window uses actual scale factors
 1.0/1.25/1.5/1.75/2.0 through its resize callback, rather than substituting rem
 size for DPI. Assistant/user layout harnesses cover the relevant geometry;
 they do not instantiate the full application or certify physical Windows fonts.
+Each drag direction and SelectAll start with a click-collapsed selection and
+a fresh clipboard sentinel. Copy with that empty selection must preserve the
+sentinel, so neither a stale range nor an earlier clipboard value can conceal
+an ineffective gesture. The subsequent copy must produce the complete text.
 
 The last drag point lies in the final paragraph's bottom margin, after the
 last caret. The initial draft ended inside a rounded right edge and omitted

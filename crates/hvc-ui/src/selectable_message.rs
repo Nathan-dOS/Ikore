@@ -1708,6 +1708,27 @@ mod tests {
         }
     }
 
+    fn reset_paragraph_copy_state(
+        visual: &mut gpui::VisualTestContext,
+        start: gpui::Point<Pixels>,
+    ) {
+        // Prove the selection is empty before every independent gesture.
+        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(start, MouseButton::Left, Modifiers::default());
+        visual.update(|_, cx| {
+            cx.write_to_clipboard(ClipboardItem::new_string(
+                "paragraph selection sentinel".into(),
+            ));
+        });
+        visual.simulate_keystrokes("ctrl-c");
+        visual.update(|_, cx| {
+            assert_eq!(
+                cx.read_from_clipboard().unwrap().text().as_deref(),
+                Some("paragraph selection sentinel")
+            );
+        });
+    }
+
     #[gpui::test]
     fn paragraph_fusion_keeps_actual_message_selection_and_complete_clipboard(
         cx: &mut TestAppContext,
@@ -1757,6 +1778,7 @@ mod tests {
                     // still precede the last glyph at fractional DPI.
                     let end = point(b.left() + px(2.0), b.bottom() + px(2.0));
                     for (from, to) in [(start, end), (end, start)] {
+                        reset_paragraph_copy_state(visual, start);
                         visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
                         visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
                         visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
@@ -1768,6 +1790,7 @@ mod tests {
                             )
                         });
                     }
+                    reset_paragraph_copy_state(visual, start);
                     visual.simulate_keystrokes("ctrl-a ctrl-c");
                     visual.update(|_, cx| {
                         assert_eq!(
