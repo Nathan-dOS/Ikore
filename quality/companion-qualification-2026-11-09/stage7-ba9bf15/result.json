@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "capturedAtUtc": "2026-11-10T02:08:37.678687+00:00",
+  "sourceCommit": "ba9bf15b5945e369ecb0ab8d9d97a5a364f80070",
+  "sourceFilesVerified": 966,
+  "sourceDrift": [],
+  "sourceDiffEmpty": true,
+  "gatePassed": true,
+  "checks": 9,
+  "durationSeconds": 2007.756,
+  "testTargets": 61,
+  "totals": {
+    "passed": 2167,
+    "failed": 0,
+    "ignored": 23,
+    "filtered": 0
+  },
+  "artifacts": [
+    {
+      "path": "output.txt",
+      "bytes": 241495,
+      "sha256": "591106228a70e3f60e54272b55fcd71c041b875b0f450b27579d72195a90fab9"
+    },
+    {
+      "path": "timings.json",
+      "bytes": 2255,
+      "sha256": "f2e3d4b7662d355e571404224f60876663f1bc68d41d253a9ef3e5672f1c8924"
+    }
+  ]
+}

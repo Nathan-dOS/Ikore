@@ -1,0 +1,162 @@
+[A] cohesive-01-session-expiry
+  completed=true correct=true calls=6 rejected=0 interventions=0 input=17653 output=821 wall=5808ms 
+[B] cohesive-01-session-expiry
+  completed=true correct=true calls=6 rejected=0 interventions=0 input=11147 output=781 wall=4435ms 
+[C] cohesive-01-session-expiry
+  completed=true correct=true calls=7 rejected=0 interventions=0 input=13185 output=1086 wall=5645ms 
+[D] cohesive-01-session-expiry
+  completed=true correct=true calls=7 rejected=0 interventions=0 input=13185 output=1086 wall=4818ms 
+[A] cohesive-02-money-format
+  completed=true correct=true calls=6 rejected=0 interventions=0 input=17633 output=830 wall=4611ms 
+[B] cohesive-02-money-format
+  completed=true correct=true calls=6 rejected=0 interventions=0 input=10909 output=791 wall=4374ms 
+[C] cohesive-02-money-format
+  completed=true correct=true calls=7 rejected=0 interventions=0 input=12953 output=1097 wall=4858ms 
+[D] cohesive-02-money-format
+  completed=true correct=true calls=7 rejected=0 interventions=0 input=12953 output=1097 wall=4693ms 
+[A] cohesive-03-slug-links
+  completed=true correct=true calls=6 rejected=0 interventions=0 input=17607 output=817 wall=4813ms 
+[B] cohesive-03-slug-links
+  completed=true correct=true calls=6 rejected=0 interventions=0 input=10814 output=786 wall=5488ms 
+[C] cohesive-03-slug-links
+  completed=true correct=true calls=7 rejected=0 interventions=0 input=12842 output=1090 wall=5664ms 
+[D] cohesive-03-slug-links
+  completed=true correct=true calls=7 rejected=0 interventions=0 input=12842 output=1090 wall=6759ms 
+[A] cohesive-04-rate-window
+  completed=true correct=true calls=6 rejected=0 interventions=0 input=17625 output=818 wall=4536ms 
+[B] cohesive-04-rate-window
+  completed=true correct=true calls=6 rejected=0 interventions=0 input=10948 output=779 wall=4371ms 
+[C] cohesive-04-rate-window
+  completed=true correct=true calls=7 rejected=0 interventions=0 input=12992 output=1085 wall=4597ms 
+[D] cohesive-04-rate-window
+  completed=true correct=true calls=7 rejected=0 interventions=0 input=12992 output=1085 wall=5019ms 
+[A] cohesive-05-checksum-verify
+  completed=true correct=true calls=6 rejected=0 interventions=0 input=17629 output=814 wall=4735ms 
+[B] cohesive-05-checksum-verify
+  completed=true correct=true calls=6 rejected=0 interventions=0 input=10888 output=780 wall=5333ms 
+[C] cohesive-05-checksum-verify
+  completed=true correct=true calls=7 rejected=0 interventions=0 input=12922 output=1086 wall=5841ms 
+[D] cohesive-05-checksum-verify
+  completed=true correct=true calls=7 rejected=0 interventions=0 input=12922 output=1086 wall=4506ms 
+[A] recovery-01-transport-on-code
+  completed=true correct=true calls=7 rejected=0 interventions=0 input=16887 output=759 wall=7366ms 
+[B] recovery-01-transport-on-code
+  completed=true correct=true calls=7 rejected=1 interventions=0 input=10627 output=725 wall=4436ms 
+[C] recovery-01-transport-on-code
+  completed=true correct=true calls=7 rejected=1 interventions=0 input=10473 output=875 wall=4635ms 
+[D] recovery-01-transport-on-code
+  completed=true correct=true calls=7 rejected=1 interventions=0 input=10473 output=875 wall=4669ms 
+[A] recovery-02-malformed-intake
+  completed=true correct=true calls=7 rejected=0 interventions=0 input=19263 output=873 wall=8329ms 
+[B] recovery-02-malformed-intake
+  completed=true correct=true calls=7 rejected=1 interventions=0 input=11566 output=784 wall=4615ms 
+[C] recovery-02-malformed-intake
+  completed=true correct=true calls=7 rejected=1 interventions=0 input=11430 output=935 wall=4669ms 
+[D] recovery-02-malformed-intake
+  completed=true correct=true calls=7 rejected=1 interventions=0 input=11430 output=935 wall=4608ms 
+[A] recovery-03-transport-on-test
+  completed=true correct=true calls=7 rejected=0 interventions=0 input=18619 output=1152 wall=7357ms 
+[B] recovery-03-transport-on-test
+  completed=true correct=true calls=7 rejected=1 interventions=0 input=11853 output=1114 wall=5096ms 
+[C] recovery-03-transport-on-test
+  completed=true correct=true calls=9 rejected=1 interventions=0 input=16190 output=1466 wall=5700ms 
+[D] recovery-03-transport-on-test
+  completed=true correct=true calls=9 rejected=1 interventions=0 input=16190 output=1466 wall=5784ms 
+[A] recovery-04-malformed-code
+  completed=true correct=true calls=7 rejected=0 interventions=0 input=20554 output=984 wall=7602ms 
+[B] recovery-04-malformed-code
+  completed=true correct=true calls=7 rejected=1 interventions=0 input=12979 output=842 wall=5013ms 
+[C] recovery-04-malformed-code
+  completed=true correct=true calls=8 rejected=1 interventions=0 input=14686 output=1146 wall=5147ms 
+[D] recovery-04-malformed-code
+  completed=true correct=true calls=8 rejected=1 interventions=0 input=14686 output=1146 wall=4962ms 
+[A] recovery-05-transport-on-code-pair
+  completed=true correct=true calls=7 rejected=0 interventions=0 input=18605 output=1158 wall=8429ms 
+[B] recovery-05-transport-on-code-pair
+  completed=true correct=true calls=7 rejected=1 interventions=0 input=11887 output=1121 wall=4791ms 
+[C] recovery-05-transport-on-code-pair
+  completed=true correct=true calls=9 rejected=1 interventions=0 input=16223 output=1475 wall=5425ms 
+[D] recovery-05-transport-on-code-pair
+  completed=true correct=true calls=9 rejected=1 interventions=0 input=16223 output=1475 wall=5547ms 
+[A] separable-01-expiry-and-session
+  completed=true correct=true calls=6 rejected=0 interventions=0 input=18781 output=1156 wall=5717ms 
+[B] separable-01-expiry-and-session
+  completed=true correct=true calls=6 rejected=0 interventions=0 input=12025 output=1109 wall=4525ms 
+[C] separable-01-expiry-and-session
+  completed=true correct=true calls=8 rejected=0 interventions=0 input=16393 output=1462 wall=5454ms 
+[D] separable-01-expiry-and-session
+  completed=true correct=true calls=8 rejected=0 interventions=0 input=16393 output=1462 wall=6359ms 
+[A] separable-02-retry-and-user
+  completed=true correct=true calls=6 rejected=0 interventions=0 input=18734 output=1153 wall=5741ms 
+[B] separable-02-retry-and-user
+  completed=true correct=true calls=6 rejected=0 interventions=0 input=11730 output=1118 wall=4705ms 
+[C] separable-02-retry-and-user
+  completed=true correct=true calls=8 rejected=0 interventions=0 input=16071 output=1470 wall=5349ms 
+[D] separable-02-retry-and-user
+  completed=true correct=true calls=8 rejected=0 interventions=0 input=16071 output=1470 wall=5265ms 
+[A] separable-03-port-and-slug
+  completed=true correct=true calls=6 rejected=0 interventions=0 input=18634 output=1152 wall=4747ms 
+[B] separable-03-port-and-slug
+  completed=true correct=true calls=6 rejected=0 interventions=0 input=11673 output=1117 wall=5607ms 
+[C] separable-03-port-and-slug
+  completed=true correct=true calls=8 rejected=0 interventions=0 input=16021 output=1469 wall=5052ms 
+[D] separable-03-port-and-slug
+  completed=true correct=true calls=8 rejected=0 interventions=0 input=16021 output=1469 wall=5129ms 
+[A] separable-04-window-and-money
+  completed=true correct=true calls=6 rejected=0 interventions=0 input=18730 output=1158 wall=5776ms 
+[B] separable-04-window-and-money
+  completed=true correct=true calls=6 rejected=0 interventions=0 input=11725 output=1121 wall=4536ms 
+[C] separable-04-window-and-money
+  completed=true correct=true calls=8 rejected=0 interventions=0 input=16084 output=1475 wall=5146ms 
+[D] separable-04-window-and-money
+  completed=true correct=true calls=8 rejected=0 interventions=0 input=16084 output=1475 wall=5245ms 
+[A] separable-05-percent-and-checksum
+  completed=true correct=true calls=6 rejected=0 interventions=0 input=18651 output=1147 wall=4854ms 
+[B] separable-05-percent-and-checksum
+  completed=true correct=true calls=6 rejected=0 interventions=0 input=11626 output=1107 wall=5592ms 
+[C] separable-05-percent-and-checksum
+  completed=true correct=true calls=8 rejected=0 interventions=0 input=15995 output=1463 wall=5096ms 
+[D] separable-05-percent-and-checksum
+  completed=true correct=true calls=8 rejected=0 interventions=0 input=15995 output=1463 wall=5223ms 
+[A] simple-01-token-expiry
+  completed=true correct=true calls=6 rejected=0 interventions=0 input=16904 output=763 wall=4511ms 
+[B] simple-01-token-expiry
+  completed=true correct=true calls=6 rejected=0 interventions=0 input=10489 output=725 wall=4429ms 
+[C] simple-01-token-expiry
+  completed=true correct=true calls=6 rejected=0 interventions=0 input=10358 output=875 wall=5287ms 
+[D] simple-01-token-expiry
+  completed=true correct=true calls=6 rejected=0 interventions=0 input=10358 output=875 wall=4129ms 
+[A] simple-02-retry-limit
+  completed=true correct=true calls=6 rejected=0 interventions=0 input=17004 output=768 wall=5839ms 
+[B] simple-02-retry-limit
+  completed=true correct=true calls=6 rejected=0 interventions=0 input=10372 output=731 wall=4145ms 
+[C] simple-02-retry-limit
+  completed=true correct=true calls=6 rejected=0 interventions=0 input=10236 output=882 wall=4173ms 
+[D] simple-02-retry-limit
+  completed=true correct=true calls=6 rejected=0 interventions=0 input=10236 output=882 wall=4246ms 
+[A] simple-03-trim-username
+  completed=true correct=true calls=6 rejected=0 interventions=0 input=16837 output=759 wall=4761ms 
+[B] simple-03-trim-username
+  completed=true correct=true calls=6 rejected=0 interventions=0 input=10225 output=728 wall=4386ms 
+[C] simple-03-trim-username
+  completed=true correct=true calls=6 rejected=0 interventions=0 input=10092 output=878 wall=4379ms 
+[D] simple-03-trim-username
+  completed=true correct=true calls=6 rejected=0 interventions=0 input=10092 output=878 wall=4395ms 
+[A] simple-04-port-parse
+  completed=true correct=true calls=6 rejected=0 interventions=0 input=16970 output=765 wall=4741ms 
+[B] simple-04-port-parse
+  completed=true correct=true calls=6 rejected=0 interventions=0 input=10305 output=726 wall=4355ms 
+[C] simple-04-port-parse
+  completed=true correct=true calls=6 rejected=0 interventions=0 input=10177 output=877 wall=4214ms 
+[D] simple-04-port-parse
+  completed=true correct=true calls=6 rejected=0 interventions=0 input=10177 output=877 wall=4411ms 
+[A] simple-05-clamp-percent
+  completed=true correct=true calls=6 rejected=0 interventions=0 input=16881 output=755 wall=5023ms 
+[B] simple-05-clamp-percent
+  completed=true correct=true calls=6 rejected=0 interventions=0 input=10228 output=723 wall=4596ms 
+[C] simple-05-clamp-percent
+  completed=true correct=true calls=6 rejected=0 interventions=0 input=10100 output=875 wall=4580ms 
+[D] simple-05-clamp-percent
+  completed=true correct=true calls=6 rejected=0 interventions=0 input=10100 output=875 wall=4157ms 
+<repo>\target\companion-final\benchmark-ba9-2026-11-10\gate-speed\candidate-full-composition/stage-composition-benchmark-2026-11-10.json
+<repo>\target\companion-final\benchmark-ba9-2026-11-10\gate-speed\candidate-full-composition/stage-composition-benchmark-2026-11-10.md

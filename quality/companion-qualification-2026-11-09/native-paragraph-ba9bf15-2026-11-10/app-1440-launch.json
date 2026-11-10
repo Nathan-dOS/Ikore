@@ -1,0 +1,9 @@
+{
+  "pid": 22552,
+  "binary": "<repo>\\target\\debug\\hard-vibe-code.exe",
+  "sha256": "97a78f96d14986ccad40fe21322e50c597a9d572c3d00e4fea5c7cbf37cddc00",
+  "dataDirectory": "<repo>\\target\\native-paragraph-qa-ba9bf15-2026-11-09\\data",
+  "windowSize": "1440x900",
+  "benchmarkReportSet": false,
+  "startedAtUtc": "2026-11-10T09:54:16.2601614Z"
+}

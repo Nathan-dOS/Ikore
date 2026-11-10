@@ -202,6 +202,118 @@ vendor manifest and lock were restored to their byte-exact backups. No release
 build, full application gate or speed acceptance is claimed for this source.
 Disposition: **deferred for integration** pending those checks.
 
+## Paragraph layout and DPI test support — 2026-11-09 continuation
+
+The externally integrated WIP `e61cdf1` preserved the new paragraph tests and
+HVC-GPUI-010 test hooks, but did not qualify them. Continued work is isolated
+on `perf/companion-paragraph-layout` in the primary checkout. The prior
+`68b5c05` nine-check result remains historical and does not certify this change.
+
+The initial UI selection passed two and failed two: the intended node-count
+RED plus a drag endpoint inside the final glyph. Correcting the gesture to
+end in the final paragraph's bottom margin preserved the complete-text assert.
+With the production renderer unchanged, the corrected RED passed three and
+failed only the expected three-versus-two real Taffy-node assertion.
+
+The production callback now returns its existing neutral Div. Paragraph
+spacing/typography use that Div directly, removing one redundant node. Other
+Markdown branches and the separate owned renderer retain their paths. The
+same four tests then passed with exact geometry/caret/style equality, real
+1.0/1.25/1.5/1.75/2.0 scales, intrinsic constraints, accumulated height, wrap
+thresholds and complete clipboard selection. This is a functional/skipped-work
+result, not a release speed claim.
+
+HVC-GPUI-010 retains default test scale 2.0, simulates actual resize/DPI changes
+and exposes real frame-node counts only for tests/test-support. All three
+private tests passed; the unfiltered vendor library passed 85/85, zero failed,
+ignored or filtered, in 0.22 seconds. The three focused tests are included.
+The temporary harness preserved all 796 package identities and restored both
+manifests and the lock byte for byte; all 966 source hashes matched afterwards.
+The all-target metadata attempt encountered uncached locked WASM packages;
+member-only metadata and all Windows tests stayed offline/locked without a
+download or dependency upgrade. Raw setup/test/restoration evidence is under
+`companion-qualification-2026-11-09/dpi-vendor-current/`.
+
+With the normal workspace, all 490 UI tests passed in 90.86 seconds, zero
+failed/ignored/filtered. This is separate from the 85 vendor tests. The full
+workspace gate, strict checks, native inspection and unchanged-workload speed
+qualification remain pending. Disposition: **deferred for qualification**.
+
+Raw current results use non-ignored `.txt` archive names with byte hashes.
+The external WIP/cleanup did not retain 29 ignored historical raw logs; 21
+retained files match original hashes after a proven EOL conversion and 29
+match exactly. No unresolved content/hash mismatch was found in the inspected
+archive manifests. See `companion-qualification-2026-11-09/artifact-retention-after-wip.json`.
+Historical logs are not reconstructed or represented as currently available.
+
+## Independent paragraph copy gestures
+
+The `63bc1fd` complete-gate attempt was manually interrupted during core tests
+after independent review found that the new clipboard test could reuse an
+earlier clipboard value or complete selection. No production defect or failing
+application test triggered the interruption. Its four preliminary checks passed;
+the suite and later steps were incomplete. The interrupted log is retained in
+`companion-qualification-2026-11-09/stage7-63bc1fd-interrupted/`.
+
+The test now proves an empty selection with a click and sentinel-preserving
+copy before each drag direction and SelectAll. All four focused tests passed
+with independent gestures in 0.72 seconds, zero failed/ignored and 486 filtered.
+The production prefix and five other source files match `63bc1fd` after EOL
+normalization, as recorded in
+`companion-qualification-2026-11-09/paragraph-fusion-e61cdf1/independent-gestures.json`.
+
+The replacement complete gate passed 9/9 on frozen tests-only revision
+`ba9bf15b5945e369ecb0ab8d9d97a5a364f80070` in 2,007.756 seconds, every step
+exiting zero. The suite passed 2,167 tests, zero failed, 23 ignored and zero
+filtered in 61 targets. Tests took 1,408.630 seconds including compilation,
+release 577.947 seconds and graceful Windows smoke 1.715 seconds. Supply-chain
+and advisory checks took 1.912 and 4.861 seconds respectively, with zero
+vulnerabilities. The 966 raw source hashes matched `source-ba9bf15.json`, with
+an empty source diff. Exact-byte output, timings and result are archived in
+`companion-qualification-2026-11-09/stage7-ba9bf15/`.
+
+## Companion qualification completed — 2026-11-10
+
+M0–M5 implementation is qualified on unchanged source `ba9bf15`: the technical
+gate above, current native inspection and the full speed gate passed. Native
+1440×900/960×640 client-size checks covered three/two topics, overflow/history,
+Expand with one composer, wrapping/Unicode, both selection directions and an
+exact native SelectAll/copy/paste of the complete 534-character projection.
+Original and copied drafts survived restart unchanged. Three QA conversations,
+six messages and zero QA model/tool calls were retained; both app runs and
+the stopped fixture exited zero, with empty app stderr. The
+[native result](companion-qualification-2026-11-09/native-paragraph-ba9bf15-2026-11-10/result.json)
+indexes 17 byte-exact artifacts.
+
+The release preflight passed at p50/p95/p99 6.1899/7.6257/8.1624 ms. The full
+speed gate passed 20 A/A and 20 alternating A/B pairs, 82 samples and all eight
+metrics in 3,916.8588 seconds. Its 80 complete composition observations retained
+identical calls/checkpoints/correctness. The required final three-stream run
+passed at p50/p95/p99 6.21/7.4188/8.8826 ms, preserving the 8.33/16.67 ms limits,
+120 measured plus 20 warmup samples, 141 frames, 423 updates, 1440×900 and 164 Hz.
+The [speed result](companion-qualification-2026-11-09/speed-ba9bf15-2026-11-10/result.json)
+indexes 512 byte-exact artifacts. All 966 source files, 20 actual JSON inputs per
+checkout and six executables stayed frozen through preflight and the gate,
+with HEAD unchanged. Historical failures, including `d71a573`, remain unchanged.
+
+These are offline orchestration and GPUI callback-interval results, without
+real-provider latency/quality or direct compositor measurements. The paired
+closed-dock command requested 1280×820 for both versions. Historical `ef2879a`
+release fixes `initial_window_size()` at 1280×820 and ignores the benchmark
+window-size variable; its 61 legacy idle reports do not prove observed viewport.
+The existing `-AllowLegacyUi` compatibility path permits these reports. Native inspection
+used one physical scale; IME, live-provider streaming and approval/submit were
+not exercised in this latest pass, and pinned history retained its blocked-
+connection notice. The [independent audit](companion-qualification-2026-11-09/speed-ba9bf15-2026-11-10/independent-audit.json)
+passed without blocking findings: all eight metrics were recalculated, with
+82-sample order, 80-observation parity, six executable identities and 966 source
+files checked. Passing the median-delta/A/A-noise rule establishes neither
+statistical significance nor universal speedup; transition tolerances are large
+relative to measured deltas. No required qualification gate remains pending.
+Merge/push and cleanup await developer confirmation on
+`perf/companion-paragraph-layout` in the primary checkout; only the detached
+baseline worktree needs removal.
+
 ## Distribuição
 
 O executável release está tecnicamente operável, mas distribuição externa não

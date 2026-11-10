@@ -1,0 +1,466 @@
+{
+  "meta": {
+    "arch": "x86_64",
+    "arms": [
+      "a",
+      "b",
+      "c",
+      "d"
+    ],
+    "branch": "HEAD",
+    "code_base": "ef2879a6ecc161f5910c6ee4402aea1206d644f8",
+    "fixture_version": "stage-composition-fixtures-v1",
+    "fixtures": [
+      {
+        "family": "cohesive_multi_file",
+        "held_out": false,
+        "id": "cohesive-01-session-expiry",
+        "tasks": 1
+      }
+    ],
+    "fixtures_sha256": "7c931da80b5cb21dc310b01953f288ee68361f192cbc917718866735a34526e2",
+    "generated_at": "2026-11-10T10:13:05.205871200+00:00",
+    "mode": "fixture",
+    "model_id": null,
+    "os": "windows",
+    "spend_limit_micro_usd": null,
+    "spent_micro_usd": null
+  },
+  "observations": [
+    {
+      "arm": "a",
+      "cache_read_tokens": 0,
+      "completed": true,
+      "correct": true,
+      "diagnostics": [],
+      "estimated_cost_micro_usd": null,
+      "failure_checkpoints": 0,
+      "family": "cohesive_multi_file",
+      "fixture": "cohesive-01-session-expiry",
+      "held_out": false,
+      "human_checkpoints": 4,
+      "input_tokens": 17653,
+      "interventions": 0,
+      "inventory_violations": [],
+      "mode": "fixture",
+      "oracle_failures": [],
+      "output_tokens": 821,
+      "prompt_calls": [
+        {
+          "chars": 8862,
+          "executor": "legacy:Intake",
+          "items": 2
+        },
+        {
+          "chars": 14079,
+          "executor": "legacy:SPECIFICATION",
+          "items": 2
+        },
+        {
+          "chars": 10320,
+          "executor": "legacy:Contract",
+          "items": 2
+        },
+        {
+          "chars": 11089,
+          "executor": "legacy:Code",
+          "items": 2
+        },
+        {
+          "chars": 13029,
+          "executor": "legacy:Test",
+          "items": 2
+        },
+        {
+          "chars": 13222,
+          "executor": "legacy:Integrator",
+          "items": 2
+        }
+      ],
+      "prompt_chars": 70601,
+      "provider_calls": 6,
+      "reasoning_tokens": 0,
+      "rejected_attempts": 0,
+      "usage_partial_records": 0,
+      "usage_records": 6,
+      "usage_unavailable_records": 0,
+      "wall_ms": 4999
+    },
+    {
+      "arm": "b",
+      "cache_read_tokens": 0,
+      "completed": true,
+      "correct": true,
+      "diagnostics": [],
+      "estimated_cost_micro_usd": null,
+      "failure_checkpoints": 0,
+      "family": "cohesive_multi_file",
+      "fixture": "cohesive-01-session-expiry",
+      "held_out": false,
+      "human_checkpoints": 4,
+      "input_tokens": 11147,
+      "interventions": 0,
+      "inventory_violations": [],
+      "mode": "fixture",
+      "oracle_failures": [],
+      "output_tokens": 781,
+      "prompt_calls": [
+        {
+          "chars": 4944,
+          "executor": "intake_classifier",
+          "items": 1
+        },
+        {
+          "chars": 7062,
+          "executor": "specification_author",
+          "items": 3
+        },
+        {
+          "chars": 7172,
+          "executor": "contract_author",
+          "items": 7
+        },
+        {
+          "chars": 8497,
+          "executor": "code_implementer",
+          "items": 7
+        },
+        {
+          "chars": 7665,
+          "executor": "test_author",
+          "items": 7
+        },
+        {
+          "chars": 9240,
+          "executor": "integration_reviewer",
+          "items": 11
+        }
+      ],
+      "prompt_chars": 44580,
+      "provider_calls": 6,
+      "reasoning_tokens": 0,
+      "rejected_attempts": 0,
+      "usage_partial_records": 0,
+      "usage_records": 6,
+      "usage_unavailable_records": 0,
+      "wall_ms": 4627
+    },
+    {
+      "arm": "c",
+      "cache_read_tokens": 0,
+      "completed": true,
+      "correct": true,
+      "diagnostics": [],
+      "estimated_cost_micro_usd": null,
+      "failure_checkpoints": 0,
+      "family": "cohesive_multi_file",
+      "fixture": "cohesive-01-session-expiry",
+      "held_out": false,
+      "human_checkpoints": 4,
+      "input_tokens": 13185,
+      "interventions": 0,
+      "inventory_violations": [],
+      "mode": "fixture",
+      "oracle_failures": [],
+      "output_tokens": 1086,
+      "prompt_calls": [
+        {
+          "chars": 4944,
+          "executor": "intake_classifier",
+          "items": 1
+        },
+        {
+          "chars": 7062,
+          "executor": "specification_author",
+          "items": 3
+        },
+        {
+          "chars": 8120,
+          "executor": "contract_author",
+          "items": 8
+        },
+        {
+          "chars": 7321,
+          "executor": "code_implementer",
+          "items": 4
+        },
+        {
+          "chars": 7696,
+          "executor": "code_implementer",
+          "items": 5
+        },
+        {
+          "chars": 8256,
+          "executor": "test_author",
+          "items": 7
+        },
+        {
+          "chars": 9334,
+          "executor": "integration_reviewer",
+          "items": 11
+        }
+      ],
+      "prompt_chars": 52733,
+      "provider_calls": 7,
+      "reasoning_tokens": 0,
+      "rejected_attempts": 0,
+      "usage_partial_records": 0,
+      "usage_records": 7,
+      "usage_unavailable_records": 0,
+      "wall_ms": 6025
+    },
+    {
+      "arm": "d",
+      "cache_read_tokens": 0,
+      "completed": true,
+      "correct": true,
+      "diagnostics": [],
+      "estimated_cost_micro_usd": null,
+      "failure_checkpoints": 0,
+      "family": "cohesive_multi_file",
+      "fixture": "cohesive-01-session-expiry",
+      "held_out": false,
+      "human_checkpoints": 4,
+      "input_tokens": 13185,
+      "interventions": 0,
+      "inventory_violations": [],
+      "mode": "fixture",
+      "oracle_failures": [],
+      "output_tokens": 1086,
+      "prompt_calls": [
+        {
+          "chars": 4944,
+          "executor": "intake_classifier",
+          "items": 1
+        },
+        {
+          "chars": 7062,
+          "executor": "specification_author",
+          "items": 3
+        },
+        {
+          "chars": 8120,
+          "executor": "contract_author",
+          "items": 8
+        },
+        {
+          "chars": 7321,
+          "executor": "code_implementer",
+          "items": 4
+        },
+        {
+          "chars": 7696,
+          "executor": "code_implementer",
+          "items": 5
+        },
+        {
+          "chars": 8256,
+          "executor": "test_author",
+          "items": 7
+        },
+        {
+          "chars": 9334,
+          "executor": "integration_reviewer",
+          "items": 11
+        }
+      ],
+      "prompt_chars": 52733,
+      "provider_calls": 7,
+      "reasoning_tokens": 0,
+      "rejected_attempts": 0,
+      "usage_partial_records": 0,
+      "usage_records": 7,
+      "usage_unavailable_records": 0,
+      "wall_ms": 6749
+    }
+  ],
+  "qualification": {
+    "B": {
+      "cost_quality_qualified": null,
+      "development_correct": true,
+      "held_out_correct": true,
+      "note": "fixture mode proves orchestration only; no monetary or semantic conclusion",
+      "orchestration_qualified": true,
+      "unexpected_interventions": 0
+    },
+    "C": {
+      "cost_quality_qualified": null,
+      "development_correct": true,
+      "held_out_correct": true,
+      "note": "fixture mode proves orchestration only; no monetary or semantic conclusion",
+      "orchestration_qualified": true,
+      "unexpected_interventions": 0
+    },
+    "D": {
+      "cost_quality_qualified": null,
+      "development_correct": true,
+      "held_out_correct": true,
+      "note": "fixture mode proves orchestration only; no monetary or semantic conclusion",
+      "orchestration_qualified": true,
+      "unexpected_interventions": 0
+    }
+  },
+  "summary": {
+    "arms": {
+      "A": {
+        "arm": "a",
+        "cache_read_tokens": 0,
+        "completed": 1,
+        "completion_rate": 1.0,
+        "correct": 1,
+        "correct_tasks": 1,
+        "estimated_cost_micro_usd": null,
+        "fixtures": 1,
+        "held_out": false,
+        "input_tokens": 17653,
+        "interventions": 0,
+        "label": "A: pipeline v3 (legacy, one call per stage)",
+        "output_tokens": 821,
+        "prompt_chars": {
+          "p50": 70601,
+          "p95": 70601
+        },
+        "provider_calls": 6,
+        "reasoning_tokens": 0,
+        "rejected_attempts": 0,
+        "spend_per_correct_task_micro_usd": null,
+        "tasks": 1,
+        "tokens_per_correct_task": 18474.0,
+        "usage_unavailable_records": 0,
+        "wall_ms": {
+          "p50": 4999,
+          "p95": 4999
+        }
+      },
+      "B": {
+        "arm": "b",
+        "cache_read_tokens": 0,
+        "completed": 1,
+        "completion_rate": 1.0,
+        "correct": 1,
+        "correct_tasks": 1,
+        "estimated_cost_micro_usd": null,
+        "fixtures": 1,
+        "held_out": false,
+        "input_tokens": 11147,
+        "interventions": 0,
+        "label": "B: pipeline v4, one unit per stage",
+        "output_tokens": 781,
+        "prompt_chars": {
+          "p50": 44580,
+          "p95": 44580
+        },
+        "provider_calls": 6,
+        "reasoning_tokens": 0,
+        "rejected_attempts": 0,
+        "spend_per_correct_task_micro_usd": null,
+        "tasks": 1,
+        "tokens_per_correct_task": 11928.0,
+        "usage_unavailable_records": 0,
+        "wall_ms": {
+          "p50": 4627,
+          "p95": 4627
+        }
+      },
+      "C": {
+        "arm": "c",
+        "cache_read_tokens": 0,
+        "completed": 1,
+        "completion_rate": 1.0,
+        "correct": 1,
+        "correct_tasks": 1,
+        "estimated_cost_micro_usd": null,
+        "fixtures": 1,
+        "held_out": false,
+        "input_tokens": 13185,
+        "interventions": 0,
+        "label": "C: pipeline v4, planned units, sequential",
+        "output_tokens": 1086,
+        "prompt_chars": {
+          "p50": 52733,
+          "p95": 52733
+        },
+        "provider_calls": 7,
+        "reasoning_tokens": 0,
+        "rejected_attempts": 0,
+        "spend_per_correct_task_micro_usd": null,
+        "tasks": 1,
+        "tokens_per_correct_task": 14271.0,
+        "usage_unavailable_records": 0,
+        "wall_ms": {
+          "p50": 6025,
+          "p95": 6025
+        }
+      },
+      "D": {
+        "arm": "d",
+        "cache_read_tokens": 0,
+        "completed": 1,
+        "completion_rate": 1.0,
+        "correct": 1,
+        "correct_tasks": 1,
+        "estimated_cost_micro_usd": null,
+        "fixtures": 1,
+        "held_out": false,
+        "input_tokens": 13185,
+        "interventions": 0,
+        "label": "D: pipeline v4, planned units, up to two in flight",
+        "output_tokens": 1086,
+        "prompt_chars": {
+          "p50": 52733,
+          "p95": 52733
+        },
+        "provider_calls": 7,
+        "reasoning_tokens": 0,
+        "rejected_attempts": 0,
+        "spend_per_correct_task_micro_usd": null,
+        "tasks": 1,
+        "tokens_per_correct_task": 14271.0,
+        "usage_unavailable_records": 0,
+        "wall_ms": {
+          "p50": 6749,
+          "p95": 6749
+        }
+      }
+    },
+    "families": {
+      "CohesiveMultiFile": {
+        "A": {
+          "correct": 1,
+          "fixtures": 1,
+          "input_tokens": 17653,
+          "interventions": 0,
+          "output_tokens": 821,
+          "provider_calls": 6
+        },
+        "B": {
+          "correct": 1,
+          "fixtures": 1,
+          "input_tokens": 11147,
+          "interventions": 0,
+          "output_tokens": 781,
+          "provider_calls": 6
+        },
+        "C": {
+          "correct": 1,
+          "fixtures": 1,
+          "input_tokens": 13185,
+          "interventions": 0,
+          "output_tokens": 1086,
+          "provider_calls": 7
+        },
+        "D": {
+          "correct": 1,
+          "fixtures": 1,
+          "input_tokens": 13185,
+          "interventions": 0,
+          "output_tokens": 1086,
+          "provider_calls": 7
+        }
+      },
+      "FailureRecovery": {},
+      "SeparableMultiTask": {},
+      "SimpleMaintenance": {}
+    }
+  }
+}

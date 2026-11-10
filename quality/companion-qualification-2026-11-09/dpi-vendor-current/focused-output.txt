@@ -1,0 +1,15 @@
+warning: resolver for the non root package will be ignored, specify resolver at the workspace root:
+package:   <repo>\third_party\gpui\Cargo.toml
+workspace: <repo>\Cargo.toml
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.09s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running unittests src\gpui.rs (target\debug\deps\gpui-24fe41aed0a10818.exe)
+
+running 3 tests
+test app::test_context::dpi_and_layout_tests::invalid_simulated_scale_factors_leave_window_state_unchanged ... ok
+test app::test_context::dpi_and_layout_tests::layout_node_count_reads_real_frame_nodes_and_marks_active_measurement_unavailable ... ok
+test app::test_context::dpi_and_layout_tests::simulated_scale_factor_updates_the_real_window_and_preserves_viewport ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 82 filtered out; finished in 0.01s
+

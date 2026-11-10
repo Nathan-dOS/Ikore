@@ -1,0 +1,21 @@
+{
+  "restored": [
+    {
+      "path": "Cargo.toml",
+      "sha256": "45084da2cbd126b4abe0be92cac1a6fb054cac4476ae68726ce9acb109ed3c28",
+      "byteExact": true
+    },
+    {
+      "path": "Cargo.lock",
+      "sha256": "a9ecf157e73b7ea67876fb416cce4f460838bc6ab1ed2eee985e9915a457e96b",
+      "byteExact": true
+    },
+    {
+      "path": "third_party/gpui/Cargo.toml",
+      "sha256": "bdbdf8c6340c387eea3c0a6ed0d880edbbbacf64062cd4fd5b04cac6afdf44cb",
+      "byteExact": true
+    }
+  ],
+  "sourceFilesVerified": 966,
+  "sourceDrift": []
+}

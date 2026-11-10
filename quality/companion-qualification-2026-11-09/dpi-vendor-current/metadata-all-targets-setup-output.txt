@@ -1,0 +1,7 @@
+warning: resolver for the non root package will be ignored, specify resolver at the workspace root:
+package:   <repo>\third_party\gpui\Cargo.toml
+workspace: <repo>\Cargo.toml
+error: failed to download `rsqlite-vfs v0.2.0`
+
+Caused by:
+  attempting to make an HTTP request, but --offline was specified

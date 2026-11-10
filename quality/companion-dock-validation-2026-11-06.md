@@ -1,15 +1,18 @@
 # Companion dock, decisions and feature starts — 2026-11-06
 
-Status: implementation in progress; qualification pending. This document does
-not certify the source tree, native behavior or performance until executed
-evidence is added below.
+Status: implementation M0–M5 is qualified for `ba9bf15`: technical gate 9/9,
+native inspection and the unchanged-workload speed gate passed. Integration
+awaits developer confirmation; independent evidence audit passed without
+blocking findings.
+Earlier dispositions below record each historical source, not current status.
 
 ## Source and scope
 
-- Branch: `feat/companion-decision-dock` in its isolated worktree.
-- Current candidate: `68b5c0522fa642664f114e4bbdf8628c81db41c0`.
-- Baseline: `c42f2a77dafd30ee0023b342f9a5f4bd7f28cef2`, combining the existing
-  Forge fixes at `ef2879a` with the current `main` documentation/CI changes.
+- Current branch: `perf/companion-paragraph-layout` in the primary checkout.
+- Current candidate: `ba9bf15b5945e369ecb0ab8d9d97a5a364f80070`.
+- Measured baseline: detached `ef2879a6ecc161f5910c6ee4402aea1206d644f8`.
+  Its source is equivalent to the documented `c42f2a7` baseline; the latter
+  adds documentation/CI changes to that source.
 - First delivery: corrected notifications/counts, per-conversation chat state,
   native Companion dock, durable drafts, read-only pending decisions and tools,
   lazy resolution conversations, richer Forge questions and Approve and start.
@@ -475,8 +478,158 @@ Renderer retention remains a proposal: wrapping parity at fractional DPI must
 be demonstrated before adopting cached paragraph views. Speed qualification
 and delivery remain pending.
 
+## WIP handoff and paragraph continuation
+
+The previous worktree/branch was removed externally after `e61cdf1` integrated
+the in-progress tests, GPUI hooks and qualification records into main. The
+attempted paragraph test process in that removed worktree has no retained
+outcome and is not counted. Work continues on `perf/companion-paragraph-layout`
+in `HARD-VC`, reusing its target directory. The WIP does not inherit the
+`68b5c05` qualification for its new test/hooks changes.
+
+An availability audit of the carried archive manifests found 29 exact copies,
+21 equivalent after a proven EOL conversion and 29 missing ignored raw logs,
+with no unresolved raw-content mismatch. Historical manifest checks describe
+the original capture, rather than current byte-exact availability. The audit
+is `companion-qualification-2026-11-09/artifact-retention-after-wip.json`.
+Missing logs are not recreated. Current raw outputs are copied to non-ignored
+`.txt` files and hashed before source changes.
+
+The three original baseline executables still matched their approved hashes.
+They were copied byte for byte to a detached `ef2879a` checkout at
+`../.worktrees/companion-speed-baseline`; this checkout has no source edits.
+The frozen composition binary reads its original compiled manifest directory
+in `HARD-VC`. All 20 runtime fixture files there match the detached baseline
+exactly and must remain frozen during measurement. Provenance is recorded in
+`companion-qualification-2026-11-09/baseline-recreated-after-wip.json`.
+No new speed sample has run.
+
+The four paragraph tests on the WIP initially passed two and failed two: node
+count plus an inside-glyph drag endpoint. The corrected endpoint lies after
+the final caret in the last paragraph's bottom margin. With production still
+unchanged, the corrected RED passed three and failed only the intended node
+assertion. Raw logs, correction patch and source snapshot are retained in
+`companion-qualification-2026-11-09/paragraph-fusion-e61cdf1/` and
+`source-e61cdf1.json`.
+
+The borrowed renderer now applies paragraph typography/spacing directly to
+its callback's existing neutral Div. It removes one actual Taffy node per
+paragraph, retaining native text measurements, complete projection, selection
+bounds and copy. Other blocks and the owned renderer retain their code paths.
+The same selection passed 4/4, zero failed/ignored and 486 filtered, in 0.71
+seconds. It compares exact geometry/carets/styles and accumulated height at
+real 1.0/1.25/1.5/1.75/2.0 test-window scales, intrinsic constraints, wrapping
+boundaries and clipboard selection in both directions. Assistant/user
+harnesses reproduce relevant geometry; they do not instantiate the whole app
+or certify physical Windows fonts. The complete normal UI suite then passed
+490/490, zero failed/ignored/filtered, in 90.86 seconds. Its raw output is
+retained under the same paragraph package with byte-preserving attributes.
+
+The three new private DPI/layout tests passed, and the complete GPUI library
+passed all 85 tests in 0.22 seconds, zero failed/ignored/filtered. The three
+focused tests are included and are separate from normal workspace counts.
+The temporary harness preserved all 796 package identities. Both manifests
+and the lock were restored byte for byte; all 966 source hashes matched the
+pre-harness state. All-target metadata initially required uncached locked
+WASM packages; member-only metadata and the Windows tests completed offline
+without downloads or upgrades. Raw setup/test output, harness script/diff,
+lock snapshots and restoration proof are retained under
+`companion-qualification-2026-11-09/dpi-vendor-current/`, with byte-preserving
+Git attributes. Full workspace/native gates, strict checks and release speed
+qualification remain pending.
+
+## Independent clipboard assertions
+
+Independent review found no production defect in `63bc1fd`, but identified a
+test weakness inherited from the WIP: later copies could reuse the previous
+clipboard value or the previous complete selection. The full gate was manually
+interrupted during core tests to strengthen those assertions. Structure,
+boundaries, format and strict Clippy had passed; the workspace suite and later
+steps were incomplete. This is not a complete gate or an application-test
+failure. The interrupted output and unchanged 966-source proof are retained in
+`companion-qualification-2026-11-09/stage7-63bc1fd-interrupted/`.
+
+Every drag direction and SelectAll now starts with a real click-collapsed
+selection, a fresh sentinel and a negative copy check that must preserve it.
+Only a new complete selection/copy can satisfy the expected text assertion.
+The four focused paragraph tests passed again: zero failed/ignored, 486
+filtered, 0.72 seconds. Independent follow-up confirmed the assertions no
+longer depend on an earlier range or clipboard result. Production rendering,
+workload, cadence, warmup, readiness and limits are unchanged. The normalized
+production-prefix and five other source comparisons are recorded in
+`companion-qualification-2026-11-09/paragraph-fusion-e61cdf1/independent-gestures.json`.
+
+Frozen tests-only revision `ba9bf15b5945e369ecb0ab8d9d97a5a364f80070` passed
+the complete technical gate 9/9 in 2,007.756 seconds, with every step exiting
+zero. The workspace suite passed 2,167 tests, zero failed, 23 ignored and zero
+filtered across 61 targets; its step took 1,408.630 seconds including compilation.
+Release took 577.947 seconds. Windows smoke shut down gracefully in 1.715 seconds;
+supply-chain checks took 1.912 seconds and advisories 4.861 seconds, with zero
+vulnerabilities and existing informational warnings retained. All 966 raw source
+hashes still matched `source-ba9bf15.json`, with an empty source diff.
+
+The completed output, timings and result are archived with exact byte hashes in
+`companion-qualification-2026-11-09/stage7-ba9bf15/`. Native and speed results
+for the same unchanged source follow. The failed historical `d71a573`
+three-stream preflight remains recorded at p95 12.3584 ms.
+
+## Final native and speed qualification — 2026-11-10
+
+Native inspection passed with the `ba9bf15` debug executable at requested
+1440×900 and 960×640 client sizes: three topics became two plus recoverable
+overflow; history reopened minimized/overflow topics, and Expand retained one
+composer. Paragraph wrapping, Unicode, table/code/diff content and selection in
+both drag directions were observed. Native Ctrl+A/C and paste into an empty
+second composer produced the exact complete 534-character plain projection,
+SHA-256 `6ef4e9d5d5b8fe3fd0d0efcee7a602e49ae49fdea8fe4abe4f99ef31e5fb519f`.
+The original and copied drafts survived restart unchanged. The profile retained
+three QA conversations and six messages, with zero QA model/tool calls. Both
+app runs and the stopped fixture exited zero; app stderr was empty.
+The [native result](companion-qualification-2026-11-09/native-paragraph-ba9bf15-2026-11-10/result.json)
+records the checks and 17 byte-exact artifacts.
+
+The initial release preflight passed with p50/p95/p99 of
+6.1899/7.6257/8.1624 ms. The complete speed gate then passed 20 A/A calibration
+pairs followed by 20 alternating A/B pairs, with 82 samples, all eight metrics
+within the frozen noise tolerances and parity across 80 complete composition
+observations. Both versions retained 540 provider calls, 320 human checkpoints,
+15 rejected attempts and zero interventions/failure checkpoints. Total duration
+was 3,916.8588 seconds (65 min 16.86 s). The required final three-stream run
+passed with p50/p95/p99 6.21/7.4188/8.8826 ms, against unchanged p95/p99 limits
+8.33/16.67 ms. Both streaming runs retained 120 measured samples plus 20 warmup,
+141 fixture frames, 423 conversation updates, 1440×900 and reported 164 Hz.
+The [speed result](companion-qualification-2026-11-09/speed-ba9bf15-2026-11-10/result.json)
+indexes 512 byte-exact artifacts, including raw samples and
+[the complete report](companion-qualification-2026-11-09/speed-ba9bf15-2026-11-10/gate-speed/report.json).
+
+Freeze checks before measurement, after preflight and after the gate verified
+966 source files, all 20 actual composition JSON inputs per checkout and six
+executables, with zero differences and HEAD fixed at `ba9bf15`. This qualifies
+the recorded offline workloads on this machine; it does not establish a
+universal speedup, real-model quality/latency or compositor presentation.
+The paired closed-dock command requested 1280×820 on both versions. Historical
+`ef2879a` release fixes `initial_window_size()` at 1280×820 and ignores the
+benchmark window-size environment variable. This source agrees with the request,
+but its 61 legacy idle JSON reports do not prove the observed viewport; the
+existing `-AllowLegacyUi` exception permits this compatibility path.
+
+Native coverage used one physical Windows display scale and current fonts.
+Fractional DPI geometry is covered by the separate test-window scales;
+physical IME, live-provider streaming and approval/submit were not exercised
+in this latest native pass. Pinned history was readable with its
+blocked-connection notice. The [independent audit](companion-qualification-2026-11-09/speed-ba9bf15-2026-11-10/independent-audit.json)
+passed with no blocking findings. It recalculated all eight metrics and checked
+the 82-sample order, 80-observation parity, six executable identities and 966
+source files. The median-delta/A/A-noise rule passed; this does not establish
+statistical significance or universal speedup, and transition tolerances are
+large relative to the measured deltas. No required qualification gate remains
+pending; integration awaits the developer's confirmation.
+
 ## Integration and cleanup
 
-Pending. After all required qualification passes, obtain the developer's
-required confirmation before merging, pushing and removing this delivery's
-worktree and temporary branches. Preserve preexisting branches and Cérebro edits.
+M0–M5 implementation is qualified at `ba9bf15`; merge, push and cleanup await
+the developer's explicit confirmation. The candidate is in the primary checkout
+on `perf/companion-paragraph-layout`, with no candidate worktree to remove.
+After approval, clean the detached `../.worktrees/companion-speed-baseline`
+worktree and this delivery's temporary branches, preserving preexisting branches
+and Cérebro edits. External binary distribution remains legally blocked.

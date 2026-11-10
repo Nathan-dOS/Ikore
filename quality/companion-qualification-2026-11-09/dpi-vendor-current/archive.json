@@ -1,0 +1,107 @@
+{
+  "schemaVersion": 1,
+  "focus": {
+    "passed": 3,
+    "failed": 0,
+    "ignored": 0,
+    "filtered": 82,
+    "durationSeconds": 0.01
+  },
+  "vendorLib": {
+    "passed": 85,
+    "failed": 0,
+    "ignored": 0,
+    "filtered": 0,
+    "durationSeconds": 0.22
+  },
+  "focusedIncludedInVendorLib": true,
+  "separateFromNormalWorkspaceSuite": true,
+  "same796PackageIdentities": true,
+  "allThreeManifestLockFilesRestoredByteExact": true,
+  "sourceFilesVerified": 966,
+  "sourceDrift": [],
+  "setupNote": "Full all-target Cargo metadata could not read two uncached locked WASM packages offline. Member metadata with no dependencies succeeded; Windows private tests stayed offline/locked. No dependency package/version changed and no download was needed.",
+  "omittedDevFeaturesNote": "Only unused env_logger/pretty_assertions and the extra dev feature of Lyon were omitted. The normal production Lyon dependency remained enabled.",
+  "files": [
+    {
+      "path": "harness.py",
+      "bytes": 4033,
+      "sha256": "35bb60599bfd149b32c729f1fcd723da5372836995d57fadbf9e64a94b8772f5"
+    },
+    {
+      "path": "prepared.json",
+      "bytes": 771,
+      "sha256": "3ce52e7ffea127de3df83cbf504d7717bd341d2e669fe739ea4474e356de9a53"
+    },
+    {
+      "path": "source-before.json",
+      "bytes": 152536,
+      "sha256": "5d0729c150bde00a1ee08679edbf9d1571c83fae79c77e2688fc32e42930ac8e"
+    },
+    {
+      "path": "lock-proof.json",
+      "bytes": 108,
+      "sha256": "b242171b258d5a090e57efa7ca3c415299af36d080adc6091041754394f82cef"
+    },
+    {
+      "path": "restoration.json",
+      "bytes": 559,
+      "sha256": "e82217744b3b481f0733c2c25dd09d60ea6720f8a003d1b1db4a6f63bd331c0c"
+    },
+    {
+      "path": "temporary-harness.patch",
+      "bytes": 1502,
+      "sha256": "4f185910f256f395cb57986b95d83cb8f863e09a2c731f9d7b6b76d41aa96017"
+    },
+    {
+      "path": "inventory-output.txt",
+      "bytes": 8495,
+      "sha256": "59dfe9b0c5dcfc80d7b64d3a891863c88453cbbcf15c227e5d7bc94e69372d6b"
+    },
+    {
+      "path": "focused-output.txt",
+      "bytes": 1177,
+      "sha256": "640805d98321366922e5abff90165151419a620ee0c34928ea71bed28e539758"
+    },
+    {
+      "path": "full-output.txt",
+      "bytes": 6686,
+      "sha256": "962c9c7e4346b41847301bf4d6614c1cda62bc73997fad317f214493f3ad5fb6"
+    },
+    {
+      "path": "0.before",
+      "bytes": 1742,
+      "sha256": "45084da2cbd126b4abe0be92cac1a6fb054cac4476ae68726ce9acb109ed3c28"
+    },
+    {
+      "path": "1.before",
+      "bytes": 209373,
+      "sha256": "a9ecf157e73b7ea67876fb416cce4f460838bc6ab1ed2eee985e9915a457e96b"
+    },
+    {
+      "path": "2.before",
+      "bytes": 16267,
+      "sha256": "bdbdf8c6340c387eea3c0a6ed0d880edbbbacf64062cd4fd5b04cac6afdf44cb"
+    },
+    {
+      "path": "0.temporary",
+      "bytes": 1767,
+      "sha256": "0db6ba8abc8a93ed979eaf794c657ad0f6620bc6731b53b35b5c335426c3430d"
+    },
+    {
+      "path": "1.temporary",
+      "bytes": 201235,
+      "sha256": "bdea09e2a390f0daab2ef3489e318df1c898df452919cf5778293f3ce8cfb2d6"
+    },
+    {
+      "path": "2.temporary",
+      "bytes": 16066,
+      "sha256": "7fe2cf734b19a3ea3be40abf94f8cca41db85a3358b8c7c40f11e50956f8d556"
+    },
+    {
+      "path": "metadata-all-targets-setup-output.txt",
+      "bytes": 399,
+      "sha256": "1a3e6e28620392fa94b32e3085e3595c3a62a69b2ec2a45372494878503318dc"
+    }
+  ]
+}

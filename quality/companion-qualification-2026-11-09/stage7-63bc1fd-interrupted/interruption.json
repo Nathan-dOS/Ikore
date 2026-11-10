@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "sourceCommit": "63bc1fd4ae9bb05404adc5e7c798841888bf5ae3",
+  "stoppedAtUtc": "2026-11-10T01:28:56.609228+00:00",
+  "outcome": "manually interrupted; not a full gate result",
+  "reason": "Independent review found stale clipboard values could conceal a no-op copy in the new test. Strengthen each gesture with a sentinel and verify Ctrl+A starts from an empty selection. No production defect or failing application test reported before stop.",
+  "completedChecks": [
+    "GPUI/Rust structure",
+    "crate boundaries",
+    "format",
+    "strict Clippy"
+  ],
+  "workspaceTests": "incomplete; core tests still running at interruption",
+  "timingsFileAvailable": false,
+  "sourceFilesVerified": 966,
+  "sourceDrift": [],
+  "rawOutputSha256": "4ceaa84bc58e40e7f531b59571c3a36b98801169efefa237f0502fbc24df7977"
+}

@@ -1,0 +1,14 @@
+   Compiling hvc-ui v0.1.0 (<repo>\crates\hvc-ui)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 18.17s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running unittests src\lib.rs (target\debug\deps\hvc_ui-e0d5dae7018a271f.exe)
+
+running 4 tests
+test selectable_message::tests::paragraph_fusion_keeps_actual_message_selection_and_complete_clipboard ... ok
+test selectable_message::tests::paragraph_fusion_keeps_exact_geometry_carets_and_style_at_real_dpi ... ok
+test selectable_message::tests::paragraph_fusion_removes_one_real_taffy_node_per_paragraph ... ok
+test selectable_message::tests::paragraph_fusion_has_no_accumulated_height_drift_or_wrap_threshold_change ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 486 filtered out; finished in 0.71s
+

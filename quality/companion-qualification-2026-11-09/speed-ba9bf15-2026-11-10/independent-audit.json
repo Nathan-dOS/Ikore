@@ -1,0 +1,307 @@
+{
+  "schemaVersion": 1,
+  "kind": "independent-read-only-speed-audit",
+  "auditedAtUtc": "2026-11-10T11:15:44.948443+00:00",
+  "result": "passed",
+  "sourceCommit": "ba9bf15b5945e369ecb0ab8d9d97a5a364f80070",
+  "branch": "perf/companion-paragraph-layout",
+  "scope": "Recalculation and read-only review of existing frozen evidence; no new test, Cargo, EXE, benchmark or network operation. Only this audit JSON was written.",
+  "sampleInventory": {
+    "total": 82,
+    "uniqueLabels": 82,
+    "warmups": 2,
+    "calibrationSamples": 40,
+    "calibrationPairs": 20,
+    "comparisonSamples": 40,
+    "comparisonPairs": 20,
+    "orderMatched": "A/A calibration followed by AB even indexes and BA odd indexes",
+    "calibrationFrozenBeforeComparison": true
+  },
+  "metrics": {
+    "nonTerminalP50Us": {
+      "samples": 20,
+      "calibrationPairs": 20,
+      "noiseP95": 5187.0,
+      "pairedMedianDelta": 25.0,
+      "passed": true
+    },
+    "nonTerminalP95Us": {
+      "samples": 20,
+      "calibrationPairs": 20,
+      "noiseP95": 8490.0,
+      "pairedMedianDelta": 35.0,
+      "passed": true
+    },
+    "terminalP50Us": {
+      "samples": 20,
+      "calibrationPairs": 20,
+      "noiseP95": 5058.0,
+      "pairedMedianDelta": 49.0,
+      "passed": true
+    },
+    "terminalP95Us": {
+      "samples": 20,
+      "calibrationPairs": 20,
+      "noiseP95": 6156.0,
+      "pairedMedianDelta": 132.0,
+      "passed": true
+    },
+    "compositionWallP50Ms": {
+      "samples": 20,
+      "calibrationPairs": 20,
+      "noiseP95": 693.0,
+      "pairedMedianDelta": -235.0,
+      "passed": true
+    },
+    "compositionWallP95Ms": {
+      "samples": 20,
+      "calibrationPairs": 20,
+      "noiseP95": 1987.0,
+      "pairedMedianDelta": -898.0,
+      "passed": true
+    },
+    "uiP50Ms": {
+      "samples": 20,
+      "calibrationPairs": 20,
+      "noiseP95": 0.11279999999999912,
+      "pairedMedianDelta": -0.007499999999999396,
+      "passed": true
+    },
+    "uiP95Ms": {
+      "samples": 20,
+      "calibrationPairs": 20,
+      "noiseP95": 0.31240000000000023,
+      "pairedMedianDelta": -0.009800000000001141,
+      "passed": true
+    }
+  },
+  "rawCrossChecks": {
+    "transitionLogs": 82,
+    "observationsPerTransitionReport": {
+      "nonTerminal": 1000,
+      "terminalDone": 200
+    },
+    "canaryReports": 82,
+    "armsPerCanary": 4,
+    "closedDockUiReports": 82,
+    "samplesPerUiReport": 120,
+    "legacyBaselineIdleReports": 61,
+    "nearestRankQuantilesMatched": true
+  },
+  "streaming": {
+    "p50Ms": 6.21,
+    "p95Ms": 7.4188,
+    "p99Ms": 8.8826,
+    "samples": 120,
+    "warmupSamples": 20,
+    "fixtureFrames": 141,
+    "updatedConversations": 423,
+    "fixtureReady": true,
+    "viewport": "1440x900",
+    "originalLimits": {
+      "p95Ms": 8.33,
+      "p99Ms": 16.67
+    },
+    "passed": true
+  },
+  "compositionParity": {
+    "baseline": {
+      "observations": 80,
+      "correct": 80,
+      "completed": 80,
+      "fixtures": 20,
+      "heldOutFixtures": 4,
+      "totals": {
+        "provider_calls": 540,
+        "human_checkpoints": 320,
+        "failure_checkpoints": 0,
+        "interventions": 0,
+        "rejected_attempts": 15,
+        "usage_records": 540,
+        "usage_partial_records": 0,
+        "usage_unavailable_records": 12
+      },
+      "orchestrationQualified": [
+        "B",
+        "C",
+        "D"
+      ],
+      "costQualityQualified": null,
+      "oracleFailures": 0,
+      "inventoryViolations": 0,
+      "diagnostics": 0
+    },
+    "candidate": {
+      "observations": 80,
+      "correct": 80,
+      "completed": 80,
+      "fixtures": 20,
+      "heldOutFixtures": 4,
+      "totals": {
+        "provider_calls": 540,
+        "human_checkpoints": 320,
+        "failure_checkpoints": 0,
+        "interventions": 0,
+        "rejected_attempts": 15,
+        "usage_records": 540,
+        "usage_partial_records": 0,
+        "usage_unavailable_records": 12
+      },
+      "orchestrationQualified": [
+        "B",
+        "C",
+        "D"
+      ],
+      "costQualityQualified": null,
+      "oracleFailures": 0,
+      "inventoryViolations": 0,
+      "diagnostics": 0
+    }
+  },
+  "fixtureIdentity": {
+    "id": "cohesive-01-session-expiry",
+    "fixtureVersion": "stage-composition-fixtures-v1",
+    "fullFixtureSha256": "786e5cc1da8409dc4985da0d27cea9c388d4c42fc82a82121ce1515c1f093c5e",
+    "arms": [
+      "a",
+      "b",
+      "c",
+      "d"
+    ],
+    "canaryFixtureSha256": "7c931da80b5cb21dc310b01953f288ee68361f192cbc917718866735a34526e2",
+    "fixtures": 20,
+    "typedRustSerializationRecalculated": true,
+    "candidateAndDetachedBaselineByteHashesMatched": true
+  },
+  "binaryIdentity": [
+    {
+      "side": "baseline",
+      "kind": "core",
+      "name": "hvc_core-b3ff09f63410ebf4.exe",
+      "sha256": "efd5638ef0881df0f72ef6c18b0a8d374511f893fafece5163b02bcdf0c59e3f"
+    },
+    {
+      "side": "baseline",
+      "kind": "ui",
+      "name": "hard-vibe-code.exe",
+      "sha256": "024e10d90ee80e8f364b3b43751d1cc11a3f15194aa84db2d954fe549509938d"
+    },
+    {
+      "side": "baseline",
+      "kind": "composition",
+      "name": "composition_benchmark.exe",
+      "sha256": "cd1b60805ac03b49eaef66bc8ef2ba4a4599af4e9bb940680f848c47c057dcfb"
+    },
+    {
+      "side": "candidate",
+      "kind": "core",
+      "name": "hvc_core-4dee993b4e86ff9a.exe",
+      "sha256": "71b038d873b5e1f9fb7078dbd7982e7e9a42eda96472a9b2db77fc67f001fe70"
+    },
+    {
+      "side": "candidate",
+      "kind": "ui",
+      "name": "hard-vibe-code.exe",
+      "sha256": "545ffc9720dc81e4af125efe902747715556a7450548c4bb50084ee5474eba3c"
+    },
+    {
+      "side": "candidate",
+      "kind": "composition",
+      "name": "composition_benchmark.exe",
+      "sha256": "3c28479fd9df7e6cbe17ac999b9aa5127901cd1fbf7e51fd00d7e1348314a92a"
+    }
+  ],
+  "freezeIdentity": {
+    "beforeEqualsAfter": true,
+    "postGateDifferences": 0,
+    "sixReportPathsAndHashesMatchSnapshotsAndCurrentBytes": true,
+    "sourceFilesVerified": 966,
+    "HEADGitBlobsVerified": 966,
+    "CRLFNormalizedGitBlobs": 768,
+    "coreInventory": {
+      "baseline": {
+        "files": 1,
+        "selected": "hvc_core-b3ff09f63410ebf4.exe",
+        "summary": "1172 tests, 0 benchmarks"
+      },
+      "candidate": {
+        "files": 6,
+        "selected": "hvc_core-4dee993b4e86ff9a.exe",
+        "summary": "1203 tests, 0 benchmarks"
+      }
+    },
+    "finalStage7CoreMatches": true,
+    "cargoFingerprintFieldsComparedExactly": {
+      "composition": {
+        "rustc": 6728126329342245928,
+        "features": "[]",
+        "declared_features": "[]",
+        "target": 12173013903719439314,
+        "profile": 12615065149452638216,
+        "path": 15644833489447302030,
+        "rustflags": [],
+        "config": 9396254390672932401,
+        "compile_kind": 0
+      },
+      "core": {
+        "rustc": 6728126329342245928,
+        "features": "[\"default\", \"quota-credential-collectors\"]",
+        "declared_features": "[\"default\", \"quota-credential-collectors\"]",
+        "target": 15478591064592608281,
+        "profile": 11210029956904455165,
+        "path": 3452404229797067220,
+        "rustflags": [],
+        "config": 9396254390672932401,
+        "compile_kind": 0
+      },
+      "ui": {
+        "rustc": 6728126329342245928,
+        "features": "[\"default\", \"quota-credential-collectors\"]",
+        "declared_features": "[\"default\", \"quota-credential-collectors\"]",
+        "target": 9133603289547208269,
+        "profile": 2500809432665998947,
+        "path": 10153279826194601681,
+        "rustflags": [],
+        "config": 9396254390672932401,
+        "compile_kind": 0
+      }
+    }
+  },
+  "existingStage7": {
+    "checks": 9,
+    "testTargets": 61,
+    "testTotals": {
+      "failed": 0,
+      "filtered": 0,
+      "ignored": 23,
+      "passed": 2167
+    },
+    "recordHashesMatched": true
+  },
+  "gateInputInventory": {
+    "files": 505,
+    "pathAndSha256ManifestSha256": "62fd77dcbe7b0079a1083283c3a7df991deb16bf8685c7a03150922e1f736a0f"
+  },
+  "legacyViewportEvidence": {
+    "scriptRequested": "1280x820",
+    "baselineSource": "ef2879a6ecc161f5910c6ee4402aea1206d644f8:crates/hvc-ui/src/shell.rs",
+    "baselineReleaseDefault": "1280x820",
+    "baselineHonorsBenchmarkWindowSizeEnvironment": false,
+    "observedViewportInBaselineJson": null,
+    "legacyCompatibilityPermittedByHelper": true
+  },
+  "findings": {
+    "blocking": [],
+    "usageUnavailableRecords": "12 on each side, corresponding to the injected transport failures. Values agree per observation; this counter is outside Assert-SpeedCompositionParity and is not treated as a regression."
+  },
+  "limitations": [
+    "Fixture mode establishes measured orchestration, calls/checkpoints/publication and fixture oracles; real-model quality, provider latency and monetary conclusions remain outside scope.",
+    "The UI metric measures GPUI animation-frame callback intervals, not direct compositor presentation.",
+    "The script requests 1280x820. Historical ef287 release ignores HVC_BENCHMARK_UI_WINDOW_SIZE and defaults in source to1280x820. Its 61 legacy idle JSON reports do not prove actual observed viewport; the helper explicitly permits this compatibility path. Candidate closed-dock and streaming viewports were checked directly.",
+    "The existing median-delta versus A/A p95-noise rule passed. It proves neither statistical significance, confidence intervals nor speedup. Transition tolerances are large relative to observed deltas.",
+    "The comparison covers the complete frozen candidate versus ef2879a baseline and does not causally isolate only the paragraph change.",
+    "Snapshots cannot certify transient changes restored between observations. OS DLLs, fonts, GPU drivers, ambient load and power policy are outside frozen identity.",
+    "Cargo fingerprints are cached provenance evidence rather than an independent rebuild. Python preserved all integer fields, including values above2^53.",
+    "No merge, push or branch/worktree cleanup was authorized or performed by this auditor."
+  ]
+}

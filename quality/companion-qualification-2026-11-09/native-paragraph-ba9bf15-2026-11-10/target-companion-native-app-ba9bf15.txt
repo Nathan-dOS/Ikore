@@ -1,0 +1,63 @@
+   Compiling serde v1.0.229
+   Compiling zerovec v0.11.8
+   Compiling zerotrie v0.2.5
+   Compiling tokio v1.54.1
+   Compiling futures-util v0.3.34
+   Compiling tinystr v0.8.4
+   Compiling potential_utf v0.1.6
+   Compiling icu_collections v2.3.0
+   Compiling serde_urlencoded v0.7.1
+   Compiling icu_locale_core v2.3.0
+   Compiling rusqlite v0.41.1
+   Compiling av-scenechange v0.14.1
+   Compiling ahash v0.8.12
+   Compiling schemars v1.2.2
+   Compiling fluent-uri v0.4.1
+   Compiling serde_json_lenient v0.2.4
+   Compiling icu_provider v2.3.1
+   Compiling jsonschema-value v0.59.0
+   Compiling email_address v0.2.9
+   Compiling icu_properties v2.3.0
+   Compiling icu_normalizer v2.3.0
+   Compiling rav1e v0.8.1
+   Compiling referencing v0.59.0
+   Compiling gpui_perf v0.2.2
+   Compiling hvc-contracts v0.1.0 (<repo>\crates\hvc-contracts)
+   Compiling futures-executor v0.3.34
+   Compiling serde_yaml v0.9.34+deprecated
+   Compiling gpui_util_macros v0.2.2
+   Compiling futures v0.3.34
+   Compiling gpui_util v0.2.2
+   Compiling postage v0.5.0
+   Compiling idna_adapter v1.2.2
+   Compiling idna v1.1.0
+   Compiling gpui_semantic_version v0.2.2
+   Compiling url v2.5.8
+   Compiling jsonschema v0.59.0
+   Compiling hvc-editor v0.1.0 (<repo>\crates\hvc-editor)
+   Compiling tokio-util v0.7.20
+   Compiling tokio-rustls v0.26.4
+   Compiling h2 v0.4.18
+   Compiling tower v0.5.3
+   Compiling tokio-socks v0.5.3
+   Compiling refinery-core v0.10.1
+   Compiling hvc-app v0.1.0 (<repo>\crates\hvc-app)
+   Compiling tower-http v0.6.11
+   Compiling refinery-macros v0.10.0
+   Compiling ravif v0.13.0
+   Compiling refinery v0.10.0
+   Compiling hyper v1.11.0
+   Compiling image v0.25.10
+   Compiling hyper-util v0.1.20
+   Compiling hyper-rustls v0.27.9
+   Compiling reqwest v0.12.28
+   Compiling zed-reqwest v0.12.15-zed
+   Compiling hvc-terminal v0.1.0 (<repo>\crates\hvc-terminal)
+   Compiling hvc-voice v0.1.0 (<repo>\crates\hvc-voice)
+   Compiling gpui_http_client v0.2.2
+   Compiling gpui v0.2.2 (<repo>\third_party\gpui)
+   Compiling hvc-core v0.1.0 (<repo>\crates\hvc-core)
+   Compiling hvc-ui v0.1.0 (<repo>\crates\hvc-ui)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 44s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
