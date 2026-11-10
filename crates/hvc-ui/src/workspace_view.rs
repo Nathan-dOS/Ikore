@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use gpui::{AnyElement, Context, IntoElement, SharedString, div, prelude::*, px};
+use gpui::{AnyElement, Context, Div, IntoElement, SharedString, div, prelude::*, px};
 use hvc_editor::{MarkdownBlock, parse_markdown};
 
 use crate::app_model::AppModel;
@@ -923,9 +923,11 @@ pub(crate) fn render_markdown_block_owned_with(
     }
 }
 
+/// The callback supplies a neutral text container without typography overrides.
+/// Paragraph spacing and typography reuse that container, keeping native layout.
 pub(crate) fn render_markdown_block_with(
     block: &MarkdownBlock,
-    text_element: &mut impl FnMut(&str) -> AnyElement,
+    text_element: &mut impl FnMut(&str) -> Div,
 ) -> AnyElement {
     match block {
         MarkdownBlock::Table { headers, rows } => div()
@@ -965,11 +967,10 @@ pub(crate) fn render_markdown_block_with(
             .font_weight(gpui::FontWeight::BOLD)
             .child(text_element(text))
             .into_any_element(),
-        MarkdownBlock::Paragraph(text) => div()
+        MarkdownBlock::Paragraph(text) => text_element(text)
             .mb_3()
             .text_sm()
             .line_height(px(22.0))
-            .child(text_element(text))
             .into_any_element(),
         MarkdownBlock::CodeBlock { language, code } => div()
             .mb_3()

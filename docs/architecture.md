@@ -48,6 +48,10 @@ at most four exact wrapping/truncation measurements, evicting the least recently
 used state. Inherited text style and rem size invalidate the cache; selection
 highlights and current hit-testing bounds remain frame-specific.
 
+Selectable Markdown paragraphs apply spacing and typography to their existing
+text container. This avoids a redundant layout node while retaining native
+text measurement, complete projections and current selection bounds.
+
 Text painting preserves scene layers when skipping a background with no colors
 or foreground glyphs proven outside the existing vertical visibility guard.
 Full text layout, selection and copy remain available; decorated foreground

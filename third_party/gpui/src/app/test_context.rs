@@ -1111,14 +1111,7 @@ mod dpi_and_layout_tests {
         visual.simulate_scale_factor(1.25);
         visual.run_until_parked();
 
-        for invalid in [
-            f32::NAN,
-            f32::INFINITY,
-            f32::NEG_INFINITY,
-            0.0,
-            -0.0,
-            -1.0,
-        ] {
+        for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.0, -0.0, -1.0] {
             assert!(
                 catch_unwind(AssertUnwindSafe(|| visual.simulate_scale_factor(invalid))).is_err()
             );
@@ -1142,9 +1135,8 @@ mod dpi_and_layout_tests {
     ) {
         let visual = cx.add_empty_window();
         visual.run_until_parked();
-        let before = visual.update(|window, _| {
-            window.layout_node_count().expect("layout engine available")
-        });
+        let before =
+            visual.update(|window, _| window.layout_node_count().expect("layout engine available"));
         assert_eq!(before, 0);
         let during_measurement = Rc::new(Cell::new(None));
         let observed = during_measurement.clone();
@@ -1158,13 +1150,11 @@ mod dpi_and_layout_tests {
                 AvailableSpace::Definite(px(200.0)),
             ),
             move |window, cx| {
-                let measured = window.request_measured_layout(
-                    Style::default(),
-                    move |_, _, window, _| {
+                let measured =
+                    window.request_measured_layout(Style::default(), move |_, _, window, _| {
                         observed.set(Some(window.layout_node_count()));
                         size(px(8.0), px(8.0))
-                    },
-                );
+                    });
                 window.compute_layout(measured, size(px(20.0), px(20.0)).into(), cx);
                 div()
                     .on_children_prepainted(move |_, window, _| {
@@ -1177,6 +1167,9 @@ mod dpi_and_layout_tests {
         // One explicitly measured node, one Div, and the real text leaf.
         assert_eq!(during_prepaint.get(), Some(before + 3));
         // TestAppContext flushes the dirty window at the end of draw's update.
-        assert_eq!(visual.update(|window, _| window.layout_node_count()), Some(0));
+        assert_eq!(
+            visual.update(|window, _| window.layout_node_count()),
+            Some(0)
+        );
     }
 }

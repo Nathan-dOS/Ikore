@@ -195,6 +195,34 @@ workload, warmup, readiness or latency limit changed. Release speed and the
 complete application delivery gate remain pending. See
 [`quality/stage7-report.md`](../../quality/stage7-report.md).
 
+## HVC-GPUI-010 — test-only DPI changes and real layout-node observation
+
+Files: `src/platform/test/window.rs`, `src/app/test_context.rs`,
+`src/taffy.rs` and `src/window.rs`.
+
+Local test infrastructure (2026-11-09); no upstream backport is claimed.
+The test platform retains its default scale of 2.0 and can simulate a finite,
+positive DPI change through the existing resize callback, preserving logical
+viewport size. Invalid values are rejected before state mutation. Test context
+helpers expose this operation to UI tests so fractional DPI exercises the
+real Window/Taffy scale rather than a rem-size approximation.
+
+A read-only node-count getter exists only under `test`/`test-support`. It
+observes the real Taffy tree without counters or layout retention, returns
+`None` while measurement temporarily takes the engine, and zero after a
+completed frame clears the tree. All three private seam tests passed. The
+complete vendor library passed 85/85 with zero failed/ignored/filtered; the
+three are included. The temporary offline/locked harness preserved all 796
+package identities and restored both manifests and the lock byte for byte.
+The application paragraph tests use it to prove one redundant node is removed
+without changing native measurement or selection. This adds no release state,
+benchmark override, workload change or latency-limit exception.
+
+Execution and remaining qualification are recorded in
+[`quality/stage7-report.md`](../../quality/stage7-report.md) and the Companion
+validation record. The private tests must run explicitly; workspace tests do
+not execute a dependency's test module.
+
 ## Integridade
 
 - Versão-base: `gpui` 0.2.2.
