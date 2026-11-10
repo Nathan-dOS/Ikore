@@ -138,6 +138,12 @@ off; a build without the `quota-credential-collectors` feature has no credential
 reader at all. A pre-flight check before each stage is advisory and uses the
 existing human checkpoint; it never switches provider by itself.
 
+Since 2026-11-10 that feature is off by default (G10). Anthropic's Claude Code
+terms do not allow other applications to collect or use Claude sign-in tokens,
+and OpenAI's terms do not allow programmatic extraction of ChatGPT data outside
+the API. Default builds therefore use only the official and local sources; the
+Claude bar fills from the events of the developer's own Claude Code runs.
+
 See the [threat model](../../quality/cli-threat-model.md) and the
 [quota module](../../crates/hvc-core/src/quota/mod.rs).
 

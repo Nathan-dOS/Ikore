@@ -11,8 +11,8 @@ name = "hard-vibe-code"
 path = "src/main.rs"
 
 [features]
-# ADR-028 G10: a public build may ship with `--no-default-features`.
-default = ["quota-credential-collectors"]
+# ADR-028 G10: off by default since 2026-11-10; see the hvc-core manifest.
+default = []
 quota-credential-collectors = ["hvc-ui/quota-credential-collectors"]
 
 [dependencies]

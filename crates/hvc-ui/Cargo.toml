@@ -7,7 +7,8 @@ license.workspace = true
 description = "GPUI views and native design system for Hard Vibe Code"
 
 [features]
-default = ["quota-credential-collectors"]
+# ADR-028 G10: off by default since 2026-11-10; see the hvc-core manifest.
+default = []
 quota-credential-collectors = ["hvc-core/quota-credential-collectors"]
 
 [dependencies]

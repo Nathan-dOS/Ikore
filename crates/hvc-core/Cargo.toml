@@ -7,9 +7,12 @@ license.workspace = true
 description = "Framework-agnostic domain and application core for Hard Vibe Code"
 
 [features]
-# ADR-028 G10: the plan-quota collectors that read a CLI's own access token. On in
-# development; a public build can turn it off without affecting the other sources.
-default = ["quota-credential-collectors"]
+# ADR-028 G10: the plan-quota collectors that read a CLI's own access token. Off by
+# default since 2026-11-10: Anthropic's Claude Code terms do not allow other
+# applications to collect or use Claude sign-in tokens, and OpenAI's terms do not
+# allow programmatic extraction of ChatGPT data outside the API. The official and
+# local quota sources do not depend on this feature.
+default = []
 quota-credential-collectors = ["hvc-terminal/quota-credential-collectors"]
 
 [dependencies]
