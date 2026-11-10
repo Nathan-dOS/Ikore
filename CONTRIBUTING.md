@@ -12,7 +12,10 @@ embeddings through Ollama). All state lives in a local SQLite database, and
 credentials live in the operating system keyring.
 
 See [docs/architecture.md](docs/architecture.md) for the architecture and
-[docs/testing.md](docs/testing.md) for the full testing guide.
+[docs/testing.md](docs/testing.md) for the full testing guide. For a short,
+visual overview of the path from an idea to a merged pull request, read
+[How to contribute, step by step](docs/how-to-contribute.md). Everyone who
+participates follows the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 We welcome bug fixes, tests, documentation, performance work, new adapters,
 and Linux/macOS portability of the headless crates.

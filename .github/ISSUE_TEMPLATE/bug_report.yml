@@ -1,0 +1,68 @@
+name: Bug report
+description: Report something that does not work as expected.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for the report. Search the existing issues first.
+        Security problems must not be reported here; follow SECURITY.md instead.
+        Remove tokens, keys, personal paths and private prompt content from logs and screenshots.
+  - type: textarea
+    id: current
+    attributes:
+      label: What happened
+      description: The current behavior, including error messages.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open a project with ...
+        2. Start a pulsation ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or stack trace
+      description: Paste only redacted output.
+      render: text
+  - type: input
+    id: commit
+    attributes:
+      label: HVC commit
+      description: Output of `git rev-parse --short HEAD`.
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: Windows 11 23H2
+  - type: input
+    id: rustc
+    attributes:
+      label: Rust version
+      description: Output of `rustc --version`.
+  - type: input
+    id: backend
+    attributes:
+      label: CLI backend or LLM provider involved
+      placeholder: Codex CLI, Claude Code, OpenRouter, ...
+  - type: dropdown
+    id: docker
+    attributes:
+      label: Did you use the Docker harness?
+      options:
+        - "No"
+        - "Yes"

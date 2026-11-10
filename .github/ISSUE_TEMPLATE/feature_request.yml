@@ -1,0 +1,37 @@
+name: Feature request
+description: Propose a new feature or a change to the design.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Large or architectural changes are agreed in an issue before any code is written:
+        a new pipeline stage, a change to the contract between stages, a migration,
+        a new CLI backend or LLM provider, a heavy dependency, a change to the vendored
+        GPUI or to the human checkpoint flow.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is hard or impossible today, and who runs into it?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What should change? Mention the stages, crates or views involved if you know them.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: dropdown
+    id: contribute
+    attributes:
+      label: Would you like to implement it?
+      options:
+        - "Yes, after the design is agreed"
+        - "Maybe, with guidance"
+        - "No"
