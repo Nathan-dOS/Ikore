@@ -1,291 +1,262 @@
 # Hard Vibe Code
 
-Desktop Orchestrator nativo em GPUI/Rust para Windows x64.
+A native Windows desktop application that runs AI coding agents through a
+six-stage engineering pipeline, with a human decision at every checkpoint
+that matters.
 
-Documentação: [arquitetura](docs/architecture.md), [testes](docs/testing.md),
-[decisões de design](docs/adr/README.md) e [evidências de qualidade](quality/README.md).
+[![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
+![Rust 1.98](https://img.shields.io/badge/rust-1.98-orange)
+![Platform: Windows x64](https://img.shields.io/badge/platform-Windows%20x64-lightgrey)
+![Status: pre-release](https://img.shields.io/badge/status-pre--release-yellow)
 
-## Estado atual
+![A pulsation paused at its Test checkpoint](docs/images/review-checkpoint.png)
 
-- `hvc-app` é o único binário desktop e gera `hard-vibe-code.exe`.
-- Nine native views are grouped under Agent (Agents, Logs), Engine (Tasks, Feature Forge, Pulsations, Vault), and Companion (Chat, Workspace). Settings opens from the header gear.
-- UI e core compartilham o mesmo processo e usam chamadas Rust tipadas, sem JSON/IPC.
-- O banco permanece em `%APPDATA%\com.hardvibecode.desktop\hard-vibe-code.db`.
-- `HVC_DATA_DIR` permite isolar dados de desenvolvimento e teste.
-- Migrations V1–V9 e o serviço `hard-vibe-code.runtime` no keyring foram preservados.
+<sub>A pulsation paused at its Test checkpoint. The brief is derived by the
+host from validated records: criteria, the required check that ran, the new
+test file and four trust layers. Nothing reaches the Integrator stage until
+the developer approves, requests a revision or rejects.</sub>
 
-## Stack
+## Why
 
-- Rust 1.98.0, edition 2024 e Cargo resolver 3.
-- GPUI 0.2.2 com backend Windows e patch local auditável.
-- Tokio multi-thread para rede, streaming e workers.
-- SQLite via `rusqlite`/`refinery`.
-- Rope e `EntityInputHandler` para editor Unicode/IME.
-- Tree-sitter Markdown incremental e `pulldown-cmark` para preview sem HTML bruto.
-- `notify` para filesystem e `keyring` para credenciais.
+AI coding agents are fast, but on their own they lose context, drift from
+what was asked and report work as finished without evidence. Reviewing a
+large generated change after the fact is slow and easy to get wrong.
 
-Não são reutilizadas crates de editor/UI do Zed. A única fonte vendorizada é o
-próprio GPUI 0.2.2, sob Apache-2.0, documentado em
-[`third_party/gpui/HVC-PATCHES.md`](third_party/gpui/HVC-PATCHES.md).
+Hard Vibe Code (HVC) keeps the speed and adds engineering discipline. Every
+change runs as a **pulsation**: a fixed pipeline of six stages (Intake,
+Specification, Contract, Code, Test and Integrator) carried out by agents
+through LLM APIs or the official coding CLIs. Between stages, the developer
+reviews a short brief and decides what happens next. The Rust host, not the
+model, owns the state transitions, the file writes, the checks and the
+evidence, so every claim in a brief is backed by records the host produced
+itself.
 
-## Workspace Cargo
+## How it works
 
-- `crates/hvc-app`: composition root e binário GPUI.
-- `crates/hvc-contracts`: shared execution, stage, timeout, usage and redaction values.
-- `crates/hvc-terminal`: CLI services, repository, adapters, process isolation and subscription quota.
-- `crates/hvc-voice`: local dictation: pinned speech runtime and model, microphone capture, global push-to-talk and earcons.
-- `crates/hvc-core`: domínio, persistência, workspace, LLM, Chat e barramento tipado.
-- `crates/hvc-ui`: native shell, three header tabs, nine views, and the GPUI design system.
-- `crates/hvc-editor`: Rope, seleção, undo/redo, diff, Markdown e Tree-sitter.
-- `crates/hvc-test-support`: ambientes isolados, doubles e fixtures de paridade.
-
-## Executar
-
-```powershell
-cargo run -p hvc-app
+```mermaid
+flowchart TB
+    subgraph P[Pulsation]
+      direction LR
+      I[Intake] --> S[Specification] --> C[Contract] --> Co[Code] --> T[Test] --> In[Integrator]
+    end
+    Dev([Developer]) --> Forge["Feature Forge<br/>scope and tasks"]
+    Forge --> P
+    P <--> H{{"Human checkpoints<br/>approve, revise, reject"}}
+    P --> R["Agent runtime<br/>LLM APIs and coding CLIs"]
+    P --> Ctx["Project context<br/>Markdown vault<br/>Tree-sitter, embeddings"]
+    P --> DB[("Local SQLite<br/>events, usage, evidence")]
+    DB --> Rep["Pulsation report<br/>and signed attestation"]
 ```
 
-Build release e smoke Windows:
+- **Feature Forge.** An idea becomes approved scope and backlog tasks through
+  a conversation with a feature agent. Approval creates tasks; it never starts
+  execution by itself.
+- **Pulsations.** A pulsation freezes the selected task revisions and their
+  approved context, then runs them through the six stages. Stage work is split
+  into bounded units under a frozen plan, and a worker result never advances
+  the pipeline on its own.
+- **Human checkpoints.** Specification, Contract, Test and Integrator stop for
+  review. The Review Brief summarizes criteria, host checks, files, risk and
+  four trust layers (identity, scope, guardrails and intent). Supported stage
+  failures park for Retry, a revision to a permitted stage or Abort.
+- **Host-owned evidence.** Approving a Specification issues an execution
+  mandate, an append-only and hash-chained record of what the later stages may
+  write and which checks must run. Writes outside it are refused. When a
+  pulsation ends, the host signs an in-toto statement in a DSSE envelope with
+  an Ed25519 key kept in the operating system's credential store.
+- **Agent runtime.** Each pipeline role runs through an API provider (OpenAI,
+  Anthropic, Gemini, DeepSeek, Groq, Mistral, OpenRouter or a local Ollama) or
+  an official CLI (Codex, Claude Code, Gemini CLI, OpenCode, Antigravity or a
+  custom adapter). CLI processes run with argument arrays, reduced
+  environments, deadlines, bounded output, cancellation and secret redaction.
+- **Project context.** A Markdown vault with a wikilink graph, bounded
+  repository reads, Tree-sitter and local embeddings through Ollama. Context
+  traces record what each agent actually received.
+- **Companion.** A chat dock that knows the project's pulsations and pending
+  decisions, notes captured by text or by local voice dictation (Whisper or
+  Nemotron on the CPU), and a native architecture canvas.
+- **Local first.** One native Rust process built on
+  [GPUI](https://crates.io/crates/gpui), the UI framework from the Zed
+  editor. State lives in a local SQLite database and credentials in the
+  operating system keyring.
+
+## Screenshots
+
+All screenshots use the demo data described in
+[Try it with demo data](#try-it-with-demo-data).
+
+| | |
+|---|---|
+| ![Pulsation overview](docs/images/pulsation-overview.png) | ![Feature Forge backlog](docs/images/forge-backlog.png) |
+| **Pulsation overview.** The six stages, the trust layers derived by the host and the pulsation report, available from the Integrator checkpoint. | **Feature Forge.** Backlog tasks with their acceptance criteria, and the panel that composes selected tasks into a pulsation. |
+| ![Home dashboard](docs/images/home-dashboard.png) | ![Logs and observability](docs/images/observability-logs.png) |
+| **Home.** The active pulsation, what is waiting on you, the runtime state and token usage. | **Logs.** Every agent run with its model, duration, tokens and structured output. |
+| ![Vault graph](docs/images/vault-graph.png) | ![Architecture canvas](docs/images/architecture-canvas.png) |
+| **Vault.** The project's Markdown knowledge as a wikilink graph, with link and frontmatter checks. | **Canvas.** Native architecture drawings, saved with the project as JSON and SVG. |
+
+## Status
+
+- **Platform:** Windows 10 and 11, x64. The UI uses GPUI's Windows backend.
+  The headless crates also build and test on Linux and macOS, with known gaps.
+- **Maturity:** pre-release (0.1.0).
+- **Distribution:** source only. There are no binary releases or installers
+  yet; build from source. The current policy is recorded in
+  [`quality/distribution-policy.json`](quality/distribution-policy.json).
+
+## Getting started
+
+### Requirements
+
+- Windows 10 or 11, x64.
+- [rustup](https://rustup.rs). `rust-toolchain.toml` pins Rust 1.98.0 with
+  Clippy and rustfmt, and rustup installs it on the first `cargo` call.
+- Visual Studio Build Tools 2022 with the "Desktop development with C++"
+  workload and a recent Windows SDK.
+- Optional: [Ollama](https://ollama.com) for local embeddings, and any of the
+  supported coding CLIs, installed and signed in.
+
+### Build and run
 
 ```powershell
-cargo build --release -p hvc-app
-powershell -ExecutionPolicy Bypass -File scripts/smoke-windows.ps1
+git clone https://github.com/Nathan-dOS/HARD-VC.git
+cd HARD-VC
+
+# Keep development data apart from your real profile.
+$env:HVC_DATA_DIR = "$PWD\target\dev-data"
+cargo run --locked -p hvc-app
 ```
 
-O artefato atual é o executável release. Instalador NSIS/WiX e Authenticode
-pertencem à etapa posterior de distribuição.
+Without `HVC_DATA_DIR`, data is stored in
+`%APPDATA%\com.hardvibecode.desktop\`. API keys are entered in Settings and
+stored in the Windows Credential Manager; HVC does not read them from `.env`
+files.
 
-## Testes durante o desenvolvimento
+For an optimized build, `cargo build --locked --release -p hvc-app` produces
+`target\release\hard-vibe-code.exe`, and
+`powershell -ExecutionPolicy Bypass -File scripts/smoke-windows.ps1` runs the
+Windows smoke test.
 
-Use os atalhos na raiz do workspace. Todos mantêm as dependências do lockfile
-(`--locked`) e executam até dois testes simultâneos por binário:
+### Try it with demo data
 
-| Comando | Abrangência |
+The repository includes deterministic fixtures that run the pipeline against
+a scripted local provider. They let you explore a paused pulsation without API
+keys or internet access:
+
+```powershell
+cargo build --locked -p hvc-test-support --bin check_fixture
+cargo run --locked -p hvc-test-support --example review_brief_fixture -- target\demo-review --stage test --visualizer
+
+# Use the HVC_DATA_DIR value that the fixture prints.
+$env:HVC_DATA_DIR = "<printed data directory>"
+cargo run --locked -p hvc-app
+```
+
+The fixture refuses to reuse a directory, so pass a new one each time.
+`--stage` also accepts `contract`, `integrator`, `failure`, `scope` and
+`done`; without it, the pulsation stops at the Specification checkpoint. The
+canvas example runs on its own with
+`cargo run --locked -p hvc-ui --example canvas_preview`.
+
+## Repository layout
+
+| Path | Contents |
+|---|---|
+| `crates/hvc-app` | Entry point and composition root; builds `hard-vibe-code.exe` |
+| `crates/hvc-ui` | Native GPUI views, review controls and design system |
+| `crates/hvc-core` | Domain, SQLite migrations, workspace, provider routing and orchestration, with no GPUI dependency |
+| `crates/hvc-terminal` | CLI runtime: adapters, discovery, process isolation and the plan-usage meter |
+| `crates/hvc-contracts` | Shared execution, stage, timeout, usage and redaction types |
+| `crates/hvc-editor` | Rope text model, selection, undo, diff, Markdown and Tree-sitter |
+| `crates/hvc-voice` | Local dictation: pinned speech runtimes, microphone capture and push-to-talk |
+| `crates/hvc-test-support` | Isolated harnesses, test doubles and the demo fixtures |
+| `third_party/gpui` | Vendored GPUI 0.2.2 and its [patch ledger](third_party/gpui/HVC-PATCHES.md) |
+| `docs/` | Architecture, testing guide and design summaries |
+| `quality/` | Dated validation reports and the distribution policy |
+| `parity/` | Traceability from the retired Tauri frontend tests to their Rust equivalents |
+| `scripts/` | Quality gate, smoke test, supply-chain audits and boundary checks |
+
+Built with Rust 1.98 (edition 2024), GPUI 0.2.2, Tokio, SQLite through
+rusqlite with refinery migrations, ropey, Tree-sitter, pulldown-cmark, reqwest
+with rustls, notify and keyring.
+
+## Development
+
+Run these before opening a pull request:
+
+```powershell
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test-core   # or the alias for the area you changed
+```
+
+The aliases live in `.cargo/config.toml`. All of them keep the lockfile
+(`--locked`) and run at most two tests at a time per binary:
+
+| Command | Scope |
 |---|---|
 | `cargo test-ui` | UI |
-| `cargo test-editor` | Editor e UI consumidora |
-| `cargo test-support` | Harnesses, integrações e UI consumidora |
-| `cargo test-contracts` | Shared contracts |
-| `cargo test-terminal` | Contracts and terminal subsystem |
-| `cargo test-core` | Contracts, terminal and core |
-| `cargo test-all` | Workspace completo, incluindo integrações, exemplos marcados como teste e doctests |
-| `cargo test-unit` | Workspace `lib` and `bin` tests (CI `unit` job) |
-| `cargo test-integration` | `tests/` targets and the `pulsation_ui_fixture` example (CI `integration` job) |
-| `cargo test-headless` | Contracts, terminal, core, editor and test-support without GPUI, used by Docker |
+| `cargo test-editor` | Editor and the UI that uses it |
+| `cargo test-core` | Contracts, terminal, voice and core |
+| `cargo test-support` | Harnesses, integration tests and the UI that uses them |
+| `cargo test-all` | The whole workspace, including integration tests and doctests |
+| `cargo test-headless` | Crates without GPUI; the Linux Docker harness runs this one |
 
-`test-unit`, `test-integration` and `cargo test --locked --workspace --doc`
-together select the same tests as `test-all`.
+`scripts/gate-stage7.ps1` is the full quality gate: formatting, Clippy,
+workspace tests, a release build, the Windows smoke test and the license,
+source and advisory audits. On GitHub Actions, formatting runs on every pull
+request and the dependency audits run when dependencies change; the Windows
+suites and the Linux harness run on manual dispatch. The
+[testing guide](docs/testing.md) covers the CI split, the Docker harness and
+how to investigate a single area.
 
-### Local and CI
-
-Before each push, run `cargo fmt --all -- --check`,
-`cargo clippy --workspace --all-targets --locked -- -D warnings` and the alias
-for the area you changed. GitHub Actions only runs the cheap checks by itself:
-hosted Windows minutes are too expensive while the repository is private, so the
-broad suite runs locally or by manual dispatch:
-
-| Workflow | Checks |
-|---|---|
-| [`ci.yml`](.github/workflows/ci.yml) | `fmt` on every pull request and push to `main`. Manual dispatch only: `clippy (windows)`, `unit (windows)`, `integration (windows)` and `linux headless (docker)`, which stays informational until Linux passes |
-| [`nightly.yml`](.github/workflows/nightly.yml) | Complete Stage 7 gate: manual dispatch only |
-| [`security.yml`](.github/workflows/security.yml) | `cargo audit` on dependency changes and weekly; the license and source audit on dependency changes |
-
-CI uses the same aliases and commands; to reproduce a failure, run the job's
-command. Run `cargo test-all` locally for cross-cutting changes, migrations,
-dependencies and the CLI runtime. `#[ignore]` tests that need authenticated
-CLIs, network access or paid quota never run in CI.
-`cargo test` sem seleção usa apenas o `default-members` (`hvc-app`).
-
-Para investigar uma área menor, confira os nomes com `--list` e aplique um filtro:
-
-```powershell
-cargo test --locked -p hvc-core --lib usage:: -- --list
-cargo test --locked -p hvc-core --lib usage:: -- --test-threads=2
-cargo test --locked -p hvc-test-support --test cli_executor -- --test-threads=2
-```
-
-Filtros reduzem a execução, mas ainda compilam o binário de testes da crate.
-O primeiro uso de uma seleção pode compilar variantes de dependências com
-features diferentes; compare tempos com o mesmo comando e cache aquecido.
-Testar um pacote não executa os testes de suas dependências. O nome de um teste
-pode diferir do diretório do arquivo (`#[path]`); não derive cobertura só de paths.
-Os aliases já contêm `--`: liste com `cargo test-ui --list`, sem outro delimitador.
-Para opções do Cargo como `--lib` e `--test`, use o comando explícito acima.
-Não passe `--ignored`/`--include-ignored` sem conferir os requisitos de cada caso.
-
-Cada worktree deve usar seu próprio `target/`, sem compartilhar `CARGO_TARGET_DIR`
-com outro checkout. `-j` controla jobs de compilação; `--test-threads` controla
-testes. A fixture `CoreTestHarness` limita seu runtime Tokio a dois workers;
-isso evita multiplicar o número de processadores por teste concorrente.
-
-## Gate da Etapa 7
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/gate-stage7.ps1
-```
-
-O gate comprova estrutura exclusivamente GPUI/Rust, formatação, Clippy com
-`-D warnings`, testes do workspace, build release, smoke Windows e auditorias
-Rust de licenças, fontes e advisories.
-
-Reserve esse gate completo para a validação final da entrega. Ele registra
-tempo e resultado de cada etapa no console e em `target/stage7/timings.json`,
-inclusive a etapa que falhar. Use `-TimingOutputPath` para guardar uma rodada
-separadamente. As opções `-SkipAdvisories` e `-EnforceDistribution` permanecem
-disponíveis; omitir uma auditoria não constitui o gate final completo.
-Compare execuções com cache aquecido e sem outra compilação concorrente;
-o primeiro build de uma worktree vazia inclui o custo de compilar dependências.
-
-A [validação desta organização de testes](quality/test-workflow-validation-2026-10-15.md)
-registra comandos, tempos, inventário e as pendências encontradas no gate.
-
-## Docker (Linux headless harness)
-
-Docker does not run the app: GPUI needs the Windows backend. The image runs
-`hvc-contracts`, `hvc-terminal`, `hvc-voice`, `hvc-core`, `hvc-editor` and `hvc-test-support` on Linux, with the same command
-locally and in the CI `linux headless (docker)` job. Every service is one-shot
-and behind a profile, so `docker compose up` starts nothing:
-
-```powershell
-docker compose --profile tools build
-docker compose --profile tools run --rm test-runner
-docker compose --profile tools run --rm cargo-check
-docker compose --profile tools run --rm clippy-check
-docker compose --profile tools run --rm fmt-check
-```
-
-`test-runner` runs `cargo test-headless`. The Cargo caches and `target/` live
-in named volumes; in CI, the `docker-compose.ci.yml` override stores them in
-`.ci-cache/` and builds without debug information so the test binaries fit the
-runner's disk. Linux validation has known failures and does not certify the
-Windows desktop, so the CI job is still informational.
-
-## Paridade e desempenho
-
-O ledger [`parity/gpui-frontend-ledger.json`](parity/gpui-frontend-ledger.json)
-preserva a rastreabilidade dos 51 testes do frontend removido para seus testes
-Rust equivalentes.
-
-No comparativo curto do corte, o P50 até janela visível + SQLite foi de
-247,498 ms no GPUI e 528,724 ms no Tauri, redução de 53,19%. A memória ociosa
-P50 caiu 61,129%. Os números descrevem a máquina e metodologia registradas no
-relatório; não são garantias universais.
-
-A distribuição externa permanece bloqueada até a auditoria final e a
-resolução ou decisão jurídica explícita sobre o issue Zed #55470.
-
-## Tab navigation and panel layout
-
-Companion includes a [native architecture canvas](docs/native-canvas.md) on `Ctrl+0`,
-with project drawings, connected shapes, gesture Undo/Redo and recoverable JSON/SVG
-mirrors. [Canvas AI authoring](docs/canvas-ai-authoring.md) adds explicit consent,
-hidden generation and a receipt-bound Open Canvas button, with profile-aware
-architecture/BPMN editing. The source is published on main; its selected tree
-passed all nine checks and 1,778 tests. The [publication record](quality/canvas-ai-publication-2026-10-29.md)
-distinguishes that scope from preserved local voice work. Drawing-to-AI analysis
-is planned separately.
-
-Agents uses a list and one detail panel in CLI and API modes. Pulsations separates Review, Overview, Preparation, and Artifacts; Settings separates Connections, Routes, and Runtime. Agents and Companion share an absolute model-picker overlay with Escape dismissal. Logs has collapsible sections and incremental event display; Vault has independent graph and document scrolling.
-
-Pulsations groups executions by status, with Running first and initially expanded. Each group shows newest-created pulsations first; expansion choices survive view navigation and runtime polling. Review reads complete persisted documents belonging to the current checkpoint, with document/source views, full-content copy, and the existing human decisions. Workspace and Pulsations column dividers support bounded mouse resizing and double-click reset. Widths remain in memory across view navigation. Workspace text, selections, and caret stay clipped to their own viewport; long lines support horizontal scrolling.
-
-The existing session schema persists the active view. The corresponding header tab is derived during restoration; other tab histories and internal sections are kept in memory.
-
-Implementation evidence: [Tabs UI validation](quality/tabs-ui-validation-2026-09-05.md). See the public [ADR-015 summary](docs/adr/README.md#adr-015-navigation).
-
-Review, status groups, and resizing evidence: [Pulsations and Workspace validation](quality/pulsations-workspace-validation-2026-09-09.md), extending the Review placement defined in ADR-017.
-
-
-## Feature Forge and task batches
-
-The Companion is also available in a floating dock inside the application
-window, with conversation history and unsent drafts kept across restarts.
-Decision cards bring existing reviews, clarification questions and failure
-actions alongside the chat. Opening a card does not spend model tokens;
-asking the Companion for help uses its configured model as usual.
-
-Feature Forge offers **Approve and start** when the feature revision can be
-approved, planned in the current wave and dispatched. Its preview explains
-blocking dependencies, wave capacity, model configuration and other admission
-requirements. If a requirement changes during the operation, completed approval
-and planning are kept and the remaining step can be retried. Questions can include
-explained options and a recommendation; selecting one fills a draft for you to
-review and send. Contract and Test still require human approval in this release.
-See the [qualification record](quality/companion-dock-validation-2026-11-06.md)
-for executed checks and remaining limitations.
-
-Global **Novo** separates multiple backlog tasks from a new feature conversation.
-FeatureAgent refines product scope with the developer; approval creates tasks without
-starting execution. Engine provides Tasks, Feature Forge, Pulsations and Vault.
-
-V26 adds developer-started triage/dependency analysis. A validated triage pass may
-approve ready scope and create tasks; dependency analysis can apply agent-origin
-relations while preserving human ones. V27 parks supported stage failures for
-Retry, Revision or confirmed Abort in Pulsations → Review.
-See [synchronization and validation](quality/cerebro-sync-validation-2026-09-09.md).
-
-A pulsation selects task revisions and freezes their approved feature context. Pipeline
-version 3 keeps all six existing stages and integrates the batch atomically. Database
-V24 preserves prior pulsations and adds feature, task, conversation, dependency, wave
-and evidence history. Planning notes explicitly describe approved scope, not delivered code.
-
-Implementation: [core services](crates/hvc-core/src/feature_forge/mod.rs).
-Validation: [Feature Forge report](quality/feature-forge-validation-2026-09-06.md).
-
-Tasks and Feature Forge refresh from existing events and deliberate actions without a
-layout-changing loading row. The Pulsations adapter invalidates them only on newly
-observed terminal transitions. Capture and model-picker overlays also close on an
-outside click. Companion supports Enter to send, Shift+Enter for a newline, and a
-wrapped composer that grows to six visible rows before scrolling internally.
-See [UI interaction validation](quality/ui-interactions-validation-2026-09-07.md).
-
-## Terminal subsystem boundary
-
-The CLI service, repository, adapters, process isolation and subscription quota
-live in `hvc-terminal`. Shared execution/stage/timeout/usage/redaction values live
-in `hvc-contracts`. Existing typed core APIs remain available through reexports
-and composition facades. Host authorization and global usage persistence stay
-in core. See [ADR-031](docs/adr/031-terminal-boundary.md) and the
-[architecture](docs/architecture.md). The
-[2026-10-23 validation report](quality/rust-boundaries-validation-2026-10-23.md)
-records the test inventory, build measurements and remaining validation limits.
-
-## Voice dictation
-
-Settings → Voice dictation offers two local recognizers. Nemotron 3.5 ASR 0.6B
-keeps the existing NeMo-Speech.cpp CPU runtime with automatic language detection.
-Whisper large-v3-turbo Q5_0 uses the native whisper.cpp 1.9.5 CPU runtime, with
-Portuguese (`pt`) and the transcription task fixed. This replaces the earlier
-Python Whisper medium installation. The choice persists across restarts;
-switching preserves both installations and is disabled during setup or dictation.
-
-The selected model downloads into `%LOCALAPPDATA%\com.hardvibecode.desktop\voice`.
-Nemotron's model is 742 MB; Whisper's quantized model is 574 MB. Runtime archives
-and model downloads are pinned by URL, version or revision, size and SHA-256.
-The Whisper backend uses a native executable and quantized model without Python,
-PyTorch or FFmpeg. Each dictation starts one process and releases it when the
-attempt ends; no speech service remains loaded. The system Python is untouched.
-
-Holding the push-to-talk shortcut
-(default `Ctrl+Shift+F9`, any two or three of Ctrl/Alt/Shift with F1–F10)
-records from the microphone anywhere in Windows; releasing it transcribes the
-recording with the selected recognizer and saves it as a voice
-note in the open project. No audio is kept. Windows only. See
-[ADR-029](docs/adr/README.md#adr-029-companion-notes).
-
-For an installation or WAV smoke test without the microphone:
+To check a voice dictation install without a microphone:
 
 ```powershell
 cargo run --locked -p hvc-voice --example voice_probe -- "$env:LOCALAPPDATA\com.hardvibecode.desktop\voice" whisper-large-v3-turbo
-# Append a mono, 16-bit, 16 kHz WAV path to transcribe it. Use `nemotron` to test the other backend.
+# Append a mono, 16-bit, 16 kHz WAV path to transcribe it. Use `nemotron` for the other backend.
 ```
 
-The legacy `whisper-medium` setting is read as the native Whisper backend. See
-the [2026-10-29 qualification record](quality/whisper-cpp-validation-2026-10-29.md)
-for executed checks, measured memory and the limits of the Portuguese samples.
+## Documentation
 
-```powershell
-cargo test-contracts
-cargo test-terminal
-powershell -ExecutionPolicy Bypass -File scripts/check-crate-boundaries.ps1
-```
+- [Architecture](docs/architecture.md)
+- [Testing guide](docs/testing.md)
+- [Design decisions](docs/adr/README.md), summarized from the architecture records
+- [Pulsation attestations](docs/attestation.md)
+- [Review policy and the Integrator's inputs](docs/review-policy.md)
+- [Secret sanitization](docs/secret-sanitization.md)
+- [Cargo candidate validation](docs/cargo-validation.md)
+- [Native architecture canvas](docs/native-canvas.md) and [Canvas AI authoring](docs/canvas-ai-authoring.md)
+- [Validation reports](quality/README.md), dated records of what was checked and what remains open
+
+## Performance
+
+When the earlier Tauri frontend was retired, a short comparison measured the
+time to a visible window with SQLite ready: a P50 of 247.5 ms for the native
+GPUI build against 528.7 ms for Tauri, 53.2% less. Idle memory had a P50 of
+140.4 MiB against 361.3 MiB, 61.1% less. These numbers describe one machine
+and the methodology recorded in the [Stage 7 report](quality/stage7-report.md);
+they are not general guarantees.
+
+## Contributing
+
+Bug fixes, tests, documentation, new CLI adapters and Linux or macOS
+portability of the headless crates are welcome. Read
+[CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. AI-assisted
+contributions are welcome under the human-in-the-loop rules described there.
+
+Report security issues privately, as described in [SECURITY.md](SECURITY.md).
+
+## License
+
+Copyright (C) 2026 Nathan de Oliveira dos Santos
+
+Hard Vibe Code is free software: you can redistribute it and/or modify it
+under the terms of the GNU General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option) any
+later version. It is distributed in the hope that it will be useful, but
+WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+FITNESS FOR A PARTICULAR PURPOSE. See [LICENSE](LICENSE) for the full text.
+
+Third-party code keeps its own license: the vendored GPUI in
+[`third_party/gpui`](third_party/gpui/LICENSE-APACHE) is Apache-2.0, and the
+[Lucide icons](crates/hvc-ui/assets/icons/LICENSE-lucide.txt) are ISC.
