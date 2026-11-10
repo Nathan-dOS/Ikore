@@ -1,8 +1,9 @@
 # Hard Vibe Code
 
-A native Windows desktop application that runs AI coding agents through a
-six-stage engineering pipeline, with a human decision at every checkpoint
-that matters.
+A native Windows desktop application for AI-assisted development in which the
+developer does the reasoning and AI models do the writing. Every change runs
+through a six-stage pipeline with human checkpoints, and a Rust host enforces
+the plan that was approved.
 
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
 ![Rust 1.98](https://img.shields.io/badge/rust-1.98-orange)
@@ -18,18 +19,37 @@ the developer approves, requests a revision or rejects.</sub>
 
 ## Why
 
-AI coding agents are fast, but on their own they lose context, drift from
-what was asked and report work as finished without evidence. Reviewing a
-large generated change after the fact is slow and easy to get wrong.
+**Independence from expensive models.** A handful of companies control the
+most capable AI models, and the price of their plans can rise at any time.
+Hard Vibe Code (HVC) is built so that the work does not depend on the most
+expensive, highest-reasoning models. The developer does the reasoning:
+thinking, planning and deciding. The agents do what language models are best
+at, which is turning a precise specification into text and code. Small,
+inexpensive models are enough for that, and the prompts and stage boundaries
+are designed for them.
 
-Hard Vibe Code (HVC) keeps the speed and adds engineering discipline. Every
-change runs as a **pulsation**: a fixed pipeline of six stages (Intake,
-Specification, Contract, Code, Test and Integrator) carried out by agents
-through LLM APIs or the official coding CLIs. Between stages, the developer
-reviews a short brief and decides what happens next. The Rust host, not the
-model, owns the state transitions, the file writes, the checks and the
-evidence, so every claim in a brief is backed by records the host produced
-itself.
+**The developer stays in the loop.** With most agents today, you hand over a
+task and get back a large volume of code that nobody can review properly,
+sometimes with a plan in a Markdown file that describes work the agent never
+did. HVC changes that architecture. Every change runs as a **pulsation**: a
+fixed pipeline of six stages (Intake, Specification, Contract, Code, Test and
+Integrator) carried out by agents through LLM APIs or the official coding
+CLIs. At each checkpoint the developer reviews contracts, acceptance criteria
+and evidence, rather than every line of code, and decides what happens next.
+
+**The host guarantees the plan.** The Rust host, not the model, owns the state
+transitions, the file writes, the checks and the evidence. An approved
+specification becomes an execution mandate: later stages may write only what
+it allows, and the checks it requires must run. A plan is not just text an
+agent wrote; the host enforces it and records the proof.
+
+**Less context, fewer tokens.** Project knowledge lives in Markdown notes that
+link to the code they describe. HVC reads those links and note properties
+first, at no model cost, and only then runs local embedding search over the
+small set of candidate files. Agents receive the files that matter instead of
+searching the whole repository. The same links keep the documentation
+current: when linked code changes, the note is flagged without calling a
+model.
 
 ## How it works
 
@@ -43,7 +63,7 @@ flowchart TB
     Forge --> P
     P <--> H{{"Human checkpoints<br/>approve, revise, reject"}}
     P --> R["Agent runtime<br/>LLM APIs and coding CLIs"]
-    P --> Ctx["Project context<br/>Markdown vault<br/>Tree-sitter, embeddings"]
+    P --> Ctx["Project context<br/>notes linked to code<br/>local embeddings"]
     P --> DB[("Local SQLite<br/>events, usage, evidence")]
     DB --> Rep["Pulsation report<br/>and signed attestation"]
 ```
@@ -69,9 +89,19 @@ flowchart TB
   an official CLI (Codex, Claude Code, Gemini CLI, OpenCode, Antigravity or a
   custom adapter). CLI processes run with argument arrays, reduced
   environments, deadlines, bounded output, cancellation and secret redaction.
-- **Project context.** A Markdown vault with a wikilink graph, bounded
-  repository reads, Tree-sitter and local embeddings through Ollama. Context
-  traces record what each agent actually received.
+- **Project context with link-first retrieval.** Notes in the project's
+  Markdown vault list the source and test files they describe, along with
+  properties such as risk and contracts. HVC narrows the context through those
+  links and the wikilink graph before running local embeddings (Ollama) over
+  the remaining candidates, and adds Tree-sitter and bounded repository reads.
+  Context traces record what each agent actually received.
+- **Self-maintaining documentation.** An existing repository can be mapped
+  into component notes in the background, without overwriting existing notes.
+  The host keeps a baseline for every link between a note and a code file.
+  When linked code changes, the note is flagged by comparing hashes, with no
+  model involved. On request, a documentation agent proposes edits to that
+  note, and they are published only if neither the note nor the code changed
+  in the meantime.
 - **Companion.** A chat dock that knows the project's pulsations and pending
   decisions, notes captured by text or by local voice dictation (Whisper or
   Nemotron on the CPU), and a native architecture canvas.
@@ -240,11 +270,15 @@ they are not general guarantees.
 ## Contributing
 
 Bug fixes, tests, documentation, new CLI adapters and Linux or macOS
-portability of the headless crates are welcome. Read
-[CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. AI-assisted
-contributions are welcome under the human-in-the-loop rules described there.
+portability of the headless crates are welcome.
 
-Report security issues privately, as described in [SECURITY.md](SECURITY.md).
+- [How to contribute, step by step](docs/how-to-contribute.md): the path from
+  an idea to a merged pull request, with a diagram.
+- [CONTRIBUTING.md](CONTRIBUTING.md): the complete rules. AI-assisted
+  contributions are welcome under the human-in-the-loop rules described there.
+- [Code of Conduct](CODE_OF_CONDUCT.md): how we treat each other.
+- [SECURITY.md](SECURITY.md): report vulnerabilities privately, never in a
+  public issue.
 
 ## License
 
