@@ -1,0 +1,22 @@
+{
+  "counts": {
+    "qa_conversations": 3,
+    "qa_messages": 6,
+    "qa_noncompleted_messages": 0,
+    "qa_model_calls": 0,
+    "qa_tool_calls": 0,
+    "open_docks": 1,
+    "dock_topics": 3,
+    "active_qa_chat": 1,
+    "pulsations": 2,
+    "jobs": 2,
+    "checkpoints": 0,
+    "drafts": 1
+  },
+  "drafts": [
+    {
+      "revision": 1,
+      "content": "Rascunho Unicode n\u00e3o enviado \u2014 a\u00e7\u00e3o, cora\u00e7\u00e3o, caf\u00e9; \u03a9, \u6f22\u5b57, \ud83d\ude42.\n\nSelecionar e copiar preserva os par\u00e1grafos, a acentua\u00e7\u00e3o e os espa\u00e7os.\nSegunda linha do rascunho: a + b \u2192 c; e\u0301 = \u00e9 visualmente."
+    }
+  ]
+}

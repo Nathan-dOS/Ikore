@@ -1,0 +1,3 @@
+HVC_DATA_DIR=\\?\<repo>\target\native-paragraph-qa-ba9bf15-2026-11-09\data
+MODE=new
+Loopback provider ready; GUI is the sole worker. STOP file or 45 min ends fixture.

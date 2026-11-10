@@ -1,0 +1,3174 @@
+{
+  "schemaVersion": 1,
+  "archivedAtUtc": "2026-11-10T11:08:17.899539+00:00",
+  "sourceCommit": "ba9bf15b5945e369ecb0ab8d9d97a5a364f80070",
+  "baselineSourceCommit": "ef2879a6ecc161f5910c6ee4402aea1206d644f8",
+  "gatePassed": true,
+  "durationSeconds": 3916.8588,
+  "pairsCalibration": 20,
+  "pairsComparison": 20,
+  "samples": 82,
+  "metrics": {
+    "nonTerminalP50Us": {
+      "samples": 20,
+      "calibrationPairs": 20,
+      "noiseP95": 5187.0,
+      "pairedMedianDelta": 25.0,
+      "passed": true
+    },
+    "nonTerminalP95Us": {
+      "samples": 20,
+      "calibrationPairs": 20,
+      "noiseP95": 8490.0,
+      "pairedMedianDelta": 35.0,
+      "passed": true
+    },
+    "terminalP50Us": {
+      "samples": 20,
+      "calibrationPairs": 20,
+      "noiseP95": 5058.0,
+      "pairedMedianDelta": 49.0,
+      "passed": true
+    },
+    "terminalP95Us": {
+      "samples": 20,
+      "calibrationPairs": 20,
+      "noiseP95": 6156.0,
+      "pairedMedianDelta": 132.0,
+      "passed": true
+    },
+    "compositionWallP50Ms": {
+      "samples": 20,
+      "calibrationPairs": 20,
+      "noiseP95": 693.0,
+      "pairedMedianDelta": -235.0,
+      "passed": true
+    },
+    "compositionWallP95Ms": {
+      "samples": 20,
+      "calibrationPairs": 20,
+      "noiseP95": 1987.0,
+      "pairedMedianDelta": -898.0,
+      "passed": true
+    },
+    "uiP50Ms": {
+      "samples": 20,
+      "calibrationPairs": 20,
+      "noiseP95": 0.11279999999999912,
+      "pairedMedianDelta": -0.007499999999999396,
+      "passed": true
+    },
+    "uiP95Ms": {
+      "samples": 20,
+      "calibrationPairs": 20,
+      "noiseP95": 0.31240000000000023,
+      "pairedMedianDelta": -0.009800000000001141,
+      "passed": true
+    }
+  },
+  "compositionParity": {
+    "observations": 80,
+    "fixtureSha256": "786e5cc1da8409dc4985da0d27cea9c388d4c42fc82a82121ce1515c1f093c5e"
+  },
+  "threeStreams": {
+    "samples": 120,
+    "warmupSamples": 20,
+    "fixtureFrames": 141,
+    "updatedConversations": 423,
+    "viewportWidth": 1440.0,
+    "viewportHeight": 900.0,
+    "p50Ms": 6.21,
+    "p95Ms": 7.4188,
+    "p99Ms": 8.8826,
+    "passed": true
+  },
+  "frozenInputsVerified": {
+    "sourceFiles": 966,
+    "actualCompositionJsonFilesPerCheckout": 20,
+    "executables": 6,
+    "differencesAfterPreflight": [],
+    "differencesAfterGate": []
+  },
+  "rawArchivePolicy": "Copies are byte-identical. Original .log names are mapped to non-ignored .txt filenames. No executable, database or generated project workspace is archived. Snapshot utility is a strict local historical capture recipe anchored to its original target path, source revision and recorded environment.",
+  "artifacts": [
+    {
+      "source": "freeze-after-gate.json",
+      "path": "freeze-after-gate.json",
+      "bytes": 342876,
+      "sha256": "3c5410209b7f7786e7885c65d59e97dc732cb54df8d294748dcbc075dcf227c2"
+    },
+    {
+      "source": "freeze-after-preflight.json",
+      "path": "freeze-after-preflight.json",
+      "bytes": 342876,
+      "sha256": "dd9e043ebc99a5e3916b8bf75febe124e73b836b7deddd29995dff3dcf6ce5af"
+    },
+    {
+      "source": "freeze-before.json",
+      "path": "freeze-before.json",
+      "bytes": 342510,
+      "sha256": "7f8b0284ba90d677f98b5fd106db362ec0074bb16a47dab0e63a38ce2b811dd7"
+    },
+    {
+      "source": "gate-speed/baseline-full-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/baseline-full-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 136276,
+      "sha256": "fce013d5d3773e1aa2e8ae3a659f2f694a727937d44e0542806af729133de146"
+    },
+    {
+      "source": "gate-speed/baseline-full-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/baseline-full-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 13655,
+      "sha256": "2d37104e2bc149f42fdadd5944d22ba65a4312d82e089f7f146bd658d54944a1"
+    },
+    {
+      "source": "gate-speed/baseline-full-composition.log",
+      "path": "gate-speed/baseline-full-composition.txt",
+      "bytes": 11136,
+      "sha256": "8126412123ffafbf7258e5899ba0a52ef0799abd77cec648162129cd12f20e2c"
+    },
+    {
+      "source": "gate-speed/baseline-hvc_core-b3ff09f63410ebf4-inventory.log",
+      "path": "gate-speed/baseline-hvc_core-b3ff09f63410ebf4-inventory.txt",
+      "bytes": 119530,
+      "sha256": "cfbcec82337d980c4b5351068c1ae40663212e82f83c7211fa0318a6dd012e8b"
+    },
+    {
+      "source": "gate-speed/calibration-0-a-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/calibration-0-a-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "639c7b9a9f0ac378a39406f8f38e0613af3fe6eaa6c39b0c6d4d67bd47ba3869"
+    },
+    {
+      "source": "gate-speed/calibration-0-a-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/calibration-0-a-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "2dbf609cc2c80052c8169dcd6d5cf1f3c565299c14bdd5e35c5a487c202a4784"
+    },
+    {
+      "source": "gate-speed/calibration-0-a-composition.log",
+      "path": "gate-speed/calibration-0-a-composition.txt",
+      "bytes": 906,
+      "sha256": "3a55f4f6eea017bc2fd05af1cfcd693a864d06c2c36be54ee503d5bf1be38c97"
+    },
+    {
+      "source": "gate-speed/calibration-0-a-transition.log",
+      "path": "gate-speed/calibration-0-a-transition.txt",
+      "bytes": 521,
+      "sha256": "ea3612aeb5f6590b945657530ef072c3c6bdbf7f54bfbbbe8cd972a4bbe16956"
+    },
+    {
+      "source": "gate-speed/calibration-0-a-ui.json",
+      "path": "gate-speed/calibration-0-a-ui.json",
+      "bytes": 2662,
+      "sha256": "91005af794960ccb665f5fb1db6e7099e6ac6916ef323bb92d01ffd0d9959bbb"
+    },
+    {
+      "source": "gate-speed/calibration-0-a-ui.log",
+      "path": "gate-speed/calibration-0-a-ui.txt",
+      "bytes": 2662,
+      "sha256": "91005af794960ccb665f5fb1db6e7099e6ac6916ef323bb92d01ffd0d9959bbb"
+    },
+    {
+      "source": "gate-speed/calibration-0-b-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/calibration-0-b-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "9b953c12a033ca4a4b5dbb63f92c060f8506a517d7198f7a9633854c0079c4f1"
+    },
+    {
+      "source": "gate-speed/calibration-0-b-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/calibration-0-b-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "b3a05661256902f620e89fb67dae1e1c82a33ed1657e366389b15c1b840061bf"
+    },
+    {
+      "source": "gate-speed/calibration-0-b-composition.log",
+      "path": "gate-speed/calibration-0-b-composition.txt",
+      "bytes": 978,
+      "sha256": "9cf2398fbe12645eda98b4adf9ca0fd06e4e6c5b7a79092b345ed8175a517631"
+    },
+    {
+      "source": "gate-speed/calibration-0-b-transition.log",
+      "path": "gate-speed/calibration-0-b-transition.txt",
+      "bytes": 521,
+      "sha256": "6a979ad4b8fb769ca7d1464612af0bbe14803dc4c51273df38e8942a9f4e8b5b"
+    },
+    {
+      "source": "gate-speed/calibration-0-b-ui.json",
+      "path": "gate-speed/calibration-0-b-ui.json",
+      "bytes": 2777,
+      "sha256": "470e0bd843885f3a74eba35920382538e6dc791047ef12819776223cb3b0d2f6"
+    },
+    {
+      "source": "gate-speed/calibration-0-b-ui.log",
+      "path": "gate-speed/calibration-0-b-ui.txt",
+      "bytes": 2777,
+      "sha256": "470e0bd843885f3a74eba35920382538e6dc791047ef12819776223cb3b0d2f6"
+    },
+    {
+      "source": "gate-speed/calibration-1-a-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/calibration-1-a-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "21082301dd696adeaecd46d990c60c35f4f7e78a8befad42ec79724a7d8ee452"
+    },
+    {
+      "source": "gate-speed/calibration-1-a-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/calibration-1-a-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "d3e06542f8ad637d1c27c24a2361d3b4df7c14e681b0620be66e3ec638ab186b"
+    },
+    {
+      "source": "gate-speed/calibration-1-a-composition.log",
+      "path": "gate-speed/calibration-1-a-composition.txt",
+      "bytes": 906,
+      "sha256": "700926d6b6dc5625756e99a5bc6bd17dc57dd701ff0a32ca3173f5fb27240575"
+    },
+    {
+      "source": "gate-speed/calibration-1-a-transition.log",
+      "path": "gate-speed/calibration-1-a-transition.txt",
+      "bytes": 521,
+      "sha256": "0d49507831f4a5a94d814cf514e028b3144b320e4b2e1445796d972354b626f0"
+    },
+    {
+      "source": "gate-speed/calibration-1-a-ui.json",
+      "path": "gate-speed/calibration-1-a-ui.json",
+      "bytes": 2682,
+      "sha256": "4e752c12ce88d4ba73b227710e0cc3b1b5ec591fd27c7b36aef77586757d5417"
+    },
+    {
+      "source": "gate-speed/calibration-1-a-ui.log",
+      "path": "gate-speed/calibration-1-a-ui.txt",
+      "bytes": 2682,
+      "sha256": "4e752c12ce88d4ba73b227710e0cc3b1b5ec591fd27c7b36aef77586757d5417"
+    },
+    {
+      "source": "gate-speed/calibration-1-b-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/calibration-1-b-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "4f4f2f5326b7fa35435e50705fccd127c0f30131d37dced7441d7a1c71fa8697"
+    },
+    {
+      "source": "gate-speed/calibration-1-b-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/calibration-1-b-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "2b465d1ba438dea03c78ab47611463ef30367bac0824ccf81541b71cf63f5e27"
+    },
+    {
+      "source": "gate-speed/calibration-1-b-composition.log",
+      "path": "gate-speed/calibration-1-b-composition.txt",
+      "bytes": 978,
+      "sha256": "e0ad33af25cb8e583d57a26811f236bb533c8d5dbeb6b5e2f858e94244bc5b6d"
+    },
+    {
+      "source": "gate-speed/calibration-1-b-transition.log",
+      "path": "gate-speed/calibration-1-b-transition.txt",
+      "bytes": 521,
+      "sha256": "8c9ecc47a396ce46097b1ffd0d78711d9c57bb21ca66759e60931266e88a5ce0"
+    },
+    {
+      "source": "gate-speed/calibration-1-b-ui.json",
+      "path": "gate-speed/calibration-1-b-ui.json",
+      "bytes": 2823,
+      "sha256": "520bf10c06c4a867c96d5805fefc7152ac9825e79f65b37674bce9375e471346"
+    },
+    {
+      "source": "gate-speed/calibration-1-b-ui.log",
+      "path": "gate-speed/calibration-1-b-ui.txt",
+      "bytes": 2823,
+      "sha256": "520bf10c06c4a867c96d5805fefc7152ac9825e79f65b37674bce9375e471346"
+    },
+    {
+      "source": "gate-speed/calibration-10-a-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/calibration-10-a-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "b54eb054979d9c4845b94ff8aae5f28ccbaf2c77954cfba07a265e9a33192b4a"
+    },
+    {
+      "source": "gate-speed/calibration-10-a-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/calibration-10-a-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "5afe55147240128e857fa9d8f0c8e0a7381b476e3626bc17406a351b6fdb09d6"
+    },
+    {
+      "source": "gate-speed/calibration-10-a-composition.log",
+      "path": "gate-speed/calibration-10-a-composition.txt",
+      "bytes": 908,
+      "sha256": "185287195aae0608fa300a72b3fa234b53f606aca91e58414165d5976f98d27f"
+    },
+    {
+      "source": "gate-speed/calibration-10-a-transition.log",
+      "path": "gate-speed/calibration-10-a-transition.txt",
+      "bytes": 522,
+      "sha256": "2c6f956cb0b742c06c5f6d0680dd80e377ad04a35f2518dd8e08c9511dbd3eb4"
+    },
+    {
+      "source": "gate-speed/calibration-10-a-ui.json",
+      "path": "gate-speed/calibration-10-a-ui.json",
+      "bytes": 2647,
+      "sha256": "c96cfdf7835fdbade47e6957506e000a9da5c93bb1891cef3599c7f192519c69"
+    },
+    {
+      "source": "gate-speed/calibration-10-a-ui.log",
+      "path": "gate-speed/calibration-10-a-ui.txt",
+      "bytes": 2647,
+      "sha256": "c96cfdf7835fdbade47e6957506e000a9da5c93bb1891cef3599c7f192519c69"
+    },
+    {
+      "source": "gate-speed/calibration-10-b-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/calibration-10-b-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "cb74eb4469974a91f51d2d852fda08bc767e49f62e60268fa146ab30bb72869b"
+    },
+    {
+      "source": "gate-speed/calibration-10-b-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/calibration-10-b-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "9739f4848bfb08c08cdce4cf729ba5cb6858bd5e18f1a62d302671d5e2d807de"
+    },
+    {
+      "source": "gate-speed/calibration-10-b-composition.log",
+      "path": "gate-speed/calibration-10-b-composition.txt",
+      "bytes": 908,
+      "sha256": "55b6e57a28b866986688274a29b0128cdd2acf4a898ea1118bced59d015f38fc"
+    },
+    {
+      "source": "gate-speed/calibration-10-b-transition.log",
+      "path": "gate-speed/calibration-10-b-transition.txt",
+      "bytes": 521,
+      "sha256": "e93a71da0e8e012de66690d6e620fb0756a2455bdfdb5b87f8d480322b09ed6b"
+    },
+    {
+      "source": "gate-speed/calibration-10-b-ui.json",
+      "path": "gate-speed/calibration-10-b-ui.json",
+      "bytes": 2639,
+      "sha256": "bea8e14511e2e89a2e3cba8077c684e752e68327aa8d8b60a2f27f4124006269"
+    },
+    {
+      "source": "gate-speed/calibration-10-b-ui.log",
+      "path": "gate-speed/calibration-10-b-ui.txt",
+      "bytes": 2639,
+      "sha256": "bea8e14511e2e89a2e3cba8077c684e752e68327aa8d8b60a2f27f4124006269"
+    },
+    {
+      "source": "gate-speed/calibration-11-a-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/calibration-11-a-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "ac520d70919d966b2a0832d48749aff2b12b268fd3635e98c7bb949c0cb2c915"
+    },
+    {
+      "source": "gate-speed/calibration-11-a-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/calibration-11-a-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "22cdede5edb03c9c19f844e6fce94a3b4722d093479689c18b58b164d5c2f3b2"
+    },
+    {
+      "source": "gate-speed/calibration-11-a-composition.log",
+      "path": "gate-speed/calibration-11-a-composition.txt",
+      "bytes": 908,
+      "sha256": "be757d559a2aacaa3ddccf92aef8e16e6d205315432c641560e299f6c82525c9"
+    },
+    {
+      "source": "gate-speed/calibration-11-a-transition.log",
+      "path": "gate-speed/calibration-11-a-transition.txt",
+      "bytes": 523,
+      "sha256": "2520c13694d86f6c74ff2325cdab6f892c77234a2c39e3941701e75649660ca2"
+    },
+    {
+      "source": "gate-speed/calibration-11-a-ui.json",
+      "path": "gate-speed/calibration-11-a-ui.json",
+      "bytes": 2701,
+      "sha256": "dc46f1fc9b1d104e414eee62aaac0b61adf0315d8386e3a99a7c86c53d751a3c"
+    },
+    {
+      "source": "gate-speed/calibration-11-a-ui.log",
+      "path": "gate-speed/calibration-11-a-ui.txt",
+      "bytes": 2701,
+      "sha256": "dc46f1fc9b1d104e414eee62aaac0b61adf0315d8386e3a99a7c86c53d751a3c"
+    },
+    {
+      "source": "gate-speed/calibration-11-b-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/calibration-11-b-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "f060d2f062359b2aad36eeda76deaafbd01b4178653095a2ae6d5418cbee7e1b"
+    },
+    {
+      "source": "gate-speed/calibration-11-b-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/calibration-11-b-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "1d993233a2381e08a3198749adc8f489b35c7e799beafdf1428b13e63e139095"
+    },
+    {
+      "source": "gate-speed/calibration-11-b-composition.log",
+      "path": "gate-speed/calibration-11-b-composition.txt",
+      "bytes": 908,
+      "sha256": "ddc112429a74ffcf33080ab3ffd00990c5c46067152dfd1879feef1d8d7d7a52"
+    },
+    {
+      "source": "gate-speed/calibration-11-b-transition.log",
+      "path": "gate-speed/calibration-11-b-transition.txt",
+      "bytes": 522,
+      "sha256": "84a9e637168b84e08554a604bc43bf690f182ebdacd8111f8d29edbd14e9aa8d"
+    },
+    {
+      "source": "gate-speed/calibration-11-b-ui.json",
+      "path": "gate-speed/calibration-11-b-ui.json",
+      "bytes": 2730,
+      "sha256": "6fb6250da723859dc3fb60c19ad504c9606165542b4996c871b97066364ecd23"
+    },
+    {
+      "source": "gate-speed/calibration-11-b-ui.log",
+      "path": "gate-speed/calibration-11-b-ui.txt",
+      "bytes": 2730,
+      "sha256": "6fb6250da723859dc3fb60c19ad504c9606165542b4996c871b97066364ecd23"
+    },
+    {
+      "source": "gate-speed/calibration-12-a-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/calibration-12-a-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "5c426d3cc96af1cabcd5f8fa15889f7ccaff6cc9c493a30376db5aaffe725cb6"
+    },
+    {
+      "source": "gate-speed/calibration-12-a-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/calibration-12-a-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "193d48f917752068ecd058a5d4c970e691332c9dc06668063e7af21854f60184"
+    },
+    {
+      "source": "gate-speed/calibration-12-a-composition.log",
+      "path": "gate-speed/calibration-12-a-composition.txt",
+      "bytes": 908,
+      "sha256": "b4fa60418ca2950b8ccd80f590a05134811a938cd464b342f80cf53bf87ada35"
+    },
+    {
+      "source": "gate-speed/calibration-12-a-transition.log",
+      "path": "gate-speed/calibration-12-a-transition.txt",
+      "bytes": 521,
+      "sha256": "ba0f7672b4a188726e54b9dfed64de2f47dcf39c5dfce9bb16f32ece91b54bc4"
+    },
+    {
+      "source": "gate-speed/calibration-12-a-ui.json",
+      "path": "gate-speed/calibration-12-a-ui.json",
+      "bytes": 2644,
+      "sha256": "61cd2d0ac06aedc63aade8f6d68bac21cc9020c800dacbdcf2728ed5c571a606"
+    },
+    {
+      "source": "gate-speed/calibration-12-a-ui.log",
+      "path": "gate-speed/calibration-12-a-ui.txt",
+      "bytes": 2644,
+      "sha256": "61cd2d0ac06aedc63aade8f6d68bac21cc9020c800dacbdcf2728ed5c571a606"
+    },
+    {
+      "source": "gate-speed/calibration-12-b-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/calibration-12-b-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "aa6c0726e1bc168a12c3826332e29aa7c3253bb2371497dafb49ba54415d28dc"
+    },
+    {
+      "source": "gate-speed/calibration-12-b-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/calibration-12-b-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "267d626f423f6abfc716696098ff2b30616a7aa707017e07c80f55ca300fb90d"
+    },
+    {
+      "source": "gate-speed/calibration-12-b-composition.log",
+      "path": "gate-speed/calibration-12-b-composition.txt",
+      "bytes": 908,
+      "sha256": "92ebf9a02ae3309291fb70a4d41e35bdf8923d3fa37c31c52920bc47ed493362"
+    },
+    {
+      "source": "gate-speed/calibration-12-b-transition.log",
+      "path": "gate-speed/calibration-12-b-transition.txt",
+      "bytes": 525,
+      "sha256": "0e4454fcf875ee85786239c414cd0f7f501812d39b75dd011b9e4ed866a1d77e"
+    },
+    {
+      "source": "gate-speed/calibration-12-b-ui.json",
+      "path": "gate-speed/calibration-12-b-ui.json",
+      "bytes": 2681,
+      "sha256": "68b8f75d097e1e91aafc6f4ec28e533955c5c85cf1366c39b9643fb38132ba9e"
+    },
+    {
+      "source": "gate-speed/calibration-12-b-ui.log",
+      "path": "gate-speed/calibration-12-b-ui.txt",
+      "bytes": 2681,
+      "sha256": "68b8f75d097e1e91aafc6f4ec28e533955c5c85cf1366c39b9643fb38132ba9e"
+    },
+    {
+      "source": "gate-speed/calibration-13-a-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/calibration-13-a-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "37b5c8b9f03f664ac9de54bde5bf5ea7a65b94f5d61b4f9c3294f69b7f46d45b"
+    },
+    {
+      "source": "gate-speed/calibration-13-a-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/calibration-13-a-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "f0374c4af10c8bbd9dc4fc4907bdde499b18a926279c718290a9a9817c459efc"
+    },
+    {
+      "source": "gate-speed/calibration-13-a-composition.log",
+      "path": "gate-speed/calibration-13-a-composition.txt",
+      "bytes": 908,
+      "sha256": "c06d3170f41cc28a30a0308cabfeafa34d16f4b8d2f5e3fdad1680e2d54ef04f"
+    },
+    {
+      "source": "gate-speed/calibration-13-a-transition.log",
+      "path": "gate-speed/calibration-13-a-transition.txt",
+      "bytes": 526,
+      "sha256": "2dde43ccf80eb79a3779be3cc03466ee4023c793b2b994e0bcfb32b57fa742ef"
+    },
+    {
+      "source": "gate-speed/calibration-13-a-ui.json",
+      "path": "gate-speed/calibration-13-a-ui.json",
+      "bytes": 2650,
+      "sha256": "3038c0f312855dff3208628798ee485f06e06b9e0731c0c6e77253c8da5e6f1e"
+    },
+    {
+      "source": "gate-speed/calibration-13-a-ui.log",
+      "path": "gate-speed/calibration-13-a-ui.txt",
+      "bytes": 2650,
+      "sha256": "3038c0f312855dff3208628798ee485f06e06b9e0731c0c6e77253c8da5e6f1e"
+    },
+    {
+      "source": "gate-speed/calibration-13-b-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/calibration-13-b-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "55fcfcecadf5a4f49e57de92466572d1056d510e716bc0406b66b1bb37ddf200"
+    },
+    {
+      "source": "gate-speed/calibration-13-b-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/calibration-13-b-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "2ef75467ab9d9192b83b7e510e5ac943c5d426a1c9e057c34caf51509edb8773"
+    },
+    {
+      "source": "gate-speed/calibration-13-b-composition.log",
+      "path": "gate-speed/calibration-13-b-composition.txt",
+      "bytes": 908,
+      "sha256": "e3b89b609e3994ee6603a07bc58cb3f6226b7edbe662f24eaa421867512b04a1"
+    },
+    {
+      "source": "gate-speed/calibration-13-b-transition.log",
+      "path": "gate-speed/calibration-13-b-transition.txt",
+      "bytes": 521,
+      "sha256": "786831aee61793b4e649ce934f1645a80c974c834db2b585e2af6554eeffffdb"
+    },
+    {
+      "source": "gate-speed/calibration-13-b-ui.json",
+      "path": "gate-speed/calibration-13-b-ui.json",
+      "bytes": 2661,
+      "sha256": "bc2ceebe9f394e3a9a728129eab31f3509e802daaaf4acd1ef083cad1e47469e"
+    },
+    {
+      "source": "gate-speed/calibration-13-b-ui.log",
+      "path": "gate-speed/calibration-13-b-ui.txt",
+      "bytes": 2661,
+      "sha256": "bc2ceebe9f394e3a9a728129eab31f3509e802daaaf4acd1ef083cad1e47469e"
+    },
+    {
+      "source": "gate-speed/calibration-14-a-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/calibration-14-a-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "039840c8e51823a7cf8b6621694d5430190f2ba837f0443f2f9218308cce0529"
+    },
+    {
+      "source": "gate-speed/calibration-14-a-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/calibration-14-a-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "c873279637cbe5918646320570e45595e439250f3edc3330d799fc2e3ab46f97"
+    },
+    {
+      "source": "gate-speed/calibration-14-a-composition.log",
+      "path": "gate-speed/calibration-14-a-composition.txt",
+      "bytes": 908,
+      "sha256": "661311cd5a796351e2a5f2ef4f9c0d72a54ad97777d9d28af183b38e3fbd2291"
+    },
+    {
+      "source": "gate-speed/calibration-14-a-transition.log",
+      "path": "gate-speed/calibration-14-a-transition.txt",
+      "bytes": 522,
+      "sha256": "ae1befb1fed64b0b17d9738ee387c99cf8cd7f56e90083dfbfc5ea0d7b4c1180"
+    },
+    {
+      "source": "gate-speed/calibration-14-a-ui.json",
+      "path": "gate-speed/calibration-14-a-ui.json",
+      "bytes": 2668,
+      "sha256": "5737da8e70995489c2942c3eb8742c707ffa7a924f183655c13bec24a2c7dece"
+    },
+    {
+      "source": "gate-speed/calibration-14-a-ui.log",
+      "path": "gate-speed/calibration-14-a-ui.txt",
+      "bytes": 2668,
+      "sha256": "5737da8e70995489c2942c3eb8742c707ffa7a924f183655c13bec24a2c7dece"
+    },
+    {
+      "source": "gate-speed/calibration-14-b-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/calibration-14-b-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "846b9ce03b80b78b7443f8a09779cf819d5445f3604aab003190e3ef03020bd0"
+    },
+    {
+      "source": "gate-speed/calibration-14-b-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/calibration-14-b-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "79c50d9996251e19b6783f39a7716f4b11cf7d6b5116dd1f4a47f4058ab41a58"
+    },
+    {
+      "source": "gate-speed/calibration-14-b-composition.log",
+      "path": "gate-speed/calibration-14-b-composition.txt",
+      "bytes": 908,
+      "sha256": "ac8bf925de0479bf33347cb6b328c0ad3f6e67cee61bdd0c223a9a566a958431"
+    },
+    {
+      "source": "gate-speed/calibration-14-b-transition.log",
+      "path": "gate-speed/calibration-14-b-transition.txt",
+      "bytes": 522,
+      "sha256": "255b5dbed01864706ed341a0d738ca51d8539a9de29b164b86889d2ba139d2c0"
+    },
+    {
+      "source": "gate-speed/calibration-14-b-ui.json",
+      "path": "gate-speed/calibration-14-b-ui.json",
+      "bytes": 2728,
+      "sha256": "ea6e28a1dd4c2330c44194936c83c51779e92fc8adfb8e86966071e845ed681e"
+    },
+    {
+      "source": "gate-speed/calibration-14-b-ui.log",
+      "path": "gate-speed/calibration-14-b-ui.txt",
+      "bytes": 2728,
+      "sha256": "ea6e28a1dd4c2330c44194936c83c51779e92fc8adfb8e86966071e845ed681e"
+    },
+    {
+      "source": "gate-speed/calibration-15-a-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/calibration-15-a-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "a7b7933f863878148da1b407e770a4c63d3f815e234eb6db96cc1f3026c00747"
+    },
+    {
+      "source": "gate-speed/calibration-15-a-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/calibration-15-a-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "dc542985bff702918b22955caeedc6d571ae73bd78252b5b3963b39e2b5a67e3"
+    },
+    {
+      "source": "gate-speed/calibration-15-a-composition.log",
+      "path": "gate-speed/calibration-15-a-composition.txt",
+      "bytes": 908,
+      "sha256": "893831d427de81b4458c70796ca2b8f2de3fe91db0ad5314667bb8cd4dca8aa4"
+    },
+    {
+      "source": "gate-speed/calibration-15-a-transition.log",
+      "path": "gate-speed/calibration-15-a-transition.txt",
+      "bytes": 522,
+      "sha256": "856b6a7852e3d6556d775deb1ee456d1571880f1d2183d74a39b9ff25e331e4d"
+    },
+    {
+      "source": "gate-speed/calibration-15-a-ui.json",
+      "path": "gate-speed/calibration-15-a-ui.json",
+      "bytes": 2755,
+      "sha256": "0150507eda2d4eda81cf0d337286d5765fe25144d7988002ae160e059a9cbaeb"
+    },
+    {
+      "source": "gate-speed/calibration-15-a-ui.log",
+      "path": "gate-speed/calibration-15-a-ui.txt",
+      "bytes": 2755,
+      "sha256": "0150507eda2d4eda81cf0d337286d5765fe25144d7988002ae160e059a9cbaeb"
+    },
+    {
+      "source": "gate-speed/calibration-15-b-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/calibration-15-b-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11911,
+      "sha256": "8812205ed86b5d9fc2b96591e0cc51eb503fb7b887a85ea1e7a65fe3be8fdc5e"
+    },
+    {
+      "source": "gate-speed/calibration-15-b-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/calibration-15-b-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3368,
+      "sha256": "d4e96a57044fc6612a39b3928b3699885216347ab620ac11e214dcdedee0686f"
+    },
+    {
+      "source": "gate-speed/calibration-15-b-composition.log",
+      "path": "gate-speed/calibration-15-b-composition.txt",
+      "bytes": 908,
+      "sha256": "2ea71cd830b73b01a50566b1bd0e93d41a29e5ffa7066b0294e2b6048b3a8e7f"
+    },
+    {
+      "source": "gate-speed/calibration-15-b-transition.log",
+      "path": "gate-speed/calibration-15-b-transition.txt",
+      "bytes": 522,
+      "sha256": "5f4408e759081aa678368790aee1cf5ef00c45903e0c22ce97995678c4c6a9cf"
+    },
+    {
+      "source": "gate-speed/calibration-15-b-ui.json",
+      "path": "gate-speed/calibration-15-b-ui.json",
+      "bytes": 2696,
+      "sha256": "bfe114313a4fff8c58a4f4061b5888f8667ad07cec26b0cf6a4efdd76288d7a1"
+    },
+    {
+      "source": "gate-speed/calibration-15-b-ui.log",
+      "path": "gate-speed/calibration-15-b-ui.txt",
+      "bytes": 2696,
+      "sha256": "bfe114313a4fff8c58a4f4061b5888f8667ad07cec26b0cf6a4efdd76288d7a1"
+    },
+    {
+      "source": "gate-speed/calibration-16-a-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/calibration-16-a-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "27d46068ee6908e7e3bd2b895e67135e584fb17d8dbdd93429556651947f5f21"
+    },
+    {
+      "source": "gate-speed/calibration-16-a-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/calibration-16-a-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "3f2c0812765e0199ef42dbe8c550913a1de6d99b15b922b68a8bfc96f65121d0"
+    },
+    {
+      "source": "gate-speed/calibration-16-a-composition.log",
+      "path": "gate-speed/calibration-16-a-composition.txt",
+      "bytes": 908,
+      "sha256": "36ea961c47a5fb7ec955521db0c8b03921f601231abd8ce56c44fd9c3a4d63db"
+    },
+    {
+      "source": "gate-speed/calibration-16-a-transition.log",
+      "path": "gate-speed/calibration-16-a-transition.txt",
+      "bytes": 521,
+      "sha256": "f38e3d0e39fab2f7cd479dfe382d6f1a229ed1e7b9cff5e3a6bf00297833a143"
+    },
+    {
+      "source": "gate-speed/calibration-16-a-ui.json",
+      "path": "gate-speed/calibration-16-a-ui.json",
+      "bytes": 2774,
+      "sha256": "86a6ccfc9e73e70ad789312b77b01609a06d6bf1fc36ab21cce48f6bc292289b"
+    },
+    {
+      "source": "gate-speed/calibration-16-a-ui.log",
+      "path": "gate-speed/calibration-16-a-ui.txt",
+      "bytes": 2774,
+      "sha256": "86a6ccfc9e73e70ad789312b77b01609a06d6bf1fc36ab21cce48f6bc292289b"
+    },
+    {
+      "source": "gate-speed/calibration-16-b-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/calibration-16-b-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "7ab49593cda4587cb9d1a333ea17654774d8d5b3564b8614b69e2ef3479acba2"
+    },
+    {
+      "source": "gate-speed/calibration-16-b-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/calibration-16-b-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "d9741b8adc3a823e9283ef20131a502443fb117500077966b4d5cb93001d8e74"
+    },
+    {
+      "source": "gate-speed/calibration-16-b-composition.log",
+      "path": "gate-speed/calibration-16-b-composition.txt",
+      "bytes": 908,
+      "sha256": "094155479584687f8bd9c921a359bf7b08dff95592d12bba24cd9fb119582c85"
+    },
+    {
+      "source": "gate-speed/calibration-16-b-transition.log",
+      "path": "gate-speed/calibration-16-b-transition.txt",
+      "bytes": 525,
+      "sha256": "45bb013cd32072fad6601e60148eb248275b39a918a56dd66dc31c766f8a2c36"
+    },
+    {
+      "source": "gate-speed/calibration-16-b-ui.json",
+      "path": "gate-speed/calibration-16-b-ui.json",
+      "bytes": 2741,
+      "sha256": "7283632a040c069c3dd9e21c3c7c61a0f6498c9ef1f47b7291b35b6b85bb1d7b"
+    },
+    {
+      "source": "gate-speed/calibration-16-b-ui.log",
+      "path": "gate-speed/calibration-16-b-ui.txt",
+      "bytes": 2741,
+      "sha256": "7283632a040c069c3dd9e21c3c7c61a0f6498c9ef1f47b7291b35b6b85bb1d7b"
+    },
+    {
+      "source": "gate-speed/calibration-17-a-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/calibration-17-a-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "abe06f1301e6bbfb41f6a8396ddb52f6c4455d21a348d67434a0f2cdc4240311"
+    },
+    {
+      "source": "gate-speed/calibration-17-a-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/calibration-17-a-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "a4fc12314cf242895ff76df66ead736b30fd0548f19943bf781ef90f2b683186"
+    },
+    {
+      "source": "gate-speed/calibration-17-a-composition.log",
+      "path": "gate-speed/calibration-17-a-composition.txt",
+      "bytes": 908,
+      "sha256": "d4801f55196cb24e8d47eb1d0979ad344c9ac0b20ed7ec5bbcad9a8060b98df7"
+    },
+    {
+      "source": "gate-speed/calibration-17-a-transition.log",
+      "path": "gate-speed/calibration-17-a-transition.txt",
+      "bytes": 521,
+      "sha256": "92de31e58ccd4bbcb0023cca31fe903f16807422b79beeccaf37e4e20c5dc118"
+    },
+    {
+      "source": "gate-speed/calibration-17-a-ui.json",
+      "path": "gate-speed/calibration-17-a-ui.json",
+      "bytes": 2645,
+      "sha256": "520396cd6029b046646f0a451b6b6eb429998b2330383ee55f3804f4bed024a7"
+    },
+    {
+      "source": "gate-speed/calibration-17-a-ui.log",
+      "path": "gate-speed/calibration-17-a-ui.txt",
+      "bytes": 2645,
+      "sha256": "520396cd6029b046646f0a451b6b6eb429998b2330383ee55f3804f4bed024a7"
+    },
+    {
+      "source": "gate-speed/calibration-17-b-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/calibration-17-b-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "c4a57a43fb9c8229702ba238f3220c9e32b5d8de0a904eef6cf901007c7c9992"
+    },
+    {
+      "source": "gate-speed/calibration-17-b-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/calibration-17-b-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "b336da34d641d25c32cdb87f43d79b27b667090614692b386fc29e95e491ec74"
+    },
+    {
+      "source": "gate-speed/calibration-17-b-composition.log",
+      "path": "gate-speed/calibration-17-b-composition.txt",
+      "bytes": 908,
+      "sha256": "ca7ff2fe0b29234824405a170a6753d5e0dc9cbf6ca593967422f6116f61eb44"
+    },
+    {
+      "source": "gate-speed/calibration-17-b-transition.log",
+      "path": "gate-speed/calibration-17-b-transition.txt",
+      "bytes": 523,
+      "sha256": "8a10ce9118f61aaa6b9067e573862cbb713c646b296774a4a7e9598b6f53e99a"
+    },
+    {
+      "source": "gate-speed/calibration-17-b-ui.json",
+      "path": "gate-speed/calibration-17-b-ui.json",
+      "bytes": 2698,
+      "sha256": "121db5356daf674873a6ade3c734e48136f7a32aba97958546030529d17b4838"
+    },
+    {
+      "source": "gate-speed/calibration-17-b-ui.log",
+      "path": "gate-speed/calibration-17-b-ui.txt",
+      "bytes": 2698,
+      "sha256": "121db5356daf674873a6ade3c734e48136f7a32aba97958546030529d17b4838"
+    },
+    {
+      "source": "gate-speed/calibration-18-a-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/calibration-18-a-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "0c83df14e3b2313d6c788f098bcf9362fa349cfbd247618107c71f18ec4a996c"
+    },
+    {
+      "source": "gate-speed/calibration-18-a-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/calibration-18-a-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "dacde59e3bb1095f0c3f753b47655527bf3221907ebe94087740c684433949cc"
+    },
+    {
+      "source": "gate-speed/calibration-18-a-composition.log",
+      "path": "gate-speed/calibration-18-a-composition.txt",
+      "bytes": 908,
+      "sha256": "c827a5835e5384c36b294e8f508c92121665ea5d124108726b4c5b983b7a56d2"
+    },
+    {
+      "source": "gate-speed/calibration-18-a-transition.log",
+      "path": "gate-speed/calibration-18-a-transition.txt",
+      "bytes": 521,
+      "sha256": "a67347db1a7714ec896a6ed1e2a4d892e2ee259dfcaa44b4964268d7fbbecd3c"
+    },
+    {
+      "source": "gate-speed/calibration-18-a-ui.json",
+      "path": "gate-speed/calibration-18-a-ui.json",
+      "bytes": 2663,
+      "sha256": "239916579022eaa19c053c72ac9dcd074bfac84c65e0dabfc2705dfdb4fe0d12"
+    },
+    {
+      "source": "gate-speed/calibration-18-a-ui.log",
+      "path": "gate-speed/calibration-18-a-ui.txt",
+      "bytes": 2663,
+      "sha256": "239916579022eaa19c053c72ac9dcd074bfac84c65e0dabfc2705dfdb4fe0d12"
+    },
+    {
+      "source": "gate-speed/calibration-18-b-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/calibration-18-b-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "0730ffc13c56cad3de023aa4b70d2fde0f86f2adf0af86b7e2aac8e05a6ad072"
+    },
+    {
+      "source": "gate-speed/calibration-18-b-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/calibration-18-b-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "16799d234a1c058a72a22a0a64ec05c8eeca7cc3a739bacc89d7833cf17acdd2"
+    },
+    {
+      "source": "gate-speed/calibration-18-b-composition.log",
+      "path": "gate-speed/calibration-18-b-composition.txt",
+      "bytes": 980,
+      "sha256": "88f6a925a2a1f71ed54823855b2a14fca87fd087ef2a59b5e3706212418484f8"
+    },
+    {
+      "source": "gate-speed/calibration-18-b-transition.log",
+      "path": "gate-speed/calibration-18-b-transition.txt",
+      "bytes": 526,
+      "sha256": "0ed9503f7499e93d66d7ddc4b26737d829a7d1de87e821fd713e4876f05c5f97"
+    },
+    {
+      "source": "gate-speed/calibration-18-b-ui.json",
+      "path": "gate-speed/calibration-18-b-ui.json",
+      "bytes": 2712,
+      "sha256": "d4e9394e92423700ce43bc62d7336adb160d5d22d11ff7d29e5f97bdee36b537"
+    },
+    {
+      "source": "gate-speed/calibration-18-b-ui.log",
+      "path": "gate-speed/calibration-18-b-ui.txt",
+      "bytes": 2712,
+      "sha256": "d4e9394e92423700ce43bc62d7336adb160d5d22d11ff7d29e5f97bdee36b537"
+    },
+    {
+      "source": "gate-speed/calibration-19-a-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/calibration-19-a-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "41a52b0214a779751d45b24563ccdfd732d13b45277b52671bbab05b17b6046d"
+    },
+    {
+      "source": "gate-speed/calibration-19-a-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/calibration-19-a-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "b73c6966078593f521cbd773500fbf6045a1f3878f80930da206d4265ea4f597"
+    },
+    {
+      "source": "gate-speed/calibration-19-a-composition.log",
+      "path": "gate-speed/calibration-19-a-composition.txt",
+      "bytes": 908,
+      "sha256": "3033476299a368374e0d0378f8e8d6e4a7dd00b50bd9cc5e04e7fa80ccd81bfc"
+    },
+    {
+      "source": "gate-speed/calibration-19-a-transition.log",
+      "path": "gate-speed/calibration-19-a-transition.txt",
+      "bytes": 524,
+      "sha256": "f32902fcfab8aae20105e66302b5d084e0f9600e442f7961e68dfd7ec9388e97"
+    },
+    {
+      "source": "gate-speed/calibration-19-a-ui.json",
+      "path": "gate-speed/calibration-19-a-ui.json",
+      "bytes": 2654,
+      "sha256": "1c65dac24c9c69343d288a42384398adabe810912efd8c9a8be3759a36960d4d"
+    },
+    {
+      "source": "gate-speed/calibration-19-a-ui.log",
+      "path": "gate-speed/calibration-19-a-ui.txt",
+      "bytes": 2654,
+      "sha256": "1c65dac24c9c69343d288a42384398adabe810912efd8c9a8be3759a36960d4d"
+    },
+    {
+      "source": "gate-speed/calibration-19-b-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/calibration-19-b-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "c5e1e29cbafa2e07c21c0c1a2796955efa8aa0856a5b51c479ff9df10279e1d0"
+    },
+    {
+      "source": "gate-speed/calibration-19-b-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/calibration-19-b-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "b04b119129b2e5be98c66138fcab38d4cc29e5f33f5def6c0e41dbd54f5fe400"
+    },
+    {
+      "source": "gate-speed/calibration-19-b-composition.log",
+      "path": "gate-speed/calibration-19-b-composition.txt",
+      "bytes": 908,
+      "sha256": "12c6c318fff85ee9de2913b39d0c36c46c05fbeb4d64d5d313c695b1af29a2de"
+    },
+    {
+      "source": "gate-speed/calibration-19-b-transition.log",
+      "path": "gate-speed/calibration-19-b-transition.txt",
+      "bytes": 522,
+      "sha256": "377e144361ba807adb08f14e7e5fb1a93f3439b40d15042672554bfcb239185c"
+    },
+    {
+      "source": "gate-speed/calibration-19-b-ui.json",
+      "path": "gate-speed/calibration-19-b-ui.json",
+      "bytes": 2754,
+      "sha256": "ea681ecc0e71e5014b0b4ee3fec8470fb8ceedb02be6d90aa2e38fc707bbef0d"
+    },
+    {
+      "source": "gate-speed/calibration-19-b-ui.log",
+      "path": "gate-speed/calibration-19-b-ui.txt",
+      "bytes": 2754,
+      "sha256": "ea681ecc0e71e5014b0b4ee3fec8470fb8ceedb02be6d90aa2e38fc707bbef0d"
+    },
+    {
+      "source": "gate-speed/calibration-2-a-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/calibration-2-a-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "14f47776978e1931e6b709404f979fd115a15d17988c0fbf4ffb960203441d14"
+    },
+    {
+      "source": "gate-speed/calibration-2-a-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/calibration-2-a-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "4460577f3b249cc5d238553789dd296dc2c3f47a5d7385a09a3220faa4a19b74"
+    },
+    {
+      "source": "gate-speed/calibration-2-a-composition.log",
+      "path": "gate-speed/calibration-2-a-composition.txt",
+      "bytes": 906,
+      "sha256": "88c1c69aa0db30a94f78a241d73624fdc1add05ad0da706250ddee1da65f2565"
+    },
+    {
+      "source": "gate-speed/calibration-2-a-transition.log",
+      "path": "gate-speed/calibration-2-a-transition.txt",
+      "bytes": 521,
+      "sha256": "24651cdcbef280ab24289bdf631277cafe54261553474f59c69e226ac115ccaf"
+    },
+    {
+      "source": "gate-speed/calibration-2-a-ui.json",
+      "path": "gate-speed/calibration-2-a-ui.json",
+      "bytes": 2661,
+      "sha256": "0110a900978bc0fc098f1d89c3903837694ff0d009e527a46a82fd7af14f90e3"
+    },
+    {
+      "source": "gate-speed/calibration-2-a-ui.log",
+      "path": "gate-speed/calibration-2-a-ui.txt",
+      "bytes": 2661,
+      "sha256": "0110a900978bc0fc098f1d89c3903837694ff0d009e527a46a82fd7af14f90e3"
+    },
+    {
+      "source": "gate-speed/calibration-2-b-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/calibration-2-b-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11911,
+      "sha256": "e991546ef80345d90f954739cf8e21cfb532115304007363b8de21b77e9aacbc"
+    },
+    {
+      "source": "gate-speed/calibration-2-b-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/calibration-2-b-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3368,
+      "sha256": "b742b8f9519096209bbfc023de9532a992535fcd0057246816f1648f028e76e7"
+    },
+    {
+      "source": "gate-speed/calibration-2-b-composition.log",
+      "path": "gate-speed/calibration-2-b-composition.txt",
+      "bytes": 906,
+      "sha256": "322aebb8e1a81c50334807382c8541fbae26e03d9c4721341dceccd736947f4a"
+    },
+    {
+      "source": "gate-speed/calibration-2-b-transition.log",
+      "path": "gate-speed/calibration-2-b-transition.txt",
+      "bytes": 522,
+      "sha256": "1b7aa4d53ae5a9c2df353cfc9eea7d4297b85da751c27364c674e7cbe98547ea"
+    },
+    {
+      "source": "gate-speed/calibration-2-b-ui.json",
+      "path": "gate-speed/calibration-2-b-ui.json",
+      "bytes": 2782,
+      "sha256": "9828e16b8344b585ad8f57ce93e2d0fb505ef0695eed0e2a4a12ca8d69628970"
+    },
+    {
+      "source": "gate-speed/calibration-2-b-ui.log",
+      "path": "gate-speed/calibration-2-b-ui.txt",
+      "bytes": 2782,
+      "sha256": "9828e16b8344b585ad8f57ce93e2d0fb505ef0695eed0e2a4a12ca8d69628970"
+    },
+    {
+      "source": "gate-speed/calibration-3-a-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/calibration-3-a-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11911,
+      "sha256": "2745e63c3f9c0303c00ea3569653c1624166758303649c87b95ed24e8b0255eb"
+    },
+    {
+      "source": "gate-speed/calibration-3-a-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/calibration-3-a-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3368,
+      "sha256": "ae81a8b3cf6808436aa94804d1a6717442ae13f1115bc8ad1058fdcb0bbdec35"
+    },
+    {
+      "source": "gate-speed/calibration-3-a-composition.log",
+      "path": "gate-speed/calibration-3-a-composition.txt",
+      "bytes": 953,
+      "sha256": "94e69ff4b0b96ef145ec53ffb6ff1c1ba81a4a361c3d819158d5f1e1147a6774"
+    },
+    {
+      "source": "gate-speed/calibration-3-a-transition.log",
+      "path": "gate-speed/calibration-3-a-transition.txt",
+      "bytes": 522,
+      "sha256": "28a77bd9f2b3a068078a78613986635cdd456374ade47604ff2edd8a15347324"
+    },
+    {
+      "source": "gate-speed/calibration-3-a-ui.json",
+      "path": "gate-speed/calibration-3-a-ui.json",
+      "bytes": 2640,
+      "sha256": "d733fb037c4b434120a93756d925f9d8051590c34edef29c3ee8690809cf117a"
+    },
+    {
+      "source": "gate-speed/calibration-3-a-ui.log",
+      "path": "gate-speed/calibration-3-a-ui.txt",
+      "bytes": 2640,
+      "sha256": "d733fb037c4b434120a93756d925f9d8051590c34edef29c3ee8690809cf117a"
+    },
+    {
+      "source": "gate-speed/calibration-3-b-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/calibration-3-b-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "51ca8d7f2d480d1b7b21611823c600db4eef35e6b71e69c2a13b4389c5701c28"
+    },
+    {
+      "source": "gate-speed/calibration-3-b-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/calibration-3-b-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "3298b15c196dd22f7f5cfb17fa8fdc4f65ac98e30aeb06e1f6633afd4b1dd149"
+    },
+    {
+      "source": "gate-speed/calibration-3-b-composition.log",
+      "path": "gate-speed/calibration-3-b-composition.txt",
+      "bytes": 906,
+      "sha256": "e35294a2f7679ccf8798deb4007733205c6631770bd5c9d27cf4c7d6b2ef3567"
+    },
+    {
+      "source": "gate-speed/calibration-3-b-transition.log",
+      "path": "gate-speed/calibration-3-b-transition.txt",
+      "bytes": 522,
+      "sha256": "f7357491a4d884d85d8061d07532dd0f98bb5b80fcba0f92b08cc9a2dcdbb6ba"
+    },
+    {
+      "source": "gate-speed/calibration-3-b-ui.json",
+      "path": "gate-speed/calibration-3-b-ui.json",
+      "bytes": 2654,
+      "sha256": "ed98c017e5c6e6ba443704bee2afefc7bd17ac41f91e34a229c571268b2d4384"
+    },
+    {
+      "source": "gate-speed/calibration-3-b-ui.log",
+      "path": "gate-speed/calibration-3-b-ui.txt",
+      "bytes": 2654,
+      "sha256": "ed98c017e5c6e6ba443704bee2afefc7bd17ac41f91e34a229c571268b2d4384"
+    },
+    {
+      "source": "gate-speed/calibration-4-a-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/calibration-4-a-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "d7187c7da0b6359d44116b903b9394fe17b38b853eee0d2d5896a3d52743ba50"
+    },
+    {
+      "source": "gate-speed/calibration-4-a-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/calibration-4-a-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "2196b11743d307b2386ffcd19b779ec8d678b0389970beb79fc76d31d9c6c972"
+    },
+    {
+      "source": "gate-speed/calibration-4-a-composition.log",
+      "path": "gate-speed/calibration-4-a-composition.txt",
+      "bytes": 906,
+      "sha256": "8c91d5b22eb19985c98bdb4b3dcdf26aa9999ca3c10247567993eb9d78eeabb1"
+    },
+    {
+      "source": "gate-speed/calibration-4-a-transition.log",
+      "path": "gate-speed/calibration-4-a-transition.txt",
+      "bytes": 521,
+      "sha256": "99fe14d7181a0324b5d9c0abfd932c71e54e68bf8affa9227863054e71f7b142"
+    },
+    {
+      "source": "gate-speed/calibration-4-a-ui.json",
+      "path": "gate-speed/calibration-4-a-ui.json",
+      "bytes": 2714,
+      "sha256": "246d10f383770edb03cd7f282a1fbd50f5f29da97ed4c052425ff2922ca454ad"
+    },
+    {
+      "source": "gate-speed/calibration-4-a-ui.log",
+      "path": "gate-speed/calibration-4-a-ui.txt",
+      "bytes": 2714,
+      "sha256": "246d10f383770edb03cd7f282a1fbd50f5f29da97ed4c052425ff2922ca454ad"
+    },
+    {
+      "source": "gate-speed/calibration-4-b-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/calibration-4-b-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "2d54691a721f2f248c38bdd5f64aacf1fad652af6178b4e8029002252fbb97c3"
+    },
+    {
+      "source": "gate-speed/calibration-4-b-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/calibration-4-b-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "611f278ad53f7bbe7d2f5eaa7f80013fbcef665ec122ad811997df576625950e"
+    },
+    {
+      "source": "gate-speed/calibration-4-b-composition.log",
+      "path": "gate-speed/calibration-4-b-composition.txt",
+      "bytes": 906,
+      "sha256": "cc9536ecf27f96f126d0f3f4d97822ca12ecce26f61fbbe2f7139dadd12f7230"
+    },
+    {
+      "source": "gate-speed/calibration-4-b-transition.log",
+      "path": "gate-speed/calibration-4-b-transition.txt",
+      "bytes": 522,
+      "sha256": "04496c1ed291915629c69b69182562349fe86f4e1ec4cb1a8f7091a5277545f9"
+    },
+    {
+      "source": "gate-speed/calibration-4-b-ui.json",
+      "path": "gate-speed/calibration-4-b-ui.json",
+      "bytes": 2709,
+      "sha256": "529ddf47ea5894bd4835136a1c67b64ad4f3fe13a46f1eb2fac147f42985734a"
+    },
+    {
+      "source": "gate-speed/calibration-4-b-ui.log",
+      "path": "gate-speed/calibration-4-b-ui.txt",
+      "bytes": 2709,
+      "sha256": "529ddf47ea5894bd4835136a1c67b64ad4f3fe13a46f1eb2fac147f42985734a"
+    },
+    {
+      "source": "gate-speed/calibration-5-a-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/calibration-5-a-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "047f8d2c8a0b91d09fe49ca33e4e16b9730ea2ed83c3f5c7b311353a07022f04"
+    },
+    {
+      "source": "gate-speed/calibration-5-a-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/calibration-5-a-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "4a7ea51e9b5c086c1fcb1ed8df4c614c857b841b782292437f2f4f44d484c57e"
+    },
+    {
+      "source": "gate-speed/calibration-5-a-composition.log",
+      "path": "gate-speed/calibration-5-a-composition.txt",
+      "bytes": 906,
+      "sha256": "fbb780eccc7178859a9a8d0985707eafc24beb4befc419e1261deeb3d548e099"
+    },
+    {
+      "source": "gate-speed/calibration-5-a-transition.log",
+      "path": "gate-speed/calibration-5-a-transition.txt",
+      "bytes": 521,
+      "sha256": "eb2166d37b624c0f493738739cbe38ff8baa575d8b9b2a8c423845ad1fab4c97"
+    },
+    {
+      "source": "gate-speed/calibration-5-a-ui.json",
+      "path": "gate-speed/calibration-5-a-ui.json",
+      "bytes": 2744,
+      "sha256": "89132d74a0585a2dc2ecfcf8b23e0c99c1dcbd00abc58ea25d2af1465fb1cce5"
+    },
+    {
+      "source": "gate-speed/calibration-5-a-ui.log",
+      "path": "gate-speed/calibration-5-a-ui.txt",
+      "bytes": 2744,
+      "sha256": "89132d74a0585a2dc2ecfcf8b23e0c99c1dcbd00abc58ea25d2af1465fb1cce5"
+    },
+    {
+      "source": "gate-speed/calibration-5-b-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/calibration-5-b-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "edc809dbe766df4daac329d936b1f53dff87d53701439dbdca474e3dbccf4cbf"
+    },
+    {
+      "source": "gate-speed/calibration-5-b-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/calibration-5-b-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "54aac745247e6780e454a1faa9eb0ab40c5a09992dc6e39a54e5bad3aaed1a51"
+    },
+    {
+      "source": "gate-speed/calibration-5-b-composition.log",
+      "path": "gate-speed/calibration-5-b-composition.txt",
+      "bytes": 906,
+      "sha256": "890243d22a73ed6a8a4d567ed4b6bb34762977a3b7069f6b75eccbc1bd80be5a"
+    },
+    {
+      "source": "gate-speed/calibration-5-b-transition.log",
+      "path": "gate-speed/calibration-5-b-transition.txt",
+      "bytes": 522,
+      "sha256": "c9efa78f211ca3dac5899b41b8c7d4eae70c619ffe6aa72a16b1864eff517aa1"
+    },
+    {
+      "source": "gate-speed/calibration-5-b-ui.json",
+      "path": "gate-speed/calibration-5-b-ui.json",
+      "bytes": 2736,
+      "sha256": "a37f610f32f3227889077d938efcfd7ffe1dce197aec7d5fb8b06ec6a2786ae1"
+    },
+    {
+      "source": "gate-speed/calibration-5-b-ui.log",
+      "path": "gate-speed/calibration-5-b-ui.txt",
+      "bytes": 2736,
+      "sha256": "a37f610f32f3227889077d938efcfd7ffe1dce197aec7d5fb8b06ec6a2786ae1"
+    },
+    {
+      "source": "gate-speed/calibration-6-a-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/calibration-6-a-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "d5c032d1312a275c385d21fa25d691f079497b9e6170eb9dc98e984c3e2ab0cb"
+    },
+    {
+      "source": "gate-speed/calibration-6-a-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/calibration-6-a-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "aa138a74fe1ed6e9535c65f871f57fd66f9a0e2a80439734794e7e7de9752b64"
+    },
+    {
+      "source": "gate-speed/calibration-6-a-composition.log",
+      "path": "gate-speed/calibration-6-a-composition.txt",
+      "bytes": 978,
+      "sha256": "12703103e4ad46d911640f48aa74969cd46c85ad903ca8f493804b2760797f87"
+    },
+    {
+      "source": "gate-speed/calibration-6-a-transition.log",
+      "path": "gate-speed/calibration-6-a-transition.txt",
+      "bytes": 522,
+      "sha256": "892d7ca4396cc8f87e811f6a1071d6fab4ee304512e7ba14e39d5aece7c00e25"
+    },
+    {
+      "source": "gate-speed/calibration-6-a-ui.json",
+      "path": "gate-speed/calibration-6-a-ui.json",
+      "bytes": 2707,
+      "sha256": "36eda884861cda6dd3a311ddae4c6e20503a05ebdd0634cf9bbe7669b9794bcb"
+    },
+    {
+      "source": "gate-speed/calibration-6-a-ui.log",
+      "path": "gate-speed/calibration-6-a-ui.txt",
+      "bytes": 2707,
+      "sha256": "36eda884861cda6dd3a311ddae4c6e20503a05ebdd0634cf9bbe7669b9794bcb"
+    },
+    {
+      "source": "gate-speed/calibration-6-b-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/calibration-6-b-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "91702d0262c39c9061ee38789444c62cf62375f474ec20e89268a46c0ade26a5"
+    },
+    {
+      "source": "gate-speed/calibration-6-b-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/calibration-6-b-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "eb9c66960f3a61bf89f1a846a327b7b2327f5468530698d2fb6012b880029780"
+    },
+    {
+      "source": "gate-speed/calibration-6-b-composition.log",
+      "path": "gate-speed/calibration-6-b-composition.txt",
+      "bytes": 906,
+      "sha256": "c06cedc736f7013ac8044a8fd6c12a0e0235582ffbc31ba4bcb4d43e43274167"
+    },
+    {
+      "source": "gate-speed/calibration-6-b-transition.log",
+      "path": "gate-speed/calibration-6-b-transition.txt",
+      "bytes": 522,
+      "sha256": "070014b11ac1932616b991da94a695c847f5d1326663fdcbdc53b6c6953b3b7c"
+    },
+    {
+      "source": "gate-speed/calibration-6-b-ui.json",
+      "path": "gate-speed/calibration-6-b-ui.json",
+      "bytes": 2712,
+      "sha256": "610b20ec00aa02e81c3df52b955f61df20613881098f5c34f24df1901f79e7a3"
+    },
+    {
+      "source": "gate-speed/calibration-6-b-ui.log",
+      "path": "gate-speed/calibration-6-b-ui.txt",
+      "bytes": 2712,
+      "sha256": "610b20ec00aa02e81c3df52b955f61df20613881098f5c34f24df1901f79e7a3"
+    },
+    {
+      "source": "gate-speed/calibration-7-a-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/calibration-7-a-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "9848131634277467d7c2649447850c082130d1e961101bc9c1b563be558fcc33"
+    },
+    {
+      "source": "gate-speed/calibration-7-a-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/calibration-7-a-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "016949dda68d7df70f3250ef2a21e3cb42d9d6761b24081457e47ff59b186838"
+    },
+    {
+      "source": "gate-speed/calibration-7-a-composition.log",
+      "path": "gate-speed/calibration-7-a-composition.txt",
+      "bytes": 906,
+      "sha256": "bd5b736d254c970378b5dd6cfc8005e46276cf4c5514a49444679d66df81c49e"
+    },
+    {
+      "source": "gate-speed/calibration-7-a-transition.log",
+      "path": "gate-speed/calibration-7-a-transition.txt",
+      "bytes": 522,
+      "sha256": "87c87e2dfcbbb4b2707a7f3095e1824f5b6d2504a248538bf1ea4892cdfd3f4d"
+    },
+    {
+      "source": "gate-speed/calibration-7-a-ui.json",
+      "path": "gate-speed/calibration-7-a-ui.json",
+      "bytes": 2694,
+      "sha256": "e01e9f78f24eef8cfe6b5e6145ddae44ec03f2d9aff3c722b92fab5059b0af98"
+    },
+    {
+      "source": "gate-speed/calibration-7-a-ui.log",
+      "path": "gate-speed/calibration-7-a-ui.txt",
+      "bytes": 2694,
+      "sha256": "e01e9f78f24eef8cfe6b5e6145ddae44ec03f2d9aff3c722b92fab5059b0af98"
+    },
+    {
+      "source": "gate-speed/calibration-7-b-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/calibration-7-b-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "5510ac59431374a2a161e273438951c22221912be1973c43029d0e8c0e66791a"
+    },
+    {
+      "source": "gate-speed/calibration-7-b-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/calibration-7-b-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "3b3ce4af1538d457c45701250a80ebe2a92bc6c3dd44937466204f7794dba0ac"
+    },
+    {
+      "source": "gate-speed/calibration-7-b-composition.log",
+      "path": "gate-speed/calibration-7-b-composition.txt",
+      "bytes": 906,
+      "sha256": "d302f34c743ed1516e8c93216d704437af08ff4c5fdd2f54dd262df5f1fc337a"
+    },
+    {
+      "source": "gate-speed/calibration-7-b-transition.log",
+      "path": "gate-speed/calibration-7-b-transition.txt",
+      "bytes": 521,
+      "sha256": "be6b1072afa38ffe167115832bd0be7172a278c4065d5d9a20a9dd82c2cdb3c9"
+    },
+    {
+      "source": "gate-speed/calibration-7-b-ui.json",
+      "path": "gate-speed/calibration-7-b-ui.json",
+      "bytes": 2688,
+      "sha256": "fcd6de081ca4ff428792fce30a27bdff435b3f3c69db68837f6cea0fcf486bed"
+    },
+    {
+      "source": "gate-speed/calibration-7-b-ui.log",
+      "path": "gate-speed/calibration-7-b-ui.txt",
+      "bytes": 2688,
+      "sha256": "fcd6de081ca4ff428792fce30a27bdff435b3f3c69db68837f6cea0fcf486bed"
+    },
+    {
+      "source": "gate-speed/calibration-8-a-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/calibration-8-a-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "a178c3c642cc1aa304fae8daa2197e7ee157e7a738be171f1143f28e346704ff"
+    },
+    {
+      "source": "gate-speed/calibration-8-a-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/calibration-8-a-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "4824a545d86befda2875c2aa57c2d1e6ada1337bc85d32e1a243e118e06b2719"
+    },
+    {
+      "source": "gate-speed/calibration-8-a-composition.log",
+      "path": "gate-speed/calibration-8-a-composition.txt",
+      "bytes": 906,
+      "sha256": "43e314aac16e07ec76c77b31b2bb75ab8d332e4472940d5e084518ec3cfea732"
+    },
+    {
+      "source": "gate-speed/calibration-8-a-transition.log",
+      "path": "gate-speed/calibration-8-a-transition.txt",
+      "bytes": 521,
+      "sha256": "d755fb494f0aa0b205b3aa7bd616c9d6a1f644fe0174c68d4baed981e91ed557"
+    },
+    {
+      "source": "gate-speed/calibration-8-a-ui.json",
+      "path": "gate-speed/calibration-8-a-ui.json",
+      "bytes": 2692,
+      "sha256": "ff5f7055b183b7c06d41717906d6db2190b028690aeec15ed85422b111d31c6e"
+    },
+    {
+      "source": "gate-speed/calibration-8-a-ui.log",
+      "path": "gate-speed/calibration-8-a-ui.txt",
+      "bytes": 2692,
+      "sha256": "ff5f7055b183b7c06d41717906d6db2190b028690aeec15ed85422b111d31c6e"
+    },
+    {
+      "source": "gate-speed/calibration-8-b-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/calibration-8-b-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "23612c872ca31743eb6b5db85a877fd07507aa72d09a0466b619d715b6f11819"
+    },
+    {
+      "source": "gate-speed/calibration-8-b-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/calibration-8-b-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "c9505ca2cb5bfd13ccfc3f1fea01d0fd8d77953d43d95af89746169e4f434a0a"
+    },
+    {
+      "source": "gate-speed/calibration-8-b-composition.log",
+      "path": "gate-speed/calibration-8-b-composition.txt",
+      "bytes": 906,
+      "sha256": "b6a2fa28112cd7e962a21c668f548f132e0ee7ec404af717bdb8b800502002d7"
+    },
+    {
+      "source": "gate-speed/calibration-8-b-transition.log",
+      "path": "gate-speed/calibration-8-b-transition.txt",
+      "bytes": 522,
+      "sha256": "3ad9cf084c7acc39660570f9b18b88c52a859dee1a1e7e51b240f3387ced640c"
+    },
+    {
+      "source": "gate-speed/calibration-8-b-ui.json",
+      "path": "gate-speed/calibration-8-b-ui.json",
+      "bytes": 2712,
+      "sha256": "70eb87ce19eb7944aad7ba70fa9346ab23070ac0d392099267a1b238d7f68d35"
+    },
+    {
+      "source": "gate-speed/calibration-8-b-ui.log",
+      "path": "gate-speed/calibration-8-b-ui.txt",
+      "bytes": 2712,
+      "sha256": "70eb87ce19eb7944aad7ba70fa9346ab23070ac0d392099267a1b238d7f68d35"
+    },
+    {
+      "source": "gate-speed/calibration-9-a-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/calibration-9-a-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11911,
+      "sha256": "92ddd235d8ae47c5bb65c3c175d9a6996419a39f9b3b82810986e31c91fef18a"
+    },
+    {
+      "source": "gate-speed/calibration-9-a-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/calibration-9-a-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3368,
+      "sha256": "85628019d24a0de8431d3727d52001544e8e03ce801da511258e705cae84ef40"
+    },
+    {
+      "source": "gate-speed/calibration-9-a-composition.log",
+      "path": "gate-speed/calibration-9-a-composition.txt",
+      "bytes": 906,
+      "sha256": "8440b643e552377c71f7526af582a0757588d4b94314b8656b04ecfbfec53a42"
+    },
+    {
+      "source": "gate-speed/calibration-9-a-transition.log",
+      "path": "gate-speed/calibration-9-a-transition.txt",
+      "bytes": 521,
+      "sha256": "d7f3dd623946819178f1f60d7e55741ff7bc7d25fc4daf4c3c418ceb8a786c7e"
+    },
+    {
+      "source": "gate-speed/calibration-9-a-ui.json",
+      "path": "gate-speed/calibration-9-a-ui.json",
+      "bytes": 2690,
+      "sha256": "3a7294160829fc836b76a8cc77bbcc85777109d2ab1324a03f06a1b71fd47b7a"
+    },
+    {
+      "source": "gate-speed/calibration-9-a-ui.log",
+      "path": "gate-speed/calibration-9-a-ui.txt",
+      "bytes": 2690,
+      "sha256": "3a7294160829fc836b76a8cc77bbcc85777109d2ab1324a03f06a1b71fd47b7a"
+    },
+    {
+      "source": "gate-speed/calibration-9-b-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/calibration-9-b-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "9e30f57497b607dbb3c48e1d53259a42d541874c96680ec688b3af4ed558fb82"
+    },
+    {
+      "source": "gate-speed/calibration-9-b-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/calibration-9-b-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "f5f03b8145af8dccf37ded5bf1bf1e5c42a173598c1126bbb69eb72c64026c65"
+    },
+    {
+      "source": "gate-speed/calibration-9-b-composition.log",
+      "path": "gate-speed/calibration-9-b-composition.txt",
+      "bytes": 906,
+      "sha256": "2c42986f168fb2a971fa63cdac1de8bff8e7d2ce782079d2864863c0f1ef758a"
+    },
+    {
+      "source": "gate-speed/calibration-9-b-transition.log",
+      "path": "gate-speed/calibration-9-b-transition.txt",
+      "bytes": 522,
+      "sha256": "0f32491fab5ad8fff862c052a70092979f9a381ca28e509ad69b26738b7aab00"
+    },
+    {
+      "source": "gate-speed/calibration-9-b-ui.json",
+      "path": "gate-speed/calibration-9-b-ui.json",
+      "bytes": 2662,
+      "sha256": "b4f33c603c36b931e0393a1d814596b69743d51242b960b1fe8e78787c8ee96f"
+    },
+    {
+      "source": "gate-speed/calibration-9-b-ui.log",
+      "path": "gate-speed/calibration-9-b-ui.txt",
+      "bytes": 2662,
+      "sha256": "b4f33c603c36b931e0393a1d814596b69743d51242b960b1fe8e78787c8ee96f"
+    },
+    {
+      "source": "gate-speed/calibration.json",
+      "path": "gate-speed/calibration.json",
+      "bytes": 14343,
+      "sha256": "3bc10d40728f0663be67e49fe7cd9e26532f03397bd899df5b08c0ba67755ec0"
+    },
+    {
+      "source": "gate-speed/candidate-full-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/candidate-full-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 136303,
+      "sha256": "5e87ddd30129f2d9128172732010251822a62847ecf8aed8b19cb6ed94e8082b"
+    },
+    {
+      "source": "gate-speed/candidate-full-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/candidate-full-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 13655,
+      "sha256": "c27252b76b863128f875a3b246ec5c4e13425b881e08bd512271d163eac1f2a9"
+    },
+    {
+      "source": "gate-speed/candidate-full-composition.log",
+      "path": "gate-speed/candidate-full-composition.txt",
+      "bytes": 11138,
+      "sha256": "b480c3207290dea9ab93f967f319333a9b879c3b0a37863c6e046b5cc9c5b528"
+    },
+    {
+      "source": "gate-speed/candidate-hvc_core-4dee993b4e86ff9a-inventory.log",
+      "path": "gate-speed/candidate-hvc_core-4dee993b4e86ff9a-inventory.txt",
+      "bytes": 123014,
+      "sha256": "60058c6a2f71ea3857b2b238a869039c8737ec79bc1cd50eebd4bd955e0fd9f1"
+    },
+    {
+      "source": "gate-speed/comparison-0-baseline-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/comparison-0-baseline-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "29b9de5f727d4c0fd1b9c86ec923f63d3e9c7942f56f5602c3951927606e35cd"
+    },
+    {
+      "source": "gate-speed/comparison-0-baseline-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/comparison-0-baseline-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "78532a56dc1960b710d0d58729eaed21f7da11fe74751ddd25e9d1d21c93f602"
+    },
+    {
+      "source": "gate-speed/comparison-0-baseline-composition.log",
+      "path": "gate-speed/comparison-0-baseline-composition.txt",
+      "bytes": 918,
+      "sha256": "b5c4c7d803caf339b67bd79e6d35a60a8b44e8d73cbe7a1bc06de7aafcbae90e"
+    },
+    {
+      "source": "gate-speed/comparison-0-baseline-transition.log",
+      "path": "gate-speed/comparison-0-baseline-transition.txt",
+      "bytes": 520,
+      "sha256": "216ec210d3793c64e1266976f4475eb34d44ce80a595a980e5ced8a052f14684"
+    },
+    {
+      "source": "gate-speed/comparison-0-baseline-ui.json",
+      "path": "gate-speed/comparison-0-baseline-ui.json",
+      "bytes": 2675,
+      "sha256": "2973c42e85cb3698f46d3340a4f5b6d9e762834fc7f9f99e1a15e7f2bbcef4f9"
+    },
+    {
+      "source": "gate-speed/comparison-0-baseline-ui.log",
+      "path": "gate-speed/comparison-0-baseline-ui.txt",
+      "bytes": 2675,
+      "sha256": "2973c42e85cb3698f46d3340a4f5b6d9e762834fc7f9f99e1a15e7f2bbcef4f9"
+    },
+    {
+      "source": "gate-speed/comparison-0-candidate-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/comparison-0-candidate-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11941,
+      "sha256": "0c740440c9b8ff4e1c814cf958bf5e128cc3c11687dd0bcb2845c452ec86834e"
+    },
+    {
+      "source": "gate-speed/comparison-0-candidate-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/comparison-0-candidate-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "eb25330df0ebba8cba579539779a26727c00e4e36d0c78dedbd4fe88348a5c0d"
+    },
+    {
+      "source": "gate-speed/comparison-0-candidate-composition.log",
+      "path": "gate-speed/comparison-0-candidate-composition.txt",
+      "bytes": 920,
+      "sha256": "6504c25344cac5ed24a16b4761bdd88b5ead455228aff7e2d2fc67cd7fe41b62"
+    },
+    {
+      "source": "gate-speed/comparison-0-candidate-transition.log",
+      "path": "gate-speed/comparison-0-candidate-transition.txt",
+      "bytes": 520,
+      "sha256": "91f897382063f0703d6cf9f52774b06d0f9a4b5d3ffe03b3da2b1ee728d0c80e"
+    },
+    {
+      "source": "gate-speed/comparison-0-candidate-ui.json",
+      "path": "gate-speed/comparison-0-candidate-ui.json",
+      "bytes": 2821,
+      "sha256": "7c4a14155ee0a418942eebfe3fc72e456d5a326b66a401a17678745d1c6567b6"
+    },
+    {
+      "source": "gate-speed/comparison-0-candidate-ui.log",
+      "path": "gate-speed/comparison-0-candidate-ui.txt",
+      "bytes": 2821,
+      "sha256": "7c4a14155ee0a418942eebfe3fc72e456d5a326b66a401a17678745d1c6567b6"
+    },
+    {
+      "source": "gate-speed/comparison-1-baseline-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/comparison-1-baseline-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "196e00383aabc1106cf4a15f5a38bb29a19b48e91a11a3fc3e537fffbabdf5ff"
+    },
+    {
+      "source": "gate-speed/comparison-1-baseline-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/comparison-1-baseline-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "7e6169dd3e06e769e7e7db02c3b37c4f94f86c9816f0786de627c03f2d3623f6"
+    },
+    {
+      "source": "gate-speed/comparison-1-baseline-composition.log",
+      "path": "gate-speed/comparison-1-baseline-composition.txt",
+      "bytes": 918,
+      "sha256": "131ced4152538a311133e86ac001d84f920d5e595aada459e980c0d778f585b7"
+    },
+    {
+      "source": "gate-speed/comparison-1-baseline-transition.log",
+      "path": "gate-speed/comparison-1-baseline-transition.txt",
+      "bytes": 521,
+      "sha256": "229680d669b3d83479088d46e459178cc5a18a4780fbff8cb076207980ff2ca2"
+    },
+    {
+      "source": "gate-speed/comparison-1-baseline-ui.json",
+      "path": "gate-speed/comparison-1-baseline-ui.json",
+      "bytes": 2669,
+      "sha256": "f40ff07d0d85f8624d40d2a3465a379fb0f988fbaa9956cf10e014df2a1b8bd5"
+    },
+    {
+      "source": "gate-speed/comparison-1-baseline-ui.log",
+      "path": "gate-speed/comparison-1-baseline-ui.txt",
+      "bytes": 2669,
+      "sha256": "f40ff07d0d85f8624d40d2a3465a379fb0f988fbaa9956cf10e014df2a1b8bd5"
+    },
+    {
+      "source": "gate-speed/comparison-1-candidate-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/comparison-1-candidate-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11941,
+      "sha256": "97977c45fdc9bd2372058ab7ad85079ed0373a5a11501fc3e900a51cc2c070d7"
+    },
+    {
+      "source": "gate-speed/comparison-1-candidate-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/comparison-1-candidate-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "3c300671e9285934db1f2b2ed69609de63bf5eaa8aa999457302c86471e3d739"
+    },
+    {
+      "source": "gate-speed/comparison-1-candidate-composition.log",
+      "path": "gate-speed/comparison-1-candidate-composition.txt",
+      "bytes": 920,
+      "sha256": "a4719622db1e1e7667778e4b54f264cb3eaffdf2c5fcb82763bcbffab5e2fe86"
+    },
+    {
+      "source": "gate-speed/comparison-1-candidate-transition.log",
+      "path": "gate-speed/comparison-1-candidate-transition.txt",
+      "bytes": 521,
+      "sha256": "b773525865efae5d08cef3ca09cd6f2196f870b61c009b7338ecf6e7cbecb22a"
+    },
+    {
+      "source": "gate-speed/comparison-1-candidate-ui.json",
+      "path": "gate-speed/comparison-1-candidate-ui.json",
+      "bytes": 2884,
+      "sha256": "873884c6a086f57c2834c6693e9e3114bc25890acaca099f2b4e71d428a09c2f"
+    },
+    {
+      "source": "gate-speed/comparison-1-candidate-ui.log",
+      "path": "gate-speed/comparison-1-candidate-ui.txt",
+      "bytes": 2884,
+      "sha256": "873884c6a086f57c2834c6693e9e3114bc25890acaca099f2b4e71d428a09c2f"
+    },
+    {
+      "source": "gate-speed/comparison-10-baseline-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/comparison-10-baseline-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "0e5ab482cf5df3764296007b081952346bd3e7912ab05d66f941c3dd2b69c736"
+    },
+    {
+      "source": "gate-speed/comparison-10-baseline-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/comparison-10-baseline-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "faec4fe2e0c304d635750d2012cd8e0c02780c3378b8f97a9d26d4d4442026fd"
+    },
+    {
+      "source": "gate-speed/comparison-10-baseline-composition.log",
+      "path": "gate-speed/comparison-10-baseline-composition.txt",
+      "bytes": 920,
+      "sha256": "6d1b6b0d5928c14c6fe5cfe8cadd1847775ee08c5de9651b99465f1cb3a85833"
+    },
+    {
+      "source": "gate-speed/comparison-10-baseline-transition.log",
+      "path": "gate-speed/comparison-10-baseline-transition.txt",
+      "bytes": 520,
+      "sha256": "5d364c31f7cd465cd118fab4825128395cc3d0758afdc8a36d7bd0fed15b4c20"
+    },
+    {
+      "source": "gate-speed/comparison-10-baseline-ui.json",
+      "path": "gate-speed/comparison-10-baseline-ui.json",
+      "bytes": 2718,
+      "sha256": "d8ddd0ef49f042e756ed5e1b78d8796ad9184e5c7fc7b854f52d36585742029f"
+    },
+    {
+      "source": "gate-speed/comparison-10-baseline-ui.log",
+      "path": "gate-speed/comparison-10-baseline-ui.txt",
+      "bytes": 2718,
+      "sha256": "d8ddd0ef49f042e756ed5e1b78d8796ad9184e5c7fc7b854f52d36585742029f"
+    },
+    {
+      "source": "gate-speed/comparison-10-candidate-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/comparison-10-candidate-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11941,
+      "sha256": "03830559c9776673e704a2c7657da3e27322ff3dd8b75010caa062d375f77233"
+    },
+    {
+      "source": "gate-speed/comparison-10-candidate-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/comparison-10-candidate-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "a66916aefa007dcdfa4424916b3820ed6c736711dbba1589ad2461b244da84eb"
+    },
+    {
+      "source": "gate-speed/comparison-10-candidate-composition.log",
+      "path": "gate-speed/comparison-10-candidate-composition.txt",
+      "bytes": 922,
+      "sha256": "38b41b33f38dd4caed66880442487e7715c57d6191a1403444516a4c9b37609b"
+    },
+    {
+      "source": "gate-speed/comparison-10-candidate-transition.log",
+      "path": "gate-speed/comparison-10-candidate-transition.txt",
+      "bytes": 521,
+      "sha256": "cbc01fea17fc5acd05ea0d7cec9758cf1ceeb988b7e5cda9486cc11ae290dab7"
+    },
+    {
+      "source": "gate-speed/comparison-10-candidate-ui.json",
+      "path": "gate-speed/comparison-10-candidate-ui.json",
+      "bytes": 2920,
+      "sha256": "f2e3325a5053c74efae0180d76c844fb58c90dcaf8fd5ee018fe3809117ea1c1"
+    },
+    {
+      "source": "gate-speed/comparison-10-candidate-ui.log",
+      "path": "gate-speed/comparison-10-candidate-ui.txt",
+      "bytes": 2920,
+      "sha256": "f2e3325a5053c74efae0180d76c844fb58c90dcaf8fd5ee018fe3809117ea1c1"
+    },
+    {
+      "source": "gate-speed/comparison-11-baseline-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/comparison-11-baseline-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "9bac22b462f40f665534a3f5a41d81e28fffe5aa3f32bac84104cea0e665ea55"
+    },
+    {
+      "source": "gate-speed/comparison-11-baseline-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/comparison-11-baseline-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "f8f178c3709242af7fc742565d431792450dbbe6997059f885176dc03b285da0"
+    },
+    {
+      "source": "gate-speed/comparison-11-baseline-composition.log",
+      "path": "gate-speed/comparison-11-baseline-composition.txt",
+      "bytes": 920,
+      "sha256": "15cc08369f9209968c46e7a1d3c3b8d8c715f1eb32f44c3c35a3591ddce007db"
+    },
+    {
+      "source": "gate-speed/comparison-11-baseline-transition.log",
+      "path": "gate-speed/comparison-11-baseline-transition.txt",
+      "bytes": 522,
+      "sha256": "889e905a75911bba32c2e4d0f9253f968dca8f6d25eff8d86c37da54b8b366e4"
+    },
+    {
+      "source": "gate-speed/comparison-11-baseline-ui.json",
+      "path": "gate-speed/comparison-11-baseline-ui.json",
+      "bytes": 2728,
+      "sha256": "6025a4a2c2d2e979fbe95075f9f3e7645059dab60dd5935dc8977102f3806944"
+    },
+    {
+      "source": "gate-speed/comparison-11-baseline-ui.log",
+      "path": "gate-speed/comparison-11-baseline-ui.txt",
+      "bytes": 2728,
+      "sha256": "6025a4a2c2d2e979fbe95075f9f3e7645059dab60dd5935dc8977102f3806944"
+    },
+    {
+      "source": "gate-speed/comparison-11-candidate-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/comparison-11-candidate-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11941,
+      "sha256": "81e96d0df125bf66c32034a08e705f0ca590a636fb44fa95545a2169d66cae0c"
+    },
+    {
+      "source": "gate-speed/comparison-11-candidate-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/comparison-11-candidate-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "b7f6861b7730d122fc95b26670e20733b931f7ca5edbf908c143adbc50bad324"
+    },
+    {
+      "source": "gate-speed/comparison-11-candidate-composition.log",
+      "path": "gate-speed/comparison-11-candidate-composition.txt",
+      "bytes": 922,
+      "sha256": "2a597f2133667f4ee01197210fae2513f4ac1bb6ad4e0b2c763fe474e0937652"
+    },
+    {
+      "source": "gate-speed/comparison-11-candidate-transition.log",
+      "path": "gate-speed/comparison-11-candidate-transition.txt",
+      "bytes": 521,
+      "sha256": "0799462e99178fe669f2a259ee27121373e4ed1df0ad6d3024822e84685f9e02"
+    },
+    {
+      "source": "gate-speed/comparison-11-candidate-ui.json",
+      "path": "gate-speed/comparison-11-candidate-ui.json",
+      "bytes": 2917,
+      "sha256": "dd726ba36ec4fd8863bcee4d77fbd070c4bf812d4c24d06f49c84d50799ba3f5"
+    },
+    {
+      "source": "gate-speed/comparison-11-candidate-ui.log",
+      "path": "gate-speed/comparison-11-candidate-ui.txt",
+      "bytes": 2917,
+      "sha256": "dd726ba36ec4fd8863bcee4d77fbd070c4bf812d4c24d06f49c84d50799ba3f5"
+    },
+    {
+      "source": "gate-speed/comparison-12-baseline-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/comparison-12-baseline-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "27a17bd1ee78537d67c7c857299c6c2dca32c8023dc59ca7faf8740ba7a25d80"
+    },
+    {
+      "source": "gate-speed/comparison-12-baseline-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/comparison-12-baseline-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "30f94cd9c264f58c4bd1f4625e153a6f764a27239efded67a45076ddce7d79ed"
+    },
+    {
+      "source": "gate-speed/comparison-12-baseline-composition.log",
+      "path": "gate-speed/comparison-12-baseline-composition.txt",
+      "bytes": 920,
+      "sha256": "624e0294e190a3664a8df538b78d0ada4a059a4ce942f20232af4a54d502885a"
+    },
+    {
+      "source": "gate-speed/comparison-12-baseline-transition.log",
+      "path": "gate-speed/comparison-12-baseline-transition.txt",
+      "bytes": 521,
+      "sha256": "0f3ab8613baa02777ec33cff80b693f06f80b365f64ecdd306049d540bca79d6"
+    },
+    {
+      "source": "gate-speed/comparison-12-baseline-ui.json",
+      "path": "gate-speed/comparison-12-baseline-ui.json",
+      "bytes": 2801,
+      "sha256": "948e5a7ab7ebc52c05aa276dcf1dea6c9bcb5e0456ebe1757bbe6c0a25bf665c"
+    },
+    {
+      "source": "gate-speed/comparison-12-baseline-ui.log",
+      "path": "gate-speed/comparison-12-baseline-ui.txt",
+      "bytes": 2801,
+      "sha256": "948e5a7ab7ebc52c05aa276dcf1dea6c9bcb5e0456ebe1757bbe6c0a25bf665c"
+    },
+    {
+      "source": "gate-speed/comparison-12-candidate-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/comparison-12-candidate-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11941,
+      "sha256": "f7210804e44a1f0d9b6b4bcee0d34a3ff5b3fa61b3f55252150f292cecd63238"
+    },
+    {
+      "source": "gate-speed/comparison-12-candidate-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/comparison-12-candidate-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "e99631f9fcc0a502fbd24a6e9d0248abd0116041a590ddb26fbf7fe809eec014"
+    },
+    {
+      "source": "gate-speed/comparison-12-candidate-composition.log",
+      "path": "gate-speed/comparison-12-candidate-composition.txt",
+      "bytes": 922,
+      "sha256": "7e01b64172421fd7d5e3d372fe29633da0c6e9c299a7761dca5ae199c9721c25"
+    },
+    {
+      "source": "gate-speed/comparison-12-candidate-transition.log",
+      "path": "gate-speed/comparison-12-candidate-transition.txt",
+      "bytes": 522,
+      "sha256": "841218dcb4d554683ae82fc6925991ff95326485482dec1eaa53bf4588d27575"
+    },
+    {
+      "source": "gate-speed/comparison-12-candidate-ui.json",
+      "path": "gate-speed/comparison-12-candidate-ui.json",
+      "bytes": 2942,
+      "sha256": "2f88fc42e49f1b1c2933008ffa4a481dfc7c7d292722999c1224dadf3c7d1eac"
+    },
+    {
+      "source": "gate-speed/comparison-12-candidate-ui.log",
+      "path": "gate-speed/comparison-12-candidate-ui.txt",
+      "bytes": 2942,
+      "sha256": "2f88fc42e49f1b1c2933008ffa4a481dfc7c7d292722999c1224dadf3c7d1eac"
+    },
+    {
+      "source": "gate-speed/comparison-13-baseline-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/comparison-13-baseline-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "00aefa032988b91c1ae78f8f753dbe7af6c79615e4d4a62d02e401c92a58e796"
+    },
+    {
+      "source": "gate-speed/comparison-13-baseline-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/comparison-13-baseline-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "df599c2e302b2f84331243f8fe716da3430e19adb1cdcc590842c33c57b02582"
+    },
+    {
+      "source": "gate-speed/comparison-13-baseline-composition.log",
+      "path": "gate-speed/comparison-13-baseline-composition.txt",
+      "bytes": 920,
+      "sha256": "217cc38dda6d4a76b47a947cd5d8386c64f326bb0846d27bc02a6d8592954fe8"
+    },
+    {
+      "source": "gate-speed/comparison-13-baseline-transition.log",
+      "path": "gate-speed/comparison-13-baseline-transition.txt",
+      "bytes": 520,
+      "sha256": "fd3912bd5c3bb33cf6afa3ab89bb04f9689b57992a4aa14e8827b0e0fd130ada"
+    },
+    {
+      "source": "gate-speed/comparison-13-baseline-ui.json",
+      "path": "gate-speed/comparison-13-baseline-ui.json",
+      "bytes": 2664,
+      "sha256": "8db4c48124421d322056a132667fb795eddf7ef4a99984a0140e537957656ef0"
+    },
+    {
+      "source": "gate-speed/comparison-13-baseline-ui.log",
+      "path": "gate-speed/comparison-13-baseline-ui.txt",
+      "bytes": 2664,
+      "sha256": "8db4c48124421d322056a132667fb795eddf7ef4a99984a0140e537957656ef0"
+    },
+    {
+      "source": "gate-speed/comparison-13-candidate-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/comparison-13-candidate-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11941,
+      "sha256": "a5b2f8e20d3c3ba0ee8bb7eee4d3e4331ca4facc545dbd892b7a7eb0ca4fe0aa"
+    },
+    {
+      "source": "gate-speed/comparison-13-candidate-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/comparison-13-candidate-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "245ccc8af4d0118c3da9c5f65e12b67be55960429f5ecc77fec5765530c664c2"
+    },
+    {
+      "source": "gate-speed/comparison-13-candidate-composition.log",
+      "path": "gate-speed/comparison-13-candidate-composition.txt",
+      "bytes": 922,
+      "sha256": "64a8879f5a13abb1b51ce498dcf94e19a8d477e750ec03d5f4e8d38eb2a400dc"
+    },
+    {
+      "source": "gate-speed/comparison-13-candidate-transition.log",
+      "path": "gate-speed/comparison-13-candidate-transition.txt",
+      "bytes": 521,
+      "sha256": "4d6eb0653d2a85f6afb11a1043e2993784f47f0062f14e192cce5d31e85ad2c5"
+    },
+    {
+      "source": "gate-speed/comparison-13-candidate-ui.json",
+      "path": "gate-speed/comparison-13-candidate-ui.json",
+      "bytes": 2969,
+      "sha256": "9e031df10d880d484c832a93c238132aa399c1850583acdcb965f09118d4dc4a"
+    },
+    {
+      "source": "gate-speed/comparison-13-candidate-ui.log",
+      "path": "gate-speed/comparison-13-candidate-ui.txt",
+      "bytes": 2969,
+      "sha256": "9e031df10d880d484c832a93c238132aa399c1850583acdcb965f09118d4dc4a"
+    },
+    {
+      "source": "gate-speed/comparison-14-baseline-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/comparison-14-baseline-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "c49b8884408f28228bc32ab0e26ce97209cbdce0df17161147437ec00b8cf351"
+    },
+    {
+      "source": "gate-speed/comparison-14-baseline-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/comparison-14-baseline-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "f83c3c0f86b4c68a8f249925467291bd8dd69aae9930f7a907f24f6b9b10ae91"
+    },
+    {
+      "source": "gate-speed/comparison-14-baseline-composition.log",
+      "path": "gate-speed/comparison-14-baseline-composition.txt",
+      "bytes": 920,
+      "sha256": "5f288a05fe39a05eb9f87b2c03b7ed42a56919ef8a321e1b06ecd27ec41e91d1"
+    },
+    {
+      "source": "gate-speed/comparison-14-baseline-transition.log",
+      "path": "gate-speed/comparison-14-baseline-transition.txt",
+      "bytes": 521,
+      "sha256": "f0daf6d9d0ed1387cf48d18c24f7009472fea9e805fce91108a754161a4a16ae"
+    },
+    {
+      "source": "gate-speed/comparison-14-baseline-ui.json",
+      "path": "gate-speed/comparison-14-baseline-ui.json",
+      "bytes": 2785,
+      "sha256": "77c9bc620b2d893298e06710834351d3937f1b2ba47e95743a2d27eda4145d6f"
+    },
+    {
+      "source": "gate-speed/comparison-14-baseline-ui.log",
+      "path": "gate-speed/comparison-14-baseline-ui.txt",
+      "bytes": 2785,
+      "sha256": "77c9bc620b2d893298e06710834351d3937f1b2ba47e95743a2d27eda4145d6f"
+    },
+    {
+      "source": "gate-speed/comparison-14-candidate-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/comparison-14-candidate-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11941,
+      "sha256": "89894fe4f60ac0e02544316263633220c1864fd0f47c28db55d3d9c63ec5d67f"
+    },
+    {
+      "source": "gate-speed/comparison-14-candidate-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/comparison-14-candidate-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "1bd232b4d2bf9e9cf54596c9938693d094894e99e54cf75fb4f0d802c4eef3cc"
+    },
+    {
+      "source": "gate-speed/comparison-14-candidate-composition.log",
+      "path": "gate-speed/comparison-14-candidate-composition.txt",
+      "bytes": 922,
+      "sha256": "469e14ddee54cfcc9165d199787ed8ec9ffae4ed48e4693e3b7ca355f2303c82"
+    },
+    {
+      "source": "gate-speed/comparison-14-candidate-transition.log",
+      "path": "gate-speed/comparison-14-candidate-transition.txt",
+      "bytes": 522,
+      "sha256": "14ba7045ef03474f5c0382fc570e1f1ee414c3e64e6a88ca614af4fa5b231a87"
+    },
+    {
+      "source": "gate-speed/comparison-14-candidate-ui.json",
+      "path": "gate-speed/comparison-14-candidate-ui.json",
+      "bytes": 2947,
+      "sha256": "ba620c85032b223a3d32ae0384c7a03500accae12f0d205fe5ebdfbabc00e4d1"
+    },
+    {
+      "source": "gate-speed/comparison-14-candidate-ui.log",
+      "path": "gate-speed/comparison-14-candidate-ui.txt",
+      "bytes": 2947,
+      "sha256": "ba620c85032b223a3d32ae0384c7a03500accae12f0d205fe5ebdfbabc00e4d1"
+    },
+    {
+      "source": "gate-speed/comparison-15-baseline-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/comparison-15-baseline-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "e28082a5731dde20ddcdb1cc4a4b739cab8afd248c90bcf0ec72455759899f81"
+    },
+    {
+      "source": "gate-speed/comparison-15-baseline-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/comparison-15-baseline-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "f795fed8b1f6d03adbdb6f8e19eea64733dd32e77d0a15cd838d2b76ec5c7c88"
+    },
+    {
+      "source": "gate-speed/comparison-15-baseline-composition.log",
+      "path": "gate-speed/comparison-15-baseline-composition.txt",
+      "bytes": 920,
+      "sha256": "56aef857d518314e233c047fa804d1b6ba4d90f0fac7a9198bc1fe477e9da740"
+    },
+    {
+      "source": "gate-speed/comparison-15-baseline-transition.log",
+      "path": "gate-speed/comparison-15-baseline-transition.txt",
+      "bytes": 521,
+      "sha256": "bd0499fd3d0fbd714424e6bd861ca4719b7dd9b08670e690e3c473c0d727d9f8"
+    },
+    {
+      "source": "gate-speed/comparison-15-baseline-ui.json",
+      "path": "gate-speed/comparison-15-baseline-ui.json",
+      "bytes": 2627,
+      "sha256": "6477f197dd224832987b3190320a94b6c7592594fadd254b7f3299cde9ea3688"
+    },
+    {
+      "source": "gate-speed/comparison-15-baseline-ui.log",
+      "path": "gate-speed/comparison-15-baseline-ui.txt",
+      "bytes": 2627,
+      "sha256": "6477f197dd224832987b3190320a94b6c7592594fadd254b7f3299cde9ea3688"
+    },
+    {
+      "source": "gate-speed/comparison-15-candidate-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/comparison-15-candidate-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11941,
+      "sha256": "4821dacd2f7f7142ef1f5214936d5c192b556d5b9bbfa0e67be4ae14076b0a81"
+    },
+    {
+      "source": "gate-speed/comparison-15-candidate-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/comparison-15-candidate-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "215a335c1167ad4f4d662819d92d467baff663985afa9f87c1cd908e7ecb4fef"
+    },
+    {
+      "source": "gate-speed/comparison-15-candidate-composition.log",
+      "path": "gate-speed/comparison-15-candidate-composition.txt",
+      "bytes": 922,
+      "sha256": "97f0908391fd84f89dad700c7557b1982a9e3ce57e1fabef96946aa45032c31e"
+    },
+    {
+      "source": "gate-speed/comparison-15-candidate-transition.log",
+      "path": "gate-speed/comparison-15-candidate-transition.txt",
+      "bytes": 522,
+      "sha256": "adbe6826e889e5afb314189f7bec517e2379c1fdccb4048cd5d8623abba3aaff"
+    },
+    {
+      "source": "gate-speed/comparison-15-candidate-ui.json",
+      "path": "gate-speed/comparison-15-candidate-ui.json",
+      "bytes": 2925,
+      "sha256": "2ecc715e8aaed7627fd60697a4ae870af6b5885895eed4949222cca2b8577b2f"
+    },
+    {
+      "source": "gate-speed/comparison-15-candidate-ui.log",
+      "path": "gate-speed/comparison-15-candidate-ui.txt",
+      "bytes": 2925,
+      "sha256": "2ecc715e8aaed7627fd60697a4ae870af6b5885895eed4949222cca2b8577b2f"
+    },
+    {
+      "source": "gate-speed/comparison-16-baseline-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/comparison-16-baseline-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "00b1635faab92cb1bc0ee21ec56d626742d35374c9eab6be586e6c6e658d1180"
+    },
+    {
+      "source": "gate-speed/comparison-16-baseline-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/comparison-16-baseline-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "9802e3185ffb9529f4eb62315309865bd4a9378e4aa00992da8013060f85cfa3"
+    },
+    {
+      "source": "gate-speed/comparison-16-baseline-composition.log",
+      "path": "gate-speed/comparison-16-baseline-composition.txt",
+      "bytes": 920,
+      "sha256": "6e5cb887bd3bb41f24d5a92a2eed69df51e0a69b51db3d4cc48dc23818bddf45"
+    },
+    {
+      "source": "gate-speed/comparison-16-baseline-transition.log",
+      "path": "gate-speed/comparison-16-baseline-transition.txt",
+      "bytes": 522,
+      "sha256": "278437e912e52b39150726e94d09b79f2451613c232905fdbb48c01e602ac985"
+    },
+    {
+      "source": "gate-speed/comparison-16-baseline-ui.json",
+      "path": "gate-speed/comparison-16-baseline-ui.json",
+      "bytes": 2803,
+      "sha256": "566e7d14ad59f4e466a509d12d3addd79297c611b13d351b2df729b0af978aec"
+    },
+    {
+      "source": "gate-speed/comparison-16-baseline-ui.log",
+      "path": "gate-speed/comparison-16-baseline-ui.txt",
+      "bytes": 2803,
+      "sha256": "566e7d14ad59f4e466a509d12d3addd79297c611b13d351b2df729b0af978aec"
+    },
+    {
+      "source": "gate-speed/comparison-16-candidate-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/comparison-16-candidate-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11941,
+      "sha256": "57999f8f50d7c0144b2d7ec0421feb41f2407c3ac3adb7843de018df262ec24d"
+    },
+    {
+      "source": "gate-speed/comparison-16-candidate-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/comparison-16-candidate-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "48c960c8cadeedd50dceaa6a3e475bab58e64dc9274cabd7342b60274af1d65f"
+    },
+    {
+      "source": "gate-speed/comparison-16-candidate-composition.log",
+      "path": "gate-speed/comparison-16-candidate-composition.txt",
+      "bytes": 922,
+      "sha256": "305b094968b21994eb4c65723f1725981a7dfcbcecbaee720fa9b4ba63d26ba5"
+    },
+    {
+      "source": "gate-speed/comparison-16-candidate-transition.log",
+      "path": "gate-speed/comparison-16-candidate-transition.txt",
+      "bytes": 521,
+      "sha256": "40104f9b27bdb850ff00b43169cf99eb7db6f8cdfad6e74bfc4f9f55b6952dce"
+    },
+    {
+      "source": "gate-speed/comparison-16-candidate-ui.json",
+      "path": "gate-speed/comparison-16-candidate-ui.json",
+      "bytes": 2876,
+      "sha256": "c38c911cd8e943fa105b523fd0eaba082ce36c114f1b7bbeb601e01938e42ae8"
+    },
+    {
+      "source": "gate-speed/comparison-16-candidate-ui.log",
+      "path": "gate-speed/comparison-16-candidate-ui.txt",
+      "bytes": 2876,
+      "sha256": "c38c911cd8e943fa105b523fd0eaba082ce36c114f1b7bbeb601e01938e42ae8"
+    },
+    {
+      "source": "gate-speed/comparison-17-baseline-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/comparison-17-baseline-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11911,
+      "sha256": "12b829b0d6961424b14e3891f930e460c6797b1008364f72852bfa667c23e53d"
+    },
+    {
+      "source": "gate-speed/comparison-17-baseline-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/comparison-17-baseline-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3368,
+      "sha256": "b7f69f8e634f4674cb057d3865c78d4052bdcb57b323e2eeddcf1cd082a0d203"
+    },
+    {
+      "source": "gate-speed/comparison-17-baseline-composition.log",
+      "path": "gate-speed/comparison-17-baseline-composition.txt",
+      "bytes": 920,
+      "sha256": "16cf3ca47c4a9be82d6338f0be54bc62c3c0c8edad6107ac3d6ab3ba405319ff"
+    },
+    {
+      "source": "gate-speed/comparison-17-baseline-transition.log",
+      "path": "gate-speed/comparison-17-baseline-transition.txt",
+      "bytes": 521,
+      "sha256": "306e8b7eea85d6b7b0b24dd84bd6e77adf0b5ddb995225e2e258931a6fa0e6fa"
+    },
+    {
+      "source": "gate-speed/comparison-17-baseline-ui.json",
+      "path": "gate-speed/comparison-17-baseline-ui.json",
+      "bytes": 2642,
+      "sha256": "603e8bcddf17bd0d489bd1193a006173c6dd300c02e595512a9b06e7ac593ded"
+    },
+    {
+      "source": "gate-speed/comparison-17-baseline-ui.log",
+      "path": "gate-speed/comparison-17-baseline-ui.txt",
+      "bytes": 2642,
+      "sha256": "603e8bcddf17bd0d489bd1193a006173c6dd300c02e595512a9b06e7ac593ded"
+    },
+    {
+      "source": "gate-speed/comparison-17-candidate-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/comparison-17-candidate-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11941,
+      "sha256": "ae92e2caafac28c3a023dd75aa4862d87960c7d5adc6f3ab7ebce68650152cd7"
+    },
+    {
+      "source": "gate-speed/comparison-17-candidate-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/comparison-17-candidate-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "cc57f44c9b4c12eca7c9853322679be35789d47dff22acd7349763b3628a2fa2"
+    },
+    {
+      "source": "gate-speed/comparison-17-candidate-composition.log",
+      "path": "gate-speed/comparison-17-candidate-composition.txt",
+      "bytes": 922,
+      "sha256": "aeb6bd05321d3518b0934ace129bcd211c9a34113612df219e7ea2072736f23f"
+    },
+    {
+      "source": "gate-speed/comparison-17-candidate-transition.log",
+      "path": "gate-speed/comparison-17-candidate-transition.txt",
+      "bytes": 521,
+      "sha256": "61b0c29dfdf8853800d80ffc332a5b4cac0edae9366d0e424128e540f7a59a48"
+    },
+    {
+      "source": "gate-speed/comparison-17-candidate-ui.json",
+      "path": "gate-speed/comparison-17-candidate-ui.json",
+      "bytes": 3003,
+      "sha256": "43ee71155bfe312f96fd7f48d63edaab452d866e6caafef9de474ed1fcc94eb1"
+    },
+    {
+      "source": "gate-speed/comparison-17-candidate-ui.log",
+      "path": "gate-speed/comparison-17-candidate-ui.txt",
+      "bytes": 3003,
+      "sha256": "43ee71155bfe312f96fd7f48d63edaab452d866e6caafef9de474ed1fcc94eb1"
+    },
+    {
+      "source": "gate-speed/comparison-18-baseline-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/comparison-18-baseline-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "fad3cca235f28c56f3b4b4a633e047ad32a666162f6c5197ac37c8590689f63c"
+    },
+    {
+      "source": "gate-speed/comparison-18-baseline-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/comparison-18-baseline-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "82324ce478861c0050c1219d70a8e05ac2ced7b9f2b9e4523082d735b4a79953"
+    },
+    {
+      "source": "gate-speed/comparison-18-baseline-composition.log",
+      "path": "gate-speed/comparison-18-baseline-composition.txt",
+      "bytes": 920,
+      "sha256": "574113050f8e6b0f1530e88aff666ef2bc9c7214b90fd7847997724627df9fe5"
+    },
+    {
+      "source": "gate-speed/comparison-18-baseline-transition.log",
+      "path": "gate-speed/comparison-18-baseline-transition.txt",
+      "bytes": 521,
+      "sha256": "5c843f1258c59b3dd7fe8fdab50b558e88ef23dbe055adc5f564330b707a2327"
+    },
+    {
+      "source": "gate-speed/comparison-18-baseline-ui.json",
+      "path": "gate-speed/comparison-18-baseline-ui.json",
+      "bytes": 2781,
+      "sha256": "85641aa119f776dbebef4c067cb95e958472b1a7316b1649eefd46fb4b623022"
+    },
+    {
+      "source": "gate-speed/comparison-18-baseline-ui.log",
+      "path": "gate-speed/comparison-18-baseline-ui.txt",
+      "bytes": 2781,
+      "sha256": "85641aa119f776dbebef4c067cb95e958472b1a7316b1649eefd46fb4b623022"
+    },
+    {
+      "source": "gate-speed/comparison-18-candidate-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/comparison-18-candidate-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11941,
+      "sha256": "62d7239f440581601b4abf03712ea3a8ee2038801112092b78d9bfedfbba72c0"
+    },
+    {
+      "source": "gate-speed/comparison-18-candidate-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/comparison-18-candidate-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "31d1b7695a17b2f43979c970429492c8eb23012b2032bf9b5d9d7ae317811f94"
+    },
+    {
+      "source": "gate-speed/comparison-18-candidate-composition.log",
+      "path": "gate-speed/comparison-18-candidate-composition.txt",
+      "bytes": 922,
+      "sha256": "011566445ab9ac5c3b472e74d47d23d01acf46676627481ec86e4a171dd18b7b"
+    },
+    {
+      "source": "gate-speed/comparison-18-candidate-transition.log",
+      "path": "gate-speed/comparison-18-candidate-transition.txt",
+      "bytes": 522,
+      "sha256": "dea4b3c01646eb3eb3a9509c00e638c949f3e94a2c6f37d5cfee805d33fd5194"
+    },
+    {
+      "source": "gate-speed/comparison-18-candidate-ui.json",
+      "path": "gate-speed/comparison-18-candidate-ui.json",
+      "bytes": 2892,
+      "sha256": "7fbe98142dca066f35784e62be18ba6a1cf482c2a17de6e91ae9e3676b1c9a4f"
+    },
+    {
+      "source": "gate-speed/comparison-18-candidate-ui.log",
+      "path": "gate-speed/comparison-18-candidate-ui.txt",
+      "bytes": 2892,
+      "sha256": "7fbe98142dca066f35784e62be18ba6a1cf482c2a17de6e91ae9e3676b1c9a4f"
+    },
+    {
+      "source": "gate-speed/comparison-19-baseline-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/comparison-19-baseline-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "0636a6f04ec1db8dd832499ae20f30208c307f5499f7afbc5c7426044866218d"
+    },
+    {
+      "source": "gate-speed/comparison-19-baseline-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/comparison-19-baseline-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "ec49fb25c8b55613d82fad88585ec0f19d2d57073c64d8c820ad8576f5f3dc1d"
+    },
+    {
+      "source": "gate-speed/comparison-19-baseline-composition.log",
+      "path": "gate-speed/comparison-19-baseline-composition.txt",
+      "bytes": 920,
+      "sha256": "c84d5efb7f6d13809840d8f839967de6ec892be8c0440c04e25024c710853027"
+    },
+    {
+      "source": "gate-speed/comparison-19-baseline-transition.log",
+      "path": "gate-speed/comparison-19-baseline-transition.txt",
+      "bytes": 521,
+      "sha256": "21093a01b2839f01b5e7dc7e2e05bcc2903c62b18c83e23fd7c0f65c0ac49102"
+    },
+    {
+      "source": "gate-speed/comparison-19-baseline-ui.json",
+      "path": "gate-speed/comparison-19-baseline-ui.json",
+      "bytes": 2836,
+      "sha256": "f30ccaa0307c22dae0ae192b36060bcd1750cfadbb8b62b14c2c58253c10e095"
+    },
+    {
+      "source": "gate-speed/comparison-19-baseline-ui.log",
+      "path": "gate-speed/comparison-19-baseline-ui.txt",
+      "bytes": 2836,
+      "sha256": "f30ccaa0307c22dae0ae192b36060bcd1750cfadbb8b62b14c2c58253c10e095"
+    },
+    {
+      "source": "gate-speed/comparison-19-candidate-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/comparison-19-candidate-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11941,
+      "sha256": "0b6b068121db76cd3f8fdba663fbb65a6e3b9fbc9975256a902b9174081b32c4"
+    },
+    {
+      "source": "gate-speed/comparison-19-candidate-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/comparison-19-candidate-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "59ec09fa2b8e72e37326ecb55e29001d227617660bbddcafb44583cd4beda4d1"
+    },
+    {
+      "source": "gate-speed/comparison-19-candidate-composition.log",
+      "path": "gate-speed/comparison-19-candidate-composition.txt",
+      "bytes": 922,
+      "sha256": "bedc9b5864f6f7c3399700f0ac77eb543f271871848010f6b142c0dc03028d4c"
+    },
+    {
+      "source": "gate-speed/comparison-19-candidate-transition.log",
+      "path": "gate-speed/comparison-19-candidate-transition.txt",
+      "bytes": 521,
+      "sha256": "077c70bd15dca8e559af3c31cc813ea91771ea5b459b37f819307c9f51eb5059"
+    },
+    {
+      "source": "gate-speed/comparison-19-candidate-ui.json",
+      "path": "gate-speed/comparison-19-candidate-ui.json",
+      "bytes": 2879,
+      "sha256": "a388f60773e4b37b18dd35a70ace75aa63e2c12a45e05eee4ece8ecefd026560"
+    },
+    {
+      "source": "gate-speed/comparison-19-candidate-ui.log",
+      "path": "gate-speed/comparison-19-candidate-ui.txt",
+      "bytes": 2879,
+      "sha256": "a388f60773e4b37b18dd35a70ace75aa63e2c12a45e05eee4ece8ecefd026560"
+    },
+    {
+      "source": "gate-speed/comparison-2-baseline-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/comparison-2-baseline-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "887387c624c9ba91271d224e2c34189671cad51bc7d1f7b8df61e7bd3b26a341"
+    },
+    {
+      "source": "gate-speed/comparison-2-baseline-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/comparison-2-baseline-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "854379e901891a0788fc115dd8b08fc0f46e315a8b8f965c8880f3d087133ae9"
+    },
+    {
+      "source": "gate-speed/comparison-2-baseline-composition.log",
+      "path": "gate-speed/comparison-2-baseline-composition.txt",
+      "bytes": 918,
+      "sha256": "213e9e4591f07ebbe8fae29747eb7b850f900f41abd935f883d20ce9b44d41ca"
+    },
+    {
+      "source": "gate-speed/comparison-2-baseline-transition.log",
+      "path": "gate-speed/comparison-2-baseline-transition.txt",
+      "bytes": 521,
+      "sha256": "e4883fe511c2801292d2df6695bc704d8877af49e1bc487244aba59b0dae31ce"
+    },
+    {
+      "source": "gate-speed/comparison-2-baseline-ui.json",
+      "path": "gate-speed/comparison-2-baseline-ui.json",
+      "bytes": 2759,
+      "sha256": "a3855a88ff3b1d32a0439064c40cfb5af533ab5f796b4099441b700adef958bb"
+    },
+    {
+      "source": "gate-speed/comparison-2-baseline-ui.log",
+      "path": "gate-speed/comparison-2-baseline-ui.txt",
+      "bytes": 2759,
+      "sha256": "a3855a88ff3b1d32a0439064c40cfb5af533ab5f796b4099441b700adef958bb"
+    },
+    {
+      "source": "gate-speed/comparison-2-candidate-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/comparison-2-candidate-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11941,
+      "sha256": "e591b68d39051adb6a9627fce148223182723267ae0d2bb9b8d02a19980e7add"
+    },
+    {
+      "source": "gate-speed/comparison-2-candidate-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/comparison-2-candidate-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "3542da3df92a2ccfa8775c40e583c9b23fc3bb2912560f4c12b1e9f43bec02bb"
+    },
+    {
+      "source": "gate-speed/comparison-2-candidate-composition.log",
+      "path": "gate-speed/comparison-2-candidate-composition.txt",
+      "bytes": 920,
+      "sha256": "03ee0202e968afb0089d44680303ed43b35a21c9f54ea8b5501ec55dec00c890"
+    },
+    {
+      "source": "gate-speed/comparison-2-candidate-transition.log",
+      "path": "gate-speed/comparison-2-candidate-transition.txt",
+      "bytes": 521,
+      "sha256": "a70956e769372c53bdc58a2c09a97a735efa69dd79d67f317d89ec1cdadc9595"
+    },
+    {
+      "source": "gate-speed/comparison-2-candidate-ui.json",
+      "path": "gate-speed/comparison-2-candidate-ui.json",
+      "bytes": 2851,
+      "sha256": "4db4b6a79fd266b3e6dbd9d116936e7624ba9565a0019f02635a68ab2c768759"
+    },
+    {
+      "source": "gate-speed/comparison-2-candidate-ui.log",
+      "path": "gate-speed/comparison-2-candidate-ui.txt",
+      "bytes": 2851,
+      "sha256": "4db4b6a79fd266b3e6dbd9d116936e7624ba9565a0019f02635a68ab2c768759"
+    },
+    {
+      "source": "gate-speed/comparison-3-baseline-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/comparison-3-baseline-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "068957d082634c9c7917730ac8b26b2efdab1b5739aed5f00a3f5f9b84110c26"
+    },
+    {
+      "source": "gate-speed/comparison-3-baseline-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/comparison-3-baseline-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "aa4265d3fb07eac927dfef933855b50e8e81738559c6c046d15b06fb9d33ee92"
+    },
+    {
+      "source": "gate-speed/comparison-3-baseline-composition.log",
+      "path": "gate-speed/comparison-3-baseline-composition.txt",
+      "bytes": 918,
+      "sha256": "a811030ffedec9aff625e40a236d89540736b023098a9a3d143df8ad4aa2102a"
+    },
+    {
+      "source": "gate-speed/comparison-3-baseline-transition.log",
+      "path": "gate-speed/comparison-3-baseline-transition.txt",
+      "bytes": 521,
+      "sha256": "2adff78e6fdac4a8193ef843fe29051c7223b9e29286e31e8617a901743033f6"
+    },
+    {
+      "source": "gate-speed/comparison-3-baseline-ui.json",
+      "path": "gate-speed/comparison-3-baseline-ui.json",
+      "bytes": 2780,
+      "sha256": "c3e493c04471a5d6c3504f0cea3c2c7afb3f7fa708260c50d7ed4fb927599ab3"
+    },
+    {
+      "source": "gate-speed/comparison-3-baseline-ui.log",
+      "path": "gate-speed/comparison-3-baseline-ui.txt",
+      "bytes": 2780,
+      "sha256": "c3e493c04471a5d6c3504f0cea3c2c7afb3f7fa708260c50d7ed4fb927599ab3"
+    },
+    {
+      "source": "gate-speed/comparison-3-candidate-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/comparison-3-candidate-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11941,
+      "sha256": "ed0fd3f8ab1d76ddb668a0ff1bfcbee29caa96e63b2065ff26054f95f59455ec"
+    },
+    {
+      "source": "gate-speed/comparison-3-candidate-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/comparison-3-candidate-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "371bd7662e8f4a87d8ea69e8b6e278850ecadb2343452b3d473abdf97131d2c8"
+    },
+    {
+      "source": "gate-speed/comparison-3-candidate-composition.log",
+      "path": "gate-speed/comparison-3-candidate-composition.txt",
+      "bytes": 920,
+      "sha256": "cd5b7b085b50a5e95e8e7e51452719f806b1f162d0a23d17bb9c610e1e3180b2"
+    },
+    {
+      "source": "gate-speed/comparison-3-candidate-transition.log",
+      "path": "gate-speed/comparison-3-candidate-transition.txt",
+      "bytes": 524,
+      "sha256": "b8fd6f65bd4efafe2c03d329932bc49965d609b8eb34a33fb9ada0b7c1e41708"
+    },
+    {
+      "source": "gate-speed/comparison-3-candidate-ui.json",
+      "path": "gate-speed/comparison-3-candidate-ui.json",
+      "bytes": 2869,
+      "sha256": "fd88a5b63ea24397561b06c30c6eae6506cd1fcbc8839cb5fbb051ecc2c8032f"
+    },
+    {
+      "source": "gate-speed/comparison-3-candidate-ui.log",
+      "path": "gate-speed/comparison-3-candidate-ui.txt",
+      "bytes": 2869,
+      "sha256": "fd88a5b63ea24397561b06c30c6eae6506cd1fcbc8839cb5fbb051ecc2c8032f"
+    },
+    {
+      "source": "gate-speed/comparison-4-baseline-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/comparison-4-baseline-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "d93eec0b1341f3698db27129193e751ef21a6ce48163762fd3d050f259e89659"
+    },
+    {
+      "source": "gate-speed/comparison-4-baseline-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/comparison-4-baseline-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "fee08ca2daf4cecddb5f75e15e829d7dcb3a3186dcb10b943dbbdce0cd66a339"
+    },
+    {
+      "source": "gate-speed/comparison-4-baseline-composition.log",
+      "path": "gate-speed/comparison-4-baseline-composition.txt",
+      "bytes": 918,
+      "sha256": "909b2ad60c86e272daa85e77da5e00c793277620b955da57e9347df4a713b5b4"
+    },
+    {
+      "source": "gate-speed/comparison-4-baseline-transition.log",
+      "path": "gate-speed/comparison-4-baseline-transition.txt",
+      "bytes": 522,
+      "sha256": "2d9ad9495a4aee42d4ba3474b9c99688bdf82fc0faef2394a119e66439c503ac"
+    },
+    {
+      "source": "gate-speed/comparison-4-baseline-ui.json",
+      "path": "gate-speed/comparison-4-baseline-ui.json",
+      "bytes": 2642,
+      "sha256": "1e48490f31cf937e68065ef2fba464af42cbd7a3d94bf9e3a7c0257f9bbb1ffe"
+    },
+    {
+      "source": "gate-speed/comparison-4-baseline-ui.log",
+      "path": "gate-speed/comparison-4-baseline-ui.txt",
+      "bytes": 2642,
+      "sha256": "1e48490f31cf937e68065ef2fba464af42cbd7a3d94bf9e3a7c0257f9bbb1ffe"
+    },
+    {
+      "source": "gate-speed/comparison-4-candidate-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/comparison-4-candidate-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11941,
+      "sha256": "ee063d314c98068c43ddc3bb9760edc2f79a9b6ed20e1fd57e2639506622450b"
+    },
+    {
+      "source": "gate-speed/comparison-4-candidate-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/comparison-4-candidate-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "25237ccc756b0895ee012b75f16a6de58c8b477e9c5a0f1956347428d3b30ef8"
+    },
+    {
+      "source": "gate-speed/comparison-4-candidate-composition.log",
+      "path": "gate-speed/comparison-4-candidate-composition.txt",
+      "bytes": 920,
+      "sha256": "6fd21c8cd87b5d5f07ac5f4669b6fcd6e10db41a736bcff8c038db2befd545ce"
+    },
+    {
+      "source": "gate-speed/comparison-4-candidate-transition.log",
+      "path": "gate-speed/comparison-4-candidate-transition.txt",
+      "bytes": 521,
+      "sha256": "aa722ad4d62c74bc5ef0db216cc02ca8b037620e1997037883a8bf10c062b861"
+    },
+    {
+      "source": "gate-speed/comparison-4-candidate-ui.json",
+      "path": "gate-speed/comparison-4-candidate-ui.json",
+      "bytes": 2883,
+      "sha256": "7162eda581bd7a5d06b75ece078fe3c97568e65bfcc60b6716ee4adc1fb2f4b7"
+    },
+    {
+      "source": "gate-speed/comparison-4-candidate-ui.log",
+      "path": "gate-speed/comparison-4-candidate-ui.txt",
+      "bytes": 2883,
+      "sha256": "7162eda581bd7a5d06b75ece078fe3c97568e65bfcc60b6716ee4adc1fb2f4b7"
+    },
+    {
+      "source": "gate-speed/comparison-5-baseline-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/comparison-5-baseline-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11911,
+      "sha256": "47659dd895e1b314c293ebe558c992b3d25d947cd7aca647825c12779d2c6074"
+    },
+    {
+      "source": "gate-speed/comparison-5-baseline-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/comparison-5-baseline-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3368,
+      "sha256": "57690e07e90af1a2a61d5e07a0db576b429b7a6369ad6a0c483fd73332b33905"
+    },
+    {
+      "source": "gate-speed/comparison-5-baseline-composition.log",
+      "path": "gate-speed/comparison-5-baseline-composition.txt",
+      "bytes": 918,
+      "sha256": "af75e5d40d2a08806e6d430e6b73f49c4f18baa963c2f7790976c07227339d00"
+    },
+    {
+      "source": "gate-speed/comparison-5-baseline-transition.log",
+      "path": "gate-speed/comparison-5-baseline-transition.txt",
+      "bytes": 525,
+      "sha256": "e4fc5b21106ec4b696ab2745c0f97bbcc9043d665eb1297663ac69b906d5591f"
+    },
+    {
+      "source": "gate-speed/comparison-5-baseline-ui.json",
+      "path": "gate-speed/comparison-5-baseline-ui.json",
+      "bytes": 2718,
+      "sha256": "274e8fe106345ea28d876649b7ff564135a26339a9be6152a44a2b4193131237"
+    },
+    {
+      "source": "gate-speed/comparison-5-baseline-ui.log",
+      "path": "gate-speed/comparison-5-baseline-ui.txt",
+      "bytes": 2718,
+      "sha256": "274e8fe106345ea28d876649b7ff564135a26339a9be6152a44a2b4193131237"
+    },
+    {
+      "source": "gate-speed/comparison-5-candidate-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/comparison-5-candidate-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11941,
+      "sha256": "a3caf9b686b4730805b80ef47ec841bfecb330d3737070c80417ae1bb5af2862"
+    },
+    {
+      "source": "gate-speed/comparison-5-candidate-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/comparison-5-candidate-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "ff99065484c5ac3dfdaf4ce1da549b4189dbfafc5dfbdcf770c228edb5ac1763"
+    },
+    {
+      "source": "gate-speed/comparison-5-candidate-composition.log",
+      "path": "gate-speed/comparison-5-candidate-composition.txt",
+      "bytes": 920,
+      "sha256": "dcabbc10338a9b40f9ff013bf516f03cf236b2412a9221a220c166a48568ea6b"
+    },
+    {
+      "source": "gate-speed/comparison-5-candidate-transition.log",
+      "path": "gate-speed/comparison-5-candidate-transition.txt",
+      "bytes": 522,
+      "sha256": "13d25bfbf10a2d12c52c5411ef746e7112cc4a0074f1d419f2c1e085cfc9c10a"
+    },
+    {
+      "source": "gate-speed/comparison-5-candidate-ui.json",
+      "path": "gate-speed/comparison-5-candidate-ui.json",
+      "bytes": 2895,
+      "sha256": "7da6e7b5374faad2f79f213b7baea04c14695fe8bc7d65fd379efd0831bbfeab"
+    },
+    {
+      "source": "gate-speed/comparison-5-candidate-ui.log",
+      "path": "gate-speed/comparison-5-candidate-ui.txt",
+      "bytes": 2895,
+      "sha256": "7da6e7b5374faad2f79f213b7baea04c14695fe8bc7d65fd379efd0831bbfeab"
+    },
+    {
+      "source": "gate-speed/comparison-6-baseline-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/comparison-6-baseline-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "b65c0f938519791203a441bf227fec92eb15e6697639e423d9f707f4e3f23a0e"
+    },
+    {
+      "source": "gate-speed/comparison-6-baseline-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/comparison-6-baseline-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "30fdc8b1baf843227fe526fada5ca6ad28f91cc7127e768eb4c58603c6535444"
+    },
+    {
+      "source": "gate-speed/comparison-6-baseline-composition.log",
+      "path": "gate-speed/comparison-6-baseline-composition.txt",
+      "bytes": 918,
+      "sha256": "dd44425f49b5428391cfb39191f086adb3442923fa39d4761df8a3c016b4a048"
+    },
+    {
+      "source": "gate-speed/comparison-6-baseline-transition.log",
+      "path": "gate-speed/comparison-6-baseline-transition.txt",
+      "bytes": 521,
+      "sha256": "93fd93a3f62e20ddd5bd661194aad70d62c8a8ee1459e2023d27284bf7f0dc67"
+    },
+    {
+      "source": "gate-speed/comparison-6-baseline-ui.json",
+      "path": "gate-speed/comparison-6-baseline-ui.json",
+      "bytes": 2715,
+      "sha256": "ae4c65f9f8eb0057aa994493f024a48d4139e8df3df15cd641156111974c0d71"
+    },
+    {
+      "source": "gate-speed/comparison-6-baseline-ui.log",
+      "path": "gate-speed/comparison-6-baseline-ui.txt",
+      "bytes": 2715,
+      "sha256": "ae4c65f9f8eb0057aa994493f024a48d4139e8df3df15cd641156111974c0d71"
+    },
+    {
+      "source": "gate-speed/comparison-6-candidate-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/comparison-6-candidate-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11941,
+      "sha256": "fe563fd2a2807469f506b229c1be405c9936b7d38679693a40fca61559295373"
+    },
+    {
+      "source": "gate-speed/comparison-6-candidate-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/comparison-6-candidate-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "7e1f901a011e1f00d4506f7629c31fed585bbeb7e2496051ff7c6d090a5002ee"
+    },
+    {
+      "source": "gate-speed/comparison-6-candidate-composition.log",
+      "path": "gate-speed/comparison-6-candidate-composition.txt",
+      "bytes": 920,
+      "sha256": "606d92560f0760d5d4537656054390fdab25a553a20eb068f0b63461a5eb51bf"
+    },
+    {
+      "source": "gate-speed/comparison-6-candidate-transition.log",
+      "path": "gate-speed/comparison-6-candidate-transition.txt",
+      "bytes": 521,
+      "sha256": "04f98a994a457d0a602eccf1df1a9407f33f30d340bcb0050e5f36aa02d4418e"
+    },
+    {
+      "source": "gate-speed/comparison-6-candidate-ui.json",
+      "path": "gate-speed/comparison-6-candidate-ui.json",
+      "bytes": 2976,
+      "sha256": "00a7f150941355965fa7539ce2c2ccdf4c741ad6e5739b58a8ce97f5c6118930"
+    },
+    {
+      "source": "gate-speed/comparison-6-candidate-ui.log",
+      "path": "gate-speed/comparison-6-candidate-ui.txt",
+      "bytes": 2976,
+      "sha256": "00a7f150941355965fa7539ce2c2ccdf4c741ad6e5739b58a8ce97f5c6118930"
+    },
+    {
+      "source": "gate-speed/comparison-7-baseline-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/comparison-7-baseline-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "19066d11981a9d4d3ccfd552cdf1fb7579191e4c555143d10c4e19c23f9717ed"
+    },
+    {
+      "source": "gate-speed/comparison-7-baseline-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/comparison-7-baseline-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "5df22ce842eb0e76b3841a74d625bd2037798cbb57dbf3ad6036366f281de910"
+    },
+    {
+      "source": "gate-speed/comparison-7-baseline-composition.log",
+      "path": "gate-speed/comparison-7-baseline-composition.txt",
+      "bytes": 918,
+      "sha256": "55e34c7db47974227426c04fbf1955e2c4aa3dcb10d4747981048747a0667f45"
+    },
+    {
+      "source": "gate-speed/comparison-7-baseline-transition.log",
+      "path": "gate-speed/comparison-7-baseline-transition.txt",
+      "bytes": 522,
+      "sha256": "a616180fdf5e5e5c7177251f7363edb312ef37b88f73c5c745bee0073341f1aa"
+    },
+    {
+      "source": "gate-speed/comparison-7-baseline-ui.json",
+      "path": "gate-speed/comparison-7-baseline-ui.json",
+      "bytes": 2630,
+      "sha256": "2a467636c2a4c8c5ddce8968ce78c2d552630a8343061b574878b46a0691b295"
+    },
+    {
+      "source": "gate-speed/comparison-7-baseline-ui.log",
+      "path": "gate-speed/comparison-7-baseline-ui.txt",
+      "bytes": 2630,
+      "sha256": "2a467636c2a4c8c5ddce8968ce78c2d552630a8343061b574878b46a0691b295"
+    },
+    {
+      "source": "gate-speed/comparison-7-candidate-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/comparison-7-candidate-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11941,
+      "sha256": "3f75a1435fa6c2703efe885e3175e276c9c1a7a6b0f25296359691174fbc9f17"
+    },
+    {
+      "source": "gate-speed/comparison-7-candidate-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/comparison-7-candidate-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "f16847dc5265802e0bd244d4258bb56ab800703623317679c1c793dfa1ce131e"
+    },
+    {
+      "source": "gate-speed/comparison-7-candidate-composition.log",
+      "path": "gate-speed/comparison-7-candidate-composition.txt",
+      "bytes": 920,
+      "sha256": "521f5440898cb42554a6888f64b7ed19ec3a9583296b486843b9854898d9f251"
+    },
+    {
+      "source": "gate-speed/comparison-7-candidate-transition.log",
+      "path": "gate-speed/comparison-7-candidate-transition.txt",
+      "bytes": 521,
+      "sha256": "b6b8bebb542e78f93fcf0711be7dcf1cb0c6bac722983bb3969f378ae8e8cbf6"
+    },
+    {
+      "source": "gate-speed/comparison-7-candidate-ui.json",
+      "path": "gate-speed/comparison-7-candidate-ui.json",
+      "bytes": 2903,
+      "sha256": "3e71daeec56f7c8671390f341b931730c8c4399fa9d6d2f96834f128b4426691"
+    },
+    {
+      "source": "gate-speed/comparison-7-candidate-ui.log",
+      "path": "gate-speed/comparison-7-candidate-ui.txt",
+      "bytes": 2903,
+      "sha256": "3e71daeec56f7c8671390f341b931730c8c4399fa9d6d2f96834f128b4426691"
+    },
+    {
+      "source": "gate-speed/comparison-8-baseline-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/comparison-8-baseline-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "6341d80b410f207e99515b0b80f5ea267098eb58e8128c5145662e98f916b7bc"
+    },
+    {
+      "source": "gate-speed/comparison-8-baseline-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/comparison-8-baseline-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "85ee78a98ea059c40d3e47262fdf57fdf85be5af83fed5cc4326463585ebc080"
+    },
+    {
+      "source": "gate-speed/comparison-8-baseline-composition.log",
+      "path": "gate-speed/comparison-8-baseline-composition.txt",
+      "bytes": 918,
+      "sha256": "79e8f0a64b598426f10b270c972c978d499a350f5c5dac5ceab754bf6c3b61e0"
+    },
+    {
+      "source": "gate-speed/comparison-8-baseline-transition.log",
+      "path": "gate-speed/comparison-8-baseline-transition.txt",
+      "bytes": 521,
+      "sha256": "45d1d6d726192fec9eb00fb44093b6050f48d0c50395b73de1505d9fd84bd0ea"
+    },
+    {
+      "source": "gate-speed/comparison-8-baseline-ui.json",
+      "path": "gate-speed/comparison-8-baseline-ui.json",
+      "bytes": 2644,
+      "sha256": "cc6932003174a77589734fb5af25fd85e1f3e8f92f1030d01f2ba1337e9c38d8"
+    },
+    {
+      "source": "gate-speed/comparison-8-baseline-ui.log",
+      "path": "gate-speed/comparison-8-baseline-ui.txt",
+      "bytes": 2644,
+      "sha256": "cc6932003174a77589734fb5af25fd85e1f3e8f92f1030d01f2ba1337e9c38d8"
+    },
+    {
+      "source": "gate-speed/comparison-8-candidate-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/comparison-8-candidate-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11941,
+      "sha256": "4ee2d7629e3cc6cadab94cd59532dc16f5db4e65212b2e3f77adeb43fb64d483"
+    },
+    {
+      "source": "gate-speed/comparison-8-candidate-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/comparison-8-candidate-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "823e27dcd445ff4f2bd3dffaa603bafbe1d3de09f0047765c8f6d414a45cf1cd"
+    },
+    {
+      "source": "gate-speed/comparison-8-candidate-composition.log",
+      "path": "gate-speed/comparison-8-candidate-composition.txt",
+      "bytes": 920,
+      "sha256": "71f59c575d333ee3eb1e0684dc31b3793ea5c5e5eb3a4df255189f2ee7328428"
+    },
+    {
+      "source": "gate-speed/comparison-8-candidate-transition.log",
+      "path": "gate-speed/comparison-8-candidate-transition.txt",
+      "bytes": 522,
+      "sha256": "8f00f9ec3300e2f84fa1312a802edc2228dcc2a2a3279550be687aba0f928ced"
+    },
+    {
+      "source": "gate-speed/comparison-8-candidate-ui.json",
+      "path": "gate-speed/comparison-8-candidate-ui.json",
+      "bytes": 2925,
+      "sha256": "66c21bb13e9b6d1045fda449443ca1f99c1095fc2cc8ced68ab06e212761b8df"
+    },
+    {
+      "source": "gate-speed/comparison-8-candidate-ui.log",
+      "path": "gate-speed/comparison-8-candidate-ui.txt",
+      "bytes": 2925,
+      "sha256": "66c21bb13e9b6d1045fda449443ca1f99c1095fc2cc8ced68ab06e212761b8df"
+    },
+    {
+      "source": "gate-speed/comparison-9-baseline-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/comparison-9-baseline-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "64e487aa504ed166b23d3956c5629cc4b6534d844a0696b38a134a0b148dfe3e"
+    },
+    {
+      "source": "gate-speed/comparison-9-baseline-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/comparison-9-baseline-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "5da393e835504c9f962be1609e2d0a2c7e4deede8af1aad6abaa5bb1b74e102b"
+    },
+    {
+      "source": "gate-speed/comparison-9-baseline-composition.log",
+      "path": "gate-speed/comparison-9-baseline-composition.txt",
+      "bytes": 918,
+      "sha256": "fc016635db24280bc33a9f39adb53a3f51dc5f54aa42b4e23e5f48ff9b626d31"
+    },
+    {
+      "source": "gate-speed/comparison-9-baseline-transition.log",
+      "path": "gate-speed/comparison-9-baseline-transition.txt",
+      "bytes": 521,
+      "sha256": "b3289240360e57b076616213149955a750d51b11717cc115856ea63a99e0bce8"
+    },
+    {
+      "source": "gate-speed/comparison-9-baseline-ui.json",
+      "path": "gate-speed/comparison-9-baseline-ui.json",
+      "bytes": 2828,
+      "sha256": "0b8c6323713c48db53df69e8aa8eaa140ceaa316b48d23e9c735bd45515ef487"
+    },
+    {
+      "source": "gate-speed/comparison-9-baseline-ui.log",
+      "path": "gate-speed/comparison-9-baseline-ui.txt",
+      "bytes": 2828,
+      "sha256": "0b8c6323713c48db53df69e8aa8eaa140ceaa316b48d23e9c735bd45515ef487"
+    },
+    {
+      "source": "gate-speed/comparison-9-candidate-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/comparison-9-candidate-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11941,
+      "sha256": "80235d9f11d1cc4147b6d65019f66d047b691a05bd0033e82786841e30296c71"
+    },
+    {
+      "source": "gate-speed/comparison-9-candidate-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/comparison-9-candidate-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "59bd6f5b2ca559f7ecfe687edd1ef87b81814c6e9757ed5b16beb61a8349c40b"
+    },
+    {
+      "source": "gate-speed/comparison-9-candidate-composition.log",
+      "path": "gate-speed/comparison-9-candidate-composition.txt",
+      "bytes": 920,
+      "sha256": "7c46b50973ad2fd48ed53e7f14cad3a8444c599f446fc81c2cdb86a5a2c3b275"
+    },
+    {
+      "source": "gate-speed/comparison-9-candidate-transition.log",
+      "path": "gate-speed/comparison-9-candidate-transition.txt",
+      "bytes": 522,
+      "sha256": "44d52e81581e7bcc1a73286bb46606f87f411e4469c36d7eb83d86d82c6e4ed6"
+    },
+    {
+      "source": "gate-speed/comparison-9-candidate-ui.json",
+      "path": "gate-speed/comparison-9-candidate-ui.json",
+      "bytes": 2914,
+      "sha256": "829f03efdc62d2fd4b6c4dd4d540282b99528fb642651e03adba2cbabe7e3b27"
+    },
+    {
+      "source": "gate-speed/comparison-9-candidate-ui.log",
+      "path": "gate-speed/comparison-9-candidate-ui.txt",
+      "bytes": 2914,
+      "sha256": "829f03efdc62d2fd4b6c4dd4d540282b99528fb642651e03adba2cbabe7e3b27"
+    },
+    {
+      "source": "gate-speed/raw-samples.json",
+      "path": "gate-speed/raw-samples.json",
+      "bytes": 26793,
+      "sha256": "ed0d28bf8bbf02d63ffb240354e1ead30ee746f164e7daa20729c75cd74059df"
+    },
+    {
+      "source": "gate-speed/report.json",
+      "path": "gate-speed/report.json",
+      "bytes": 7935,
+      "sha256": "861c7667a8351c6b0d15f41a9e1da0b2e0392b1f428c44ffe6e1c6225b071ecb"
+    },
+    {
+      "source": "gate-speed/three-streams.json",
+      "path": "gate-speed/three-streams.json",
+      "bytes": 2832,
+      "sha256": "74f3c2369c53e77deaeb69506301dad9aca0b8cf9e4eb844e8fe876d33b93222"
+    },
+    {
+      "source": "gate-speed/three-streams.log",
+      "path": "gate-speed/three-streams.txt",
+      "bytes": 2832,
+      "sha256": "74f3c2369c53e77deaeb69506301dad9aca0b8cf9e4eb844e8fe876d33b93222"
+    },
+    {
+      "source": "gate-speed/warmup-baseline-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/warmup-baseline-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11914,
+      "sha256": "e68c064e1ca44447e15030b4d0cc6e89d8353f2286176f8d5c6c5c23fec59409"
+    },
+    {
+      "source": "gate-speed/warmup-baseline-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/warmup-baseline-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3371,
+      "sha256": "a6735ec3c8bdd33bc0d553c6fcf21b245d1f16b287d253fc5e2a08e35fabf48e"
+    },
+    {
+      "source": "gate-speed/warmup-baseline-composition.log",
+      "path": "gate-speed/warmup-baseline-composition.txt",
+      "bytes": 906,
+      "sha256": "90cec508c933c6d7d02c01738852ce1761f1f1951f6a397bf86f4f0e594f081c"
+    },
+    {
+      "source": "gate-speed/warmup-baseline-transition.log",
+      "path": "gate-speed/warmup-baseline-transition.txt",
+      "bytes": 521,
+      "sha256": "f60b5734c27eee2488bfe1af48a2caceb4578b4eb16d64da31c646eab5d6ded6"
+    },
+    {
+      "source": "gate-speed/warmup-baseline-ui.json",
+      "path": "gate-speed/warmup-baseline-ui.json",
+      "bytes": 2709,
+      "sha256": "16191ac0a5c9429f16e3130d138d1f032a3da121cbb2d8dbd4af03cd16d91ff1"
+    },
+    {
+      "source": "gate-speed/warmup-baseline-ui.log",
+      "path": "gate-speed/warmup-baseline-ui.txt",
+      "bytes": 2709,
+      "sha256": "16191ac0a5c9429f16e3130d138d1f032a3da121cbb2d8dbd4af03cd16d91ff1"
+    },
+    {
+      "source": "gate-speed/warmup-candidate-composition/stage-composition-benchmark-2026-11-10.json",
+      "path": "gate-speed/warmup-candidate-composition/stage-composition-benchmark-2026-11-10.json",
+      "bytes": 11938,
+      "sha256": "07b7c40d09661e6cf6f8eb70f20bce085ce5a7d37766cdfecbd6eab86177da51"
+    },
+    {
+      "source": "gate-speed/warmup-candidate-composition/stage-composition-benchmark-2026-11-10.md",
+      "path": "gate-speed/warmup-candidate-composition/stage-composition-benchmark-2026-11-10.md",
+      "bytes": 3368,
+      "sha256": "b3ab9dfa1eadfe7cd76c55af9ae66b773d3ef18ef3b739826f23d5c0c336f805"
+    },
+    {
+      "source": "gate-speed/warmup-candidate-composition.log",
+      "path": "gate-speed/warmup-candidate-composition.txt",
+      "bytes": 908,
+      "sha256": "cbfab9bc70fdb0e00364f32c283f6fac7249f99c42d8734dea6b87191dabbf62"
+    },
+    {
+      "source": "gate-speed/warmup-candidate-transition.log",
+      "path": "gate-speed/warmup-candidate-transition.txt",
+      "bytes": 522,
+      "sha256": "0e119ecd771495b3c530edfea28396ec30aafb12198908e5154d328503faa44c"
+    },
+    {
+      "source": "gate-speed/warmup-candidate-ui.json",
+      "path": "gate-speed/warmup-candidate-ui.json",
+      "bytes": 2902,
+      "sha256": "c1a8252283a329344ed50828825201e454f0f9b16a7b26e794b555f29332bc9d"
+    },
+    {
+      "source": "gate-speed/warmup-candidate-ui.log",
+      "path": "gate-speed/warmup-candidate-ui.txt",
+      "bytes": 2902,
+      "sha256": "c1a8252283a329344ed50828825201e454f0f9b16a7b26e794b555f29332bc9d"
+    },
+    {
+      "source": "gate-speed.txt",
+      "path": "gate-speed.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "source": "three-streams-preflight.json",
+      "path": "three-streams-preflight.json",
+      "bytes": 2961,
+      "sha256": "1e0595d475ab9c7d68ebd8d9407dc7987986abd1b3c674c47dd9bdf31f3ce077"
+    },
+    {
+      "source": "three-streams-preflight.txt",
+      "path": "three-streams-preflight.txt",
+      "bytes": 2961,
+      "sha256": "1e0595d475ab9c7d68ebd8d9407dc7987986abd1b3c674c47dd9bdf31f3ce077"
+    },
+    {
+      "source": "<repo>\\target\\companion-final\\benchmark-freeze-ba9.py",
+      "path": "benchmark-freeze-ba9.py",
+      "bytes": 28781,
+      "sha256": "e0bdbb17a923170b5930755b97802ca91676abc0b68a05780ba58745b05e4ec8"
+    }
+  ],
+  "independentAudit": {
+    "path": "independent-audit.json",
+    "bytes": 10319,
+    "sha256": "70e54d32e962379c0c958041dbe71d1fa4d749b3c2c20da4d83c4088a3828cf5",
+    "result": "passed",
+    "blockingFindings": []
+  }
+}

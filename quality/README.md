@@ -19,6 +19,7 @@ historical check applies to the source and environment identified in that report
 | Automatic Codex model verification | [2026-10-31 host-context rollout correction and validation](codex-host-context-model-evidence-2026-10-31.md) |
 | Forge Incubation, file-path requests and context budget | [2026-10-31 follow-up correction and validation](forge-incubation-path-context-validation-2026-10-31.md) |
 | Forge automatic destinations and batch admission | [2026-11-02 implementation and check status](forge-destinations-validation-2026-11-02.md) |
+| Companion dock, decisions and paragraph layout | [Implementation and qualification](companion-dock-validation-2026-11-06.md), [2026-11-10 native inspection](companion-qualification-2026-11-09/native-paragraph-ba9bf15-2026-11-10/result.json), [2026-11-10 speed gate](companion-qualification-2026-11-09/speed-ba9bf15-2026-11-10/result.json) |
 | Synchronization and human recovery | [Synchronization report](cerebro-sync-validation-2026-09-09.md) |
 | Context telemetry and Learning | [Validation](learning-context-optimization.md) |
 | Deterministic secret sanitization | [2026-10-22 implementation and validation](secret-sanitization-validation-2026-10-22.md) |

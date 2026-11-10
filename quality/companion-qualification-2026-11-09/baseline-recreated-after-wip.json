@@ -1,0 +1,136 @@
+{
+  "schemaVersion": 1,
+  "capturedAtUtc": "2026-11-10T01:06:47.155017+00:00",
+  "baselineSourceCommit": "ef2879a6ecc161f5910c6ee4402aea1206d644f8",
+  "baselineRoot": "<home>\\Documents\\Nathan\\HardVibeCode\\.worktrees\\companion-speed-baseline",
+  "candidateHeadAtPreparation": "e61cdf1bc33be22a3bf7fac5320572afcd9b4837",
+  "baselineSourceClean": true,
+  "artifacts": [
+    {
+      "name": "core",
+      "path": "<home>\\Documents\\Nathan\\HardVibeCode\\.worktrees\\companion-speed-baseline\\target\\debug\\deps\\hvc_core-b3ff09f63410ebf4.exe",
+      "originalPath": "<repo>\\target\\debug\\deps\\hvc_core-b3ff09f63410ebf4.exe",
+      "bytes": 77668864,
+      "sha256": "efd5638ef0881df0f72ef6c18b0a8d374511f893fafece5163b02bcdf0c59e3f"
+    },
+    {
+      "name": "composition",
+      "path": "<home>\\Documents\\Nathan\\HardVibeCode\\.worktrees\\companion-speed-baseline\\target\\debug\\examples\\composition_benchmark.exe",
+      "originalPath": "<repo>\\target\\debug\\examples\\composition_benchmark.exe",
+      "bytes": 50095616,
+      "sha256": "cd1b60805ac03b49eaef66bc8ef2ba4a4599af4e9bb940680f848c47c057dcfb"
+    },
+    {
+      "name": "ui",
+      "path": "<home>\\Documents\\Nathan\\HardVibeCode\\.worktrees\\companion-speed-baseline\\target\\release\\hard-vibe-code.exe",
+      "originalPath": "<repo>\\target\\release\\hard-vibe-code.exe",
+      "bytes": 37499392,
+      "sha256": "024e10d90ee80e8f364b3b43751d1cc11a3f15194aa84db2d954fe549509938d"
+    }
+  ],
+  "compiledCompositionManifestDirectory": "<repo>\\crates\\hvc-test-support",
+  "runtimeFixturePathNote": "The frozen composition binary reads fixtures from its original compiled manifest directory. All tracked fixture bytes match the detached baseline and must remain frozen through measurement.",
+  "runtimeFixtures": [
+    {
+      "path": "crates/hvc-test-support/tests/fixtures/composition/cohesive-01-session-expiry.json",
+      "bytes": 2549,
+      "sha256": "4db92ce348a2aab09b3fe86fda4ef91a7b2b7526d5f463476f52c7f2549f0ee1"
+    },
+    {
+      "path": "crates/hvc-test-support/tests/fixtures/composition/cohesive-02-money-format.json",
+      "bytes": 2513,
+      "sha256": "d29ab39ecbbecbdbe8bc083b83890c729c65c7a220d8ecd6fff7471592499a2e"
+    },
+    {
+      "path": "crates/hvc-test-support/tests/fixtures/composition/cohesive-03-slug-links.json",
+      "bytes": 2441,
+      "sha256": "2cccc182895bf0e86a4d2b2beee552466a1d7dcfce2298a298f81bb706215bb8"
+    },
+    {
+      "path": "crates/hvc-test-support/tests/fixtures/composition/cohesive-04-rate-window.json",
+      "bytes": 2545,
+      "sha256": "c464afd4fe370377cc845af56805e37a0a5a52d0f5b2e51861029305bbdb9c9b"
+    },
+    {
+      "path": "crates/hvc-test-support/tests/fixtures/composition/cohesive-05-checksum-verify.json",
+      "bytes": 2492,
+      "sha256": "c83c333962bbfff974c1b697ae1b6ce55c9adeee720ec2660c9ccf824390715e"
+    },
+    {
+      "path": "crates/hvc-test-support/tests/fixtures/composition/recovery-01-transport-on-code.json",
+      "bytes": 1904,
+      "sha256": "c5be0579f6ae4c8e1eab672f08db3bc7c8f0f209b811bf40b528a159dc0d8827"
+    },
+    {
+      "path": "crates/hvc-test-support/tests/fixtures/composition/recovery-02-malformed-intake.json",
+      "bytes": 1940,
+      "sha256": "2b131ef5ed0e38d13e978ca405fd9002f2391499a3a306fa97d407fb940f292e"
+    },
+    {
+      "path": "crates/hvc-test-support/tests/fixtures/composition/recovery-03-transport-on-test.json",
+      "bytes": 3213,
+      "sha256": "b05fc9e552a8f77759de80c1e078ee5b9bc2dcf164a71389a0621bed2895442a"
+    },
+    {
+      "path": "crates/hvc-test-support/tests/fixtures/composition/recovery-04-malformed-code.json",
+      "bytes": 2496,
+      "sha256": "45ab57ebdc4e24c6d474cfd250d0b672d90a0d78545ce9c737a2de36055a19c2"
+    },
+    {
+      "path": "crates/hvc-test-support/tests/fixtures/composition/recovery-05-transport-on-code-pair.json",
+      "bytes": 3282,
+      "sha256": "6755551f1b608860edcfb6f3d457f7337486fef5ab15cfe868aa6c1aea85bd08"
+    },
+    {
+      "path": "crates/hvc-test-support/tests/fixtures/composition/separable-01-expiry-and-session.json",
+      "bytes": 3258,
+      "sha256": "921fef5c94052e1733c945c00d334e290a0a0fc537af754b21fef4263fa373b3"
+    },
+    {
+      "path": "crates/hvc-test-support/tests/fixtures/composition/separable-02-retry-and-user.json",
+      "bytes": 3219,
+      "sha256": "74944eaed9db88422d3b79a97c42d6beaf42db1c22af4f4bf524544fc69924ef"
+    },
+    {
+      "path": "crates/hvc-test-support/tests/fixtures/composition/separable-03-port-and-slug.json",
+      "bytes": 3147,
+      "sha256": "3d9b3be8a9afeb6f0085fff15177d823665f04dc5286e8470c7fdce64cc64fb2"
+    },
+    {
+      "path": "crates/hvc-test-support/tests/fixtures/composition/separable-04-window-and-money.json",
+      "bytes": 3228,
+      "sha256": "5edfc223a2f863d19e0550d0d2344a9d89d99b95dc4c7822f39053f2a1daeebf"
+    },
+    {
+      "path": "crates/hvc-test-support/tests/fixtures/composition/separable-05-percent-and-checksum.json",
+      "bytes": 3119,
+      "sha256": "2dfb42fa92a4750001c0eb84ede725eca6a85fb86648027d4d388f67125f3dd5"
+    },
+    {
+      "path": "crates/hvc-test-support/tests/fixtures/composition/simple-01-token-expiry.json",
+      "bytes": 1860,
+      "sha256": "4c0c395fe4155c88a8e1e17d9c42a1bf5e80d189d6d09905852e6e60b68dce05"
+    },
+    {
+      "path": "crates/hvc-test-support/tests/fixtures/composition/simple-02-retry-limit.json",
+      "bytes": 1925,
+      "sha256": "4f7ae6ee731ae67ba5413fe65251febb27882c1b06db65bad810f7c6fb46b74f"
+    },
+    {
+      "path": "crates/hvc-test-support/tests/fixtures/composition/simple-03-trim-username.json",
+      "bytes": 1775,
+      "sha256": "475b6e1ac361bc686c370eaa719983efed8ce6b4043a43d39e0ddfb88ef6f513"
+    },
+    {
+      "path": "crates/hvc-test-support/tests/fixtures/composition/simple-04-port-parse.json",
+      "bytes": 1817,
+      "sha256": "0d05523f8b90828ea30eb1c635a61e0b53c0c89027eca6f9e1c4fb43b9534446"
+    },
+    {
+      "path": "crates/hvc-test-support/tests/fixtures/composition/simple-05-clamp-percent.json",
+      "bytes": 1742,
+      "sha256": "c385b045c1ae75a9195085501ea84406b6c3d8f94b19f73271160151cbb03044"
+    }
+  ],
+  "status": "prepared; no performance sample executed"
+}

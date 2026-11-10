@@ -1,0 +1,97 @@
+warning: resolver for the non root package will be ignored, specify resolver at the workspace root:
+package:   <repo>\third_party\gpui\Cargo.toml
+workspace: <repo>\Cargo.toml
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.01s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running unittests src\gpui.rs (target\debug\deps\gpui-24fe41aed0a10818.exe)
+
+running 85 tests
+test app::entity_map::test::test_entity_map_weak_upgrade_before_cleanup ... ok
+test app::entity_map::test::test_entity_map_slot_assignment_before_cleanup ... ok
+test app::test::test_gpui_borrow ... ok
+test app::test_context::dpi_and_layout_tests::invalid_simulated_scale_factors_leave_window_state_unchanged ... ok
+test app::test_context::dpi_and_layout_tests::layout_node_count_reads_real_frame_nodes_and_marks_active_measurement_unavailable ... ok
+test arena::tests::test_arena ... ok
+test arena::tests::test_arena_alignment ... ok
+test app::test_context::dpi_and_layout_tests::simulated_scale_factor_updates_the_real_window_and_preserves_viewport ... ok
+test arena::tests::test_arena_grow ... ok
+test bounds_tree::tests::test_insert ... ok
+test arena::tests::test_arena_use_after_clear - should panic ... ok
+test color::tests::test_background_linear_gradient ... ok
+test color::tests::test_background_solid ... ok
+test color::tests::test_deserialize_eight_value_hex_to_rgba ... ok
+test color::tests::test_deserialize_eight_value_hex_with_mixed_case_to_rgba ... ok
+test color::tests::test_deserialize_eight_value_hex_with_padding_to_rgba ... ok
+test color::tests::test_deserialize_four_value_hex_to_rgba ... ok
+test color::tests::test_deserialize_six_value_hex_to_rgba ... ok
+test color::tests::test_deserialize_three_value_hex_to_rgba ... ok
+test elements::list::test::test_reset_after_paint_before_scroll ... ok
+test elements::list::test::test_scroll_by_positive_and_negative_distance ... ok
+test geometry::tests::test_bounds_intersects ... ok
+test interactive::test::test_on_events ... ok
+test key_dispatch::tests::test_input_handler_pending ... ok
+test key_dispatch::tests::test_keybinding_for_action_bounds ... ok
+test keymap::context::tests::test_actions_definition ... ok
+test keymap::context::tests::test_child_operator ... ok
+test keymap::context::tests::test_is_superset ... ok
+test keymap::context::tests::test_not_operator ... ok
+test keymap::context::tests::test_parse_boolean_operators ... ok
+test keymap::context::tests::test_parse_context ... ok
+test keymap::context::tests::test_parse_equality_operators ... ok
+test keymap::context::tests::test_parse_identifiers ... ok
+test keymap::context::tests::test_parse_negations ... ok
+test keymap::context::tests::test_parse_parenthesized_expressions ... ok
+test keymap::tests::test_bindings_for_action ... ok
+test keymap::tests::test_context_precedence_with_same_source ... ok
+test keymap::tests::test_depth_precedence ... ok
+test keymap::tests::test_disable_deeper ... ok
+test keymap::tests::test_fail_to_disable ... ok
+test keymap::tests::test_keymap ... ok
+test keymap::tests::test_keymap_disabled ... ok
+test keymap::tests::test_multiple_keystroke_binding_disabled ... ok
+test keymap::tests::test_override_multikey ... ok
+test keymap::tests::test_overriding_prefix ... ok
+test keymap::tests::test_pending_match_enabled ... ok
+test keymap::tests::test_pending_match_enabled_extended ... ok
+test keymap::tests::test_simple_disable ... ok
+test keymap::tests::test_source_precedence_sorting ... ok
+test platform::windows::direct_write::tests::test_cluster_map ... ok
+test platform::windows::keyboard::tests::test_keyboard_mapper ... ok
+test platform::windows::platform::tests::test_clipboard ... ok
+test platform::windows::window::tests::test_double_click_interval ... ok
+test platform::windows::window::tests::test_double_click_spatial_tolerance ... ok
+test style::tests::test_basic_highlight_style_combination ... ok
+test style::tests::test_combine_highlights ... ok
+test tab_stop::tests::test_nested_group ... ok
+test tab_stop::tests::test_sibling_groups ... ok
+test tab_stop::tests::test_sibling_nested_groups ... ok
+test tab_stop::tests::test_sibling_nested_groups_out_of_order ... ok
+test tab_stop::tests::test_tab_group_functionality ... ok
+test tab_stop::tests::test_tab_handles ... ok
+test tab_stop::tests::test_tab_non_stop_filtering ... ok
+test tab_stop::tests::test_with_disabled_tab_stop ... ok
+test tab_stop::tests::test_with_multiple_disabled_tab_stops ... ok
+test text_system::line::tests::background_without_colors_skips_font_metrics_but_preserves_layers ... ok
+test text_system::line::tests::colored_and_transparent_backgrounds_still_measure_and_paint ... ok
+test text_system::line::tests::empty_background_layers_preserve_overlapping_order_and_scene_replay ... ok
+test text_system::line::tests::mixed_background_runs_keep_exact_colored_ranges ... ok
+test text_system::line::tests::plain_background_preserves_foreground_underline_and_strikethrough ... ok
+test text_system::line::tests::vertical_culling_keeps_partial_wrapped_emoji_and_the_tallest_font ... ok
+test text_system::line::tests::vertical_culling_never_skips_any_some_underline_or_strikethrough ... ok
+test text_system::line::tests::vertical_culling_preserves_overhang_and_subpixel_boundary_intersections ... ok
+test text_system::line::tests::vertical_culling_skips_plain_visits_preserving_empty_layers_and_replay ... ok
+test text_system::line::tests::vertical_envelope_falls_back_for_non_finite_or_invalid_heights ... ok
+test text_system::line::tests::vertical_envelope_never_culls_a_row_accepted_by_the_old_glyph_guard ... ok
+test text_system::line::tests::wrapped_unicode_backgrounds_keep_each_line_segment ... ok
+test text_system::line_wrapper::tests::repeated_measurements_truncate_from_the_original_runs ... ok
+test text_system::line_wrapper::tests::test_is_word_char ... ok
+test text_system::line_wrapper::tests::test_truncate_line ... ok
+test text_system::line_wrapper::tests::test_truncate_multiple_runs ... ok
+test text_system::line_wrapper::tests::test_update_run_after_truncation ... ok
+test text_system::line_wrapper::tests::test_wrap_line ... ok
+test util::tests::test_with_timeout ... ok
+test bounds_tree::tests::test_random_iterations ... ok
+
+test result: ok. 85 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s
+

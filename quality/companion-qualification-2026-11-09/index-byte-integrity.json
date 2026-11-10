@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "verifiedAtUtc": "2026-11-10T11:17:38.860144+00:00",
+  "sourceCommit": "ba9bf15b5945e369ecb0ab8d9d97a5a364f80070",
+  "scope": "All new staged qualification artifacts except this self-reference; source files and main prose files are outside this archival byte check",
+  "filesVerified": 581,
+  "exactBytesInGitIndex": true,
+  "differences": [],
+  "method": "git ls-files --stage plus one git cat-file --batch; compare staged blob bytes with each working artifact, without EOL conversion",
+  "pathAndBlobIdsSha256": "fafcf0682b26c35cdd3ea72adba54531e6e5b9634dd2161c93c069820eed34a3"
+}

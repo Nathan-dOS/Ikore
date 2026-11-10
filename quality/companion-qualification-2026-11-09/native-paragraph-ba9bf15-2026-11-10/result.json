@@ -1,0 +1,176 @@
+{
+  "schemaVersion": 1,
+  "testedAtUtc": "2026-11-10T09:59:34.184622+00:00",
+  "sourceCommit": "ba9bf15b5945e369ecb0ab8d9d97a5a364f80070",
+  "nativeDebugExecutable": {
+    "path": "<repo>\\target\\debug\\hard-vibe-code.exe",
+    "sha256": "97a78f96d14986ccad40fe21322e50c597a9d572c3d00e4fea5c7cbf37cddc00"
+  },
+  "requestedClientSizes": [
+    "1440x900",
+    "960x640"
+  ],
+  "observedOuterCaptureSizes": [
+    "1442x930",
+    "962x670"
+  ],
+  "result": "passed",
+  "checks": {
+    "threeTopicsAt1440": true,
+    "twoTopicsPlusRecoverableOverflowAt960": true,
+    "expandMinimizesSharedComposer": true,
+    "historyReopensMinimizedAndOverflow": true,
+    "paragraphSpacingAndNativeWrapObserved": true,
+    "unicodeAndTableAndCodeAndDiffObserved": true,
+    "selectionBothDragDirectionsObserved": true,
+    "selectAllCopyPasteExactCompleteProjection": true,
+    "originalDraftUnchangedAfterRestart": true,
+    "pastedDraftUnchangedAfterRestart": true,
+    "ctrlShiftCFromFocusedInputAndFocusRestored": true,
+    "bothWindowsClosedAndExitedZero": true,
+    "fixtureStoppedAndExitedZero": true
+  },
+  "countsBefore": {
+    "qa_conversations": 3,
+    "qa_messages": 6,
+    "qa_noncompleted_messages": 0,
+    "qa_model_calls": 0,
+    "qa_tool_calls": 0,
+    "open_docks": 1,
+    "dock_topics": 3,
+    "active_qa_chat": 1,
+    "pulsations": 2,
+    "jobs": 2,
+    "checkpoints": 0,
+    "drafts": 1
+  },
+  "countsAfter1440": {
+    "qa_conversations": 3,
+    "qa_messages": 6,
+    "qa_noncompleted_messages": 0,
+    "qa_model_calls": 0,
+    "qa_tool_calls": 0,
+    "open_docks": 1,
+    "dock_topics": 3,
+    "active_qa_chat": 0,
+    "pulsations": 2,
+    "jobs": 2,
+    "checkpoints": 0,
+    "drafts": 2
+  },
+  "countsAfter960": {
+    "qa_conversations": 3,
+    "qa_messages": 6,
+    "qa_noncompleted_messages": 0,
+    "qa_model_calls": 0,
+    "qa_tool_calls": 0,
+    "open_docks": 0,
+    "dock_topics": 3,
+    "active_qa_chat": 0,
+    "pulsations": 2,
+    "jobs": 2,
+    "checkpoints": 0,
+    "drafts": 2
+  },
+  "clipboardProjection": {
+    "characters": 534,
+    "sha256": "6ef4e9d5d5b8fe3fd0d0efcee7a602e49ae49fdea8fe4abe4f99ef31e5fb519f",
+    "verification": "Native Ctrl+A/C on the paragraph response, paste into the empty second conversation composer without Send; exact read-only SQLite draft comparison with the complete five-block plain projection, including final paragraph and combining Unicode."
+  },
+  "limits": [
+    "One physical Windows display scale and current system fonts; fractional DPI geometry covered separately by test-window scales.",
+    "No physical IME, live-provider streaming, approval or submit exercised. Pinned history was readable with its blocked-connection banner.",
+    "Debug native inspection is separate from release callback latency and the paired speed gate."
+  ],
+  "preparationNotes": [
+    "First seed refused read-only FTS data_version and rolled back to zero QA rows. Artifact-only allowlist correction was proved in read-only mode; all write restrictions retained.",
+    "Prior GUI launch was not executed because automatic approval review hit its usage limit. After the user continued, the same approval path allowed fixture resume and GUI launches."
+  ],
+  "artifacts": [
+    {
+      "path": "README.md",
+      "bytes": 8153,
+      "sha256": "478929031561cd232402457b530c4a70f3d9059033cb4cb53f83f915769c60b9"
+    },
+    {
+      "path": "seed_native_paragraph_fixture.py",
+      "bytes": 25865,
+      "sha256": "8164bc4aa520d9cc0b5a4dfc9dc3758a024f4dc6cd927e9bba72e9bec8969fd1"
+    },
+    {
+      "path": "seeded-before.json",
+      "bytes": 681,
+      "sha256": "190326bad0bfe957f28472fc7e1fab84b313b7feb9a2be1eb80ad2f3475ff768"
+    },
+    {
+      "path": "after-1440.json",
+      "bytes": 1412,
+      "sha256": "c62db670cca9f78224382c4c0d41747093c74710c9e277c2e7987d8cae99b595"
+    },
+    {
+      "path": "after-960.json",
+      "bytes": 1412,
+      "sha256": "0b5918b5773e2fd1b067ec4bf29ade27b86691abfe3d7c17acc7674e93d181ba"
+    },
+    {
+      "path": "app-1440-launch.json",
+      "bytes": 461,
+      "sha256": "93d2632f7fda99216830270afc03d18a7f7ccdaf85c8235e6cb7603a2c483a91"
+    },
+    {
+      "path": "app-1440-exit.json",
+      "bytes": 92,
+      "sha256": "636be4135b27e300931b2627f21cd0876e7a998a337cbda5a43ca6cca90b4e33"
+    },
+    {
+      "path": "app-1440-stdout.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "app-1440-stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "app-960-launch.json",
+      "bytes": 459,
+      "sha256": "7e88b59be4e919c24d5e9543f684a171a6588ab3d5c44820d8f161c527f1f501"
+    },
+    {
+      "path": "app-960-exit.json",
+      "bytes": 91,
+      "sha256": "090f2b5fecc33d34abc941a2a589cccaa02f1848dac3f484a1ae4266c0612743"
+    },
+    {
+      "path": "app-960-stdout.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "app-960-stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "fixture-server.txt",
+      "bytes": 216,
+      "sha256": "c6d7f468375b29edbe755fd1f674b380da86c3e913f615d8c344af9e899d2348"
+    },
+    {
+      "path": "fixture-server-resumed-2026-11-10.txt",
+      "bytes": 219,
+      "sha256": "4cb28fdfc47834b3a28491530a6c093901b3d97d6b683b4f107252154dbe4078"
+    },
+    {
+      "path": "target-companion-native-examples-ba9bf15.txt",
+      "bytes": 1592,
+      "sha256": "2d8eb47e4a37db01e604a9dcb27213bf0cfe51d468a9c5603b9dfd46ec2d9610"
+    },
+    {
+      "path": "target-companion-native-app-ba9bf15.txt",
+      "bytes": 2876,
+      "sha256": "fe04fe72a4a5cd12176a49a57a55c8d37463910c053e1e22d05bd30316d00ec1"
+    }
+  ]
+}

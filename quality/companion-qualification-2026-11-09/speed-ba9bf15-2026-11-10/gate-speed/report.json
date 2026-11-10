@@ -1,0 +1,284 @@
+{
+  "schemaVersion": 1,
+  "startedAt": "2026-11-10T10:01:15.3347287Z",
+  "passed": true,
+  "pairs": 20,
+  "baselineRoot": "<home>\\Documents\\Nathan\\HardVibeCode\\.worktrees\\companion-speed-baseline",
+  "candidateRoot": "<repo>",
+  "scope": "Offline orchestration canary across four arms, host transitions and GPUI callback intervals; not real-model quality or compositor presentation",
+  "policy": "20 or more A/A calibration pairs freeze p95 absolute noise before alternating A/B and B/A pairs; median paired delta for each p50/p95 statistic must not exceed that tolerance",
+  "sampleOrder": "transition probe, fixed composition canary across a/b/c/d, closed-dock UI",
+  "timingAggregation": "composition p50/p95 are nearest-rank quantiles of the four per-arm wall_ms observations in one sample",
+  "baselineArtifacts": {
+    "core": {
+      "path": "<home>\\Documents\\Nathan\\HardVibeCode\\.worktrees\\companion-speed-baseline\\target\\debug\\deps\\hvc_core-b3ff09f63410ebf4.exe",
+      "sha256": "EFD5638EF0881DF0F72EF6C18B0A8D374511F893FAFECE5163B02BCDF0C59E3F",
+      "modifiedAt": "2026-11-02T17:18:58.8186891Z"
+    },
+    "ui": {
+      "path": "<home>\\Documents\\Nathan\\HardVibeCode\\.worktrees\\companion-speed-baseline\\target\\release\\hard-vibe-code.exe",
+      "sha256": "024E10D90EE80E8F364B3B43751D1CC11A3F15194AA84DB2D954FE549509938D",
+      "modifiedAt": "2026-11-06T23:52:16.9729522Z"
+    },
+    "composition": {
+      "path": "<home>\\Documents\\Nathan\\HardVibeCode\\.worktrees\\companion-speed-baseline\\target\\debug\\examples\\composition_benchmark.exe",
+      "sha256": "CD1B60805AC03B49EAEF66BC8EF2BA4A4599AF4E9BB940680F848C47C057DCFB",
+      "modifiedAt": "2026-11-07T23:37:40.2707925Z"
+    }
+  },
+  "candidateArtifacts": {
+    "core": {
+      "path": "<repo>\\target\\debug\\deps\\hvc_core-4dee993b4e86ff9a.exe",
+      "sha256": "71B038D873B5E1F9FB7078DBD7982E7E9A42EDA96472A9B2DB77FC67F001FE70",
+      "modifiedAt": "2026-11-10T01:26:08.5708222Z"
+    },
+    "ui": {
+      "path": "<repo>\\target\\release\\hard-vibe-code.exe",
+      "sha256": "545FFC9720DC81E4AF125EFE902747715556A7450548C4BB50084EE5474EBA3C",
+      "modifiedAt": "2026-11-10T02:07:42.5404077Z"
+    },
+    "composition": {
+      "path": "<repo>\\target\\debug\\examples\\composition_benchmark.exe",
+      "sha256": "3C28479FD9DF7E6CBE17AC999B9AA5127901CD1FBF7E51FD00D7E1348314A92A",
+      "modifiedAt": "2026-11-10T02:09:58.2827086Z"
+    }
+  },
+  "timingFixture": {
+    "id": "cohesive-01-session-expiry",
+    "fixtureVersion": "stage-composition-fixtures-v1",
+    "fullFixtureSha256": "786e5cc1da8409dc4985da0d27cea9c388d4c42fc82a82121ce1515c1f093c5e",
+    "arms": [
+      "a",
+      "b",
+      "c",
+      "d"
+    ],
+    "canaryFixtureSha256": "7c931da80b5cb21dc310b01953f288ee68361f192cbc917718866735a34526e2"
+  },
+  "metrics": {
+    "nonTerminalP50Us": {
+      "samples": 20,
+      "calibrationPairs": 20,
+      "noiseP95": 5187.0,
+      "pairedMedianDelta": 25.0,
+      "passed": true
+    },
+    "nonTerminalP95Us": {
+      "samples": 20,
+      "calibrationPairs": 20,
+      "noiseP95": 8490.0,
+      "pairedMedianDelta": 35.0,
+      "passed": true
+    },
+    "terminalP50Us": {
+      "samples": 20,
+      "calibrationPairs": 20,
+      "noiseP95": 5058.0,
+      "pairedMedianDelta": 49.0,
+      "passed": true
+    },
+    "terminalP95Us": {
+      "samples": 20,
+      "calibrationPairs": 20,
+      "noiseP95": 6156.0,
+      "pairedMedianDelta": 132.0,
+      "passed": true
+    },
+    "compositionWallP50Ms": {
+      "samples": 20,
+      "calibrationPairs": 20,
+      "noiseP95": 693.0,
+      "pairedMedianDelta": -235.0,
+      "passed": true
+    },
+    "compositionWallP95Ms": {
+      "samples": 20,
+      "calibrationPairs": 20,
+      "noiseP95": 1987.0,
+      "pairedMedianDelta": -898.0,
+      "passed": true
+    },
+    "uiP50Ms": {
+      "samples": 20,
+      "calibrationPairs": 20,
+      "noiseP95": 0.11279999999999912,
+      "pairedMedianDelta": -0.007499999999999396,
+      "passed": true
+    },
+    "uiP95Ms": {
+      "samples": 20,
+      "calibrationPairs": 20,
+      "noiseP95": 0.31240000000000023,
+      "pairedMedianDelta": -0.009800000000001141,
+      "passed": true
+    }
+  },
+  "compositionParity": {
+    "observations": 80,
+    "fixtureSha256": "786e5cc1da8409dc4985da0d27cea9c388d4c42fc82a82121ce1515c1f093c5e"
+  },
+  "streamingFixture": {
+    "schemaVersion": 1,
+    "status": "completed",
+    "metric": "gpui_animation_frame_callback_interval_ms",
+    "scope": "Interval between GPUI render callbacks; compositor presentation is not observed directly",
+    "scenario": "dock-three-streams",
+    "streamingFixture": true,
+    "fixtureFrames": 141,
+    "updatedConversations": 423,
+    "fixtureReady": true,
+    "viewportWidth": 1440.0,
+    "viewportHeight": 900.0,
+    "samples": 120,
+    "warmupSamples": 20,
+    "p95Ms": 7.4188,
+    "p99Ms": 8.8826,
+    "p50Ms": 6.21,
+    "thresholds": {
+      "p95Ms": 8.33,
+      "p99Ms": 16.67
+    },
+    "passed": true,
+    "rawMs": [
+      4.5529,
+      4.6016,
+      4.8512,
+      4.9193,
+      5.0041,
+      5.0088,
+      5.1554,
+      5.1949,
+      5.1958,
+      5.2006,
+      5.2927,
+      5.296600000000001,
+      5.3019,
+      5.3281,
+      5.338,
+      5.3503,
+      5.3559,
+      5.4108,
+      5.4428,
+      5.468,
+      5.4732,
+      5.5353,
+      5.5896,
+      5.6057,
+      5.6231,
+      5.624,
+      5.6244,
+      5.6297999999999995,
+      5.6691,
+      5.6829,
+      5.6872,
+      5.723,
+      5.7416,
+      5.7509,
+      5.7551,
+      5.7569,
+      5.8194,
+      5.8572,
+      5.8688,
+      5.8724,
+      5.918900000000001,
+      5.927,
+      5.9374,
+      5.958,
+      5.9624,
+      5.9811,
+      5.9826999999999995,
+      5.9887,
+      6.018,
+      6.0291,
+      6.0587,
+      6.0866,
+      6.0893,
+      6.0939000000000005,
+      6.1029,
+      6.1186,
+      6.1256,
+      6.1259,
+      6.1718,
+      6.21,
+      6.2302,
+      6.2461,
+      6.25,
+      6.2744,
+      6.2845,
+      6.2989999999999995,
+      6.300199999999999,
+      6.3177,
+      6.345899999999999,
+      6.3607000000000005,
+      6.3607000000000005,
+      6.3682,
+      6.3964,
+      6.4055,
+      6.4206,
+      6.4272,
+      6.4447,
+      6.4521,
+      6.4524,
+      6.457199999999999,
+      6.4585,
+      6.5118,
+      6.5123999999999995,
+      6.5206,
+      6.5408,
+      6.5501,
+      6.584300000000001,
+      6.5855999999999995,
+      6.5883,
+      6.6107,
+      6.641,
+      6.6477,
+      6.654400000000001,
+      6.6785000000000005,
+      6.6983,
+      6.707,
+      6.7185,
+      6.7716,
+      6.7787999999999995,
+      6.7862,
+      6.8205,
+      6.8266,
+      6.8343,
+      6.837000000000001,
+      6.9427,
+      6.9547,
+      6.956300000000001,
+      6.9853,
+      7.060099999999999,
+      7.0879,
+      7.1791,
+      7.2953,
+      7.3615,
+      7.4188,
+      7.8166,
+      8.0427,
+      8.098899999999999,
+      8.652099999999999,
+      8.8826,
+      8.8886
+    ],
+    "displayRefreshRatesHz": 164,
+    "requestedScenario": "dock-three-streams",
+    "processMetrics": {
+      "sampleIntervalMs": 100,
+      "samples": 15,
+      "cpuPercentAllCores": {
+        "p50": 8.3,
+        "p95": 29.229
+      },
+      "workingSetBytes": {
+        "p50": 86609920.0,
+        "p95": 97210368.0
+      },
+      "privateMemoryBytes": {
+        "p50": 110759936.0,
+        "p95": 120909824.0
+      }
+    }
+  },
+  "finishedAt": "2026-11-10T11:06:32.1935280Z"
+}

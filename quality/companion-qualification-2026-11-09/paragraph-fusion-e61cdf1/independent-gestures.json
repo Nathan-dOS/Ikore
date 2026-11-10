@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "productionReferenceCommit": "63bc1fd4ae9bb05404adc5e7c798841888bf5ae3",
+  "selectedMessageProductionPrefixExactlyEqualAfterEolNormalization": true,
+  "productionPrefixSha256": "8644295f169ca53858da7d2487abb2e0e95a12301a175ca4a2d3710fb348845c",
+  "otherSourceFilesExactlyEqualAfterEolNormalization": [
+    "third_party/gpui/src/app/test_context.rs",
+    "third_party/gpui/src/platform/test/window.rs",
+    "third_party/gpui/src/taffy.rs",
+    "third_party/gpui/src/window.rs",
+    "crates/hvc-ui/src/workspace_view.rs"
+  ],
+  "result": {
+    "passed": 4,
+    "failed": 0,
+    "ignored": 0,
+    "filtered": 486,
+    "durationSeconds": 0.72
+  },
+  "independentReview": "Each gesture starts with a proved empty selection and fresh clipboard sentinel; no earlier range or clipboard value can satisfy the full-text assertion",
+  "files": [
+    {
+      "path": "clipboard-sentinel-first-output.txt",
+      "bytes": 1063,
+      "sha256": "841f94b2eafeb081a29eb213305f695f1b20bdbc2e130272ef0d463e6163c01c"
+    },
+    {
+      "path": "independent-gestures-output.txt",
+      "bytes": 1063,
+      "sha256": "409a5a411b4d0f32a7c9573e6d21804d6912abc98847fd9357982d8dcf5b19ff"
+    },
+    {
+      "path": "independent-format-output.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ]
+}

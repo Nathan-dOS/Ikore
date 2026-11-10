@@ -1,0 +1,7 @@
+
+running 1 test
+test persistence_service::exchange_baseline_tests::exchange_baseline_pulsation_transitions ... AGENT_EXCHANGE_BASELINE {"measurement":"pulsation_transitions","result":{"non_terminal":{"n":1000,"p50_us":2851,"p95_us":3519,"p99_us":3974,"max_us":8722,"mean_us":2920,"total_ms":2920},"terminal_done":{"n":200,"p50_us":3087,"p95_us":3887,"p99_us":4565,"max_us":10760,"mean_us":3209,"total_ms":641}}}
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1171 filtered out; finished in 7.32s
+

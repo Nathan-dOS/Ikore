@@ -1,0 +1,126 @@
+{
+  "schemaVersion": 1,
+  "capturedAtUtc": "2026-11-10T01:46:41.088359+00:00",
+  "reviewMode": "Independent read-only source/PE/provenance review; no benchmark or Cargo execution",
+  "candidateSource": "ba9bf15b5945e369ecb0ab8d9d97a5a364f80070",
+  "baselineSource": "ef2879a6ecc161f5910c6ee4402aea1206d644f8",
+  "baselineRoot": "<home>\\Documents\\Nathan\\HardVibeCode\\.worktrees\\companion-speed-baseline",
+  "effectiveFixtureJsonNamesEqual": true,
+  "effectiveFixtureJsonCount": 20,
+  "fixtures": [
+    {
+      "name": "cohesive-01-session-expiry.json",
+      "bytes": 2549,
+      "sha256": "4db92ce348a2aab09b3fe86fda4ef91a7b2b7526d5f463476f52c7f2549f0ee1"
+    },
+    {
+      "name": "cohesive-02-money-format.json",
+      "bytes": 2513,
+      "sha256": "d29ab39ecbbecbdbe8bc083b83890c729c65c7a220d8ecd6fff7471592499a2e"
+    },
+    {
+      "name": "cohesive-03-slug-links.json",
+      "bytes": 2441,
+      "sha256": "2cccc182895bf0e86a4d2b2beee552466a1d7dcfce2298a298f81bb706215bb8"
+    },
+    {
+      "name": "cohesive-04-rate-window.json",
+      "bytes": 2545,
+      "sha256": "c464afd4fe370377cc845af56805e37a0a5a52d0f5b2e51861029305bbdb9c9b"
+    },
+    {
+      "name": "cohesive-05-checksum-verify.json",
+      "bytes": 2492,
+      "sha256": "c83c333962bbfff974c1b697ae1b6ce55c9adeee720ec2660c9ccf824390715e"
+    },
+    {
+      "name": "recovery-01-transport-on-code.json",
+      "bytes": 1904,
+      "sha256": "c5be0579f6ae4c8e1eab672f08db3bc7c8f0f209b811bf40b528a159dc0d8827"
+    },
+    {
+      "name": "recovery-02-malformed-intake.json",
+      "bytes": 1940,
+      "sha256": "2b131ef5ed0e38d13e978ca405fd9002f2391499a3a306fa97d407fb940f292e"
+    },
+    {
+      "name": "recovery-03-transport-on-test.json",
+      "bytes": 3213,
+      "sha256": "b05fc9e552a8f77759de80c1e078ee5b9bc2dcf164a71389a0621bed2895442a"
+    },
+    {
+      "name": "recovery-04-malformed-code.json",
+      "bytes": 2496,
+      "sha256": "45ab57ebdc4e24c6d474cfd250d0b672d90a0d78545ce9c737a2de36055a19c2"
+    },
+    {
+      "name": "recovery-05-transport-on-code-pair.json",
+      "bytes": 3282,
+      "sha256": "6755551f1b608860edcfb6f3d457f7337486fef5ab15cfe868aa6c1aea85bd08"
+    },
+    {
+      "name": "separable-01-expiry-and-session.json",
+      "bytes": 3258,
+      "sha256": "921fef5c94052e1733c945c00d334e290a0a0fc537af754b21fef4263fa373b3"
+    },
+    {
+      "name": "separable-02-retry-and-user.json",
+      "bytes": 3219,
+      "sha256": "74944eaed9db88422d3b79a97c42d6beaf42db1c22af4f4bf524544fc69924ef"
+    },
+    {
+      "name": "separable-03-port-and-slug.json",
+      "bytes": 3147,
+      "sha256": "3d9b3be8a9afeb6f0085fff15177d823665f04dc5286e8470c7fdce64cc64fb2"
+    },
+    {
+      "name": "separable-04-window-and-money.json",
+      "bytes": 3228,
+      "sha256": "5edfc223a2f863d19e0550d0d2344a9d89d99b95dc4c7822f39053f2a1daeebf"
+    },
+    {
+      "name": "separable-05-percent-and-checksum.json",
+      "bytes": 3119,
+      "sha256": "2dfb42fa92a4750001c0eb84ede725eca6a85fb86648027d4d388f67125f3dd5"
+    },
+    {
+      "name": "simple-01-token-expiry.json",
+      "bytes": 1860,
+      "sha256": "4c0c395fe4155c88a8e1e17d9c42a1bf5e80d189d6d09905852e6e60b68dce05"
+    },
+    {
+      "name": "simple-02-retry-limit.json",
+      "bytes": 1925,
+      "sha256": "4f7ae6ee731ae67ba5413fe65251febb27882c1b06db65bad810f7c6fb46b74f"
+    },
+    {
+      "name": "simple-03-trim-username.json",
+      "bytes": 1775,
+      "sha256": "475b6e1ac361bc686c370eaa719983efed8ce6b4043a43d39e0ddfb88ef6f513"
+    },
+    {
+      "name": "simple-04-port-parse.json",
+      "bytes": 1817,
+      "sha256": "0d05523f8b90828ea30eb1c635a61e0b53c0c89027eca6f9e1c4fb43b9534446"
+    },
+    {
+      "name": "simple-05-clamp-percent.json",
+      "bytes": 1742,
+      "sha256": "c385b045c1ae75a9195085501ea84406b6c3d8f94b19f73271160151cbb03044"
+    }
+  ],
+  "compositionRuntimeFixtureDirectory": "<repo>\\crates\\hvc-test-support\\tests\\fixtures\\composition",
+  "runtimeGitMetadata": "git revision/branch use the process cwd after observations; baseline Push-Location should record ef2879a and detached HEAD. No runtime rustc command.",
+  "dllReview": "Direct PE imports are Windows/UCRT/VCRUNTIME; UI also uses DirectWrite/DirectX/ICU. No project-private direct DLL import or delay-import directory; not an assertion about every transitive loaded module.",
+  "mutableFingerprintSlots": "Composition and UI fingerprint paths in the primary target are reused by candidate builds. Historical baseline fingerprints remain authoritative for original baseline EXE association, not current contents of overwritten slots.",
+  "requiredBeforeAndAfterMeasurement": [
+    "Bind final selected core EXE to completed gate output and exact probe inventory",
+    "Explicitly build standalone composition example and capture its final fingerprint and SHA",
+    "Wait for release completion before capturing UI SHA/fingerprint",
+    "Freeze all six EXEs and the full effective 20-JSON fixture set",
+    "Keep candidate and baseline source states stable",
+    "Hash gate-speed.ps1, lib/speed-metrics.ps1 and benchmark-ui-latency.ps1",
+    "No Cargo, native QA, source mutation or unrelated workload while timed samples run"
+  ],
+  "speedResult": "not executed"
+}

@@ -66,6 +66,36 @@ version type. Existing application upgrade tests still run in the full suite.
 The [Companion record](../quality/companion-dock-validation-2026-11-06.md)
 records executed results and the complete regression gate.
 
+## Paragraph layout and fractional DPI
+
+The `selectable_message::tests::paragraph_fusion_` selection compares the
+production paragraph renderer with a literal copy of the previous tree.
+It checks real Taffy-node reduction, exact geometry/carets/styles, intrinsic
+constraints, accumulated height, native wrap thresholds and full clipboard
+selection in both directions. The test window uses actual scale factors
+1.0/1.25/1.5/1.75/2.0 through its resize callback, rather than substituting rem
+size for DPI. Assistant/user layout harnesses cover the relevant geometry;
+they do not instantiate the full application or certify physical Windows fonts.
+Each drag direction and SelectAll start with a click-collapsed selection and
+a fresh clipboard sentinel. Copy with that empty selection must preserve the
+sentinel, so neither a stale range nor an earlier clipboard value can conceal
+an ineffective gesture. The subsequent copy must produce the complete text.
+
+The last drag point lies in the final paragraph's bottom margin, after the
+last caret. The initial draft ended inside a rounded right edge and omitted
+the final character even with the legacy renderer; the corrected gesture
+keeps the complete-text assertion. The corrected RED passed three cases and
+failed only the expected three-versus-two node assertion. The first GREEN
+passed all four. Full workspace/native/speed results remain in the
+[Companion record](../quality/companion-dock-validation-2026-11-06.md).
+
+GPUI's private `dpi_and_layout_tests` separately check default scale 2.0,
+real resize/DPI propagation, rejection before mutation of invalid scales,
+and the real frame-node getter. That getter is compiled only for tests or
+`test-support`, and returns `None` while the layout engine is temporarily
+taken for measurement. Private vendor tests require the temporary offline
+harness; dependency tests are not executed by normal UI tests.
+
 ## Isolation
 
 Automatic Codex calls confined to host-selected context must retain the local

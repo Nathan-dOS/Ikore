@@ -1,0 +1,129 @@
+   Compiling syn v3.0.3
+   Compiling libsqlite3-sys v0.39.1
+   Compiling hashlink v0.12.2
+   Compiling time v0.3.55
+   Compiling deranged v0.5.8
+   Compiling pulldown-cmark v0.13.6
+   Compiling serde_derive_internals v0.30.0
+   Compiling zerovec-derive v0.11.6
+   Compiling displaydoc v0.2.7
+   Compiling serde_derive v1.0.229
+   Compiling bytemuck_derive v1.12.0
+   Compiling thiserror-impl v2.0.21
+   Compiling tokio-macros v2.7.2
+   Compiling futures-macro v0.3.34
+   Compiling ref-cast-impl v1.0.27
+   Compiling rusqlite v0.41.1
+   Compiling ref-cast v1.0.27
+   Compiling tokio v1.54.1
+   Compiling zerotrie v0.2.5
+   Compiling futures-util v0.3.34
+   Compiling schemars_derive v1.2.2
+   Compiling zerovec v0.11.8
+   Compiling bytemuck v1.25.2
+   Compiling thiserror v2.0.21
+   Compiling av-scenechange v0.14.1
+   Compiling naga v25.0.1
+   Compiling num-complex v0.4.6
+   Compiling rgb v0.8.53
+   Compiling tiny-skia-path v0.11.4
+   Compiling rustybuzz v0.20.1
+   Compiling tinystr v0.8.4
+   Compiling potential_utf v0.1.6
+   Compiling num v0.4.3
+   Compiling fraction v0.17.0
+   Compiling icu_locale_core v2.3.0
+   Compiling icu_collections v2.3.0
+   Compiling pulp v0.22.3
+   Compiling tiny-skia v0.11.4
+   Compiling qoi v0.4.1
+   Compiling serde v1.0.229
+   Compiling rav1e v0.8.1
+   Compiling gpui_perf v0.2.2
+   Compiling serde_urlencoded v0.7.1
+   Compiling ahash v0.8.12
+   Compiling fluent-uri v0.4.1
+   Compiling icu_provider v2.3.1
+   Compiling jsonschema-value v0.59.0
+   Compiling gpui_util_macros v0.2.2
+   Compiling futures-executor v0.3.34
+   Compiling referencing v0.59.0
+   Compiling serde_json_lenient v0.2.4
+   Compiling futures v0.3.34
+   Compiling schemars v1.2.2
+   Compiling email_address v0.2.9
+   Compiling hvc-contracts v0.1.0 (<repo>\crates\hvc-contracts)
+   Compiling icu_properties v2.3.0
+   Compiling icu_normalizer v2.3.0
+   Compiling exr v1.74.2
+   Compiling tokio-util v0.7.20
+   Compiling tokio-rustls v0.26.4
+   Compiling tower v0.5.3
+   Compiling tokio-socks v0.5.3
+   Compiling usvg v0.45.1
+   Compiling serde_yaml v0.9.34+deprecated
+   Compiling postage v0.5.0
+   Compiling gpui_semantic_version v0.2.2
+   Compiling h2 v0.4.18
+   Compiling hvc-editor v0.1.0 (<repo>\crates\hvc-editor)
+   Compiling idna_adapter v1.2.2
+   Compiling idna v1.1.0
+   Compiling blade-graphics v0.7.1
+   Compiling url v2.5.8
+   Compiling jsonschema v0.59.0
+   Compiling ravif v0.13.0
+   Compiling resvg v0.45.1
+   Compiling tower-http v0.6.11
+   Compiling refinery-core v0.10.1
+   Compiling hyper v1.11.0
+   Compiling git2 v0.20.4
+   Compiling refinery-macros v0.10.0
+   Compiling image v0.25.10
+   Compiling blade-util v0.3.0
+   Compiling hyper-util v0.1.20
+   Compiling refinery v0.10.0
+   Compiling hyper-rustls v0.27.9
+   Compiling gpui_util v0.2.2
+   Compiling reqwest v0.12.28
+   Compiling zed-reqwest v0.12.15-zed
+   Compiling hvc-voice v0.1.0 (<repo>\crates\hvc-voice)
+   Compiling hvc-terminal v0.1.0 (<repo>\crates\hvc-terminal)
+   Compiling gpui_http_client v0.2.2
+   Compiling gpui v0.2.2 (<repo>\third_party\gpui)
+   Compiling hvc-core v0.1.0 (<repo>\crates\hvc-core)
+   Compiling hvc-test-support v0.1.0 (<repo>\crates\hvc-test-support)
+   Compiling hvc-ui v0.1.0 (<repo>\crates\hvc-ui)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3m 12s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running unittests src\lib.rs (target\debug\deps\hvc_ui-e0d5dae7018a271f.exe)
+
+running 4 tests
+test selectable_message::tests::paragraph_fusion_keeps_actual_message_selection_and_complete_clipboard ... FAILED
+test selectable_message::tests::paragraph_fusion_keeps_exact_geometry_carets_and_style_at_real_dpi ... ok
+test selectable_message::tests::paragraph_fusion_removes_one_real_taffy_node_per_paragraph ... FAILED
+test selectable_message::tests::paragraph_fusion_has_no_accumulated_height_drift_or_wrap_threshold_change ... ok
+
+failures:
+
+---- selectable_message::tests::paragraph_fusion_keeps_actual_message_selection_and_complete_clipboard stdout ----
+
+thread 'selectable_message::tests::paragraph_fusion_keeps_actual_message_selection_and_complete_clipboard' (26348) panicked at crates\hvc-ui\src\selectable_message.rs:1508:47:
+assertion `left == right` failed
+  left: Some("ação 🦀\n\nsegunda linh")
+ right: Some("ação 🦀\n\nsegunda linha")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- selectable_message::tests::paragraph_fusion_removes_one_real_taffy_node_per_paragraph stdout ----
+
+thread 'selectable_message::tests::paragraph_fusion_removes_one_real_taffy_node_per_paragraph' (37724) panicked at crates\hvc-ui\src\selectable_message.rs:1401:9:
+assertion failed: actual.paragraph_nodes.iter().all(|nodes| *nodes == 2)
+
+
+failures:
+    selectable_message::tests::paragraph_fusion_keeps_actual_message_selection_and_complete_clipboard
+    selectable_message::tests::paragraph_fusion_removes_one_real_taffy_node_per_paragraph
+
+test result: FAILED. 2 passed; 2 failed; 0 ignored; 0 measured; 486 filtered out; finished in 0.82s
+
+error: test failed, to rerun pass `-p hvc-ui --lib`

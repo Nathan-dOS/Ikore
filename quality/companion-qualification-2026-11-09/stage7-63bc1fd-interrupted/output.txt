@@ -1,0 +1,381 @@
+
+[Etapa 7] estrutura exclusivamente GPUI/Rust
+[Etapa 7] estrutura exclusivamente GPUI/Rust: 0.644 s (aprovado: True)
+
+[Etapa 7] crate dependency boundaries
+Crate boundaries passed: core is UI-independent; contracts are independent; terminal and voice have no dependency on the host or GPUI.
+[Etapa 7] crate dependency boundaries: 0.217 s (aprovado: True)
+
+[Etapa 7] cargo fmt
+[Etapa 7] cargo fmt: 5.511 s (aprovado: True)
+
+[Etapa 7] Clippy
+    Checking serde v1.0.229
+   Compiling bytemuck_derive v1.12.0
+    Checking zerovec v0.11.8
+    Checking zerotrie v0.2.5
+    Checking tokio v1.54.1
+    Checking futures-util v0.3.34
+    Checking thiserror v2.0.21
+   Compiling ref-cast-impl v1.0.27
+   Compiling libsqlite3-sys v0.39.1
+    Checking hashlink v0.12.2
+    Checking deranged v0.5.8
+    Checking serde_urlencoded v0.7.1
+    Checking hvc-contracts v0.1.0 (<repo>\crates\hvc-contracts)
+    Checking ahash v0.8.12
+    Checking email_address v0.2.9
+    Checking ref-cast v1.0.27
+    Checking tinystr v0.8.4
+    Checking potential_utf v0.1.6
+    Checking fluent-uri v0.4.1
+    Checking serde_yaml v0.9.34+deprecated
+    Checking icu_collections v2.3.0
+    Checking icu_locale_core v2.3.0
+    Checking bytemuck v1.25.2
+    Checking referencing v0.59.0
+    Checking time v0.3.55
+    Checking icu_provider v2.3.1
+   Compiling serde_derive_internals v0.30.0
+    Checking av-scenechange v0.14.1
+    Checking num-complex v0.4.6
+    Checking tiny-skia-path v0.11.4
+    Checking icu_properties v2.3.0
+    Checking icu_normalizer v2.3.0
+    Checking num v0.4.3
+   Compiling gpui_perf v0.2.2
+    Checking rgb v0.8.53
+    Checking fraction v0.17.0
+    Checking naga v25.0.1
+    Checking rustybuzz v0.20.1
+   Compiling gpui_util_macros v0.2.2
+    Checking jsonschema-value v0.59.0
+    Checking futures-executor v0.3.34
+   Compiling schemars_derive v1.2.2
+    Checking rusqlite v0.41.1
+    Checking idna_adapter v1.2.2
+    Checking futures v0.3.34
+    Checking pulp v0.22.3
+    Checking rav1e v0.8.1
+    Checking idna v1.1.0
+    Checking serde_json_lenient v0.2.4
+    Checking pulldown-cmark v0.13.6
+    Checking tokio-util v0.7.20
+    Checking url v2.5.8
+    Checking h2 v0.4.18
+    Checking tokio-rustls v0.26.4
+    Checking tower v0.5.3
+    Checking jsonschema v0.59.0
+    Checking git2 v0.20.4
+    Checking tokio-socks v0.5.3
+    Checking usvg v0.45.1
+    Checking refinery-core v0.10.1
+    Checking tower-http v0.6.11
+    Checking schemars v1.2.2
+    Checking tiny-skia v0.11.4
+    Checking qoi v0.4.1
+    Checking postage v0.5.0
+    Checking gpui_semantic_version v0.2.2
+    Checking hvc-editor v0.1.0 (<repo>\crates\hvc-editor)
+   Compiling hvc-app v0.1.0 (<repo>\crates\hvc-app)
+   Compiling refinery-macros v0.10.0
+    Checking resvg v0.45.1
+    Checking hyper v1.11.0
+    Checking exr v1.74.2
+    Checking gpui_util v0.2.2
+    Checking refinery v0.10.0
+    Checking blade-graphics v0.7.1
+    Checking hyper-util v0.1.20
+    Checking ravif v0.13.0
+    Checking blade-util v0.3.0
+    Checking hyper-rustls v0.27.9
+    Checking reqwest v0.12.28
+    Checking zed-reqwest v0.12.15-zed
+    Checking image v0.25.10
+    Checking hvc-voice v0.1.0 (<repo>\crates\hvc-voice)
+    Checking hvc-terminal v0.1.0 (<repo>\crates\hvc-terminal)
+    Checking gpui_http_client v0.2.2
+    Checking gpui v0.2.2 (<repo>\third_party\gpui)
+    Checking hvc-core v0.1.0 (<repo>\crates\hvc-core)
+    Checking hvc-test-support v0.1.0 (<repo>\crates\hvc-test-support)
+    Checking hvc-ui v0.1.0 (<repo>\crates\hvc-ui)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 03s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+[Etapa 7] Clippy: 63.560 s (aprovado: True)
+
+[Etapa 7] testes Rust
+   Compiling hvc-terminal v0.1.0 (<repo>\crates\hvc-terminal)
+   Compiling hvc-editor v0.1.0 (<repo>\crates\hvc-editor)
+   Compiling hvc-voice v0.1.0 (<repo>\crates\hvc-voice)
+   Compiling hvc-contracts v0.1.0 (<repo>\crates\hvc-contracts)
+   Compiling hvc-app v0.1.0 (<repo>\crates\hvc-app)
+   Compiling hvc-core v0.1.0 (<repo>\crates\hvc-core)
+   Compiling hvc-test-support v0.1.0 (<repo>\crates\hvc-test-support)
+   Compiling hvc-ui v0.1.0 (<repo>\crates\hvc-ui)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4m 10s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running unittests src\main.rs (target\debug\deps\hard_vibe_code-b3496c8dd17411dc.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\lib.rs (target\debug\deps\hvc_contracts-d16e10ab996fd2ad.exe)
+
+running 17 tests
+test exchange::tests::kinds_are_listed_once_and_two_are_reserved ... ok
+test exchange::tests::dynamic_parts_cannot_break_or_stretch_the_line ... ok
+test exchange::tests::only_agent_output_carries_an_approval ... ok
+test exchange::tests::the_first_checkpoint_lies_between_producer_and_reader ... ok
+test exchange::tests::the_line_follows_the_grammar ... ok
+test exchange::tests::trust_follows_the_producer_for_every_variant ... ok
+test external_changes::tests::a_digest_tie_is_not_a_rename ... ok
+test external_changes::tests::changes_are_listed_by_kind_then_path ... ok
+test external_changes::tests::the_canonical_list_ignores_content ... ok
+test external_changes::tests::the_notice_follows_the_specified_text ... ok
+test external_changes::tests::the_budget_drops_the_largest_hunks_then_refuses ... ok
+test line_diff::tests::a_changed_line_is_reported_with_its_context ... ok
+test line_diff::tests::creation_deletion_and_missing_final_newline_round_trip ... ok
+test line_diff::tests::identical_inputs_have_no_hunks ... ok
+test line_diff::tests::output_is_cut_at_a_line_boundary ... ok
+test line_diff::tests::generated_edits_round_trip ... ok
+test line_diff::tests::oversized_inputs_are_refused ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests\contracts.rs (target\debug\deps\contracts-ca20297e5efdaa17.exe)
+
+running 11 tests
+test every_composed_specialty_has_one_required_context_scope ... ok
+test cli_budget_clamps_requested_initial_time_without_shortening_absolute_deadline ... ok
+test every_role_keeps_its_persisted_identifier ... ok
+test execution_targets_keep_distinct_lifecycle_and_serialization_keys ... ok
+test historical_stage_alias_and_unknown_fallback_do_not_expand_the_wire_contract ... ok
+test response_formats_preserve_tagged_schema_content ... ok
+test role_timeout_budgets_keep_their_existing_absolute_limits ... ok
+test stage_order_and_checkpoint_boundaries_are_unchanged ... ok
+test stage_vocabulary_preserves_database_names_roles_and_wire_values ... ok
+test unit_dispatch_preserves_frozen_profile_attribution_fields ... ok
+test usage_contracts_preserve_unknown_counters_and_transport_values ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\lib.rs (target\debug\deps\hvc_core-4dee993b4e86ff9a.exe)
+
+running 1203 tests
+test agent_output_language::tests::accepts_english_markdown_json_and_source_code ... ok
+test agent_output_language::tests::exposes_the_canonical_language_contract ... ok
+test agent_output_language::tests::a_name_or_destination_path_the_model_invented_is_still_judged_whole ... ok
+test agent_output_language::tests::prose_keeps_the_paths_and_identifiers_the_contract_forbids_translating ... ok
+test agent_output_language::tests::rejects_accented_and_ascii_only_portuguese ... ok
+test agent_output_language::tests::rejects_non_english_artifact_name_path_or_content ... ok
+test agent_runtime::m4_context_tests::retrieval_trace_keeps_the_considered_pool_beyond_the_delivery_limit ... ok
+test agent_runtime::m4_context_tests::adaptive_on_expands_structurally_when_embedding_provider_is_unavailable ... ok
+test agent_runtime::m4_context_tests::stale_vectors_never_boost_ranking_or_remove_unembedded_lexical_candidates ... ok
+test agent_runtime::prompt_tests::a_roles_output_budget_is_never_below_what_its_contract_must_produce ... ok
+test agent_runtime::prompt_tests::a_truncated_previous_attempt_is_not_quoted_back_into_the_prompt ... ok
+test agent_runtime::prompt_tests::artifact_content_is_told_not_to_fabricate_a_provenance_section ... ok
+test agent_runtime::prompt_tests::batch_scope_names_the_dispatched_task_and_hides_backlog_drafts ... ok
+test agent_runtime::prompt_tests::batch_scope_warns_that_artifact_positions_are_independent_of_criterion_count ... ok
+test agent_runtime::prompt_tests::clip_text_handles_the_degenerate_budget_and_short_ascii ... ok
+test agent_runtime::prompt_tests::clip_text_keeps_multibyte_content_whose_byte_length_exceeds_the_char_budget ... ok
+test agent_runtime::prompt_tests::clip_text_truncates_on_characters_without_splitting_a_codepoint ... ok
+test agent_runtime::prompt_tests::context_usage_instruction_teaches_stripping_the_heading_marker ... ok
+test agent_runtime::prompt_tests::derived_projections_stay_out_of_the_citable_namespace ... ok
+test agent_runtime::prompt_tests::empty_context_demands_an_empty_citation_array ... ok
+test agent_runtime::prompt_tests::every_offered_citation_is_accepted_by_the_host_validator ... ok
+test agent_runtime::prompt_tests::handoff_is_a_top_level_section_and_the_builder_never_panics ... ok
+test agent_runtime::prompt_tests::only_test_and_integrator_are_told_to_cover_every_criterion ... ok
+test agent_runtime::prompt_tests::output_schema_section_warns_against_omitting_required_keys_or_deferring_brackets ... ok
+test agent_runtime::prompt_tests::previous_attempt_renders_a_correction_section_only_when_present ... ok
+test agent_runtime::prompt_tests::print_the_prompt_a_compact_model_receives ... ignored, manual inspection aid
+test agent_runtime::prompt_tests::specification_is_told_component_proposals_need_an_already_existing_file ... ok
+test agent_runtime::prompt_tests::specification_is_told_that_component_proposals_do_not_replace_artifacts ... ok
+test agent_runtime::prompt_tests::system_prompt_resolves_the_specification_alias ... ok
+test agent_runtime::prompt_tests::system_prompt_states_the_role_and_the_read_only_tool_contract ... ok
+test agent_runtime::prompt_tests::vault_notes_are_shown_a_frontmatter_example_with_source_and_test_files ... ok
+test agent_runtime::tests::context_usage_accepts_only_exact_delivered_paths_and_tracks_empty_usage ... ok
+test agent_runtime::tests::context_usage_rejects_undelivered_and_duplicate_paths ... ok
+test agent_runtime::tests::every_array_item_schema_requires_every_property_it_declares ... ok
+test agent_runtime::tests::json_parse_failure_diagnoses_an_array_closed_too_late ... ok
+test agent_runtime::tests::json_parse_failure_reports_position_and_a_snippet_of_the_break ... ok
+test agent_runtime::tests::parses_json_inside_markdown_fence ... ok
+test agent_runtime::tests::rejects_output_missing_required_artifacts ... ok
+test agent_runtime::tests::stage_language_guard_rejects_non_english_json_text ... ok
+test agent_runtime::tests::stage_schema_rejects_missing_or_non_english_language_contract ... ok
+test agent_runtime::m4_context_tests::selected_note_changed_during_rag_is_skipped_but_provider_failure_keeps_textual_context ... ok
+test agent_runtime::tests::validates_output_that_matches_stage_schema ... ok
+test agent_runtime::tests::stage_schema_requires_the_relative_path_key_on_every_artifact ... ok
+test app_core::tests::app_paths_preserve_existing_database_name ... ok
+test app_core::tests::app_core_shutdown_cancels_and_joins_background_worker ... ok
+test app_core::tests::data_directory_lock_is_exclusive_and_recoverable ... ok
+test app_core::tests::brownfield_open_requires_scoped_consent_before_inventory_or_directories ... ok
+test attestation::tests::a_key_round_trips_through_its_stored_secret_and_never_prints_it ... ok
+test attestation::tests::a_public_key_round_trips_through_its_pem ... ok
+test attestation::tests::any_change_to_the_envelope_breaks_the_signature ... ok
+test attestation::tests::pae_follows_the_dsse_specification ... ok
+test attestation::tests::the_first_difference_names_the_block ... ok
+test attestation::tests::the_test_vector_is_stable ... ok
+test chat_service::canvas_authoring::tests::canvas_api_authorization_generates_one_hidden_candidate_then_one_ready_drawing ... ok
+test chat_service::canvas_authoring::tests::canvas_api_cancellation_stops_the_inflight_request_without_a_drawing ... ok
+test chat_service::canvas_authoring::tests::canvas_api_configuration_change_before_finish_fails_without_publication ... ok
+test chat_service::canvas_authoring::tests::canvas_authoring_schema_exposes_only_the_four_scoped_tools ... ok
+test chat_service::canvas_authoring::tests::canvas_cli_terminal_variant_is_final_not_a_read_or_a_grant ... ok
+test chat_service::canvas_authoring::tests::canvas_project_deletion_guard_blocks_admission_and_releases_after_failure ... ok
+test chat_service::canvas_authoring::tests::canvas_terminal_offer_is_explicit_closed_and_keeps_the_read_allowlist ... ok
+test chat_service::canvas_authoring::tests::canvas_wire_dsl_creates_typed_nodes_and_connections_without_writable_metadata ... ok
+test app_core::tests::project_deletion_preserves_canvas_until_acceptance_and_waits_for_running_jobs ... ok
+test chat_service::tests::a_conversation_is_retargeted_and_the_project_remembers_the_target ... ok
+test chat_service::tests::a_finished_reply_records_one_exchange_item ... ok
+test chat_service::tests::a_question_about_a_past_choice_reaches_its_approved_decision ... ok
+test chat_service::tests::a_turn_that_ends_early_closes_its_round_in_flight ... ok
+test chat_service::tests::a_turn_warns_when_a_file_read_earlier_changed ... ok
+test chat_service::tests::agent_outputs_are_project_scoped_and_only_enter_prompts_after_a_tool_call ... ok
+test chat_service::tests::cli_control_envelope_is_strict_and_allows_only_read_only_tools ... ok
+test chat_service::tests::cancellation_finishes_the_turn_and_wait_for_idle_observes_it ... ok
+test chat_service::tests::codex_companion_schema_accepts_final_and_typed_tools_with_strict_objects ... ok
+test chat_service::tests::cli_conversation_target_survives_restart_and_invalid_targets_are_refused ... ok
+test chat_service::tests::companion_exchanges_carry_their_trust_and_source ... ok
+test chat_service::tests::companion_read_budget_rejects_an_overlarge_round_before_execution ... ok
+test chat_service::tests::companion_exception_stays_in_its_file_result_across_api_and_cli ... ok
+test chat_service::tests::companion_stream_bounds_combined_text_and_tool_fields_before_growth ... ok
+test chat_service::tests::companion_stream_limits_tool_call_cardinality_before_insertion ... ok
+test chat_service::tests::companion_reprojects_legacy_terminal_secret_across_event_boundaries ... ok
+test chat_service::tests::complete_protocol_parsers_normalize_tool_calls ... ok
+test chat_service::tests::companion_stream_requires_completion_before_any_observable_output ... ok
+test chat_service::tests::conversation_crud_is_project_scoped_and_snapshots_model ... ok
+test chat_service::tests::decision_notice_keeps_host_facts_separate_from_consultative_text_and_history ... ok
+test chat_service::tests::decision_tools_are_project_scoped_bounded_and_do_not_create_conversations ... ok
+test chat_service::tests::exchange_m4_pulsation_search ... ignored, measurement; run with --ignored --nocapture --test-threads=1
+test chat_service::tests::exposes_only_the_thirteen_read_only_companion_tools ... ok
+test chat_service::tests::deleting_conversation_cascades_history_and_clears_saved_selection ... ok
+test chat_service::tests::fallback_runtime_failure_finalizes_pending_turn_and_releases_waiters ... ok
+test chat_service::tests::frontier_cli_rounds_keep_contract_and_history_before_the_volatile_suffix ... ok
+test chat_service::tests::history_projection_keeps_the_current_message_and_marks_omissions ... ok
+test chat_service::tests::frontier_api_notices_are_current_tail_input_without_changing_system_or_history ... ok
+test chat_service::tests::pulsation_search_and_read_find_an_approved_decision ... ok
+test chat_service::tests::removal_keeps_history_and_startup_recovers_interrupted_messages ... ok
+test chat_service::tests::reopened_service_recovers_pending_messages_and_running_child_records ... ok
+test chat_service::tests::v43_backfills_historical_assistant_target_without_changing_user_messages ... ok
+test chat_service::tests::starting_turn_rolls_back_user_and_assistant_messages_as_one_unit ... ok
+test companion_dock::tests::clearing_a_sent_draft_leaves_a_tombstone_against_old_debounce_writes ... ok
+test companion_dock::tests::conversation_deletion_cascades_draft_and_filters_stale_layout ... ok
+test companion_dock::tests::decision_topic_and_answer_draft_do_not_require_a_chat_or_pending_decision ... ok
+test companion_dock::tests::delayed_draft_and_layout_writes_cannot_replace_newer_content ... ok
+test companion_dock::tests::dock_layout_and_drafts_survive_reload_without_creating_messages ... ok
+test companion_drawings::authoring::tests::canvas_authoring_batch_is_atomic_and_retries_return_original_receipt ... ok
+test companion_drawings::authoring::tests::canvas_authoring_candidate_can_still_be_cancelled_before_durable_publication ... ok
+test companion_drawings::authoring::tests::canvas_authoring_captures_only_completed_assistant_sources_and_freezes_target ... ok
+test companion_drawings::authoring::tests::canvas_authoring_cli_snapshot_matches_companion_default_and_profile_contracts ... ok
+test companion_drawings::authoring::tests::canvas_authoring_fences_project_session_origin_and_lifecycle_before_mutation ... ok
+test companion_drawings::authoring::tests::canvas_authoring_finish_is_only_a_candidate_with_pinned_source_and_frozen_target ... ok
+test companion_drawings::authoring::tests::canvas_authoring_finish_preserves_completeness_notices_without_treating_them_as_invalid_connections ... ok
+test companion_drawings::authoring::tests::canvas_authoring_legacy_reducer_does_not_infer_profile_or_grant ... ok
+test companion_drawings::authoring::tests::canvas_authoring_receipts_are_bounded_and_failed_requests_do_not_consume_ids ... ok
+test companion_drawings::authoring::tests::canvas_authoring_reducer_cascades_deleted_relationships_and_preserves_unrelated_nodes ... ok
+test companion_drawings::authoring::tests::canvas_authoring_shared_reducer_preserves_metadata_and_matches_semantic_ids ... ok
+test companion_drawings::authoring::tests::canvas_authoring_source_bounds_redaction_optional_document_and_ttl_are_host_owned ... ok
+test companion_drawings::authoring::tests::canvas_authoring_source_can_exceed_local_narrative_limit_without_truncation ... ok
+test companion_drawings::authoring::tests::canvas_authoring_upsert_round_trip_keeps_the_element_as_a_json_object ... ok
+test companion_drawings::authoring::tests::canvas_authoring_wire_schema_cannot_issue_authority_or_widen_scope ... ok
+test companion_dock::tests::dock_rejects_cross_project_and_oversized_drafts_and_duplicate_layout_entries ... ok
+test companion_drawings::authoring_store::tests::canvas_store_admission_checks_ui_target_against_current_conversation_and_source ... ok
+test companion_drawings::authoring_store::tests::canvas_store_admission_is_action_idempotent_and_only_one_job_is_admitted ... ok
+test companion_drawings::authoring_store::tests::canvas_store_admission_replay_cannot_replace_the_frozen_dispatch ... ok
+test companion_drawings::authoring_store::tests::canvas_store_decline_and_cancel_are_terminal_without_publishing ... ok
+test companion_drawings::authoring_store::tests::canvas_store_cancel_before_publication_blocks_candidate_but_ready_wins_late_cancel ... ok
+test companion_drawings::authoring_store::tests::canvas_store_deleted_ready_drawing_is_a_tombstone_and_cannot_be_recreated ... ok
+test companion_drawings::authoring_store::tests::canvas_store_deleted_source_is_explicit_without_destroying_the_published_result ... ok
+test companion_drawings::authoring_store::tests::canvas_store_list_keeps_the_newest_thousand_offers_in_chronological_order ... ok
+test companion_drawings::authoring_store::tests::canvas_store_mirror_failure_does_not_demote_an_authoritative_ready_result ... ok
+test companion_drawings::authoring_store::tests::canvas_store_one_running_job_per_conversation_and_project_delete_cascades ... ok
+test companion_drawings::authoring_store::tests::canvas_store_proposal_and_snapshot_bounds_reject_untrusted_or_secret_payloads ... ok
+test companion_drawings::authoring_store::tests::canvas_store_proposal_is_persisted_idempotent_and_never_authorizes_or_creates_a_drawing ... ok
+test companion_drawings::authoring_store::tests::canvas_store_publication_commits_drawing_provenance_ready_receipt_and_mirror_intent_once ... ok
+test companion_drawings::authoring_store::tests::canvas_store_restart_interrupts_without_resuming_or_publishing_staging ... ok
+test companion_drawings::authoring_store::tests::canvas_store_source_and_failure_are_sanitized_before_durable_storage ... ok
+test companion_drawings::authoring_store::tests::canvas_store_publication_rechecks_source_expiry_and_exact_staged_candidate ... ok
+test companion_drawings::authoring_store::tests::canvas_store_source_requires_actual_project_conversation_completed_assistant_and_hash ... ok
+test companion_drawings::authoring_store::tests::canvas_store_staging_stays_hidden_and_has_an_independent_revision ... ok
+test companion_drawings::authoring_store::tests::canvas_store_stored_target_metadata_is_revalidated_on_admission_replay ... ok
+test companion_drawings::authoring_store::tests::canvas_store_transaction_failure_rolls_back_drawing_and_journal ... ok
+test companion_drawings::domain_tests::companion_drawings_bindings_follow_move_and_resize_of_every_shape ... ok
+test companion_drawings::domain_tests::companion_drawings_boundary_created_after_nodes_paints_behind_and_selects_child ... ok
+test companion_drawings::authoring_store::tests::canvas_store_worker_nonce_and_scope_are_checked_before_staging_or_publication ... ok
+test companion_drawings::domain_tests::companion_drawings_connector_labels_clear_horizontal_strokes_and_fit_svg_bounds ... ok
+test companion_drawings::domain_tests::companion_drawings_containment_chooses_smallest_dashed_boundary ... ok
+test companion_drawings::domain_tests::companion_drawings_delete_detaches_references_and_preserves_endpoints ... ok
+test companion_drawings::domain_tests::companion_drawings_disallows_unknown_fields_and_bad_binding_anchors ... ok
+test companion_drawings::domain_tests::companion_drawings_empty_svg_and_long_label_bounds_are_valid ... ok
+test companion_drawings::domain_tests::companion_drawings_enforces_text_and_scene_limits_without_truncating ... ok
+test companion_drawings::domain_tests::companion_drawings_hit_test_honors_shapes_and_paint_order ... ok
+test companion_drawings::domain_tests::companion_drawings_label_sizes_preserve_legacy_defaults_and_export ... ok
+test companion_drawings::domain_tests::companion_drawings_label_sizes_reject_invalid_and_extreme_values ... ok
+test companion_drawings::domain_tests::companion_drawings_nested_paint_order_is_stable_and_preserves_sibling_layers ... ok
+test companion_drawings::domain_tests::companion_drawings_normalizes_reverse_drag_and_vertical_connectors ... ok
+test companion_drawings::domain_tests::companion_drawings_redacts_before_json_and_svg_and_preserves_unicode ... ok
+test companion_drawings::domain_tests::companion_drawings_rejects_dangling_and_cyclic_topology ... ok
+test companion_drawings::domain_tests::companion_drawings_rejects_unknown_schema_nonfinite_and_duplicate_ids ... ok
+test companion_drawings::domain_tests::companion_drawings_scene_round_trip_is_stable_and_camera_free ... ok
+test companion_drawings::domain_tests::companion_drawings_snap_uses_border_distance_and_resolves_actual_shape ... ok
+test companion_drawings::domain_tests::companion_drawings_svg_is_deterministic_escaped_and_complete ... ok
+test companion_drawings::domain_tests::companion_drawings_text_bounds_cover_all_lines_after_sanitization ... ok
+test companion_drawings::domain_tests::companion_drawings_zoom_keeps_world_point_under_cursor ... ok
+test companion_drawings::semantic_tests::annotation_associations_are_not_control_flows ... ok
+test companion_drawings::semantic_tests::architecture_line_relationship_keeps_explicit_endpoints ... ok
+test companion_drawings::semantic_tests::architecture_shapes_are_free_of_bpmn_constraints ... ok
+test companion_drawings::semantic_tests::binding_and_semantic_endpoints_cannot_disagree ... ok
+test companion_drawings::semantic_tests::empty_semantic_document_is_a_valid_draft ... ok
+test companion_drawings::semantic_tests::every_supported_process_kind_roundtrips_with_explicit_typing ... ok
+test companion_drawings::semantic_tests::every_visual_element_has_one_semantic_entry_and_references_are_closed ... ok
+test companion_drawings::semantic_tests::failed_semantic_normalization_keeps_original_state_unchanged ... ok
+test companion_drawings::semantic_tests::incomplete_process_is_a_valid_draft_with_diagnostics ... ok
+test companion_drawings::semantic_tests::legacy_scenes_do_not_gain_semantics_from_shapes_or_containment ... ok
+test companion_drawings::semantic_tests::malformed_source_fingerprints_and_unsupported_narrative_controls_fail_closed ... ok
+test companion_drawings::semantic_tests::message_flows_require_separate_pools_and_supported_endpoint_types ... ok
+test companion_drawings::semantic_tests::multiple_start_and_end_events_are_supported ... ok
+test companion_drawings::semantic_tests::narrative_sanitization_and_canonical_order_are_stable_and_unicode_safe ... ok
+test companion_drawings::semantic_tests::ownership_and_lanes_cannot_form_cycles_or_point_to_wrong_kinds ... ok
+test companion_drawings::semantic_tests::process_sequence_flows_cross_lanes_with_explicit_same_pool_membership ... ok
+test companion_drawings::semantic_tests::profile_flow_shapes_and_direction_are_validated ... ok
+test companion_drawings::semantic_tests::secret_shaped_opaque_ids_are_rejected_without_echoing_identity ... ok
+test companion_drawings::semantic_tests::semantic_metadata_bounds_and_provenance_identity_are_validated ... ok
+test companion_drawings::semantic_tests::semantic_ownership_does_not_follow_geometric_containment_or_position ... ok
+test companion_drawings::semantic_tests::semantic_schema_is_closed_and_versioned ... ok
+test companion_drawings::semantic_tests::semantic_svg_connection_style_follows_explicit_type_and_does_not_change_source ... ok
+test companion_drawings::semantic_tests::semantic_svg_preserves_profile_narrative_and_bpmn_markers_without_inference ... ok
+test companion_drawings::semantic_tests::sequence_flows_reject_cross_pool_and_ineligible_endpoints ... ok
+test companion_drawings::semantic_tests::start_and_end_direction_rules_are_hard_errors ... ok
+test companion_drawings::domain_tests::companion_drawings_caps_escaped_svg_before_materializing_an_unreadable_mirror ... ok
+test companion_drawings::service_tests::companion_drawings_archived_project_refuses_read_write_and_sync ... ok
+test companion_drawings::service_tests::companion_drawings_crud_is_scoped_and_reopens_after_migration ... ok
+test companion_drawings::service_tests::companion_drawings_database_basename_cannot_escape_managed_directory ... ok
+test companion_drawings::service_tests::companion_drawings_delete_cleans_only_owned_outputs_and_project_cascades ... ok
+test companion_drawings::service_tests::companion_drawings_duplicate_remaps_bindings_and_containers ... ok
+test companion_drawings::service_tests::companion_drawings_external_changes_are_not_overwritten_or_deleted ... ok
+test companion_drawings::service_tests::companion_drawings_missing_workspace_is_not_recreated_and_can_retry ... ok
+test companion_drawings::service_tests::companion_drawings_partial_pair_replays_before_new_revision ... ok
+test companion_drawings::service_tests::companion_drawings_rejects_stored_unknown_schema_and_dangling_bindings ... ok
+test companion_drawings::service_tests::companion_drawings_revision_conflict_preserves_current_scene_and_basename ... ok
+test companion_drawings::service_tests::companion_drawings_secret_redaction_precedes_database_jobs_and_files ... ok
+test companion_drawings::service_tests::companion_drawings_stored_viewport_is_validated_and_sidebar_avoids_scene_decode ... ok
+test companion_drawings::service_tests::companion_drawings_svg_failure_keeps_json_and_recovers_on_retry ... ok
+test companion_drawings::style_tests::companion_drawings_curved_bindings_follow_targets_and_arrowheads_use_tangents ... ok
+test companion_drawings::style_tests::companion_drawings_curves_cover_vertical_diagonal_reversed_and_tiny_endpoints ... ok
+test companion_drawings::style_tests::companion_drawings_curves_share_hit_testing_label_position_and_export_bounds ... ok
+test companion_drawings::style_tests::companion_drawings_legacy_visual_defaults_keep_canonical_json_unchanged ... ok
+test companion_drawings::style_tests::companion_drawings_rejects_unknown_visual_variants ... ok
+test companion_drawings::style_tests::companion_drawings_sketch_paths_are_stable_bounded_and_exported_for_every_shape ... ok
+test companion_drawings::service_tests::companion_drawings_viewport_does_not_change_content_or_exports ... ok
+test companion_notes::tests::a_capture_is_stored_before_the_scribe_answers ... ok
+test companion_notes::tests::a_capture_over_the_context_budget_fails_as_too_large ... ok
+test companion_notes::tests::a_provider_failure_keeps_the_capture_for_a_retry ... ok
+test companion_notes::tests::a_rejected_answer_gets_one_corrective_call_carrying_the_reason ... ok
+test companion_notes::tests::a_restart_interrupts_running_turns_and_fails_unstructured_notes ... ok
+test companion_notes::tests::a_second_rejection_fails_the_turn_and_keeps_the_capture ... ok
+test companion_notes::tests::an_english_answer_to_another_language_is_corrected_then_accepted_with_a_notice ... ok
+test companion_notes::tests::cancelling_marks_the_turn_cancelled_and_keeps_the_capture ... ok
+test companion_notes::tests::delete_waits_for_the_scribe_and_removes_the_turns ... ok
+test companion_notes::tests::refinement_is_refused_for_a_stale_busy_or_unstructured_note ... ok

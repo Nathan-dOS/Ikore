@@ -1,0 +1,16 @@
+diff --git a/crates/hvc-ui/src/selectable_message.rs b/crates/hvc-ui/src/selectable_message.rs
+index 5ccdc9c..c973cb6 100644
+--- a/crates/hvc-ui/src/selectable_message.rs
++++ b/crates/hvc-ui/src/selectable_message.rs
+@@ -1499,7 +1499,10 @@ mod tests {
+                     let a = visual.debug_bounds("fusion-copy:text:0").unwrap();
+                     let b = visual.debug_bounds("fusion-copy:text:1").unwrap();
+                     let start = a.origin + point(px(0.0), px(2.0));
+-                    let end = b.bottom_right() - point(px(0.1), px(2.0));
++                    // End in the Paragraph's bottom margin, after its final
++                    // caret. A point just inside the rounded right edge can
++                    // still precede the last glyph at fractional DPI.
++                    let end = point(b.left() + px(2.0), b.bottom() + px(2.0));
+                     for (from, to) in [(start, end), (end, start)] {
+                         visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+                         visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());

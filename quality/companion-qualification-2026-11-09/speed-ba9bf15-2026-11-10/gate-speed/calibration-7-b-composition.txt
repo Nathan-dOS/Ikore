@@ -1,0 +1,10 @@
+[A] cohesive-01-session-expiry
+  completed=true correct=true calls=6 rejected=0 interventions=0 input=17653 output=821 wall=5962ms 
+[B] cohesive-01-session-expiry
+  completed=true correct=true calls=6 rejected=0 interventions=0 input=11147 output=781 wall=5757ms 
+[C] cohesive-01-session-expiry
+  completed=true correct=true calls=7 rejected=0 interventions=0 input=13185 output=1086 wall=5923ms 
+[D] cohesive-01-session-expiry
+  completed=true correct=true calls=7 rejected=0 interventions=0 input=13185 output=1086 wall=4979ms 
+<repo>\target\companion-final\benchmark-ba9-2026-11-10\gate-speed\calibration-7-b-composition/stage-composition-benchmark-2026-11-10.json
+<repo>\target\companion-final\benchmark-ba9-2026-11-10\gate-speed\calibration-7-b-composition/stage-composition-benchmark-2026-11-10.md

@@ -1,0 +1,648 @@
+{
+  "schemaVersion": 1,
+  "capturedAtUtc": "2026-11-10T01:08:21.924134+00:00",
+  "wipCommit": "e61cdf1bc33be22a3bf7fac5320572afcd9b4837",
+  "activeBranch": "perf/companion-paragraph-layout",
+  "scope": "Tracked archive manifests after the external WIP merge and old-worktree removal",
+  "summary": {
+    "exact": 29,
+    "missing": 29,
+    "equivalent_after_eol_conversion": 21,
+    "raw_hash_mismatch": 0
+  },
+  "interpretation": "Historical manifests describe their original capture. Missing ignored raw logs are not reconstructed. Some retained text files match the original hashes only after a proven EOL conversion; these are not called byte-exact current copies. Unresolved raw mismatches remain explicit. New raw outputs will use non-ignored filenames with exact hashes.",
+  "artifacts": [
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/paint-tests-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/background/Cargo.lock.before",
+      "expectedSha256": "ba72237f26f1090c65c1ec5b009475f1d51cb0e637f2e2c30d707d0b0ec9695a",
+      "status": "equivalent_after_eol_conversion",
+      "actualSha256": "e137d2dbcc0a867f99d3079064a9587dd69062e82a4493e93b57be9fca875bf0",
+      "originalEolIfProven": "LF"
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/paint-tests-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/background/Cargo.lock.temporary",
+      "expectedSha256": "7055aaa25a2df8615da2a76e4508022811f90ddc12f9a4ea71bc4f1a7d8b387d",
+      "status": "equivalent_after_eol_conversion",
+      "actualSha256": "fca851c6f74699638efd51d0219b96aed0030231cc1e0fdcf20ad1ccbc4fd91c",
+      "originalEolIfProven": "LF"
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/paint-tests-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/background/Cargo.toml.before",
+      "expectedSha256": "45084da2cbd126b4abe0be92cac1a6fb054cac4476ae68726ce9acb109ed3c28",
+      "status": "exact",
+      "actualSha256": "45084da2cbd126b4abe0be92cac1a6fb054cac4476ae68726ce9acb109ed3c28",
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/paint-tests-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/background/Cargo.toml.temporary",
+      "expectedSha256": "0db6ba8abc8a93ed979eaf794c657ad0f6620bc6731b53b35b5c335426c3430d",
+      "status": "exact",
+      "actualSha256": "0db6ba8abc8a93ed979eaf794c657ad0f6620bc6731b53b35b5c335426c3430d",
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/paint-tests-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/background/gpui.Cargo.toml.before",
+      "expectedSha256": "bdbdf8c6340c387eea3c0a6ed0d880edbbbacf64062cd4fd5b04cac6afdf44cb",
+      "status": "exact",
+      "actualSha256": "bdbdf8c6340c387eea3c0a6ed0d880edbbbacf64062cd4fd5b04cac6afdf44cb",
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/paint-tests-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/background/gpui.Cargo.toml.temporary",
+      "expectedSha256": "7fe2cf734b19a3ea3be40abf94f8cca41db85a3358b8c7c40f11e50956f8d556",
+      "status": "exact",
+      "actualSha256": "7fe2cf734b19a3ea3be40abf94f8cca41db85a3358b8c7c40f11e50956f8d556",
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/paint-tests-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/background/green-private-tests.log",
+      "expectedSha256": "c9c5b741868b15ee4a8da121b4b918ca4f5cccbdaae317342065f357d7d1f484",
+      "status": "missing",
+      "actualSha256": null,
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/paint-tests-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/background/HVC-GPUI-008.patch",
+      "expectedSha256": "f5aa781902862d40e91b2ba0c7249d29bac7cfbb352f332973f44d492f95e534",
+      "status": "equivalent_after_eol_conversion",
+      "actualSha256": "817de17ae23451469a114bd91632bc471f8708369f92999fe7c273fc86fea016",
+      "originalEolIfProven": "LF"
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/paint-tests-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/background/red-manifest-tests.log",
+      "expectedSha256": "b8f1a284ae9b82d0a002f02dc707c9146ce236f05aa3e543b916e45990c931a5",
+      "status": "missing",
+      "actualSha256": null,
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/paint-tests-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/background/red-member-offline-tests.log",
+      "expectedSha256": "cc33c06a476396071b61ff4ef387c988dc4ec1a71538fc965df4cfc1415311d9",
+      "status": "missing",
+      "actualSha256": null,
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/paint-tests-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/background/red-member-tests.log",
+      "expectedSha256": "65fc5b3a7a28e94baf917b62633bf6c211d53f85a6d6f843ac2f8f29230ff772",
+      "status": "missing",
+      "actualSha256": null,
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/paint-tests-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/background/red-private-sorted-lock.log",
+      "expectedSha256": "952b71f69b9999b63958bd66ffef04b63d41c75a28c9bff5e89a98cbc2fcf958",
+      "status": "missing",
+      "actualSha256": null,
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/paint-tests-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/background/red-private-tests.log",
+      "expectedSha256": "952b71f69b9999b63958bd66ffef04b63d41c75a28c9bff5e89a98cbc2fcf958",
+      "status": "missing",
+      "actualSha256": null,
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/paint-tests-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/background/red-supported-harness.log",
+      "expectedSha256": "952b71f69b9999b63958bd66ffef04b63d41c75a28c9bff5e89a98cbc2fcf958",
+      "status": "missing",
+      "actualSha256": null,
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/paint-tests-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/background/red-tests-resolved.log",
+      "expectedSha256": "11ad3e272b3012528be5dba01d94a92cf6cb7e4eb73ded2bae0b4f0ecf92d2bf",
+      "status": "missing",
+      "actualSha256": null,
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/paint-tests-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/background/red-tests.log",
+      "expectedSha256": "1ba3ceeecf09b4536cdea2cab95fee46b641a8223e0b0a51ba522690d31d69b1",
+      "status": "missing",
+      "actualSha256": null,
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/paint-tests-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/background/red-vendor-tests.log",
+      "expectedSha256": "c8944657a9376f320f1c5a6107ffbaab45701b376804cdb6f9100424dc7474f8",
+      "status": "missing",
+      "actualSha256": null,
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/paint-tests-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/background/restoration.json",
+      "expectedSha256": "2f60c19c2339a8584457a9f0c1e6a6139f069fd7e7413df6026d47faae0c2401",
+      "status": "exact",
+      "actualSha256": "2f60c19c2339a8584457a9f0c1e6a6139f069fd7e7413df6026d47faae0c2401",
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/paint-tests-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/background/temporary-harness.patch",
+      "expectedSha256": "08e6935626daa3d066306b778c46e45d22dc0ef6d49d92bbf19788fa2e74c0b3",
+      "status": "equivalent_after_eol_conversion",
+      "actualSha256": "650301c032da6f507c4813f2c3b915156f181da8c8205d83e3d99159e2129bd0",
+      "originalEolIfProven": "LF"
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/paint-tests-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/background/temporary-lock-proof.json",
+      "expectedSha256": "0f6a585de298a007eb8e2f9459a85ef210307321a94b02b42ef2b325fddd2c74",
+      "status": "exact",
+      "actualSha256": "0f6a585de298a007eb8e2f9459a85ef210307321a94b02b42ef2b325fddd2c74",
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/paint-tests-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/background/temporary-membership.json",
+      "expectedSha256": "15e8703dd203e597bc158e68e4b2c8601d6008495f311fe888c1353f38610d96",
+      "status": "exact",
+      "actualSha256": "15e8703dd203e597bc158e68e4b2c8601d6008495f311fe888c1353f38610d96",
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/paint-tests-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/background/temporary-metadata.log",
+      "expectedSha256": "845bcc5667af6644378d53759c631c59d0464521805bb5b9cd4ac7e15d69269b",
+      "status": "missing",
+      "actualSha256": null,
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/paint-tests-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/background/test-qualification.json",
+      "expectedSha256": "efd3bd5d02e92be82d55be1a3511783ccd4c257e083f49ad4d53c0cc493567c3",
+      "status": "exact",
+      "actualSha256": "efd3bd5d02e92be82d55be1a3511783ccd4c257e083f49ad4d53c0cc493567c3",
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/paint-tests-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/background/unused-dev-dependencies-rg.log",
+      "expectedSha256": "f379e7b3669ff96549e6f9a926f6dfc10d0f448c0ac32f09c81c9908f79b5824",
+      "status": "missing",
+      "actualSha256": null,
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/paint-tests-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/foreground/01-red-counter-and-tests.patch",
+      "expectedSha256": "79680d1bb923a0dcc1815c0bc50489b90cabe40f4ae594205852865945abb0e4",
+      "status": "equivalent_after_eol_conversion",
+      "actualSha256": "229846cc717bbb583f61fe5262cbe8a536cc319d6f0cc8a8139bac767546a68c",
+      "originalEolIfProven": "LF"
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/paint-tests-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/foreground/02-vertical-guard.patch",
+      "expectedSha256": "57a209d63158db48d0da7f177d1c7f0f57790131cd0aa35af6240b688f2bd2b1",
+      "status": "equivalent_after_eol_conversion",
+      "actualSha256": "cb0e2dbfb523119b8bc9ddf0aee3208bd4b684e33131e58cd612b0cb5ac69be6",
+      "originalEolIfProven": "LF"
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/paint-tests-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/foreground/all-vendor-list.log",
+      "expectedSha256": "26924aa2001e1a8064c896fafcf44655843929322036a2cf277d5e5d1ccadd00",
+      "status": "missing",
+      "actualSha256": null,
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/paint-tests-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/foreground/all-vendor-tests.log",
+      "expectedSha256": "8312fa3fdc2bb5438801275682589fdbff240661dd6be4b963d43c231c235b61",
+      "status": "missing",
+      "actualSha256": null,
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/paint-tests-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/foreground/combined-review.patch",
+      "expectedSha256": "4f2380fa529261f84e54d3ee8e9469693ddff8b881802caea786b133d96cfb53",
+      "status": "equivalent_after_eol_conversion",
+      "actualSha256": "a87fd74bc3f6b00a8ff292f4afbfad9d2bb5e3b0cbe2bdd4a8c2eef6595cd866",
+      "originalEolIfProven": "LF"
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/paint-tests-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/foreground/draft-metadata.json",
+      "expectedSha256": "dffaf61c34c8c5ef5bdfffb8585e96cf5227fc28b03ccb2a71762bccdecbc216",
+      "status": "exact",
+      "actualSha256": "dffaf61c34c8c5ef5bdfffb8585e96cf5227fc28b03ccb2a71762bccdecbc216",
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/paint-tests-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/foreground/green-private-tests.log",
+      "expectedSha256": "816edf7de3cb8b35a2b9bdb9c47add4cd769102bc332ec9297098e70a1dd92bb",
+      "status": "missing",
+      "actualSha256": null,
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/paint-tests-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/foreground/HVC-GPUI-008-009.patch",
+      "expectedSha256": "981c4f9813365dd26da53188a6d6a1a281ed68365ed8bd83c7988fe9110a0d4a",
+      "status": "equivalent_after_eol_conversion",
+      "actualSha256": "6e23cbfad6f1a3267f6fed3196756f0918a77443df8e1fa4fdd30654895b4b71",
+      "originalEolIfProven": "LF"
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/paint-tests-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/foreground/red-private-tests.log",
+      "expectedSha256": "1ca6e937b1cda7939a140a7c223b933ad85a0407563a25e38fac38ef8e121e40",
+      "status": "missing",
+      "actualSha256": null,
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/paint-tests-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/foreground/restoration.json",
+      "expectedSha256": "2f60c19c2339a8584457a9f0c1e6a6139f069fd7e7413df6026d47faae0c2401",
+      "status": "exact",
+      "actualSha256": "2f60c19c2339a8584457a9f0c1e6a6139f069fd7e7413df6026d47faae0c2401",
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/paint-tests-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/foreground/test-qualification.json",
+      "expectedSha256": "6f62b50dfed4d44022408d77c801f816e85d712f59d3cb25387edec08d4d45e5",
+      "status": "exact",
+      "actualSha256": "6f62b50dfed4d44022408d77c801f816e85d712f59d3cb25387edec08d4d45e5",
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/paint-tests-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/foreground/validation.json",
+      "expectedSha256": "854c37f852bc64adc78cfea6c91d1ce261569bcb69e07d8163c94089b13d3abe",
+      "status": "equivalent_after_eol_conversion",
+      "actualSha256": "83f9641599b385a9b6d25d82366aaf55cd098a334b655d904f49b8fdeacff45f",
+      "originalEolIfProven": "LF"
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/paint-tests-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/paint-executed-source.txt",
+      "expectedSha256": "8db9faf989f682116d7c6bfa461d9fdfaea668d18133fb6c4148299dd53e8fd7",
+      "status": "equivalent_after_eol_conversion",
+      "actualSha256": "6703b4254708c7004b86b3c6c8f14951c805cbb2d15736f90be2618324a23b77",
+      "originalEolIfProven": "LF"
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/sqlite-5111c61/archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/sqlite-5111c61/target-companion-sqlite-audit-2026-11-09.log",
+      "expectedSha256": "cdf830b0ba170d78251b58ad9f9fc0c23883249bcfb47ef263bb7d9d1454e61d",
+      "status": "missing",
+      "actualSha256": null,
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/sqlite-5111c61/archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/sqlite-5111c61/target-companion-sqlite-fmt-2026-11-09.log",
+      "expectedSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "status": "missing",
+      "actualSha256": null,
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/sqlite-5111c61/archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/sqlite-5111c61/target-companion-sqlite-runtime-green-2026-11-09.log",
+      "expectedSha256": "af61d92af1eb19a282db554a42d5470b6ca75029398fc89b366aa189868c25bd",
+      "status": "missing",
+      "actualSha256": null,
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/sqlite-5111c61/archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/sqlite-5111c61/target-companion-sqlite-runtime-green-compatible-2026-11-09.log",
+      "expectedSha256": "2e5176fe9ca250fd3335659f5e232e58e84358cdb4b7e9a58340cce43f7f6ddd",
+      "status": "missing",
+      "actualSha256": null,
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/sqlite-5111c61/archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/sqlite-5111c61/target-companion-sqlite-runtime-red-2026-11-09.log",
+      "expectedSha256": "e4efc4f4242772098479b02413ea68fc8a4bd2e9e0d8079b65a192c407093452",
+      "status": "missing",
+      "actualSha256": null,
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/sqlite-5111c61/archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/sqlite-5111c61/target-companion-sqlite-runtime-red-corrected-2026-11-09.log",
+      "expectedSha256": "93ac55de07788a9bdeb1d1aaf02c4aca76608b3c69473611546923b78c38ba36",
+      "status": "missing",
+      "actualSha256": null,
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/sqlite-5111c61/archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/sqlite-5111c61/target-companion-sqlite-update-2026-11-09.log",
+      "expectedSha256": "1b10825a9092c6ad2b6e4addf12226b4bda12f237317e1bcbbe483a4fe77c804",
+      "status": "missing",
+      "actualSha256": null,
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/sqlite-5111c61/archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/sqlite-5111c61/target-companion-sqlite-update-resolved-2026-11-09.log",
+      "expectedSha256": "9bfb0804c970e7e35695f4d287ac9c3c5409553984bbb7696eae69d4f36838c4",
+      "status": "missing",
+      "actualSha256": null,
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/sqlite-5111c61/archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/sqlite-5111c61/advisories/cargo-audit.json",
+      "expectedSha256": "ac1f428b165274b1a5f0edf4884edbec36f1e066732248325584f15a75e0c0e7",
+      "status": "exact",
+      "actualSha256": "ac1f428b165274b1a5f0edf4884edbec36f1e066732248325584f15a75e0c0e7",
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/sqlite-5111c61/archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/sqlite-5111c61/advisories/summary.json",
+      "expectedSha256": "541b8f26767824fc0c080c3d658b2ffa5846f4ffc7e6df39f736dbe4434373e4",
+      "status": "exact",
+      "actualSha256": "541b8f26767824fc0c080c3d658b2ffa5846f4ffc7e6df39f736dbe4434373e4",
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/sqlite-5111c61/archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/sqlite-5111c61/target-companion-stage7-5111c61-2026-11-09.log",
+      "expectedSha256": "51085bf1b110b66e136d6a4dab1316b1c1476caa0d7c739c1299527e1017cd74",
+      "status": "missing",
+      "actualSha256": null,
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/sqlite-5111c61/archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/sqlite-5111c61/stage7-timings-5111c61-2026-11-09.json",
+      "expectedSha256": "8d631d5d33e1f9df252dfe955ef00c318a1a105cf33f661db873ff4f1ea053f6",
+      "status": "exact",
+      "actualSha256": "8d631d5d33e1f9df252dfe955ef00c318a1a105cf33f661db873ff4f1ea053f6",
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/sqlite-harness-68b5c05/archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/sqlite-harness-68b5c05/target-companion-sqlite-harness-2026-11-09.log",
+      "expectedSha256": "84723e55d6dcd3bbcab7dcc92ee8777eb3c82c7dc0139e101b53af35c4318c26",
+      "status": "missing",
+      "actualSha256": null,
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/sqlite-harness-68b5c05/archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/sqlite-harness-68b5c05/target-companion-sqlite-harness-fmt-2026-11-09.log",
+      "expectedSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "status": "missing",
+      "actualSha256": null,
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/sqlite-harness-68b5c05/archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/sqlite-harness-68b5c05/commit.patch",
+      "expectedSha256": "aaca3bdc09b00ee28adb3e1242b17e63a8aa08259b085e59b94206e797f3facf",
+      "status": "equivalent_after_eol_conversion",
+      "actualSha256": "334e5098cd7d9bd8e465c65b32716ec4a9adaa9d16b4d1fd2430ee50ed32210b",
+      "originalEolIfProven": "LF"
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/stage7-68b5c05/archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/stage7-68b5c05/target-companion-stage7-68b5c05-2026-11-09.log",
+      "expectedSha256": "c1416459325b3d954d3a7a094fdcd6e0c543ef42ddc8dcf257c5fe7943998749",
+      "status": "missing",
+      "actualSha256": null,
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/stage7-68b5c05/archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/stage7-68b5c05/stage7-timings-68b5c05-2026-11-09.json",
+      "expectedSha256": "636da161c24c8649aaf782bfb2f35cbb1c976f740fd0f50412aac2b7409466d5",
+      "status": "exact",
+      "actualSha256": "636da161c24c8649aaf782bfb2f35cbb1c976f740fd0f50412aac2b7409466d5",
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/stage7-68b5c05/archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/stage7-68b5c05/supply-chain.json",
+      "expectedSha256": "36f9836c80fcfd33dedff803157be892627083978300a4003eadd5dbc557be5d",
+      "status": "exact",
+      "actualSha256": "36f9836c80fcfd33dedff803157be892627083978300a4003eadd5dbc557be5d",
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/stage7-68b5c05/archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/stage7-68b5c05/summary.json",
+      "expectedSha256": "8c8b2ed9e3801c7db14ceefde5217b8b21b9fe9a7ca8faf2f53b9d0da5fc627a",
+      "status": "exact",
+      "actualSha256": "8c8b2ed9e3801c7db14ceefde5217b8b21b9fe9a7ca8faf2f53b9d0da5fc627a",
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/stage7-68b5c05/archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/stage7-68b5c05/cargo-audit.json",
+      "expectedSha256": "ac1f428b165274b1a5f0edf4884edbec36f1e066732248325584f15a75e0c0e7",
+      "status": "exact",
+      "actualSha256": "ac1f428b165274b1a5f0edf4884edbec36f1e066732248325584f15a75e0c0e7",
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/stage7-d71a573/archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/stage7-d71a573/target-companion-stage7-d71a573-2026-11-09.log",
+      "expectedSha256": "2f6d9c58063d52522db77584284618b7bcc430e51f2956673b81394383520bea",
+      "status": "missing",
+      "actualSha256": null,
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/stage7-d71a573/archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/stage7-d71a573/stage7-timings-d71a573-2026-11-09.json",
+      "expectedSha256": "40825a6e039e3647318cd253e5de894dc1e79b0c1c0d78a985373a542cd50ca3",
+      "status": "exact",
+      "actualSha256": "40825a6e039e3647318cd253e5de894dc1e79b0c1c0d78a985373a542cd50ca3",
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/stage7-d71a573/archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/stage7-d71a573/supply-chain.json",
+      "expectedSha256": "ba88fa5d9236e6b33a49aa7cd433a5f402ee17cfa9d1248b68f226ad5c69e5bd",
+      "status": "exact",
+      "actualSha256": "ba88fa5d9236e6b33a49aa7cd433a5f402ee17cfa9d1248b68f226ad5c69e5bd",
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/stage7-d71a573/archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/stage7-d71a573/cargo-audit.json",
+      "expectedSha256": "0652848c16be89911e352d0989aef405b1f55c29c21280ce0bb51f73e449f906",
+      "status": "exact",
+      "actualSha256": "0652848c16be89911e352d0989aef405b1f55c29c21280ce0bb51f73e449f906",
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/stage7-d71a573/archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/stage7-d71a573/summary.json",
+      "expectedSha256": "36ed63020324549904214173d42a123762ccfe73ae56ed2cd194b4654133bdaa",
+      "status": "exact",
+      "actualSha256": "36ed63020324549904214173d42a123762ccfe73ae56ed2cd194b4654133bdaa",
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/thread-diagnostic-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/thread-diagnostic-d71a573/after-run-integrity.json",
+      "expectedSha256": "73d14f73d026ceb12b1a28ac2861df10a4d9c54b4afea98de9fe7b620f01e2bb",
+      "status": "equivalent_after_eol_conversion",
+      "actualSha256": "0e59a1400be60ee39d0291fb00dc36fad0cc67d7f311b1481df3c520bf389b44",
+      "originalEolIfProven": "LF"
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/thread-diagnostic-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/thread-diagnostic-d71a573/analysis-output.txt",
+      "expectedSha256": "e0ff10792b7939fc27ae30f415dc3ec402772f7ed4608340925cec1e6baa42d8",
+      "status": "exact",
+      "actualSha256": "e0ff10792b7939fc27ae30f415dc3ec402772f7ed4608340925cec1e6baa42d8",
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/thread-diagnostic-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/thread-diagnostic-d71a573/analysis-summary.json",
+      "expectedSha256": "bc9928a5c16f489f64f982ae2bb03d729910a720fe56b27c00b4a88ce6d87798",
+      "status": "equivalent_after_eol_conversion",
+      "actualSha256": "fe0987036fc0979b68a99410dd963e68d4e3b1c2e9296727bc734421c4c03f72",
+      "originalEolIfProven": "LF"
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/thread-diagnostic-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/thread-diagnostic-d71a573/analyze-thread-cpu.py",
+      "expectedSha256": "b362d968fd56feb5a473590298f9c8ab99212cc4de1359d87173b8e27b503451",
+      "status": "equivalent_after_eol_conversion",
+      "actualSha256": "5b29a18d2e22a4eebb8ed0cf18907f2975261791afbce173d8316937e488765b",
+      "originalEolIfProven": "LF"
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/thread-diagnostic-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/thread-diagnostic-d71a573/before-run-integrity.json",
+      "expectedSha256": "937018b5e435ad57c18b4e2b562d16af2763c81da8603440ef77460580d702df",
+      "status": "exact",
+      "actualSha256": "937018b5e435ad57c18b4e2b562d16af2763c81da8603440ef77460580d702df",
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/thread-diagnostic-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/thread-diagnostic-d71a573/benchmark-ui-latency.diagnostic.ps1",
+      "expectedSha256": "6e3a9038050fa30d35b624464e350b8bd869232ab2f83d7c592f9637576dad37",
+      "status": "equivalent_after_eol_conversion",
+      "actualSha256": "ea35fa6b82283bc33653892a79f4d126ab470cee93eeaba912ade104e29778f0",
+      "originalEolIfProven": "LF"
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/thread-diagnostic-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/thread-diagnostic-d71a573/benchmark-ui-latency.original.ps1",
+      "expectedSha256": "83d0555c3cca098d8577132dae13bdb83ea034a886cbbe46361c1f4de9de9f47",
+      "status": "exact",
+      "actualSha256": "83d0555c3cca098d8577132dae13bdb83ea034a886cbbe46361c1f4de9de9f47",
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/thread-diagnostic-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/thread-diagnostic-d71a573/build-diagnostic.py",
+      "expectedSha256": "dfe907b66ee84da2460c8e1f2956947d5e8fc9d86700691e91163a0573be1e7d",
+      "status": "equivalent_after_eol_conversion",
+      "actualSha256": "52acb2a3dce24b45b5db302e48cbc25fd792df446d2d3b532e6a952e8dd6bcc9",
+      "originalEolIfProven": "LF"
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/thread-diagnostic-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/thread-diagnostic-d71a573/cpu-intervals.csv",
+      "expectedSha256": "f82af4b597ee0ff2bd4017962d03892d6f36e1c88250398066bb854a07360fea",
+      "status": "exact",
+      "actualSha256": "f82af4b597ee0ff2bd4017962d03892d6f36e1c88250398066bb854a07360fea",
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/thread-diagnostic-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/thread-diagnostic-d71a573/derivation.json",
+      "expectedSha256": "0b87833428d5b79ac3206efe1f247601c6b4358c57962c5a492e0dae58c10df7",
+      "status": "equivalent_after_eol_conversion",
+      "actualSha256": "effbceafeb503a268b0ddad555eaa9ec6abfe8c7a9de245fb261981d24b9d69d",
+      "originalEolIfProven": "LF"
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/thread-diagnostic-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/thread-diagnostic-d71a573/diagnostic-latency.json",
+      "expectedSha256": "3a6a1aa05d9f33a24f727259bbadd970ea1da4431133fb1a93901e53d92783ae",
+      "status": "exact",
+      "actualSha256": "3a6a1aa05d9f33a24f727259bbadd970ea1da4431133fb1a93901e53d92783ae",
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/thread-diagnostic-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/thread-diagnostic-d71a573/diagnostic-script.patch",
+      "expectedSha256": "95a81817396c96206df5058a1d67d651ea8ce271ae14a888b3174a1cd8294edf",
+      "status": "equivalent_after_eol_conversion",
+      "actualSha256": "4c2337cb0c153d281192876d2fc62513f6614fd1a8984d052e4321a1e4f8d06f",
+      "originalEolIfProven": "LF"
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/thread-diagnostic-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/thread-diagnostic-d71a573/README.md",
+      "expectedSha256": "a9e75bf4fbe2e258b1f8c8ec5e6efc8ed74cbc03b0c095bc03bccfebcf3eef78",
+      "status": "equivalent_after_eol_conversion",
+      "actualSha256": "8f843b35ed848646b1d19bf4a27a62958975b1f9f27d870dfab66161cf7b4848",
+      "originalEolIfProven": "LF"
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/thread-diagnostic-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/thread-diagnostic-d71a573/RESULTADO.md",
+      "expectedSha256": "772aaf39438db1f9080f3c159426a126e399084be0761a112945eb3465e10c9f",
+      "status": "equivalent_after_eol_conversion",
+      "actualSha256": "7fe9bba3020f851339f25fd7ae4262c7838aa3fa4e65fe49046f9504da57a8b4",
+      "originalEolIfProven": "LF"
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/thread-diagnostic-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/thread-diagnostic-d71a573/run-report.json",
+      "expectedSha256": "3a6a1aa05d9f33a24f727259bbadd970ea1da4431133fb1a93901e53d92783ae",
+      "status": "exact",
+      "actualSha256": "3a6a1aa05d9f33a24f727259bbadd970ea1da4431133fb1a93901e53d92783ae",
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/thread-diagnostic-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/thread-diagnostic-d71a573/thread-cpu.json",
+      "expectedSha256": "255c5cfb1b72112042847a6e95a13a1cd1188b0351870e79bc71968c5e15acbd",
+      "status": "exact",
+      "actualSha256": "255c5cfb1b72112042847a6e95a13a1cd1188b0351870e79bc71968c5e15acbd",
+      "originalEolIfProven": null
+    },
+    {
+      "manifest": "quality/companion-qualification-2026-11-09/thread-diagnostic-archive.json",
+      "artifact": "quality/companion-qualification-2026-11-09/thread-diagnostic-d71a573/ThreadSampler.cs",
+      "expectedSha256": "bf3da3cf8243fd64bd54fdd8daa669061ab06197dd9820a0c1521f4e62898a07",
+      "status": "equivalent_after_eol_conversion",
+      "actualSha256": "a43edb629e9e7fdf245def51e79192b82bccd64babc1bbd6f08821be0c2877ce",
+      "originalEolIfProven": "LF"
+    }
+  ]
+}

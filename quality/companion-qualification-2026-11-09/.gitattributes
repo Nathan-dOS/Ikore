@@ -1,0 +1,9 @@
+/artifact-retention-after-wip.json -text
+/baseline-recreated-after-wip.json -text
+/source-63bc1fd.json -text
+/source-ba9bf15.json -text
+/source-e61cdf1.json -text
+/index-byte-integrity.json -text
+* whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+*.txt -diff
+*.patch -diff
