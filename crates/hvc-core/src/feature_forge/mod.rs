@@ -1,4 +1,8 @@
 //! Product planning and task backlogs. Only the pulsation host integrates code.
+mod assumptions;
+pub use assumptions::{
+    AssumptionCategory, AssumptionReviewAction, FeatureAssumption, ReviewAssumptionRequest,
+};
 pub(crate) mod batch_budget;
 mod destinations;
 mod failure;
@@ -103,6 +107,8 @@ pub struct WorkTask {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FeatureBrief {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assumptions: Vec<FeatureAssumption>,
     pub objective: String,
     pub audience: String,
     pub behavior: String,

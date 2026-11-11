@@ -7579,7 +7579,10 @@ mod tests {
     fn decision_tools_are_project_scoped_bounded_and_do_not_create_conversations() {
         let (_temp, _workspace, service) = prepare_chat();
         let db = companion_database(&service.db_path).unwrap();
-        db.execute("INSERT INTO forge_features(id,project_id,title,original_idea,revision,state,brief_json,evaluation_json,created_at,updated_at) VALUES('feature-a','project-a','Fixture','Idea',1,'incubating',?1,'{}','now','now')", [serde_json::to_string(&crate::feature_forge::FeatureBrief::default()).unwrap()]).unwrap();
+        let mut fixture =
+            serde_json::to_value(crate::feature_forge::FeatureBrief::default()).unwrap();
+        fixture["assumptions"] = json!([{"id":"A1","category":"scope","text":"Export the current selection.","reason":"The list has a selection.","review":{"kind":"answer","text":"Apenas os itens visíveis."}}]);
+        db.execute("INSERT INTO forge_features(id,project_id,title,original_idea,revision,state,brief_json,evaluation_json,created_at,updated_at) VALUES('feature-a','project-a','Fixture','Idea',1,'incubating',?1,'{}','now','now')", [fixture.to_string()]).unwrap();
         let before: i64 = db
             .query_row("SELECT count(*) FROM chat_conversations", [], |row| {
                 row.get(0)
@@ -7612,10 +7615,9 @@ mod tests {
             json!({"featureId":"feature-a"}),
         )
         .unwrap();
-        assert_eq!(
-            serde_json::from_str::<Value>(&brief).unwrap()["title"],
-            "Fixture"
-        );
+        let brief: Value = serde_json::from_str(&brief).unwrap();
+        assert_eq!(brief["title"], "Fixture");
+        assert_eq!(brief["brief"]["assumptions"], fixture["assumptions"]);
         assert!(
             decision_tool(
                 &service.db_path,

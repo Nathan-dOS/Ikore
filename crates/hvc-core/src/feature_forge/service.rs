@@ -443,7 +443,7 @@ impl FeatureForgeService {
         project: &str,
         feature_id: &str,
         expected: u64,
-        brief: FeatureBrief,
+        mut brief: FeatureBrief,
     ) -> Result<Feature, Error> {
         if json(&brief)?.len() > 250_000 {
             return Err(invalid("Feature brief exceeds its budget"));
@@ -452,7 +452,7 @@ impl FeatureForgeService {
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let previous = feature(&tx, project, feature_id)?;
         editable_feature(&tx, &previous, expected)?;
-        save_brief(&tx, feature_id, expected, &brief)?;
+        save_brief(&tx, &previous, &mut brief)?;
         let result = feature(&tx, project, feature_id)?;
         tx.commit()?;
         Ok(result)
@@ -696,7 +696,7 @@ impl FeatureForgeService {
             return Ok(());
         }
         brief.pending_decisions.push(decision);
-        save_brief(&tx, feature_id, f.revision, &brief)?;
+        persist_brief_revision(&tx, feature_id, f.revision, &brief)?;
         tx.commit()?;
         Ok(())
     }
@@ -784,6 +784,14 @@ pub(crate) fn validate_task(draft: &TaskDraft) -> Result<(), Error> {
     Ok(())
 }
 pub(crate) fn validate_ready_brief(brief: &FeatureBrief) -> Result<(), Error> {
+    super::assumptions::validate_assumptions(brief)?;
+    if brief
+        .assumptions
+        .iter()
+        .any(|item| item.review == Some(super::AssumptionReviewAction::Flag))
+    {
+        return Err(invalid("Answer the flagged assumptions before approval"));
+    }
     text(&brief.objective, 20_000)?;
     text(&brief.audience, 8000)?;
     text(&brief.behavior, 40_000)?;
@@ -1284,14 +1292,27 @@ pub(crate) fn editable_feature_excluding_turn(
 }
 pub(crate) fn save_brief(
     db: &Connection,
+    previous: &Feature,
+    brief: &mut FeatureBrief,
+) -> Result<(), Error> {
+    super::assumptions::carry_reviews(&previous.brief, brief)?;
+    persist_brief_revision(db, &previous.id, previous.revision, brief)
+}
+
+pub(super) fn persist_brief_revision(
+    db: &Connection,
     feature_id: &str,
     expected: u64,
     brief: &FeatureBrief,
 ) -> Result<(), Error> {
-    if db.execute("UPDATE forge_features SET revision=revision+1,brief_json=?3,state='incubating',wave=NULL,updated_at=?4 WHERE id=?1 AND revision=?2",params![feature_id,expected,json(brief)?,now()])?!=1 { return Err(invalid("Feature revision changed")); }
+    let encoded = json(brief)?;
+    if encoded.len() > 250_000 {
+        return Err(invalid("Feature brief exceeds its budget"));
+    }
+    if db.execute("UPDATE forge_features SET revision=revision+1,brief_json=?3,state='incubating',wave=NULL,updated_at=?4 WHERE id=?1 AND revision=?2",params![feature_id,expected,encoded,now()])?!=1 { return Err(invalid("Feature revision changed")); }
     db.execute(
         "INSERT INTO forge_feature_revisions(feature_id,revision,brief_json) VALUES(?1,?2,?3)",
-        params![feature_id, expected + 1, json(brief)?],
+        params![feature_id, expected + 1, encoded],
     )?;
     Ok(())
 }

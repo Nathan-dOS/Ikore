@@ -33,7 +33,7 @@ const REPEATED_FAILURE_LIMIT: usize = 2;
 pub enum TurnFailureKind {
     /// Specification text was not English.
     ReplyLanguage,
-    /// More than the three allowed questions.
+    /// The reply exceeded the remaining questions in the clarification round.
     TooManyQuestions,
     /// Truncated, not JSON, or not the required structure.
     ReplyUnreadable,
@@ -271,9 +271,9 @@ impl TurnFailure {
                 "Try again, or ask the agent to redo it in English.",
             ),
             TurnFailureKind::TooManyQuestions => text(
-                "The agent asked more than three questions at once.",
-                "Each reply is limited to three questions so they can be answered together. This one had more, so it was not applied.",
-                "Try again, or ask the agent to keep to three questions.",
+                "The agent exceeded the question limit for this clarification round.",
+                "A round allows three questions across all its replies. The reply exceeded the remaining allowance.",
+                "Ask the agent to use the remaining allowance, or explicitly start another round for open decisions.",
             ),
             TurnFailureKind::ReplyUnreadable => text(
                 "The agent's reply could not be used by the app.",
