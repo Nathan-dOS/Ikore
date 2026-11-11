@@ -13,6 +13,9 @@ use crate::orchestration::composition::canonical_json;
 use crate::orchestration::mandate::TaskRevisionRef;
 
 pub const STATEMENT_TYPE: &str = "https://in-toto.io/Statement/v1";
+/// The in-toto predicate type format identifier (ADR-036).
+/// Preserved as `urn:hvc:pulsation-attestation:v1` (Recommendation R1) to maintain cryptographic
+/// validity of historical signed attestations without requiring a breaking format migration.
 pub const PREDICATE_TYPE: &str = "urn:hvc:pulsation-attestation:v1";
 /// The version of the deriver that builds the predicate from rows. A newer
 /// deriver gets a new number; old ones stay so old statements re-derive.

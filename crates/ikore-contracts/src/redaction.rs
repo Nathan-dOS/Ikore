@@ -3,6 +3,9 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
+/// Cryptographic sanitization policy version applied to projection and embeddings (ADR-030).
+/// Preserved as `hvc-secret-projection-v1` (Recommendation R2) to avoid invalidating existing
+/// cached embeddings; scheduled for renaming upon the next structural policy revision.
 pub const SANITIZATION_POLICY_VERSION: &str = "hvc-secret-projection-v1";
 pub const MAX_SANITIZATION_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_REDACTION_SPANS: usize = 65_536;

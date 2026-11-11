@@ -16,6 +16,9 @@ use crate::orchestration::ContentSha256;
 use crate::orchestration::composition::canonical_json;
 
 pub const PAYLOAD_TYPE: &str = "application/vnd.in-toto+json";
+/// The key identifier prefix for DSSE envelopes (ADR-036).
+/// Preserved as `hvc-ed25519:` (Recommendation R1) to keep historical key IDs and signatures
+/// cryptographically valid and verifiable by OpenSSL.
 pub const KEY_ID_PREFIX: &str = "hvc-ed25519:";
 /// DER of the SPKI header for an Ed25519 public key (RFC 8410).
 const SPKI_PREFIX: [u8; 12] = [
