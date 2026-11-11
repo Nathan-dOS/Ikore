@@ -1,8 +1,8 @@
-# Contributing to Hard Vibe Code
+# Contributing to Ikore
 
-Thank you for your interest in contributing to **Hard Vibe Code (HVC)**.
+Thank you for your interest in contributing to **Ikore**.
 
-HVC is a native desktop orchestrator written in Rust with GPUI. It guides AI
+Ikore is a native desktop orchestrator written in Rust with GPUI. It guides AI
 agents through an engineering pipeline with human checkpoints. Each run (a
 *pulsation*) goes through six stages: **Intake → Specification → Contract →
 Code → Test → Integrator**. Stages run through LLM APIs or official CLIs:
@@ -60,7 +60,7 @@ template and include:
 1. the expected behavior and the current behavior;
 2. steps to reproduce, with logs or a stack trace (**remove** tokens, keys,
    personal paths and private prompt content);
-3. your environment: Windows version, `rustc --version`, the HVC commit, the
+3. your environment: Windows version, `rustc --version`, the Ikore commit, the
    CLI backend or provider involved, and whether you used Docker.
 
 ### 3.2. Proposing features or architectural changes
@@ -87,9 +87,9 @@ That way the design is agreed before you invest time in the implementation.
 ### 4.1. Fork, clone and branch
 
 ```bash
-git clone https://github.com/<your-user>/HARD-VC.git
-cd HARD-VC
-git remote add upstream https://github.com/Nathan-dOS/HARD-VC.git
+git clone https://github.com/<your-user>/Ikore.git
+cd Ikore
+git remote add upstream https://github.com/Nathan-dOS/Ikore.git
 ```
 
 Create a descriptive branch from an up-to-date `main`:
@@ -133,7 +133,7 @@ docker compose --profile tools run --rm fmt-check
 ```
 
 `.env.example` **only** holds the Docker image versions (`RUST_IMAGE`,
-`RUST_TOOLCHAIN`). HVC does **not** read API keys from `.env` files: provider
+`RUST_TOOLCHAIN`). Ikore does **not** read API keys from `.env` files: provider
 credentials are entered in Settings and stored in the operating system
 keyring.
 
@@ -273,7 +273,7 @@ Scopes already used in the history: `core`, `ui`, `brownfield`, `terminals`,
 
 ## 6. AI-assisted contributions
 
-HVC itself orchestrates AI agents, so we **encourage** the use of Claude Code,
+Ikore itself orchestrates AI agents, so we **encourage** the use of Claude Code,
 Codex, Cursor, Copilot and similar tools, as long as you follow these
 human-in-the-loop rules:
 
@@ -312,7 +312,7 @@ The pull request template includes these items:
 
 ## 8. License
 
-Hard Vibe Code is free software, licensed under the
+Ikore is free software, licensed under the
 [GNU General Public License v3.0 or later](LICENSE) (`GPL-3.0-or-later`). By
 submitting a contribution, you agree that it is licensed under the same terms.
 The vendored code in `third_party/gpui` keeps its own Apache-2.0 license and

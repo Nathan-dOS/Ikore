@@ -1,6 +1,6 @@
 # Native architecture canvas
 
-Companion → Canvas (`Ctrl+0`) keeps project diagrams inside HVC. Create a drawing,
+Companion → Canvas (`Ctrl+0`) keeps project diagrams inside Ikore. Create a drawing,
 then use rectangles, diamonds, ellipses, arrows, lines and plain text.
 Select shapes to move/resize them; double-click or Enter edits a label. The label
 editor supports Unicode, IME and its own text Undo. Enter applies without adding a
@@ -43,7 +43,7 @@ change the content revision. The project mirror contains `.hvc-canvas.json` and
 changes its title, not its filenames. JSON/SVG are one-way exports; external edits
 are not imported automatically and conflicting files are preserved.
 Copying/cloning the exported files into another workspace does not restore drawings
-into another HVC database; native import is future work.
+into another Ikore database; native import is future work.
 
 The UI refinement adds optional element fields to the scene JSON:
 `label_font_size`, `stroke_rendering` and `connector_curve`. Missing fields preserve
@@ -120,7 +120,7 @@ hidden generation and an **Open Canvas** result button, plus shared semantic
 validation for generated and manually edited architecture/process drawings.
 The [authoring implementation](canvas-ai-authoring.md) describes V58, target
 freezing, recovery and the restricted BPMN profile. Source commit
-[`e7dfe4e`](https://github.com/Nathan-dOS/HARD-VC/commit/e7dfe4e10691c2e7101839f89a0917d227fc4c9b)
+[`e7dfe4e`](https://github.com/Nathan-dOS/Ikore/commit/e7dfe4e10691c2e7101839f89a0917d227fc4c9b)
 was qualified independently of preserved local voice work: all nine gate checks
 passed, with 1,778 tests approved, zero failures and 16 existing ignored tests.
 No task branch or worktree was created. Authenticated providers and physical

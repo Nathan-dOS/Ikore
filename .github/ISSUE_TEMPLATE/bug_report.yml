@@ -40,7 +40,7 @@ body:
   - type: input
     id: commit
     attributes:
-      label: HVC commit
+      label: Ikore commit
       description: Output of `git rev-parse --short HEAD`.
     validations:
       required: true

@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Report a security vulnerability
-    url: https://github.com/Nathan-dOS/HARD-VC/security/advisories/new
+    url: https://github.com/Nathan-dOS/Ikore/security/advisories/new
     about: Report vulnerabilities privately, as described in SECURITY.md. Never in a public issue.
   - name: How to contribute
-    url: https://github.com/Nathan-dOS/HARD-VC/blob/main/docs/how-to-contribute.md
+    url: https://github.com/Nathan-dOS/Ikore/blob/main/docs/how-to-contribute.md
     about: The path of a contribution, step by step.

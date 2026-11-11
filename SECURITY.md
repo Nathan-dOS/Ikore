@@ -10,7 +10,7 @@ shows the report only to you and the maintainers.
 
 Include what you can:
 
-- the affected crate, file or feature and the HVC commit;
+- the affected crate, file or feature and the Ikore commit;
 - the steps to reproduce and the impact you observed;
 - your environment: Windows version, CLI backend or provider, and whether you
   used Docker.

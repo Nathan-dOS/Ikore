@@ -138,7 +138,7 @@ Partial, unknown or stale qualified evidence remains unverified for coverage.
 
 ## Inspect candidate capture
 
-From the HARD-VC workspace, replace the placeholders with the local project root
+From the Ikore workspace, replace the placeholders with the local project root
 and an approved asset selector:
 
 ```text
@@ -146,9 +146,9 @@ cargo run --locked --offline -p hvc-core --example cargo_candidate_capture -- "<
 ```
 
 The asset argument is optional and repeatable. A development-environment example
-is `-- /workspace/HARD-VC crates/hvc-app/assets/icon.ico`; the placeholder form also
+is `-- /workspace/Ikore crates/hvc-app/assets/icon.ico`; the placeholder form also
 accepts Windows paths. The system temporary directory must be outside the target
-root. `cargo run` may compile the HVC inspector itself; the example only captures,
+root. `cargo run` may compile the Ikore inspector itself; the example only captures,
 restores and verifies the target, without running its build, installing its
 dependencies or making network requests. Temporary copies are removed on exit.
 
@@ -159,12 +159,12 @@ compilation/test results or a passed qualification gate.
 
 ## Integration with feature 10
 
-The implementation is integrated on HARD-VC `456c91d` (ADR-034). Migration V55
+The implementation is integrated on Ikore `456c91d` (ADR-034). Migration V55
 follows its V52–V54 migrations. Review manifest schema 3 preserves the risk,
 selection and Intake-frozen review policy fields introduced in schema 2.
 Reconciliation of ordinary project documentation remains part of freshness;
 only exact host-owned stage documents are excluded.
 
-For the HVC capture pilot, approve both `crates/hvc-app/assets/icon.ico` and
+For the Ikore capture pilot, approve both `crates/hvc-app/assets/icon.ico` and
 `crates/*/fixtures/cli/*/current/hostile.txt`. The latter selects four intentional
 NUL-containing test fixtures. Their opaque bytes remain local to the candidate.

@@ -1,6 +1,6 @@
 # How to contribute, step by step
 
-This page shows the path of a contribution to Hard Vibe Code, from the first
+This page shows the path of a contribution to Ikore, from the first
 idea to the merge. [CONTRIBUTING.md](../CONTRIBUTING.md) holds the complete
 rules; each step below links to the part that matters.
 
@@ -24,7 +24,7 @@ flowchart TB
 
 ## 1. Start from an issue
 
-Search the [issues](https://github.com/Nathan-dOS/HARD-VC/issues) first. If one
+Search the [issues](https://github.com/Nathan-dOS/Ikore/issues) first. If one
 already describes your idea, say in a comment that you want to work on it, so
 two people do not do the same work.
 
@@ -42,9 +42,9 @@ never go in a public issue; see [SECURITY.md](../SECURITY.md).
 ## 2. Fork, clone and branch
 
 ```bash
-git clone https://github.com/<your-user>/HARD-VC.git
-cd HARD-VC
-git remote add upstream https://github.com/Nathan-dOS/HARD-VC.git
+git clone https://github.com/<your-user>/Ikore.git
+cd Ikore
+git remote add upstream https://github.com/Nathan-dOS/Ikore.git
 git switch -c fix/short-description
 ```
 
@@ -134,7 +134,7 @@ Good first contributions, all useful today:
 
 ## License of contributions
 
-Hard Vibe Code is licensed under the GNU General Public License v3.0 or later.
+Ikore is licensed under the GNU General Public License v3.0 or later.
 By opening a pull request, you agree that your contribution is distributed
 under the same license. You keep the copyright of what you wrote. There is no
 separate contributor agreement to sign.

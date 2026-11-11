@@ -458,7 +458,7 @@ Every one of these tests keeps the key in memory. Unit tests of `hvc-core` that
 build a service on the default store never reach the operating system's
 credential store: under `cfg(test)` it reads as empty and refuses writes. The
 one test that uses the Windows Credential Manager is ignored by default and
-writes only under the test service `hard-vibe-code.attestation-test`, removing
+writes only under the test service `ikore.attestation-test`, removing
 the entry afterwards. Run it only when you want to check the real store:
 
 ```powershell
@@ -485,7 +485,7 @@ grant.
 `review_brief_fixture` prepares the screens for a manual pass in the real
 app: `--scope-request` makes the code unit ask for `src/util.rs` and grants
 it, `--stage scope` parks with the request pending, and `--stage done` waits
-for the signed record. Start `hard-vibe-code` with the printed `HVC_DATA_DIR`.
+for the signed record. Start `ikore` with the printed `HVC_DATA_DIR`.
 The fixture keeps its signing key in memory, so the app shows the sealed
 record without reading the credential store; avoid Settings → Security there,
 which reads the real store.
@@ -538,7 +538,7 @@ the default collector configuration. See [ADR-031](adr/031-terminal-boundary.md)
 ## Canvas AI authoring candidate
 
 The [authoring implementation](canvas-ai-authoring.md) is published on main in
-[`e7dfe4e`](https://github.com/Nathan-dOS/HARD-VC/commit/e7dfe4e10691c2e7101839f89a0917d227fc4c9b).
+[`e7dfe4e`](https://github.com/Nathan-dOS/Ikore/commit/e7dfe4e10691c2e7101839f89a0917d227fc4c9b).
 Its selected source tree excluded unrelated local voice changes. On 2026-10-29,
 the complete suite passed 1,778 tests, zero failed, 16 ignored and zero filtered
 across 55 target summaries in 2,023.458 seconds. All nine gate checks passed in

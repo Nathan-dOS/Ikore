@@ -1,4 +1,4 @@
-# Hard Vibe Code
+# Ikore
 
 A native Windows desktop application for AI-assisted development in which the
 developer does the reasoning and AI models do the writing. Every change runs
@@ -21,7 +21,7 @@ the developer approves, requests a revision or rejects.</sub>
 
 **Independence from expensive models.** A handful of companies control the
 most capable AI models, and the price of their plans can rise at any time.
-Hard Vibe Code (HVC) is built so that the work does not depend on the most
+Ikore is built so that the work does not depend on the most
 expensive, highest-reasoning models. The developer does the reasoning:
 thinking, planning and deciding. The agents do what language models are best
 at, which is turning a precise specification into text and code. Small,
@@ -31,7 +31,7 @@ are designed for them.
 **The developer stays in the loop.** With most agents today, you hand over a
 task and get back a large volume of code that nobody can review properly,
 sometimes with a plan in a Markdown file that describes work the agent never
-did. HVC changes that architecture. Every change runs as a **pulsation**: a
+did. Ikore changes that architecture. Every change runs as a **pulsation**: a
 fixed pipeline of six stages (Intake, Specification, Contract, Code, Test and
 Integrator) carried out by agents through LLM APIs or the official coding
 CLIs. At each checkpoint the developer reviews contracts, acceptance criteria
@@ -44,12 +44,30 @@ it allows, and the checks it requires must run. A plan is not just text an
 agent wrote; the host enforces it and records the proof.
 
 **Less context, fewer tokens.** Project knowledge lives in Markdown notes that
-link to the code they describe. HVC reads those links and note properties
+link to the code they describe. Ikore reads those links and note properties
 first, at no model cost, and only then runs local embedding search over the
 small set of candidate files. Agents receive the files that matter instead of
 searching the whole repository. The same links keep the documentation
 current: when linked code changes, the note is flagged without calling a
 model.
+
+## The name
+
+*Ikore* (pronounced "EYE-core") joins two words. *Ichor* is the golden fluid
+that, in Greek myth, ran through the single vein of Talos, the bronze automaton
+built by Hephaestus, god of the forge: it is what gave the machine its pulse.
+*Core* is the heart of a processor, and it echoes *cor*, Latin for heart. The
+project is built around that pulse: every change runs as a pulsation, and the
+icon is two hearts.
+
+The myth also sets the roles. Hephaestus is the maker and Talos is his
+machine. In Ikore the developer thinks and decides, and the agents are the
+machine that does the heavy work, kept in rhythm by the host.
+
+Ikore was called Hard Vibe Code until November 2026. Crates, environment
+variables such as `HVC_DATA_DIR` and some internal identifiers keep the `hvc`
+prefix. Data, settings and stored credentials from Hard Vibe Code builds move
+to the new names automatically on the first start.
 
 ## How it works
 
@@ -91,7 +109,7 @@ flowchart TB
   environments, deadlines, bounded output, cancellation and secret redaction.
 - **Project context with link-first retrieval.** Notes in the project's
   Markdown vault list the source and test files they describe, along with
-  properties such as risk and contracts. HVC narrows the context through those
+  properties such as risk and contracts. Ikore narrows the context through those
   links and the wikilink graph before running local embeddings (Ollama) over
   the remaining candidates, and adds Tree-sitter and bounded repository reads.
   Context traces record what each agent actually received.
@@ -148,8 +166,8 @@ All screenshots use the demo data described in
 ### Build and run
 
 ```powershell
-git clone https://github.com/Nathan-dOS/HARD-VC.git
-cd HARD-VC
+git clone https://github.com/Nathan-dOS/Ikore.git
+cd Ikore
 
 # Keep development data apart from your real profile.
 $env:HVC_DATA_DIR = "$PWD\target\dev-data"
@@ -157,12 +175,12 @@ cargo run --locked -p hvc-app
 ```
 
 Without `HVC_DATA_DIR`, data is stored in
-`%APPDATA%\com.hardvibecode.desktop\`. API keys are entered in Settings and
-stored in the Windows Credential Manager; HVC does not read them from `.env`
+`%APPDATA%\com.ikore.desktop\`. API keys are entered in Settings and
+stored in the Windows Credential Manager; Ikore does not read them from `.env`
 files.
 
 For an optimized build, `cargo build --locked --release -p hvc-app` produces
-`target\release\hard-vibe-code.exe`, and
+`target\release\ikore.exe`, and
 `powershell -ExecutionPolicy Bypass -File scripts/smoke-windows.ps1` runs the
 Windows smoke test.
 
@@ -191,7 +209,7 @@ canvas example runs on its own with
 
 | Path | Contents |
 |---|---|
-| `crates/hvc-app` | Entry point and composition root; builds `hard-vibe-code.exe` |
+| `crates/hvc-app` | Entry point and composition root; builds `ikore.exe` |
 | `crates/hvc-ui` | Native GPUI views, review controls and design system |
 | `crates/hvc-core` | Domain, SQLite migrations, workspace, provider routing and orchestration, with no GPUI dependency |
 | `crates/hvc-terminal` | CLI runtime: adapters, discovery, process isolation and the plan-usage meter |
@@ -242,7 +260,7 @@ how to investigate a single area.
 To check a voice dictation install without a microphone:
 
 ```powershell
-cargo run --locked -p hvc-voice --example voice_probe -- "$env:LOCALAPPDATA\com.hardvibecode.desktop\voice" whisper-large-v3-turbo
+cargo run --locked -p hvc-voice --example voice_probe -- "$env:LOCALAPPDATA\com.ikore.desktop\voice" whisper-large-v3-turbo
 # Append a mono, 16-bit, 16 kHz WAV path to transcribe it. Use `nemotron` for the other backend.
 ```
 
@@ -284,7 +302,7 @@ portability of the headless crates are welcome.
 
 Copyright (C) 2026 Nathan de Oliveira dos Santos
 
-Hard Vibe Code is free software: you can redistribute it and/or modify it
+Ikore is free software: you can redistribute it and/or modify it
 under the terms of the GNU General Public License as published by the Free
 Software Foundation, either version 3 of the License, or (at your option) any
 later version. It is distributed in the hope that it will be useful, but

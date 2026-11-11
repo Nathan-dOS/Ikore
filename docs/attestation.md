@@ -84,7 +84,9 @@ key an attestation names cannot be deleted.
 
 One Ed25519 key per installation. The private key, PKCS#8 in base64, lives in
 the operating system's credential store (Windows Credential Manager, service
-`hard-vibe-code.runtime`, entry `attestation-signing-key-v1`). The database
+`ikore.runtime`, entry `attestation-signing-key-v1`). A key stored by a build
+from before the rename to Ikore, under `hard-vibe-code.runtime`, moves to the
+new service the first time it is read. The database
 keeps only public keys, so a retired key keeps verifying what it signed.
 "Create a new key" retires the active key and asks for confirmation first.
 Private key material never reaches the database, logs, events, reports,

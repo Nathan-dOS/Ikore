@@ -1,7 +1,7 @@
 # Canvas AI authoring
 
 **Status: source published on main, 2026-10-29**, in
-[`e7dfe4e`](https://github.com/Nathan-dOS/HARD-VC/commit/e7dfe4e10691c2e7101839f89a0917d227fc4c9b).
+[`e7dfe4e`](https://github.com/Nathan-dOS/Ikore/commit/e7dfe4e10691c2e7101839f89a0917d227fc4c9b).
 The selected source tree excluded unrelated local voice changes and passed 1,778
 tests with zero failures and all nine adopted gate checks. Its 884 source hashes
 and Git blobs were verified with zero drift. No task branch or worktree was
@@ -154,7 +154,7 @@ positions or containment. Current readers accept legacy scenes. Older closed
 readers can reject the added document field; forward compatibility is not claimed.
 
 The architecture profile supports components, boundaries, relationships,
-annotations and associations. The restricted HVC process profile supports generic,
+annotations and associations. The restricted Ikore process profile supports generic,
 user and service tasks, none start/end events, exclusive/parallel gateways,
 participants, lanes, sequence/message flows, annotations and associations. It
 does not claim full BPMN conformance, execution or BPMN XML interchange.

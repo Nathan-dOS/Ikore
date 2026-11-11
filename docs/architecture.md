@@ -1,6 +1,6 @@
 # Architecture
 
-Hard Vibe Code is a local Windows x64 desktop application built with Rust and
+Ikore is a local Windows x64 desktop application built with Rust and
 GPUI. The UI and domain services share one process and use typed Rust calls.
 The terminal and shared-contract boundaries were separated in ADR-031 (2026-10-23).
 
@@ -165,7 +165,7 @@ not permission. Native approval freezes the Companion target; publication commit
 one new drawing and its ready receipt. Completion never navigates. Manual semantic
 commands share core validation and preserve scene/history; no general repository
 write tool is exposed. Source commit
-[`e7dfe4e`](https://github.com/Nathan-dOS/HARD-VC/commit/e7dfe4e10691c2e7101839f89a0917d227fc4c9b)
+[`e7dfe4e`](https://github.com/Nathan-dOS/Ikore/commit/e7dfe4e10691c2e7101839f89a0917d227fc4c9b)
 passed the nine-check gate on its selected source tree, excluding unrelated local
 voice changes. The [publication record](../quality/canvas-ai-publication-2026-10-29.md)
 distinguishes that qualification from the earlier combined checkout and states
@@ -194,8 +194,16 @@ the [2026-10-29 Whisper report](../quality/whisper-cpp-validation-2026-10-29.md)
 
 SQLite stores domain state, migrations, events, checkpoints and usage records.
 `HVC_DATA_DIR` isolates development and test data; the default database location
-is `%APPDATA%\com.hardvibecode.desktop\hard-vibe-code.db`. Provider credentials
+is `%APPDATA%\com.ikore.desktop\ikore.db`. Provider credentials
 are managed through Settings and the operating system keyring.
+
+The project was called Hard Vibe Code until 2026-11-10. The first start of a
+renamed build moves the old data and cache folders (`com.hardvibecode.desktop`)
+and the database (`hard-vibe-code.db`, with its WAL) to the new names, and a
+credential stored under the old keyring service (`hard-vibe-code.runtime`) moves
+the first time it is read. A running pre-rename instance keeps its folder in use.
+Crates, environment variables and identifiers keep the `hvc` prefix. See
+[`app_names`](../crates/hvc-core/src/app_names.rs).
 
 Project context combines Markdown notes, repository reads, Tree-sitter and
 local embeddings through Ollama. Context traces distinguish delivered sources
