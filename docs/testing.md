@@ -13,7 +13,7 @@ Forge test saves the current draft as an answer and verifies that reviewing an
 assumption opens no model turn.
 
 ```powershell
-cargo test --locked -p hvc-core -p hvc-ui forge_assumptions
+cargo test --locked -p ikore-core -p ikore-ui forge_assumptions
 ```
 
 ## Local commands
@@ -47,12 +47,12 @@ cargo test-all
 ```
 
 `cargo test` without workspace/package selection uses only `default-members`
-(`hvc-app`). Testing a package does not execute its dependencies' tests.
+(`ikore-app`). Testing a package does not execute its dependencies' tests.
 Confirm that a filter selects real tests before using it:
 
 ```powershell
-cargo test --locked -p hvc-core --lib usage:: -- --list
-cargo test --locked -p hvc-core --lib usage:: -- --test-threads=2
+cargo test --locked -p ikore-core --lib usage:: -- --list
+cargo test --locked -p ikore-core --lib usage:: -- --test-threads=2
 ```
 
 Aliases already contain `--`; use `cargo test-ui --list` without adding a second
@@ -146,11 +146,11 @@ approval/wave refresh without a restart. See the
 for which checks have actually run. Focused selections are:
 
 ```powershell
-cargo test --locked -p hvc-core --lib feature_forge::batch_budget -- --test-threads=2
-cargo test --locked -p hvc-core --lib feature_forge::destinations -- --test-threads=2
-cargo test --locked -p hvc-core --lib feature_forge::tests -- --test-threads=2
-cargo test --locked -p hvc-test-support --test composition_validation -- --test-threads=2
-cargo test --locked -p hvc-ui forge::tests -- --test-threads=2
+cargo test --locked -p ikore-core --lib feature_forge::batch_budget -- --test-threads=2
+cargo test --locked -p ikore-core --lib feature_forge::destinations -- --test-threads=2
+cargo test --locked -p ikore-core --lib feature_forge::tests -- --test-threads=2
+cargo test --locked -p ikore-test-support --test composition_validation -- --test-threads=2
+cargo test --locked -p ikore-ui forge::tests -- --test-threads=2
 ```
 
 Focused success does not replace the complete workspace regression gate.
@@ -164,7 +164,7 @@ For manual application checks, use an isolated profile:
 
 ```powershell
 $env:HVC_DATA_DIR = "$PWD\target\dev-data"
-cargo run -p hvc-app
+cargo run -p ikore-app
 ```
 
 ## Complete gate and current evidence
@@ -354,7 +354,7 @@ CLI/Companion transport fixtures, composition and the review UI. The measured
 scanner probe is hermetic:
 
 ```powershell
-cargo run --locked -p hvc-core --example secret_sanitization_benchmark
+cargo run --locked -p ikore-core --example secret_sanitization_benchmark
 ```
 
 The probe reports its build profile, sizes and timings. Whole-process peak memory
@@ -367,21 +367,21 @@ the complete desktop application's memory.
 evidence gaps, `REVIEW.md` and revision rounds. Pure rules are tested next to
 `review_boundary`, `review_policy`, `line_diff`, `settings` and the recipes;
 publication protection and base capture in `serial_tests`; the full pipeline in
-`hvc-test-support/tests/composition_review.rs`, which also runs the reviewer
+`ikore-test-support/tests/composition_review.rs`, which also runs the reviewer
 through an official CLI fixture and a Custom adapter; V51 in `serial_upgrade`;
 the Review tab in the `hitl` and layout tests. Every run is hermetic:
 
 ```powershell
-cargo test --locked -p hvc-test-support --test composition_review -- --test-threads=2
+cargo test --locked -p ikore-test-support --test composition_review -- --test-threads=2
 ```
 
 ## Tool policy, risk, pre-flight and documentation drift
 
-ADR-034 tests sit next to their rules: the scope table in `hvc-contracts`
+ADR-034 tests sit next to their rules: the scope table in `ikore-contracts`
 `contracts`, the declared policies in `composition::policy`, the CLI refusal
-in `hvc-terminal` `terminals::tests`; risk and coverage in
+in `ikore-terminal` `terminals::tests`; risk and coverage in
 `composition::risk`, `review_boundary`, `review_policy` and
-`hvc-test-support/tests/composition_review.rs`; the Forge pre-flight in
+`ikore-test-support/tests/composition_review.rs`; the Forge pre-flight in
 `feature_forge::preflight` and the Forge tests (`persistence_service::forge_batches`);
 documentation reconciliation in `doc_reconciliation` (links, contract and an
 integration suite with a scripted gateway); V52, V53 and V54 in
@@ -389,8 +389,8 @@ integration suite with a scripted gateway); V52, V53 and V54 in
 tests:
 
 ```powershell
-cargo test --locked -p hvc-core --lib doc_reconciliation feature_forge::preflight forge_batches -- --test-threads=2
-cargo test --locked -p hvc-test-support --test serial_upgrade -- --test-threads=2
+cargo test --locked -p ikore-core --lib doc_reconciliation feature_forge::preflight forge_batches -- --test-threads=2
+cargo test --locked -p ikore-test-support --test serial_upgrade -- --test-threads=2
 ```
 
 `documentation_reconciler_runs_companion_scoped_under_the_reconciliation_origin`
@@ -404,14 +404,14 @@ canonical digests, the write, transport, executor and check checks, and a
 generated-envelope property test) and its host transactions in
 `persistence_service::mandate_persistence` (acceptance and publication refusals,
 receipts, the preview, the transport amendment, the frozen budget). The full v4
-pipeline runs in `hvc-test-support/tests/execution_mandate.rs`; V59 is in
+pipeline runs in `ikore-test-support/tests/execution_mandate.rs`; V59 is in
 `serial_upgrade`; the grants card in the layout tests. The receipts of the CLI
 fallback, clarification and path-confirmation decisions are asserted in those
 flows' own tests, and the project-deletion test covers the V59 rows:
 
 ```powershell
-cargo test --locked -p hvc-core --lib mandate -- --test-threads=2
-cargo test --locked -p hvc-test-support --test execution_mandate -- --test-threads=2
+cargo test --locked -p ikore-core --lib mandate -- --test-threads=2
+cargo test --locked -p ikore-test-support --test execution_mandate -- --test-threads=2
 ```
 
 ## Trust layers
@@ -420,7 +420,7 @@ ADR-035 M2 keeps the state rules in `orchestration::layers` (one table test per
 trigger and threshold edge, legacy and new pulsations, order independence, the
 50-item cut) and the reader in `persistence_service::layers_persistence` (a
 composed pulsation's mandate, writes and refusals, a tampered mandate, the
-detail read under a concurrent writer). `hvc-test-support/tests/trust_layers.rs`
+detail read under a concurrent writer). `ikore-test-support/tests/trust_layers.rs`
 follows a v4 pulsation from the Specification to the end and provokes a model
 other than the one requested, a spent repair budget and a failed required
 check. The panel, the brief card and the header dot are in the layout tests,
@@ -428,9 +428,9 @@ and the report's golden file carries the Layers section. The cost probe builds
 a pulsation at the batch limits and times reading and deriving the layers:
 
 ```powershell
-cargo test --locked -p hvc-core --lib layers -- --test-threads=2
-cargo test --locked -p hvc-test-support --test trust_layers -- --test-threads=2
-cargo run --locked --release -p hvc-core --example layers_benchmark
+cargo test --locked -p ikore-core --lib layers -- --test-threads=2
+cargo test --locked -p ikore-test-support --test trust_layers -- --test-threads=2
+cargo run --locked --release -p ikore-core --example layers_benchmark
 ```
 
 ## Scope requests
@@ -439,7 +439,7 @@ ADR-035 M4 keeps the derivation in `orchestration::mandate::scope` (one table
 test per refusal rule, a mixed request, the path, request and budget limits,
 the risk with the granted files, a Test unit's roles, the amendment of the
 mandate) and the host in `persistence_service::scope_persistence`.
-`hvc-test-support/tests/scope_escalation.rs` runs a v4 pulsation whose Code
+`ikore-test-support/tests/scope_escalation.rs` runs a v4 pulsation whose Code
 unit asks for a file it only reads: the grant, the new mandate revision and
 receipt, the shared budget and the publication; a file changed after the
 request; another decision declining it; a Test unit asking for a production
@@ -448,8 +448,8 @@ supersedes the grant. V61 is in `serial_upgrade`; the card, the stale message
 and the button are in the layout tests:
 
 ```powershell
-cargo test --locked -p hvc-core --lib scope -- --test-threads=2
-cargo test --locked -p hvc-test-support --test scope_escalation -- --test-threads=2
+cargo test --locked -p ikore-core --lib scope -- --test-threads=2
+cargo test --locked -p ikore-test-support --test scope_escalation -- --test-threads=2
 ```
 
 ## Attestations
@@ -462,12 +462,12 @@ publications settle, outcomes, the sealing switch, an unavailable, missing or
 replaced key, rotation, the immutability trigger, the size cap, a failed
 derivation and its retry, a restart before the seal, tampered rows, envelope
 and files, export and import, and a scan of every table for the private key).
-`hvc-test-support/tests/attestation.rs` seals a v4 pulsation that finishes and
+`ikore-test-support/tests/attestation.rs` seals a v4 pulsation that finishes and
 one aborted after writing, and checks the report's Provenance section. V60 is
 in `serial_upgrade`; the card, the list mark and the Security page are in the
 layout tests; the report's golden file carries the Provenance section.
 
-Every one of these tests keeps the key in memory. Unit tests of `hvc-core` that
+Every one of these tests keeps the key in memory. Unit tests of `ikore-core` that
 build a service on the default store never reach the operating system's
 credential store: under `cfg(test)` it reads as empty and refuses writes. The
 one test that uses the Windows Credential Manager is ignored by default and
@@ -475,9 +475,9 @@ writes only under the test service `ikore.attestation-test`, removing
 the entry afterwards. Run it only when you want to check the real store:
 
 ```powershell
-cargo test --locked -p hvc-core --lib attestation -- --test-threads=2
-cargo test --locked -p hvc-test-support --test attestation -- --test-threads=2
-cargo test --locked -p hvc-test-support --test attestation -- --ignored --test-threads=1
+cargo test --locked -p ikore-core --lib attestation -- --test-threads=2
+cargo test --locked -p ikore-test-support --test attestation -- --test-threads=2
+cargo test --locked -p ikore-test-support --test attestation -- --ignored --test-threads=1
 ```
 
 To check a real bundle with OpenSSL as [attestation.md](attestation.md)
@@ -520,9 +520,9 @@ and voice setup tests use loopback servers that never answer or stall the body,
 plus a runtime check cancelled mid-run:
 
 ```powershell
-cargo test --locked -p hvc-core --lib workspace_service::tests -- --test-threads=2
-cargo test --locked -p hvc-test-support --test composition_validation -- --test-threads=2
-cargo test --locked -p hvc-terminal --lib quota::http -- --test-threads=2
+cargo test --locked -p ikore-core --lib workspace_service::tests -- --test-threads=2
+cargo test --locked -p ikore-test-support --test composition_validation -- --test-threads=2
+cargo test --locked -p ikore-terminal --lib quota::http -- --test-threads=2
 cargo test-voice
 ```
 
@@ -539,9 +539,9 @@ The integration harness enables credential collectors. Check the disabled
 production graph independently of development targets:
 
 ```powershell
-cargo check --locked -p hvc-app --no-default-features --bins
-cargo tree -p hvc-app --no-default-features -e normal,build,features
-cargo test --locked -p hvc-terminal --lib --no-default-features -- --test-threads=2
+cargo check --locked -p ikore-app --no-default-features --bins
+cargo tree -p ikore-app --no-default-features -e normal,build,features
+cargo test --locked -p ikore-terminal --lib --no-default-features -- --test-threads=2
 ```
 
 Check the terminal-to-zeroize optional edge, not global absence of zeroize:
@@ -566,12 +566,12 @@ checkout; it is separate from this qualification of the published selection.
 Focused selections are:
 
 ```powershell
-cargo test --locked -p hvc-core --lib companion_drawings:: -- --test-threads=2
-cargo test --locked -p hvc-core --lib chat_service::canvas_authoring::tests -- --test-threads=2
-cargo test --locked -p hvc-test-support --test canvas_semantics -- --test-threads=2
-cargo test --locked -p hvc-test-support --test cli_executor canvas_cli_offer_requires_consent -- --test-threads=2
-cargo test --locked -p hvc-terminal --lib companion_extracts_canvas_offer -- --test-threads=2
-cargo test --locked -p hvc-ui canvas -- --test-threads=2
+cargo test --locked -p ikore-core --lib companion_drawings:: -- --test-threads=2
+cargo test --locked -p ikore-core --lib chat_service::canvas_authoring::tests -- --test-threads=2
+cargo test --locked -p ikore-test-support --test canvas_semantics -- --test-threads=2
+cargo test --locked -p ikore-test-support --test cli_executor canvas_cli_offer_requires_consent -- --test-threads=2
+cargo test --locked -p ikore-terminal --lib companion_extracts_canvas_offer -- --test-threads=2
+cargo test --locked -p ikore-ui canvas -- --test-threads=2
 ```
 
 Core/controller tests cover closed schemas, legacy scenes, profile topology,
@@ -603,9 +603,9 @@ resets; captured files and production expiry rules remain unchanged.
 that expired windows stay out of the live meter. The historical workflow report retains the
 time-dependent third gate failure and the 17-test focused correction result.
 
-The `greenfield_principles` selection in `hvc-core` exercises Forge triage with a
+The `greenfield_principles` selection in `ikore-core` exercises Forge triage with a
 workspace created by the real greenfield bootstrap and a scripted Feature Agent.
 It checks the delivered prompt and the stored finding. Boundary fixtures cover
 root precedence, case and separators, UTF-8 byte budgets, the aggregate budget,
 changes to the effective digest, a refused root entry and a Windows junction.
-Run `cargo test --locked -p hvc-core --lib greenfield_principles -- --test-threads=2`.
+Run `cargo test --locked -p ikore-core --lib greenfield_principles -- --test-threads=2`.

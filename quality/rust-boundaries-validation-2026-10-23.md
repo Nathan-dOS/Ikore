@@ -11,17 +11,17 @@ The existing advisory and distribution blockers remain outside this refactor.
 
 ## Delivered
 
-- [hvc-contracts](../crates/hvc-contracts/src/lib.rs) owns shared stage/role
+- [hvc-contracts](../crates/ikore-contracts/src/lib.rs) owns shared stage/role
   vocabulary, execution targets, response formats, dispatch attribution,
   timeout policies, usage values and redaction results. Persisted identifiers
   and wire formats retain their existing semantics.
-- [hvc-terminal](../crates/hvc-terminal/src/lib.rs) owns CLI services and SQL
+- [hvc-terminal](../crates/ikore-terminal/src/lib.rs) owns CLI services and SQL
   repository, adapters, discovery, model catalog, process isolation, watchdogs,
   stream/usage tracking, recovery and quota. The dependency direction is
   `core -> terminal -> contracts`, with a separate `core -> contracts` edge.
   The terminal package has no core, UI or test-support dependency, including
   development dependencies.
-- The [core host adapter](../crates/hvc-core/src/terminals_host.rs) retains
+- The [core host adapter](../crates/ikore-core/src/terminals_host.rs) retains
   sanitization authority, workspace selection, authorization receipts and the
   global usage ledger. It validates the concrete prepared-input proof against
   the prompts and returns the validated concrete value. Caller-provided getters
@@ -33,7 +33,7 @@ The existing advisory and distribution blockers remain outside this refactor.
   failures with context; invariant `expect` calls state their assumptions.
   RAII data-directory and process-job guards carry `must_use`, and Windows
   unsafe operations document ownership, lifetimes and buffer contracts.
-- The [chat runtime fallback](../crates/hvc-core/src/chat_service.rs) handles
+- The [chat runtime fallback](../crates/ikore-core/src/chat_service.rs) handles
   thread/runtime creation failure through normal turn finalization: persisted
   failure or cancellation, terminal events, active-turn cleanup and waiter
   notification.
@@ -55,13 +55,13 @@ There are **19 additional test functions**:
 
 | Area | Added | Behavior covered |
 |---|---:|---|
-| [Contracts](../crates/hvc-contracts/tests/contracts.rs) | 10 | Stage aliases/order/checkpoints, every role identifier, target serialization, response schemas, dispatch attribution, timeout budgets and unknown usage values |
-| [Core terminal host](../crates/hvc-core/src/terminals_host_tests.rs) | 6 | Forged proofs, changed prompts, spoofed getters, occurrence-scoped authorization, fixture/schema parity and production redaction categories |
-| [Collectors disabled](../crates/hvc-terminal/src/quota/meter_tests.rs) | 1 | Local sources remain available without credentials, endpoint collectors or first-use disclosure |
-| [Chat fallback](../crates/hvc-core/src/chat_service.rs) | 1 | Runtime startup failure finalizes pending turns and releases waiters, including cancellation |
-| [Public host integration](../crates/hvc-test-support/tests/terminal_host_integration.rs) | 1 | Stage dispatch retains core preflight blockers after a login-required recheck |
+| [Contracts](../crates/ikore-contracts/tests/contracts.rs) | 10 | Stage aliases/order/checkpoints, every role identifier, target serialization, response schemas, dispatch attribution, timeout budgets and unknown usage values |
+| [Core terminal host](../crates/ikore-core/src/terminals_host_tests.rs) | 6 | Forged proofs, changed prompts, spoofed getters, occurrence-scoped authorization, fixture/schema parity and production redaction categories |
+| [Collectors disabled](../crates/ikore-terminal/src/quota/meter_tests.rs) | 1 | Local sources remain available without credentials, endpoint collectors or first-use disclosure |
+| [Chat fallback](../crates/ikore-core/src/chat_service.rs) | 1 | Runtime startup failure finalizes pending turns and releases waiters, including cancellation |
+| [Public host integration](../crates/ikore-test-support/tests/terminal_host_integration.rs) | 1 | Stage dispatch retains core preflight blockers after a login-required recheck |
 
-Two [data-directory guard doctests](../crates/hvc-core/src/app_core.rs) cover a
+Two [data-directory guard doctests](../crates/ikore-core/src/app_core.rs) cover a
 retained guard (`no_run`, compile only) and rejection of a discarded guard under
 `deny(unused_must_use)` (`compile_fail`). Existing manual/network/live-provider
 tests retain their explicit ignore conditions; ignored tests are not passes.

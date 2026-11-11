@@ -2698,155 +2698,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
-name = "hvc-app"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "embed-resource",
- "gpui",
- "hvc-core",
- "hvc-ui",
- "tokio",
-]
-
-[[package]]
-name = "hvc-contracts"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "hvc-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.23.1",
- "chrono",
- "fs2",
- "futures",
- "globset",
- "hvc-contracts",
- "hvc-terminal",
- "hvc-voice",
- "icu_normalizer",
- "ignore",
- "jsonschema",
- "keyring",
- "notify",
- "refinery",
- "regex",
- "reqwest",
- "ring",
- "rusqlite",
- "serde",
- "serde_json",
- "serde_yaml",
- "sha2 0.11.1",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "tokio-util",
- "toml 1.1.6+spec-1.1.0",
- "tree-sitter",
- "tree-sitter-rust",
- "tree-sitter-typescript",
- "uuid",
- "walkdir",
- "zeroize",
-]
-
-[[package]]
-name = "hvc-editor"
-version = "0.1.0"
-dependencies = [
- "pulldown-cmark",
- "ropey",
- "serde",
- "thiserror 2.0.21",
- "tree-sitter",
- "tree-sitter-md",
-]
-
-[[package]]
-name = "hvc-terminal"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "futures",
- "hvc-contracts",
- "regex",
- "reqwest",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2 0.11.1",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "tokio-util",
- "toml 1.1.6+spec-1.1.0",
- "uuid",
- "walkdir",
- "windows-sys 0.61.2",
- "zeroize",
-]
-
-[[package]]
-name = "hvc-test-support"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "hvc-contracts",
- "hvc-core",
- "hvc-voice",
- "keyring",
- "refinery",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2 0.11.1",
- "tempfile",
- "tokio",
- "tokio-util",
- "walkdir",
-]
-
-[[package]]
-name = "hvc-ui"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "gpui",
- "hvc-core",
- "hvc-editor",
- "hvc-test-support",
- "raw-window-handle",
- "serde_json",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "hvc-voice"
-version = "0.1.0"
-dependencies = [
- "futures",
- "reqwest",
- "serde",
- "serde_json",
- "sha2 0.11.1",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "tokio-util",
- "uuid",
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "hybrid-array"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3058,6 +2909,155 @@ dependencies = [
  "same-file",
  "walkdir",
  "winapi-util",
+]
+
+[[package]]
+name = "ikore-app"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "embed-resource",
+ "gpui",
+ "ikore-core",
+ "ikore-ui",
+ "tokio",
+]
+
+[[package]]
+name = "ikore-contracts"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "ikore-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.23.1",
+ "chrono",
+ "fs2",
+ "futures",
+ "globset",
+ "icu_normalizer",
+ "ignore",
+ "ikore-contracts",
+ "ikore-terminal",
+ "ikore-voice",
+ "jsonschema",
+ "keyring",
+ "notify",
+ "refinery",
+ "regex",
+ "reqwest",
+ "ring",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2 0.11.1",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "toml 1.1.6+spec-1.1.0",
+ "tree-sitter",
+ "tree-sitter-rust",
+ "tree-sitter-typescript",
+ "uuid",
+ "walkdir",
+ "zeroize",
+]
+
+[[package]]
+name = "ikore-editor"
+version = "0.1.0"
+dependencies = [
+ "pulldown-cmark",
+ "ropey",
+ "serde",
+ "thiserror 2.0.21",
+ "tree-sitter",
+ "tree-sitter-md",
+]
+
+[[package]]
+name = "ikore-terminal"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "futures",
+ "ikore-contracts",
+ "regex",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "toml 1.1.6+spec-1.1.0",
+ "uuid",
+ "walkdir",
+ "windows-sys 0.61.2",
+ "zeroize",
+]
+
+[[package]]
+name = "ikore-test-support"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "ikore-contracts",
+ "ikore-core",
+ "ikore-voice",
+ "keyring",
+ "refinery",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "walkdir",
+]
+
+[[package]]
+name = "ikore-ui"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "gpui",
+ "ikore-core",
+ "ikore-editor",
+ "ikore-test-support",
+ "raw-window-handle",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "ikore-voice"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

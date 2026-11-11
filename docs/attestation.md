@@ -160,7 +160,7 @@ commit trailer.
 
 ### Test vector
 
-`crates/hvc-core/src/attestation/fixtures/` holds a vector signed with a fixed
+`crates/ikore-core/src/attestation/fixtures/` holds a vector signed with a fixed
 test seed that exists only in unit tests: `statement.json`, its digest
 `statement.sha256`, the envelope `vector.intoto.jsonl`, the public key
 `vector.pub.pem`, and the `pae.bin` and `sig.bin` the script above produces.

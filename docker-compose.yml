@@ -28,12 +28,12 @@ services:
   cargo-check:
     <<: *hvc-base
     profiles: ["tools", "ci"]
-    command: cargo check --locked -p hvc-contracts -p hvc-terminal -p hvc-core -p hvc-editor -p hvc-test-support --all-targets
+    command: cargo check --locked -p ikore-contracts -p ikore-terminal -p ikore-core -p ikore-editor -p ikore-test-support --all-targets
 
   clippy-check:
     <<: *hvc-base
     profiles: ["tools", "ci"]
-    command: cargo clippy --locked -p hvc-contracts -p hvc-terminal -p hvc-core -p hvc-editor -p hvc-test-support --all-targets -- -D warnings
+    command: cargo clippy --locked -p ikore-contracts -p ikore-terminal -p ikore-core -p ikore-editor -p ikore-test-support --all-targets -- -D warnings
 
   fmt-check:
     <<: *hvc-base

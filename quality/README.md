@@ -62,6 +62,11 @@ claim that temporary evidence is shipped in Git. Substitute your checkout when
 reusing a recorded command. Machine-readable reports carry a `pathSanitization`
 note where string values were changed.
 
+During the crate rename (Phase 1: `hvc-*` to `ikore-*`), markdown link targets in
+dated reports were updated to point to `crates/ikore-*/...` so that links remain
+navigable from the repository root. Historical report text, test outputs, and
+source fingerprints were preserved untouched.
+
 Recorded source hashes, Git blob IDs, commit IDs, commands' outcomes, timings
 and validation dates were retained. Edited report files naturally have different
 file hashes; use the original commits when exact original report bytes matter.

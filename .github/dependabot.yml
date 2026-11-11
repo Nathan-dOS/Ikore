@@ -11,7 +11,7 @@ updates:
         update-types: [minor, patch]
     ignore:
       - dependency-name: gpui # vendored in third_party/gpui with audited patches
-      - dependency-name: "tree-sitter*" # hvc-core pins the runtime and grammars with "="; bump together by hand
+      - dependency-name: "tree-sitter*" # ikore-core pins the runtime and grammars with "="; bump together by hand
   # The rust Docker image moves with rust-toolchain.toml; update both by hand.
   - package-ecosystem: github-actions
     directory: /

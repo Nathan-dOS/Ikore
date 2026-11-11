@@ -34,7 +34,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 
-$arguments = @('run', '--quiet', '--package', 'hvc-test-support', '--example', 'analyze_pulsation', '--')
+$arguments = @('run', '--quiet', '--package', 'ikore-test-support', '--example', 'analyze_pulsation', '--')
 if ($Id) {
     $arguments += @('--id', $Id)
 } elseif ($Latest) {

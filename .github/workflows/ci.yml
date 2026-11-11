@@ -54,7 +54,7 @@ jobs:
         shell: powershell
         run: ./scripts/check-crate-boundaries.ps1
       - name: Desktop without credential collectors
-        run: cargo check --locked -p hvc-app --no-default-features --bins
+        run: cargo check --locked -p ikore-app --no-default-features --bins
 
   unit:
     name: unit (windows)
@@ -73,7 +73,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo test-unit
       # Isolate this package: test-support otherwise enables collectors by feature unification.
-      - run: cargo test --locked -p hvc-terminal --lib --no-default-features -- --test-threads=2
+      - run: cargo test --locked -p ikore-terminal --lib --no-default-features -- --test-threads=2
       - run: cargo test --locked --workspace --doc
 
   integration:

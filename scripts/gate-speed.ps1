@@ -38,7 +38,7 @@ function Invoke-SpeedNative([string]$Binary, [string[]]$Arguments, [string]$LogP
 }
 
 function Get-CoreBinary([string]$Root, [string]$Label) {
-    $binaries = @(Get-ChildItem -LiteralPath (Join-Path $Root 'target\debug\deps') -Filter 'hvc_core-*.exe' | Sort-Object LastWriteTime -Descending)
+    $binaries = @(Get-ChildItem -LiteralPath (Join-Path $Root 'target\debug\deps') -Filter 'ikore_core-*.exe' | Sort-Object LastWriteTime -Descending)
     foreach ($binary in $binaries) {
         $inventory = @(Invoke-SpeedNative $binary.FullName @('--list') (Join-Path $OutputDirectory "$Label-$($binary.BaseName)-inventory.log"))
         if (@($inventory | Where-Object { $_.ToString() -eq "${probeName}: test" }).Count -eq 1) { return $binary.FullName }

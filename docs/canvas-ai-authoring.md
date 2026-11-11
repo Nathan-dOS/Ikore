@@ -182,9 +182,9 @@ work stays off the graphics thread. Authoring grants only this new Canvas scene
 and its managed persistence. It grants no source editing, general workspace write,
 shell, Git, settings mutation, external MCP or executable business process.
 
-Implementation entry points: [job runtime](../crates/hvc-core/src/chat_service/canvas_authoring.rs),
-[durable store](../crates/hvc-core/src/companion_drawings/authoring_store.rs),
-[pure controller](../crates/hvc-core/src/companion_drawings/authoring.rs),
-[semantic contracts](../crates/hvc-core/src/companion_drawings/semantics.rs), and
-[consent/result UI](../crates/hvc-ui/src/canvas_authoring_ui.rs).
+Implementation entry points: [job runtime](../crates/ikore-core/src/chat_service/canvas_authoring.rs),
+[durable store](../crates/ikore-core/src/companion_drawings/authoring_store.rs),
+[pure controller](../crates/ikore-core/src/companion_drawings/authoring.rs),
+[semantic contracts](../crates/ikore-core/src/companion_drawings/semantics.rs), and
+[consent/result UI](../crates/ikore-ui/src/canvas_authoring_ui.rs).
 See [testing](testing.md#canvas-ai-authoring-candidate) for focused selections.

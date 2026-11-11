@@ -41,8 +41,8 @@ and Linux/macOS portability of the headless crates.
 
 | Platform | What works |
 |---|---|
-| **Windows 10/11 x64** | Everything: the desktop app (`hvc-app`), the UI (`hvc-ui`), the complete test suite, release builds and the smoke test. This is the CI reference platform. |
-| **Linux / macOS** | Only the headless crates (`hvc-contracts`, `hvc-terminal`, `hvc-voice`, `hvc-core`, `hvc-editor`, `hvc-test-support`), natively with `-p` or through Docker. Voice dictation reports itself unsupported there. GPUI is configured with the Windows backend only, so `hvc-ui` and `hvc-app` do not build on these platforms. |
+| **Windows 10/11 x64** | Everything: the desktop app (`ikore-app`), the UI (`ikore-ui`), the complete test suite, release builds and the smoke test. This is the CI reference platform. |
+| **Linux / macOS** | Only the headless crates (`ikore-contracts`, `ikore-terminal`, `ikore-voice`, `ikore-core`, `ikore-editor`, `ikore-test-support`), natively with `-p` or through Docker. Voice dictation reports itself unsupported there. GPUI is configured with the Windows backend only, so `ikore-ui` and `ikore-app` do not build on these platforms. |
 
 Some tests still fail on Linux because of platform-specific code (CLI process
 and terminal handling). They are tracked in dedicated issues. If you work on
@@ -114,13 +114,13 @@ Create a descriptive branch from an up-to-date `main`:
 
    ```powershell
    $env:HVC_DATA_DIR = "$PWD\target\dev-data"
-   cargo run -p hvc-app
+   cargo run -p ikore-app
    ```
 
 **Linux/macOS (headless crates):**
 
 ```bash
-cargo test --locked -p hvc-core -p hvc-editor -p hvc-test-support -- --test-threads=2
+cargo test --locked -p ikore-core -p ikore-editor -p ikore-test-support -- --test-threads=2
 ```
 
 **Docker (headless Linux, same environment as CI):**
@@ -152,9 +152,9 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 
 # 3. Tests for the area you changed
-cargo test-core      # hvc-core
-cargo test-ui        # hvc-ui
-cargo test-editor    # hvc-editor + consuming UI
+cargo test-core      # ikore-core
+cargo test-ui        # ikore-ui
+cargo test-editor    # ikore-editor + consuming UI
 cargo test-support   # harnesses/integration tests + consuming UI
 ```
 
@@ -166,8 +166,8 @@ To investigate a subset, check the test names with `--list` before filtering.
 A filter that selects zero tests proves nothing:
 
 ```powershell
-cargo test --locked -p hvc-core --lib usage:: -- --list
-cargo test --locked -p hvc-test-support --test cli_executor -- --test-threads=2
+cargo test --locked -p ikore-core --lib usage:: -- --list
+cargo test --locked -p ikore-test-support --test cli_executor -- --test-threads=2
 ```
 
 ### 4.4. Commit messages (Conventional Commits)
@@ -192,20 +192,20 @@ Scopes already used in the history: `core`, `ui`, `brownfield`, `terminals`,
 ## 5. Architecture and quality guidelines
 
 1. **Crate boundaries**
-   - `hvc-core` is framework-agnostic: domain, migrations, workspace, LLM
+   - `ikore-core` is framework-agnostic: domain, migrations, workspace, LLM
      routing, orchestration and terminal host integration. It must **not** depend on `gpui`.
-   - `hvc-contracts` owns shared values. `hvc-terminal` owns CLI services,
+   - `ikore-contracts` owns shared values. `ikore-terminal` owns CLI services,
      repository, process isolation and quota. Neither depends on core, UI or
      test-support, including development dependencies. Run
      `scripts/check-crate-boundaries.ps1` to validate the graph.
-   - `hvc-voice` owns the speech runtime install, microphone capture, global
+   - `ikore-voice` owns the speech runtime install, microphone capture, global
      push-to-talk and earcons. It is a leaf: no local crate and no `gpui`,
      including development dependencies. Its Win32 calls stay behind
      `#[cfg(windows)]` with a `SAFETY` comment on every `unsafe` block.
-   - `hvc-ui` calls the core through typed Rust APIs, with no JSON and no IPC.
-   - `hvc-editor` owns the rope, selection, undo/redo, diff, Markdown and
+   - `ikore-ui` calls the core through typed Rust APIs, with no JSON and no IPC.
+   - `ikore-editor` owns the rope, selection, undo/redo, diff, Markdown and
      Tree-sitter support.
-   - `hvc-test-support` holds harnesses, doubles and fixtures. Never use it in
+   - `ikore-test-support` holds harnesses, doubles and fixtures. Never use it in
      production code.
 
 2. **Error handling**
@@ -217,11 +217,11 @@ Scopes already used in the history: `core`, `ui`, `brownfield`, `terminals`,
      violated, with a message that explains the invariant.
 
 3. **Persistence and migrations**
-   - Never edit an existing migration in `crates/hvc-core/migrations/`:
+   - Never edit an existing migration in `crates/ikore-core/migrations/`:
      `refinery` validates their checksums. Add the next version
      (`V<N+1>__*.sql`).
    - Every new migration updates the `MAX(version)` assertions in
-     `crates/hvc-test-support/tests/serial_upgrade.rs` and adds a
+     `crates/ikore-test-support/tests/serial_upgrade.rs` and adds a
      `vN_to_vN+1` test.
 
 4. **Agent artifacts and language**
@@ -316,7 +316,7 @@ Ikore is free software, licensed under the
 [GNU General Public License v3.0 or later](LICENSE) (`GPL-3.0-or-later`). By
 submitting a contribution, you agree that it is licensed under the same terms.
 The vendored code in `third_party/gpui` keeps its own Apache-2.0 license and
-notices, and the Lucide icons in `crates/hvc-ui/assets/icons` keep their ISC
+notices, and the Lucide icons in `crates/ikore-ui/assets/icons` keep their ISC
 license.
 
 Source code is published; binary releases are not available yet. See

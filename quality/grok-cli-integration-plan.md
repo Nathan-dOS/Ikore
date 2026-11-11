@@ -17,7 +17,7 @@ Diferente dos quatro backends existentes, o Grok CLI não tinha nenhuma fixture,
 
 - Binário: `grok.exe`, instalador oficial nativo (`irm https://x.ai/cli/install.ps1 | iex`), SHA-256 conferido contra `agent.exe` (mesma build). **Não é um wrapper npm/node** — é um executável nativo assindoável, diferente dos quatro backends atuais.
 - Versão instalada: `grok 1.0.40 (eb1a2256660d) [stable]`. Única versão validada até aqui.
-- Descoberta: `grok.exe` fica em `~/.grok/bin`, adicionado ao PATH de usuário pelo instalador. `find_executable(backend.as_str(), …)` já busca por nome genérico no PATH ([terminals.rs:2795](../crates/hvc-core/src/terminals.rs)) — nenhuma lógica nova de descoberta é necessária além de `CliBackend::Grok.as_str() == "grok"`.
+- Descoberta: `grok.exe` fica em `~/.grok/bin`, adicionado ao PATH de usuário pelo instalador. `find_executable(backend.as_str(), …)` já busca por nome genérico no PATH ([terminals.rs:2795](../crates/ikore-core/src/terminals.rs)) — nenhuma lógica nova de descoberta é necessária além de `CliBackend::Grok.as_str() == "grok"`.
 - Modo headless: `-p/--single <PROMPT>` imprime e sai. **`stdin` não é o prompt** — só `-p`, `--prompt-file <path>` ou `--prompt-json <json>` aceitam conteúdo. Isso conflita com o invariante "prompt nunca em argv, sempre por stdin"; a resolução está na seção de decisões abaixo.
 - `--output-format streaming-messages-json --include-partial-messages` produz **NDJSON no formato de wire da Anthropic Messages API**, eventos `stream_event` envolvendo `message_start` / `content_block_start` / `content_block_delta` (`thinking_delta`, `text_delta`) / `content_block_stop` / `message_delta` / `message_stop`, seguido de um evento `assistant` consolidado e um evento final `result` com `session_id`, `stop_reason`, `total_cost_usd`, `usage`. Capturado ao vivo nesta sessão (amostra completa arquivada no histórico da conversa, não neste repositório — recapturar como fixture no Bloco G2).
 - `grok -p "..." --output-format json` (modo não-streaming) devolve um único objeto `{"text","stopReason","sessionId","requestId","thought","usage",...}`. Testado pelo usuário fora desta sessão.
@@ -49,7 +49,7 @@ Diferente dos quatro backends existentes, o Grok CLI não tinha nenhuma fixture,
 
 O invariante "prompts nunca entram em argumentos; são enviados por stdin" (multi-agent-cli-completion-plan.md, Invariantes não negociáveis) não é satisfazível literalmente pelo Grok CLI: `-p` exige o prompt como argumento, e stdin é ignorado. A opção que preserva a *propriedade de segurança* por trás do invariante (o conteúdo do prompt nunca aparece em texto plano na linha de comando, visível via `tasklist`/Process Explorer/ETW/log de auditoria para qualquer outro processo ou usuário na máquina) é usar `--prompt-file <path>`: o argumento em si é só um caminho de arquivo, nunca o conteúdo.
 
-Mecanismo (espelha o que já existe para `schema_file` em [terminals.rs:3944](../crates/hvc-core/src/terminals.rs) e [terminals.rs:4599](../crates/hvc-core/src/terminals.rs)):
+Mecanismo (espelha o que já existe para `schema_file` em [terminals.rs:3944](../crates/ikore-core/src/terminals.rs) e [terminals.rs:4599](../crates/ikore-core/src/terminals.rs)):
 
 - Novo campo `prompt_file: Option<PathBuf>` em `CliInvocationRequest` (ao lado de `schema_file`).
 - Nos pontos de montagem de `CliInvocationRequest` (os mesmos dois locais que hoje materializam `schema_file` para Codex), quando `backend == CliBackend::Grok`: escrever `request.prompt` num `tempfile::NamedTempFile` fora do workspace, manter o guard vivo até o processo terminar (mesmo padrão de `schema_guard`), preencher `prompt_file` com o caminho.
@@ -59,21 +59,21 @@ Mecanismo (espelha o que já existe para `schema_file` em [terminals.rs:3944](..
 
 ### 2. Formato de saída
 
-- Pipeline/execução automática e manual: `--output-format streaming-messages-json --include-partial-messages --verbatim`. Por ser wire-compatible com a Anthropic Messages API, os helpers genéricos já existentes em [adapters/mod.rs](../crates/hvc-core/src/terminals/adapters/mod.rs) (`find_session_id`, `find_model_id`, `find_finish_reason`, `extract_visible_text`, a heurística `is_delta` que já testa `event_type(&value) == "stream_event"`) funcionam sobre os eventos do Grok sem alteração — só o `classify` fechado em `normalize_frame` precisa ser escrito, espelhando quase 1:1 o de [claude.rs](../crates/hvc-core/src/terminals/adapters/claude.rs).
+- Pipeline/execução automática e manual: `--output-format streaming-messages-json --include-partial-messages --verbatim`. Por ser wire-compatible com a Anthropic Messages API, os helpers genéricos já existentes em [adapters/mod.rs](../crates/ikore-core/src/terminals/adapters/mod.rs) (`find_session_id`, `find_model_id`, `find_finish_reason`, `extract_visible_text`, a heurística `is_delta` que já testa `event_type(&value) == "stream_event"`) funcionam sobre os eventos do Grok sem alteração — só o `classify` fechado em `normalize_frame` precisa ser escrito, espelhando quase 1:1 o de [claude.rs](../crates/ikore-core/src/terminals/adapters/claude.rs).
 - Execução com saída estruturada (schema): `--json-schema <schema-inline>` (implica `--output-format json`, então não combinar com `streaming-messages-json` nesse caso — igual à forma como Codex/Claude tratam schema hoje). `--json-schema` do Grok aceita JSON **inline** como argumento, exatamente como o do Claude — provável candidato a reaproveitar `SchemaFlavor::Canonical` (a decidir empiricamente: Claude precisa remover `$schema` antes de enviar; não há confirmação ainda de que o Grok tenha a mesma limitação — ver item em aberto).
 
 ### 3. `extract_visible_text` já protege contra vazamento de raciocínio — verificado, não assumido
 
-O invariante "sem raciocínio oculto" (rótulo canônico "ATIVIDADE E SAÍDA") foi checado campo a campo contra a captura real: em todo `content_block_delta` do tipo `thinking_delta`, o texto do raciocínio fica sob a chave `thinking`, que não é uma das cinco chaves prioritárias de `extract_visible_text` (`text`, `content`, `message`, `output`, `result` — [terminals.rs:3427](../crates/hvc-core/src/terminals.rs)) e, por ser uma string-folha sob chave não-prioritária, a recursão genérica não a alcança. No bloco `assistant` consolidado, `content` é um array com um bloco `{"type":"thinking","thinking":"...","signature":"..."}` seguido de `{"type":"text","text":"..."}`; a busca por array retorna o primeiro `find_map` que produzir `Some`, e o bloco `thinking` não produz nada pela mesma razão, então o bloco `text` é o que aparece. No modo `--output-format json` (não-streaming), o campo irmão é `thought` (nome diferente) e nunca é alcançado porque `text` já casa primeiro no mesmo objeto. Ou seja: **nenhuma mudança de código é necessária aqui**, mas isso deve virar um teste de regressão explícito no Bloco G2 (`captures_no_thinking_or_thought_text`), porque é uma propriedade essencial que hoje só existe por como as chaves calham de se chamar — uma mudança futura do formato do Grok pode quebrá-la silenciosamente.
+O invariante "sem raciocínio oculto" (rótulo canônico "ATIVIDADE E SAÍDA") foi checado campo a campo contra a captura real: em todo `content_block_delta` do tipo `thinking_delta`, o texto do raciocínio fica sob a chave `thinking`, que não é uma das cinco chaves prioritárias de `extract_visible_text` (`text`, `content`, `message`, `output`, `result` — [terminals.rs:3427](../crates/ikore-core/src/terminals.rs)) e, por ser uma string-folha sob chave não-prioritária, a recursão genérica não a alcança. No bloco `assistant` consolidado, `content` é um array com um bloco `{"type":"thinking","thinking":"...","signature":"..."}` seguido de `{"type":"text","text":"..."}`; a busca por array retorna o primeiro `find_map` que produzir `Some`, e o bloco `thinking` não produz nada pela mesma razão, então o bloco `text` é o que aparece. No modo `--output-format json` (não-streaming), o campo irmão é `thought` (nome diferente) e nunca é alcançado porque `text` já casa primeiro no mesmo objeto. Ou seja: **nenhuma mudança de código é necessária aqui**, mas isso deve virar um teste de regressão explícito no Bloco G2 (`captures_no_thinking_or_thought_text`), porque é uma propriedade essencial que hoje só existe por como as chaves calham de se chamar — uma mudança futura do formato do Grok pode quebrá-la silenciosamente.
 
 ### 4. Catálogo de modelos: caminho declarativo, não live-parse
 
-`grok models` devolve texto solto sem metadados de preço/contexto/capacidades, e a xAI publica um catálogo pequeno e estável (2 modelos hoje). Isso é o mesmo perfil de Codex/Claude/Gemini (catálogo JSON versionado e curado em [assets/cli-model-catalog-v1.json](../crates/hvc-core/assets/cli-model-catalog-v1.json)), não o do OpenCode (catálogo agregando múltiplos provedores de terceiros, por isso only ele faz parsing ao vivo de `opencode models --verbose`). Grok entra como quarto backend com catálogo declarativo:
+`grok models` devolve texto solto sem metadados de preço/contexto/capacidades, e a xAI publica um catálogo pequeno e estável (2 modelos hoje). Isso é o mesmo perfil de Codex/Claude/Gemini (catálogo JSON versionado e curado em [assets/cli-model-catalog-v1.json](../crates/ikore-core/assets/cli-model-catalog-v1.json)), não o do OpenCode (catálogo agregando múltiplos provedores de terceiros, por isso only ele faz parsing ao vivo de `opencode models --verbose`). Grok entra como quarto backend com catálogo declarativo:
 
-- `CliModelCatalogAssetBackends` ganha um campo `grok` ([model_catalog.rs:34](../crates/hvc-core/src/terminals/model_catalog.rs)).
-- `declarative_models()` ganha `CliBackend::Grok => &backends.grok.models` ([model_catalog.rs:87](../crates/hvc-core/src/terminals/model_catalog.rs)).
+- `CliModelCatalogAssetBackends` ganha um campo `grok` ([model_catalog.rs:34](../crates/ikore-core/src/terminals/model_catalog.rs)).
+- `declarative_models()` ganha `CliBackend::Grok => &backends.grok.models` ([model_catalog.rs:87](../crates/ikore-core/src/terminals/model_catalog.rs)).
 - `cli-model-catalog-v1.json` ganha a chave `"grok"` com `grok-4.7` (`contextWindow: 500000`, confirmado) e `grok-4.6` (contexto a confirmar). `profiles` (efforts aceitos) começa vazio até o item em aberto #2 ser resolvido.
-- `detect_cli_default_model` ([model_catalog.rs:703](../crates/hvc-core/src/terminals/model_catalog.rs)) ganha um branch para `~/.grok/config.toml`, chave `model` — mesma técnica read-only/capped já usada para Codex.
+- `detect_cli_default_model` ([model_catalog.rs:703](../crates/ikore-core/src/terminals/model_catalog.rs)) ganha um branch para `~/.grok/config.toml`, chave `model` — mesma técnica read-only/capped já usada para Codex.
 
 ### 5. Auth probe
 
@@ -85,11 +85,11 @@ O invariante "sem raciocínio oculto" (rótulo canônico "ATIVIDADE E SAÍDA") f
 
 ### 7. Launch target no Windows — nenhum código novo
 
-`grok.exe` tem extensão `.exe` nativa. A função de hardening de lançamento ([terminals.rs:6060-6084](../crates/hvc-core/src/terminals.rs)) só desvia para `resolve_trusted_npm_shim` quando a extensão é `.cmd`/`.bat`; qualquer outra extensão (inclusive `.exe`) já cai no caminho de binário nativo genérico (hash SHA-256 + `spec.executable = executable`), o mesmo caminho que `Custom` usa hoje. **Nenhum branch novo é necessário em `resolve_trusted_npm_shim` nem em `secure_launch_target`** — só é preciso confirmar isso com um teste dedicado (`grok_native_exe_never_routes_through_npm_shim_resolution`), já que é uma propriedade que depende de comportamento existente, não de código novo.
+`grok.exe` tem extensão `.exe` nativa. A função de hardening de lançamento ([terminals.rs:6060-6084](../crates/ikore-core/src/terminals.rs)) só desvia para `resolve_trusted_npm_shim` quando a extensão é `.cmd`/`.bat`; qualquer outra extensão (inclusive `.exe`) já cai no caminho de binário nativo genérico (hash SHA-256 + `spec.executable = executable`), o mesmo caminho que `Custom` usa hoje. **Nenhum branch novo é necessário em `resolve_trusted_npm_shim` nem em `secure_launch_target`** — só é preciso confirmar isso com um teste dedicado (`grok_native_exe_never_routes_through_npm_shim_resolution`), já que é uma propriedade que depende de comportamento existente, não de código novo.
 
 ### 8. Modo API: provedor OpenAI-compatible declarativo
 
-A API da xAI é compatível com o formato de chat completions da OpenAI. Isso cai diretamente no padrão já usado por Groq/DeepSeek/Mistral/OpenRouter/Gemini em [llm/profiles.rs](../crates/hvc-core/src/llm/profiles.rs) (`ProviderProtocol::OpenaiChat`, cliente HTTP genérico, sem código de provedor dedicado). Adição proposta:
+A API da xAI é compatível com o formato de chat completions da OpenAI. Isso cai diretamente no padrão já usado por Groq/DeepSeek/Mistral/OpenRouter/Gemini em [llm/profiles.rs](../crates/ikore-core/src/llm/profiles.rs) (`ProviderProtocol::OpenaiChat`, cliente HTTP genérico, sem código de provedor dedicado). Adição proposta:
 
 ```rust
 profile(
@@ -106,7 +106,7 @@ profile(
 ),
 ```
 
-mais uma entrada em [assets/llm-model-catalog-v1.json](../crates/hvc-core/assets/llm-model-catalog-v1.json) (preço/capacidades por `provider_id`+`model_id`). **Os IDs de modelo da API quase certamente não são os mesmos do CLI** (`grok-4.7`/`grok-4.6` parecem apelidos internos do CLI; a API pública da xAI historicamente usa nomes versionados próprios, ex. `grok-4`, `grok-4-fast`, `grok-code-fast-1`). Não assumir equivalência — ver item em aberto #4.
+mais uma entrada em [assets/llm-model-catalog-v1.json](../crates/ikore-core/assets/llm-model-catalog-v1.json) (preço/capacidades por `provider_id`+`model_id`). **Os IDs de modelo da API quase certamente não são os mesmos do CLI** (`grok-4.7`/`grok-4.6` parecem apelidos internos do CLI; a API pública da xAI historicamente usa nomes versionados próprios, ex. `grok-4`, `grok-4-fast`, `grok-code-fast-1`). Não assumir equivalência — ver item em aberto #4.
 
 ## Migração de banco (V38)
 
@@ -134,14 +134,14 @@ Cada tabela reconstruída preserva `PRAGMA foreign_key_check = 0` e testes a par
 
 ### Bloco G0 — contratos e decisões
 - Congelar as decisões da seção acima (usuário confirma os itens em aberto).
-- Adicionar `CliBackend::Grok` ao enum ([terminals.rs:251](../crates/hvc-core/src/terminals.rs)): variante, `ALL` (vira `[Self; 6]`), `as_str()` → `"grok"`, `label()` → `"Grok"`, `parse()`.
+- Adicionar `CliBackend::Grok` ao enum ([terminals.rs:251](../crates/ikore-core/src/terminals.rs)): variante, `ALL` (vira `[Self; 6]`), `as_str()` → `"grok"`, `label()` → `"Grok"`, `parse()`.
 - Rodar `cargo check --workspace` imediatamente após o passo acima e **usar os erros de match não-exaustivo como checklist autoritativa** dos pontos de código a tocar — é mais confiável do que qualquer grep manual (28 arquivos hoje referenciam `CliBackend`; nem todos têm um match exaustivo sobre ele, mas os que têm serão sinalizados pelo compilador).
 
 ### Bloco G1 — `GrokAdapter`
-- Novo `crates/hvc-core/src/terminals/adapters/grok.rs`, registrado em [adapters/mod.rs](../crates/hvc-core/src/terminals/adapters/mod.rs) (`mod grok;`, `static GROK`, braço em `adapter()`, braço em `compatibility_rule()` com `minimum: (1,0,40), maximum_exclusive: (1,1,0)` — únicos números validados até aqui).
+- Novo `crates/hvc-core/src/terminals/adapters/grok.rs`, registrado em [adapters/mod.rs](../crates/ikore-core/src/terminals/adapters/mod.rs) (`mod grok;`, `static GROK`, braço em `adapter()`, braço em `compatibility_rule()` com `minimum: (1,0,40), maximum_exclusive: (1,1,0)` — únicos números validados até aqui).
 - `capabilities`: `CliOutputFormat::JsonLines`, `structured_output: true`, `native_resume: version_supports_contract(...)`, `thinking_levels: [Low, Medium, High]` (mesmo trio do Claude, dado que a flag é a mesma `--effort`/`--reasoning-effort` — sujeito ao item em aberto #2), `auth_probe: true`, `read_only: true` (sujeito à validação da decisão #6), `model_catalog: true`.
 - `build_process_spec`: materializa `--prompt-file`, `--output-format streaming-messages-json --include-partial-messages --verbatim --permission-mode plan --tools read_file,list_dir,grep,search_tool --no-subagents --disable-web-search`; `-r <uuid>` quando `resume_session_id` presente (nunca `-c`, nunca `--session-id`); `--model`; `--effort <level>` quando thinking_level ≠ Default ou `model_profile` presente; `--json-schema <inline>` quando schema nativo pedido (força `--output-format json`, removendo os flags de streaming nesse ramo).
-- `normalize_frame`: `classify` fechado espelhando [claude.rs:76-108](../crates/hvc-core/src/terminals/adapters/claude.rs) (system/init → System; result → Completed; error → Error; stream_event com `delta.type` contendo "tool" → ToolUse; assistant com bloco `tool_use` → ToolUse; resto → Message).
+- `normalize_frame`: `classify` fechado espelhando [claude.rs:76-108](../crates/ikore-core/src/terminals/adapters/claude.rs) (system/init → System; result → Completed; error → Error; stream_event com `delta.type` contendo "tool" → ToolUse; assistant com bloco `tool_use` → ToolUse; resto → Message).
 - `auth_probe_args`: `Some(&["models"])`.
 - `classify_failure`: reaproveitar `classify_failure_text` como baseline; confirmar (Bloco G2) se o exit code de auth ausente tem um código fixo reconhecível, como o `41` do Gemini, para classificar sem depender só de texto de stderr.
 
@@ -153,8 +153,8 @@ Cada tabela reconstruída preserva `PRAGMA foreign_key_check = 0` e testes a par
 
 ### Bloco G3 — descoberta e Windows
 - Confirmar via teste que `grok.exe` cai no caminho de binário nativo (decisão #7), sem tocar `resolve_trusted_npm_shim`.
-- `install_guidance(CliBackend::Grok)` ([terminals.rs:3327](../crates/hvc-core/src/terminals.rs)) → `("https://x.ai/cli", "irm https://x.ai/cli/install.ps1 | iex")` (comando literal do instalador oficial no Windows; nunca executado automaticamente pelo app).
-- Ordenação de descoberta ([terminals.rs:2822-2828](../crates/hvc-core/src/terminals.rs)): adicionar `CliBackend::Grok => 5`.
+- `install_guidance(CliBackend::Grok)` ([terminals.rs:3327](../crates/ikore-core/src/terminals.rs)) → `("https://x.ai/cli", "irm https://x.ai/cli/install.ps1 | iex")` (comando literal do instalador oficial no Windows; nunca executado automaticamente pelo app).
+- Ordenação de descoberta ([terminals.rs:2822-2828](../crates/ikore-core/src/terminals.rs)): adicionar `CliBackend::Grok => 5`.
 
 ### Bloco G4 — migração V38
 - SQL descrito acima, com teste a partir de V1/V20/V36/V37.
@@ -163,11 +163,11 @@ Cada tabela reconstruída preserva `PRAGMA foreign_key_check = 0` e testes a par
 ### Bloco G5 — catálogo de modelos
 - `cli-model-catalog-v1.json` + `CliModelCatalogAssetBackends.grok` + `declarative_models()` (decisão #4).
 - `assets/llm-model-catalog-v1.json` para o modo API (decisão #8), pendente dos IDs de modelo reais da API.
-- Atualizar o teste `versioned_fixtures_cover_all_four_cli_model_contracts` ([model_catalog.rs:917](../crates/hvc-core/src/terminals/model_catalog.rs)) — nome e contagem de backends passam a cobrir cinco.
+- Atualizar o teste `versioned_fixtures_cover_all_four_cli_model_contracts` ([model_catalog.rs:917](../crates/ikore-core/src/terminals/model_catalog.rs)) — nome e contagem de backends passam a cobrir cinco.
 
 ### Bloco G6 — modo API (xAI)
-- Entrada em `profiles()` ([llm/profiles.rs:103](../crates/hvc-core/src/llm/profiles.rs)) conforme decisão #8.
-- `SchemaFlavor::for_cli_backend` ([composition/schema.rs:75-82](../crates/hvc-core/src/orchestration/composition/schema.rs)) ganha o braço `CliBackend::Grok` — o compilador força isso assim que o enum crescer; decisão de qual flavor (`Canonical` por padrão, `Claude`-like se o Grok também rejeitar `$schema`) fica para quando o Bloco G1 testar `--json-schema` de verdade.
+- Entrada em `profiles()` ([llm/profiles.rs:103](../crates/ikore-core/src/llm/profiles.rs)) conforme decisão #8.
+- `SchemaFlavor::for_cli_backend` ([composition/schema.rs:75-82](../crates/ikore-core/src/orchestration/composition/schema.rs)) ganha o braço `CliBackend::Grok` — o compilador força isso assim que o enum crescer; decisão de qual flavor (`Canonical` por padrão, `Claude`-like se o Grok também rejeitar `$schema`) fica para quando o Bloco G1 testar `--json-schema` de verdade.
 
 ### Bloco G7 — UI (`hvc-ui`)
 - `choices.rs:30-36` — `BACKENDS` vira `[CliBackend; 6]`, inclui `CliBackend::Grok`.

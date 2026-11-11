@@ -141,7 +141,7 @@ timestamp, `1793220000`, expired at 2026-10-28 20:40 UTC (17:40 in Sao Paulo), s
 the production expiry rule correctly excluded those historical windows.
 
 The correction changes only
-[`quota/meter_tests.rs`](../crates/hvc-terminal/src/quota/meter_tests.rs): tests
+[`quota/meter_tests.rs`](../crates/ikore-terminal/src/quota/meter_tests.rs): tests
 that need a live window use a copied fixture with a relative future reset. The
 captured fixture files and production expiry behavior remain unchanged. The new
 `claude_run_events_keep_expired_windows_out_of_the_live_meter` regression preserves

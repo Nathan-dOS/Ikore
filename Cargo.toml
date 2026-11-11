@@ -1,16 +1,16 @@
 [workspace]
 resolver = "3"
 members = [
-    "crates/hvc-app",
-    "crates/hvc-contracts",
-    "crates/hvc-core",
-    "crates/hvc-editor",
-    "crates/hvc-test-support",
-    "crates/hvc-terminal",
-    "crates/hvc-ui",
-    "crates/hvc-voice",
+    "crates/ikore-app",
+    "crates/ikore-contracts",
+    "crates/ikore-core",
+    "crates/ikore-editor",
+    "crates/ikore-test-support",
+    "crates/ikore-terminal",
+    "crates/ikore-ui",
+    "crates/ikore-voice",
 ]
-default-members = ["crates/hvc-app"]
+default-members = ["crates/ikore-app"]
 
 [workspace.package]
 version = "0.1.0"
@@ -23,14 +23,14 @@ anyhow = "1"
 chrono = { version = "0.4", features = ["clock"] }
 futures = "0.3"
 gpui = { version = "0.2.2", default-features = false, features = ["windows-manifest"] }
-hvc-contracts = { path = "crates/hvc-contracts" }
-hvc-terminal = { path = "crates/hvc-terminal", default-features = false }
-hvc-voice = { path = "crates/hvc-voice" }
+ikore-contracts = { path = "crates/ikore-contracts" }
+ikore-terminal = { path = "crates/ikore-terminal", default-features = false }
+ikore-voice = { path = "crates/ikore-voice" }
 # Members opt into the quota credential collectors through their own features (ADR-028 G10).
-hvc-core = { path = "crates/hvc-core", default-features = false }
-hvc-editor = { path = "crates/hvc-editor" }
-hvc-test-support = { path = "crates/hvc-test-support" }
-hvc-ui = { path = "crates/hvc-ui", default-features = false }
+ikore-core = { path = "crates/ikore-core", default-features = false }
+ikore-editor = { path = "crates/ikore-editor" }
+ikore-test-support = { path = "crates/ikore-test-support" }
+ikore-ui = { path = "crates/ikore-ui", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["io-util", "macros", "process", "rt", "rt-multi-thread", "sync", "time"] }

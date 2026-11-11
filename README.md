@@ -171,7 +171,7 @@ cd Ikore
 
 # Keep development data apart from your real profile.
 $env:HVC_DATA_DIR = "$PWD\target\dev-data"
-cargo run --locked -p hvc-app
+cargo run --locked -p ikore-app
 ```
 
 Without `HVC_DATA_DIR`, data is stored in
@@ -179,7 +179,7 @@ Without `HVC_DATA_DIR`, data is stored in
 stored in the Windows Credential Manager; Ikore does not read them from `.env`
 files.
 
-For an optimized build, `cargo build --locked --release -p hvc-app` produces
+For an optimized build, `cargo build --locked --release -p ikore-app` produces
 `target\release\ikore.exe`, and
 `powershell -ExecutionPolicy Bypass -File scripts/smoke-windows.ps1` runs the
 Windows smoke test.
@@ -191,32 +191,32 @@ a scripted local provider. They let you explore a paused pulsation without API
 keys or internet access:
 
 ```powershell
-cargo build --locked -p hvc-test-support --bin check_fixture
-cargo run --locked -p hvc-test-support --example review_brief_fixture -- target\demo-review --stage test --visualizer
+cargo build --locked -p ikore-test-support --bin check_fixture
+cargo run --locked -p ikore-test-support --example review_brief_fixture -- target\demo-review --stage test --visualizer
 
 # Use the HVC_DATA_DIR value that the fixture prints.
 $env:HVC_DATA_DIR = "<printed data directory>"
-cargo run --locked -p hvc-app
+cargo run --locked -p ikore-app
 ```
 
 The fixture refuses to reuse a directory, so pass a new one each time.
 `--stage` also accepts `contract`, `integrator`, `failure`, `scope` and
 `done`; without it, the pulsation stops at the Specification checkpoint. The
 canvas example runs on its own with
-`cargo run --locked -p hvc-ui --example canvas_preview`.
+`cargo run --locked -p ikore-ui --example canvas_preview`.
 
 ## Repository layout
 
 | Path | Contents |
 |---|---|
-| `crates/hvc-app` | Entry point and composition root; builds `ikore.exe` |
-| `crates/hvc-ui` | Native GPUI views, review controls and design system |
-| `crates/hvc-core` | Domain, SQLite migrations, workspace, provider routing and orchestration, with no GPUI dependency |
-| `crates/hvc-terminal` | CLI runtime: adapters, discovery, process isolation and the plan-usage meter |
-| `crates/hvc-contracts` | Shared execution, stage, timeout, usage and redaction types |
-| `crates/hvc-editor` | Rope text model, selection, undo, diff, Markdown and Tree-sitter |
-| `crates/hvc-voice` | Local dictation: pinned speech runtimes, microphone capture and push-to-talk |
-| `crates/hvc-test-support` | Isolated harnesses, test doubles and the demo fixtures |
+| `crates/ikore-app` | Entry point and composition root; builds `ikore.exe` |
+| `crates/ikore-ui` | Native GPUI views, review controls and design system |
+| `crates/ikore-core` | Domain, SQLite migrations, workspace, provider routing and orchestration, with no GPUI dependency |
+| `crates/ikore-terminal` | CLI runtime: adapters, discovery, process isolation and the plan-usage meter |
+| `crates/ikore-contracts` | Shared execution, stage, timeout, usage and redaction types |
+| `crates/ikore-editor` | Rope text model, selection, undo, diff, Markdown and Tree-sitter |
+| `crates/ikore-voice` | Local dictation: pinned speech runtimes, microphone capture and push-to-talk |
+| `crates/ikore-test-support` | Isolated harnesses, test doubles and the demo fixtures |
 | `third_party/gpui` | Vendored GPUI 0.2.2 and its [patch ledger](third_party/gpui/HVC-PATCHES.md) |
 | `docs/` | Architecture, testing guide and design summaries |
 | `quality/` | Dated validation reports and the distribution policy |
@@ -260,7 +260,7 @@ how to investigate a single area.
 To check a voice dictation install without a microphone:
 
 ```powershell
-cargo run --locked -p hvc-voice --example voice_probe -- "$env:LOCALAPPDATA\com.ikore.desktop\voice" whisper-large-v3-turbo
+cargo run --locked -p ikore-voice --example voice_probe -- "$env:LOCALAPPDATA\com.ikore.desktop\voice" whisper-large-v3-turbo
 # Append a mono, 16-bit, 16 kHz WAV path to transcribe it. Use `nemotron` for the other backend.
 ```
 
@@ -311,4 +311,4 @@ FITNESS FOR A PARTICULAR PURPOSE. See [LICENSE](LICENSE) for the full text.
 
 Third-party code keeps its own license: the vendored GPUI in
 [`third_party/gpui`](third_party/gpui/LICENSE-APACHE) is Apache-2.0, and the
-[Lucide icons](crates/hvc-ui/assets/icons/LICENSE-lucide.txt) are ISC.
+[Lucide icons](crates/ikore-ui/assets/icons/LICENSE-lucide.txt) are ISC.

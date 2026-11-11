@@ -46,7 +46,7 @@ candidates; human approval, expected hashes and host publication checks remain
 required for changes. Observe is the default mode.
 
 See [implementation and validation](../../quality/learning-context-optimization.md)
-and the [learning service](../../crates/hvc-core/src/orchestration/learning.rs).
+and the [learning service](../../crates/ikore-core/src/orchestration/learning.rs).
 
 ## ADR-010: CLI runtime
 
@@ -57,7 +57,7 @@ fallback requires an explicit human decision. Model identity and allowed
 operations remain host-validated.
 
 See the [threat model](../../quality/cli-threat-model.md) and
-[runtime implementation](../../crates/hvc-core/src/terminals.rs).
+[runtime implementation](../../crates/ikore-core/src/terminals.rs).
 
 ## ADR-013: generated artifact language
 
@@ -102,7 +102,7 @@ The host classifies supported failures and persists the actions it permits.
 Resolution validates checkpoint identity, expected state version and producer
 state. Retry does not renew a v4 stage's shared budget; revision invalidates
 affected downstream work; Abort is terminal. The UI cannot widen the persisted
-decision set. See the [failure service](../../crates/hvc-core/src/orchestration/failure.rs)
+decision set. See the [failure service](../../crates/ikore-core/src/orchestration/failure.rs)
 and [synchronization evidence](../../quality/cerebro-sync-validation-2026-09-09.md).
 
 ## ADR-022: stage composition
@@ -117,8 +117,8 @@ record. Confirm/Flag and revision diffs assist review; the host still admits
 the decision. Visualizer notes are non-normative. The end-of-pulsation report
 is rendered by the host, with lifecycle cleanup tied to its pulsation.
 
-Implementation: [review brief](../../crates/hvc-core/src/orchestration/review_brief/mod.rs)
-and [reports](../../crates/hvc-core/src/reports/mod.rs).
+Implementation: [review brief](../../crates/ikore-core/src/orchestration/review_brief/mod.rs)
+and [reports](../../crates/ikore-core/src/reports/mod.rs).
 Integration evidence: [2026-10-17 report](../../quality/main-merge-validation-2026-10-17.md).
 
 ## ADR-028: plan-quota meter
@@ -145,7 +145,7 @@ the API. Default builds therefore use only the official and local sources; the
 Claude bar fills from the events of the developer's own Claude Code runs.
 
 See the [threat model](../../quality/cli-threat-model.md) and the
-[quota module](../../crates/hvc-core/src/quota/mod.rs).
+[quota module](../../crates/ikore-core/src/quota/mod.rs).
 
 ## ADR-029: Companion notes
 
@@ -180,8 +180,8 @@ records current qualification; the
 [2026-10-26 medium report](../../quality/whisper-medium-validation-2026-10-26.md)
 remains historical evidence for the replaced Python backend.
 
-See the [notes module](../../crates/hvc-core/src/companion_notes/mod.rs), the
-[voice service](../../crates/hvc-core/src/voice.rs) and the
+See the [notes module](../../crates/ikore-core/src/companion_notes/mod.rs), the
+[voice service](../../crates/ikore-core/src/voice.rs) and the
 [threat model](../../quality/cli-threat-model.md).
 
 ## ADR-030: deterministic secret sanitization

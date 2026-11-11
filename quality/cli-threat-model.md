@@ -165,7 +165,7 @@ arguments, with no tools or repository. The resulting text enters the Notes
 capture path; no resident speech service runs.
 
 Both Windows x64 CPU archives are source-pinned in
-[`hvc-voice` runtime definitions](../crates/hvc-voice/src/runtime.rs):
+[`hvc-voice` runtime definitions](../crates/ikore-voice/src/runtime.rs):
 
 | Runtime archive | Bytes | SHA-256 |
 |---|---:|---|
