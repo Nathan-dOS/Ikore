@@ -2,7 +2,7 @@
 
 These summaries explain the implemented boundaries needed to read and
 contribute to this repository. They are curated from the design records and
-the source at `bee361b` (2026-10-17). They do not publish the maintainers'
+the source at `b66ea5d` (2026-10-17). They do not publish the maintainers'
 entire design archive or treat proposals as delivered behavior.
 
 Historical report identifiers remain unchanged. Follow their local evidence

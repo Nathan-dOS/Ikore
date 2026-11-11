@@ -24,7 +24,7 @@ de 13,177%. O gate funcional e o smoke test Windows continuam obrigatórios.
 
 ## HVC-GPUI-002 — Windows window visibility and activation
 
-Source: HVC commit `afac99605d81d4fe2afa377f3be767c992d7f4c6` (2026-09-04), a local integration correction; no upstream backport provenance is claimed.
+Source: HVC commit `ee898342bfb6df157035ec2c7d517649708a24b0` (2026-09-04), a local integration correction; no upstream backport provenance is claimed.
 
 `src/platform/windows/window.rs` sets `placement.showCmd` to `SW_SHOWNORMAL`, calls `ShowWindowAsync(SW_SHOWNORMAL)` after applying visible window placement, and shows a hidden window during activation. Minimized windows retain the `SW_RESTORE` path. The application shell explicitly calls `activate_window()` on the newly opened window before `cx.activate(true)`.
 

@@ -1,6 +1,6 @@
 # Checkpoint BF2 — Extratores e Grafo Estrutural
 
-Data: 2026-08-29. Branch `gpui-migration`. Baseline: `1ae88a7` (M5 funcional e smoke visual concluídos), com BF1-G preservado no mesmo worktree. Estado: **BF2-G aprovado; BF3 não iniciada**.
+Data: 2026-08-29. Branch `gpui-migration`. Baseline: `37d99b6` (M5 funcional e smoke visual concluídos), com BF1-G preservado no mesmo worktree. Estado: **BF2-G aprovado; BF3 não iniciada**.
 
 ## Resultado
 

@@ -17,7 +17,7 @@ Date: 2026-09-08
 
 The shared working directory contained concurrent, unrelated changes to the core, UI translation, runtime and documentation. Its first UI run passed 101 tests. Workspace-wide formatting and strict Clippy then reported unrelated changes (including `feature_forge/persistence.rs:64`, `needless_question_mark`). Those changes were preserved and excluded from this commit.
 
-Release validation uses an isolated archive of code base `1b6e7f5800fb18f99809a8c67c9d63ef6d4e7f58` plus precisely the four UI file changes selected for this commit. The source snapshot is `target/forge-composer-validation`; build artifacts use the normal repository `target` directory. No real provider credentials or LLM calls are used by these tests.
+Release validation uses an isolated archive of code base `f804f99c3bd083024702aa4af3115b11dfbe3775` plus precisely the four UI file changes selected for this commit. The source snapshot is `target/forge-composer-validation`; build artifacts use the normal repository `target` directory. No real provider credentials or LLM calls are used by these tests.
 
 ## Automated evidence
 

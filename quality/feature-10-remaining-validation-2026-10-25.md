@@ -1,6 +1,6 @@
 # Feature 10 — remaining milestones validation (ADR-034) — 2026-10-25
 
-Scope: T1 (tool policy enforced), M3 (risk scrutiny and coverage matrix), M6 (Forge pre-flight guardian) and M5 (documentation reconciliation, code → note), on branch `cli/dreamy-hamilton-s7shmz` from `main` `11af87e` (ADR-034 summary `cdaa2e4`).
+Scope: T1 (tool policy enforced), M3 (risk scrutiny and coverage matrix), M6 (Forge pre-flight guardian) and M5 (documentation reconciliation, code → note), on branch `cli/dreamy-hamilton-s7shmz` from `main` `c471ce1` (ADR-034 summary `e9c7a87`).
 
 Environment: Linux headless container (no Windows, no authenticated CLIs). GitHub Actions is out of use and is not evidence. Windows acceptance (`cargo test-all`, Clippy `-D warnings`, `scripts/gate-stage7.ps1`, `scripts/audit-advisories.ps1`) and the T1 real-run measurement stay with Nathan.
 
@@ -19,7 +19,7 @@ Each milestone closed with `cargo fmt --check`, `cargo clippy --locked` over the
 
 | Milestone | fmt | Clippy warnings (Linux baseline with `hvc-ui`: 15) | Headless passed / failed / ignored | UI passed / failed | New failures |
 |---|---|---|---|---|---|
-| Baseline `11af87e` | ok | 11 headless only | 1117 / 28 / 13 | not run | — |
+| Baseline `c471ce1` | ok | 11 headless only | 1117 / 28 / 13 | not run | — |
 | T1 | ok | 15 | 1121 / 28 / 13 | 325 / 1 | 0 |
 | M3 | ok | 16 → 15 (`level_from_db` removed after the run) | 1140 / 28 / 13 | 327 / 1 | 0 |
 | M6 | ok | 16 → 15 (`items_after_test_module` on a test helper, fixed after the run) | 1153 / 28 / 13 | 329 / 1 | 0 |
@@ -132,7 +132,7 @@ The Clippy warnings are the Linux-only ones of the baseline (`cfg(windows)` code
 
 ## Windows acceptance (2026-10-25)
 
-`scripts/gate-stage7.ps1` on `cli/dreamy-hamilton-s7shmz` (`e60c31e`), Windows 11, `CARGO_BUILD_JOBS=6`: passed, exit 0. Structure, crate boundaries, `cargo fmt`, Clippy `-D warnings` (92 s), `cargo test-all` (1,689 s, 0 failures), release build (1,021 s), Windows smoke, licenses and sources, and advisories (0 vulnerabilities) all green. Timings are in `target/stage7/timings.json`. The first attempt failed in step 1 only because `cargo tree` printed "Updating crates.io index" on stderr under PowerShell 5.1; a `cargo fetch --locked` beforehand fixed it.
+`scripts/gate-stage7.ps1` on `cli/dreamy-hamilton-s7shmz` (`88d8be2`), Windows 11, `CARGO_BUILD_JOBS=6`: passed, exit 0. Structure, crate boundaries, `cargo fmt`, Clippy `-D warnings` (92 s), `cargo test-all` (1,689 s, 0 failures), release build (1,021 s), Windows smoke, licenses and sources, and advisories (0 vulnerabilities) all green. Timings are in `target/stage7/timings.json`. The first attempt failed in step 1 only because `cargo tree` printed "Updating crates.io index" on stderr under PowerShell 5.1; a `cargo fetch --locked` beforehand fixed it.
 
 ## T1 real-run measurement (D3)
 

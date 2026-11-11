@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "capturedAtUtc": "2026-10-29T10:46:58.6442839Z",
-  "baseCommit": "92f6a0c291c2d0e05703e228547e4faa26b95d8e",
+  "baseCommit": "b3505a5e118fd345d18960b5fbe5d161d3dfe7f2",
   "selectedIndexTree": "ce651c87810c7ceb0be4265db713c442b0390e97",
   "scope": "Canvas publication candidate; unrelated voice changes preserved outside the worktree in a temporary stash",
   "files": [

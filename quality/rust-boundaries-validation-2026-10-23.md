@@ -1,6 +1,6 @@
 # Rust contracts and terminal boundary — implementation report
 
-Date: 2026-10-23. Baseline: `325ddbdd392be36188fac1ffec549235ea340a1c`;
+Date: 2026-10-23. Baseline: `954bd6e424cb23225b1d5c0ab5da4955077f8a56`;
 implementation in the local working tree. [Source fingerprints](rust-boundaries-sources-2026-10-23.json)
 identify changed code and configuration.
 

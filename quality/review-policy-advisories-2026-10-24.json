@@ -1,7 +1,7 @@
 {
     "schemaVersion":  1,
     "auditedAt":  "2026-10-25T01:05:45.0189852Z",
-    "baseline":  "4ff7e00",
+    "baseline":  "341979c",
     "cargoAuditVersion":  "0.22.2",
     "dependencyFilesChanged":  false,
     "exitCode":  1,

@@ -1,6 +1,6 @@
 # Dependency advisories — lockfile remediation and validation
 
-Date: 2026-10-24. Baseline: `main` at `e8f4644`; branch
+Date: 2026-10-24. Baseline: `main` at `bde2d06`; branch
 `fix/dependency-advisories`. Machine-readable evidence:
 [dependency-advisories-2026-10-24.json](dependency-advisories-2026-10-24.json).
 
@@ -70,7 +70,7 @@ no newer commit.
 
 | Lockfile | Exit | Vulnerabilities | Unmaintained | Unsound | Yanked |
 |---|---:|---:|---:|---:|---:|
-| `main` `e8f4644` | 1 | 9 | 14 | 3 | 1 |
+| `main` `bde2d06` | 1 | 9 | 14 | 3 | 1 |
 | this branch | 0 | **0** | 14 | 2 | 0 |
 
 ### Remaining informational warnings (not gate failures)

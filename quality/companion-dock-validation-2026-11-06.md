@@ -1,6 +1,6 @@
 # Companion dock, decisions and feature starts — 2026-11-06
 
-Status: implementation M0–M5 is qualified for `ba9bf15`: technical gate 9/9,
+Status: implementation M0–M5 is qualified for `608cfd3`: technical gate 9/9,
 native inspection and the unchanged-workload speed gate passed. Integration,
 push and cleanup completed on 2026-11-10 after developer confirmation;
 the independent evidence audit passed without blocking findings.
@@ -9,9 +9,9 @@ Earlier dispositions below record each historical source, not current status.
 ## Source and scope
 
 - Current branch: `main` in the primary checkout; integration recorded below.
-- Qualified source: `ba9bf15b5945e369ecb0ab8d9d97a5a364f80070`.
-- Measured baseline source: `ef2879a6ecc161f5910c6ee4402aea1206d644f8`.
-  Its source is equivalent to the documented `c42f2a7` baseline; the latter
+- Qualified source: `608cfd3262e8c7c634f5d02cbb5d9979932c87aa`.
+- Measured baseline source: `3a2c973a5bbe58e3d6e28cc88739c5f86e1ae9de`.
+  Its source is equivalent to the documented `790b450` baseline; the latter
   adds documentation/CI changes to that source.
 - First delivery: corrected notifications/counts, per-conversation chat state,
   native Companion dock, durable drafts, read-only pending decisions and tools,
@@ -105,7 +105,7 @@ Seven focused `approve_and_start` core tests also passed, including the
 deterministic revision-change race. These selections overlap the final suite;
 their counts must not be added to the complete regression total.
 
-The first candidate is commit `4870c07d1d7e364c38e00aa4ced084ae1fadcfa7`.
+The first candidate is commit `a9b78daaedb22f3f6d3f9c3d8248db5c2ae2b42e`.
 Its Stage 7 run passed all nine checks, including the complete workspace suite:
 2,137 passed, zero failed, 23 ignored,
 zero filtered across 61 target summaries. This includes the 1,193 core and 465
@@ -116,14 +116,14 @@ vulnerabilities. The timing/report files for this run are retained separately.
 
 Before final qualification, a second route to duplicate composer mounting was
 identified: a decision conversation could also be opened as a plain chat topic.
-The bounded correction in `9935489` reuses the decision topic across opening,
+The bounded correction in `cdbdb5a` reuses the decision topic across opening,
 delayed binding and legacy-layout restoration. Three regressions passed after
 two were first reproduced failing; formatting and strict UI Clippy passed.
 A repeated complete gate is required. The nine-check result above certifies
-only `4870c07`; it does not certify that correction. The paired speed comparison
+only `a9b78da`; it does not certify that correction. The paired speed comparison
 remains pending.
 
-Native inspection of `9935489` confirmed canonical alias restoration, history
+Native inspection of `cdbdb5a` confirmed canonical alias restoration, history
 reuse, preserved Unicode draft, three windows at requested 1440x900 and two
 with recoverable overflow at requested 960x640. Card scrolling, Expand, closing
 and restart also worked. It exposed a keyboard regression: after hiding the
@@ -133,7 +133,7 @@ this confirmed regression; no CLI test failure had been reported. That run
 does not count as a complete gate. Focus regression tests and another complete
 gate are required before qualification.
 
-The focus correction in `29ed69a` retains the previous dock focus owner through
+The focus correction in `6c742d6` retains the previous dock focus owner through
 paint and recovers it to the persistent dock ancestor only when its child has
 disappeared. It uses GPUI's focus-lost event, including while the window is
 inactive, without activating the OS window. Seven focus regressions passed
@@ -141,7 +141,7 @@ inactive, without activating the OS window. Seven focus regressions passed
 and formatting passed. Explicit blur, outside Chat focus and automatic opening
 keep their existing behavior.
 
-Native recheck of `29ed69a` at requested 960x640 passed repeated Ctrl+Shift+C
+Native recheck of `6c742d6` at requested 960x640 passed repeated Ctrl+Shift+C
 gestures without any intervening click, starting from a history button and a
 composer, and after minimizing or closing a focused topic. Full Chat retained
 its visible caret/focus when the dock was hidden and reopened. The exact Unicode
@@ -165,16 +165,16 @@ Record commands, source revision, counts, raw report paths and any limitations
 here after execution. A sandbox/environment failure and a passing retry must be
 reported separately; neither is a reason to suppress a regression.
 
-The complete gate for `29ed69a` stopped at the English-source policy check:
+The complete gate for `6c742d6` stopped at the English-source policy check:
 two Unicode test-fixture literals contained raw language-specific characters.
 The other 474 UI tests passed. No policy or allowlist was relaxed. Commit
-`0c3cca5` represents those characters with Rust escapes, preserving the runtime
+`c16c816` represents those characters with Rust escapes, preserving the runtime
 text. The guard then passed in isolation and in the complete suite. The
 production portion of the only changed Rust file is byte-equivalent after
-newline normalization to the natively inspected `29ed69a`; its SHA-256 is
+newline normalization to the natively inspected `6c742d6`; its SHA-256 is
 `dc47239624e4ffd7b042db8f3a013917e73ed50c08625e3858cbf424569ddd5a`.
 
-The complete Stage 7 gate for `0c3cca5` passed all nine checks in 1,942.096
+The complete Stage 7 gate for `c16c816` passed all nine checks in 1,942.096
 seconds. Its suite passed 2,147 tests, with zero failures, 23 ignored and zero
 filtered across 61 target summaries, including all 475 UI tests. The test step
 took 1,474.821 seconds including compilation, release took 441.094 seconds, and
@@ -186,7 +186,7 @@ comparison remains pending; this record does not certify that measurement yet.
 
 ## Performance and evidence limits
 
-The `0c3cca5` release failed the three-stream preflight at requested 1440x900:
+The `c16c816` release failed the three-stream preflight at requested 1440x900:
 P50 6.21 ms, P95 10.4591 ms (limit 8.33 ms), and P99 14.5195 ms
 (limit 16.67 ms). The report records 120 measured samples after 20 warmup
 samples, 141 fixture frames and 423 conversation updates on a 164 Hz display.
@@ -195,7 +195,7 @@ An unchanged-source closed-dock diagnostic at the same size measured P95
 qualification package. The full paired speed gate has not run. Qualification
 remains incomplete; the failed preflight is not replaced by a passing retry.
 
-Commit `fd43c7e` retains measurements for unchanged message text pieces. The
+Commit `4947ab0` retains measurements for unchanged message text pieces. The
 local wrapper invalidates the full inherited text style and rem size, recreates
 consumed selection highlights, and reads the current layout for hit testing.
 HVC-GPUI-006 requires exact wrapping-width equality: the new narrow-to-intrinsic
@@ -209,7 +209,7 @@ concrete correctness defect in the wrapper or width correction. This newer
 production source requires another complete regression gate and fresh
 performance evidence; identity reuse alone does not establish a speed gain.
 
-The `fd43c7e` release built successfully in 8 minutes 18 seconds. Its first
+The `4947ab0` release built successfully in 8 minutes 18 seconds. Its first
 three-stream preflight retained the same 141 frames, 423 conversation updates,
 120 measured samples after 20 warmup samples, 1440x900 viewport and 164 Hz
 display. P50 was 6.5485 ms, P95 8.4551 ms and P99 9.4659 ms. This is still
@@ -218,7 +218,7 @@ display. P50 was 6.5485 ms, P95 8.4551 ms and P99 9.4659 ms. This is still
 retry is substituted for this failed measurement. Further optimization and a
 complete gate are required before integration.
 
-Commit `a362f4f` removes cloned Markdown AST/text from the cached-message
+Commit `72eecca` removes cloned Markdown AST/text from the cached-message
 render path and reserves buffer capacity. Other Markdown consumers retain
 their owned-string path, without new text copies. Three additional tests cover
 borrowed storage, moved owned storage and matching geometry across nine cases
@@ -272,7 +272,7 @@ was not rebuilt by this diagnostic. The proposed correction is a small bounded
 cache retaining exact wrapping/truncation measurements, with existing style,
 rem, selection and hit-testing invariants preserved.
 
-Commit `42219bb` implements HVC-GPUI-007: one active measurement plus up to
+Commit `86ff2eb` implements HVC-GPUI-007: one active measurement plus up to
 three saved states, with exact wrapping/truncation keys and least-recently-used
 eviction. Boxed states move without copying inline glyph decorations. Bounds
 are cleared on reuse and renewed during prepaint. Measurement counters and
@@ -290,7 +290,7 @@ review found no concrete LRU/key/bounds defect. The release preflight and
 complete/paired gates for this source remain pending. No background-paint,
 readiness, workload, warmup or threshold change was included.
 
-The `42219bb` release built successfully in 8 minutes 57 seconds. Its first
+The `86ff2eb` release built successfully in 8 minutes 57 seconds. Its first
 three-stream preflight again failed the unchanged P95 limit: P50 6.1556 ms,
 P95 9.9154 ms and P99 11.7028 ms. The report confirms 141 fixture frames,
 423 conversation updates, 120 samples after 20 warmup samples, 1440x900 and
@@ -306,7 +306,7 @@ the original path. Behavioral drawing and ordering tests precede the change.
 The new qualification artifacts use `quality/companion-qualification-2026-11-09/`;
 the earlier failed evidence remains unchanged.
 
-Commit `d71a573` contains HVC-GPUI-008/009. Background painting skips metrics
+Commit `2531a81` contains HVC-GPUI-008/009. Background painting skips metrics
 and glyph work only for all-`None` backgrounds, inside the existing layer.
 Foreground painting skips traversal only when a conservative envelope proves
 the old glyph visibility predicate cannot pass. It repeats wrap Y additions,
@@ -336,7 +336,7 @@ correctness defect. The release preflight, full application gate, current
 native inspection and paired speed qualification remain pending for this
 source. No workload, cadence, warmup, readiness or limit changed.
 
-The `d71a573` release built in 8 minutes 04 seconds. Its first three-stream
+The `2531a81` release built in 8 minutes 04 seconds. Its first three-stream
 preflight failed: P50 6.1209 ms, P95 12.3584 ms and P99 15.0495 ms. The valid
 fixture retained 141 frames, 423 updates, 120 measured samples after 20 warmup,
 1440x900 and 164 Hz. Functional tests and skipped-work assertions do not
@@ -360,7 +360,7 @@ test orchestration; they do not establish the quality or speed of real models.
 
 ## Current full gate and native inspection (2026-11-09)
 
-The frozen `d71a573` full Stage 7 run completed eight of nine checks in
+The frozen `2531a81` full Stage 7 run completed eight of nine checks in
 1,762.757 seconds. The complete workspace suite passed 2,158 tests, with zero
 failed, 23 ignored and zero filtered across 61 targets. UI 486 and core 1,193
 are included. Tests took 1,694.065 seconds including compilation; incremental
@@ -373,7 +373,7 @@ threshold change is permitted. The archived log, timings, audit and integrity
 proof are in `companion-qualification-2026-11-09/stage7-d71a573/`; all 965
 source hashes still matched the frozen snapshot when the gate finished.
 
-Native inspection on the normal debug build of `d71a573` passed at 1440x900
+Native inspection on the normal debug build of `2531a81` passed at 1440x900
 and 960x640 client sizes. It covered three/two visible topics, recoverable
 overflow, complete multiline/Unicode selection, decision controls, repeated
 dock shortcuts without an intervening click, Expand and exact durable draft
@@ -393,7 +393,7 @@ The diagnostic did not qualify speed or replace the failed official preflight.
 Raw sampling, uncertainty and integrity records are retained in
 `companion-qualification-2026-11-09/thread-diagnostic-d71a573/`.
 
-Commit `5111c6117da219248f72e4844f3ebc593235ff33` upgrades the bundled
+Commit `fbb5f3904bb8278f1e20367145b48429d7e1b1a6` upgrades the bundled
 SQLite chain. `Cargo.lock` resolves `rusqlite 0.41.1`, `libsqlite3-sys 0.39.1`,
 `refinery 0.10.0`, `refinery-core 0.10.1` and `refinery-macros 0.10.0`.
 The `fallible_uint` feature preserves checked unsigned conversions. The exact
@@ -425,11 +425,11 @@ requires `i32`; the harness supplied `u32`. The workspace test suite and later
 gate steps did not start. The immutable gate log, timings and post-gate
 source verification are archived alongside the SQLite evidence, with all 12
 archived file hashes verified. The subsequent bounded migration-target
-correction is recorded below; the failed attempt does not qualify `5111c61`.
-These three focused tests are separate from the earlier `d71a573` suite,
+correction is recorded below; the failed attempt does not qualify `fbb5f39`.
+These three focused tests are separate from the earlier `2531a81` suite,
 whose eight-of-nine result and advisory failure remain unchanged.
 
-Commit `68b5c0522fa642664f114e4bbdf8628c81db41c0` uses `i32::try_from` for
+Commit `7559b27ee1ce5c5b770e3c0649cf6c215a0cce69` uses `i32::try_from` for
 the fixture migration target and retains the `DatabaseVersion` V1..V13 bound.
 The exact focused command was
 `cargo test --locked -p hvc-test-support --lib core_harness::tests -- --test-threads=2`.
@@ -470,8 +470,8 @@ submitting a message or decision. Evidence is retained in
 `companion-qualification-2026-11-09/native-sqlite-68b5c05.json`. This reopened
 the existing database file; it did not exercise an old-engine live WAL pair.
 The current physical display scale was used; IME and a real provider were not
-exercised. The failed `d71a573` official speed preflight remains unchanged,
-and no speed result is attributed to `68b5c05`. Speed and paired qualification
+exercised. The failed `2531a81` official speed preflight remains unchanged,
+and no speed result is attributed to `7559b27`. Speed and paired qualification
 remain pending.
 
 Renderer retention remains a proposal: wrapping parity at fractional DPI must
@@ -480,12 +480,12 @@ and delivery remain pending.
 
 ## WIP handoff and paragraph continuation
 
-The previous worktree/branch was removed externally after `e61cdf1` integrated
+The previous worktree/branch was removed externally after `5a4c830` integrated
 the in-progress tests, GPUI hooks and qualification records into main. The
 attempted paragraph test process in that removed worktree has no retained
 outcome and is not counted. Work continues on `perf/companion-paragraph-layout`
 in `HARD-VC`, reusing its target directory. The WIP does not inherit the
-`68b5c05` qualification for its new test/hooks changes.
+`7559b27` qualification for its new test/hooks changes.
 
 An availability audit of the carried archive manifests found 29 exact copies,
 21 equivalent after a proven EOL conversion and 29 missing ignored raw logs,
@@ -496,7 +496,7 @@ Missing logs are not recreated. Current raw outputs are copied to non-ignored
 `.txt` files and hashed before source changes.
 
 The three original baseline executables still matched their approved hashes.
-They were copied byte for byte to a detached `ef2879a` checkout at
+They were copied byte for byte to a detached `3a2c973` checkout at
 `../.worktrees/companion-speed-baseline`; this checkout has no source edits.
 The frozen composition binary reads its original compiled manifest directory
 in `HARD-VC`. All 20 runtime fixture files there match the detached baseline
@@ -540,7 +540,7 @@ qualification remain pending.
 
 ## Independent clipboard assertions
 
-Independent review found no production defect in `63bc1fd`, but identified a
+Independent review found no production defect in `01f57c5`, but identified a
 test weakness inherited from the WIP: later copies could reuse the previous
 clipboard value or the previous complete selection. The full gate was manually
 interrupted during core tests to strengthen those assertions. Structure,
@@ -559,7 +559,7 @@ workload, cadence, warmup, readiness and limits are unchanged. The normalized
 production-prefix and five other source comparisons are recorded in
 `companion-qualification-2026-11-09/paragraph-fusion-e61cdf1/independent-gestures.json`.
 
-Frozen tests-only revision `ba9bf15b5945e369ecb0ab8d9d97a5a364f80070` passed
+Frozen tests-only revision `608cfd3262e8c7c634f5d02cbb5d9979932c87aa` passed
 the complete technical gate 9/9 in 2,007.756 seconds, with every step exiting
 zero. The workspace suite passed 2,167 tests, zero failed, 23 ignored and zero
 filtered across 61 targets; its step took 1,408.630 seconds including compilation.
@@ -570,12 +570,12 @@ hashes still matched `source-ba9bf15.json`, with an empty source diff.
 
 The completed output, timings and result are archived with exact byte hashes in
 `companion-qualification-2026-11-09/stage7-ba9bf15/`. Native and speed results
-for the same unchanged source follow. The failed historical `d71a573`
+for the same unchanged source follow. The failed historical `2531a81`
 three-stream preflight remains recorded at p95 12.3584 ms.
 
 ## Final native and speed qualification — 2026-11-10
 
-Native inspection passed with the `ba9bf15` debug executable at requested
+Native inspection passed with the `608cfd3` debug executable at requested
 1440×900 and 960×640 client sizes: three topics became two plus recoverable
 overflow; history reopened minimized/overflow topics, and Expand retained one
 composer. Paragraph wrapping, Unicode, table/code/diff content and selection in
@@ -604,11 +604,11 @@ indexes 512 byte-exact artifacts, including raw samples and
 
 Freeze checks before measurement, after preflight and after the gate verified
 966 source files, all 20 actual composition JSON inputs per checkout and six
-executables, with zero differences and HEAD fixed at `ba9bf15`. This qualifies
+executables, with zero differences and HEAD fixed at `608cfd3`. This qualifies
 the recorded offline workloads on this machine; it does not establish a
 universal speedup, real-model quality/latency or compositor presentation.
 The paired closed-dock command requested 1280×820 on both versions. Historical
-`ef2879a` release fixes `initial_window_size()` at 1280×820 and ignores the
+`3a2c973` release fixes `initial_window_size()` at 1280×820 and ignores the
 benchmark window-size environment variable. This source agrees with the request,
 but its 61 legacy idle JSON reports do not prove the observed viewport; the
 existing `-AllowLegacyUi` exception permits this compatibility path.
@@ -629,11 +629,11 @@ pending; integration and cleanup completed as recorded below.
 
 After the developer's explicit confirmation, merge, push and cleanup completed
 on 2026-11-10. HARD-VC integrated the delivery through merge
-`f4f8a66a6e45efd696e48388039bdcbc57d3b97d`; Cérebro integrated its qualification
+`3ac92826c6e5d23a83d50764e8e072f55a30736c`; Cérebro integrated its qualification
 documents through merge `d1ef42f84a7315f3e23a5bb4e4316178bb6dce73`.
 Both integration commits were verified on their respective `origin/main`.
 These hashes identify integration milestones; the qualified source remains
-`ba9bf15`. All 966 frozen source hashes matched after integration, with no code
+`608cfd3`. All 966 frozen source hashes matched after integration, with no code
 change from that qualified source.
 
 The detached `../.worktrees/companion-speed-baseline` worktree was removed,

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "sourceCommit": "9935489635ea894d86755d7f58cd26c34de812c8",
+  "sourceCommit": "cdbdb5a88e67fe18d772c5ba82110c6d5dc348c7",
   "status": "interrupted_after_visual_regression",
   "reason": "Ctrl+Shift+C closes a dock with focused history control but cannot reopen until focus returns to a visible host control.",
   "cliFailedTestsReported": 0,

@@ -1,7 +1,7 @@
 # Canvas AI authoring source publication — 2026-10-29
 
 The selected Canvas source was committed and pushed to `Nathan-dOS/HARD-VC` main
-as [`e7dfe4e10691c2e7101839f89a0917d227fc4c9b`](https://github.com/Nathan-dOS/HARD-VC/commit/e7dfe4e10691c2e7101839f89a0917d227fc4c9b).
+as [`92f03c43bd73521c9f4ee55c51c697ba84f557a8`](https://github.com/Nathan-dOS/HARD-VC/commit/92f03c43bd73521c9f4ee55c51c697ba84f557a8).
 Remote main was verified after the push. The maintainer approved this source
 publication after reviewing the completed implementation and validation. No task
 branch or worktree was created.
@@ -15,7 +15,7 @@ selected tree, preserved locally and restored after the source commit.
 
 The publication candidate was isolated from unrelated local voice work before
 validation. The qualified index tree was
-`ce651c87810c7ceb0be4265db713c442b0390e97`, based on `92f6a0c`.
+`ce651c87810c7ceb0be4265db713c442b0390e97`, based on `b3505a5`.
 All **884 source SHA-256 values and Git blob identities** were verified against
 the selected index and subsequently against the source commit, with **zero drift**.
 The [qualification record](canvas-ai-publication-qualification-2026-10-29.json)
@@ -53,7 +53,7 @@ retains the earlier 1,782-test, 887-source qualification, which included preserv
 local voice changes. Its counts, source hashes and release hash describe that
 historical combined checkout. They are not the qualification of the selected
 source commit. The separate 1,778-test/884-source run above qualifies the Canvas
-selection published in `e7dfe4e`. The two runs overlap and must not be added.
+selection published in `92f03c4`. The two runs overlap and must not be added.
 
 ## Preservation and scope
 

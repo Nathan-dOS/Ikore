@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "sourceCommit": "68b5c0522fa642664f114e4bbdf8628c81db41c0",
+  "sourceCommit": "7559b27ee1ce5c5b770e3c0649cf6c215a0cce69",
   "capturedAtUtc": "2026-11-09T21:02:11.616330+00:00",
   "binarySha256": "a788a0f42e85ff26caa0ba0d53489092c9c71507c97ce9190d80821d0de10852",
   "previousSqlite": "3.48.0",

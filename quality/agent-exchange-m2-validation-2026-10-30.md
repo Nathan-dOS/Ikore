@@ -1,8 +1,8 @@
 # Agent exchange M2 validation: durable exchange log and doorbell (ADR-037)
 
-Date: 2026-10-30. Source: branch `feat/agent-exchange`, M2 at `3d7ab74`,
-gated on `133424b` (M2 plus the M1 report). The load rehearsal was rewritten
-in `2ddcb7c`, and `d230cda` (M4) trimmed the append path. Compared with the
+Date: 2026-10-30. Source: branch `feat/agent-exchange`, M2 at `222b06e`,
+gated on `d19bf47` (M2 plus the M1 report). The load rehearsal was rewritten
+in `bee6e68`, and `9adbe14` (M4) trimmed the append path. Compared with the
 [baseline before M1](agent-exchange-baseline-2026-10-29.md).
 
 This report approves no distribution.
@@ -44,7 +44,7 @@ This report approves no distribution.
 
 ## Stage 7 gate
 
-`scripts/gate-stage7.ps1` passed on `133424b` in 2,724.8 s, in the second
+`scripts/gate-stage7.ps1` passed on `d19bf47` in 2,724.8 s, in the second
 worktree, incremental over the M1 gate.
 
 | Step | Result | Duration |
@@ -75,15 +75,15 @@ binaries were run alternately on the same machine, three runs each.
 
 | Session | Build | Non-terminal p95 | Terminal p95 |
 |---|---|---:|---:|
-| 1 | Baseline code (`dd9a321`) | 3.17 ms | 3.56 ms |
-| 1 | M2 (`2ddcb7c`) | 3.91 ms (+23%) | 4.49 ms (+26%) |
-| 2 | Baseline code (`dd9a321`) | 3.35 ms | 3.81 ms |
-| 2 | M2 (`2ddcb7c`) | 3.81 ms (+14%) | 4.36 ms (+15%) |
-| 2 | Final (`9526c77`) | 3.76 ms (+12%) | 4.42 ms (+16%) |
+| 1 | Baseline code (`a17049b`) | 3.17 ms | 3.56 ms |
+| 1 | M2 (`bee6e68`) | 3.91 ms (+23%) | 4.49 ms (+26%) |
+| 2 | Baseline code (`a17049b`) | 3.35 ms | 3.81 ms |
+| 2 | M2 (`bee6e68`) | 3.81 ms (+14%) | 4.36 ms (+15%) |
+| 2 | Final (`4e396ad`) | 3.76 ms (+12%) | 4.42 ms (+16%) |
 
 Values are the median of the three runs' p95. The append costs 0.4 to 0.9 ms
 per transition at p95: under the 15 ms absolute cap, **over the 10% relative
-ceiling** of the plan. Trimming one statement per append (`d230cda`) made no
+ceiling** of the plan. Trimming one statement per append (`9adbe14`) made no
 measurable difference; the cost is the extra pages each commit writes (the
 item, its three indexes, the stream and the AUTOINCREMENT counter) under the
 rollback journal. This met the ADR's own review criterion for transition
@@ -92,17 +92,17 @@ another journal mode remain options if a later measurement exceeds 0.9 ms.
 
 ## Load rehearsal
 
-`exchange_m2_load_slow_subscriber`, opt-in, on `9526c77`: 100,000 terminal
+`exchange_m2_load_slow_subscriber`, opt-in, on `4e396ad`: 100,000 terminal
 events written in bursts of 2,000 and 1,000 pulsation transitions, with a
 subscriber slower than the event bus. The bus lagged 14 times and the
 terminal run had 7 gaps; the follower re-read 99,943 events by range, saw all
 1,000 transitions and never reset. No full reload happened. (The first run,
-on `2ddcb7c`: 23 lags, 10 gaps, 99,940 events re-read, 0 resets.)
+on `bee6e68`: 23 lags, 10 gaps, 99,940 events re-read, 0 resets.)
 
 ## Terminal re-read
 
 `exchange_m2_terminal_reread`: one page of 500 events at 100 cursors spread
-over a 100,000-event run, on `9526c77`: p50 16.8 ms, **p95 23.0 ms** (ceiling
+over a 100,000-event run, on `4e396ad`: p50 16.8 ms, **p95 23.0 ms** (ceiling
 50 ms), max 48.3 ms. Before M2 a page cost about 1.6 s at any cursor,
 because the whole run was read and redacted first.
 

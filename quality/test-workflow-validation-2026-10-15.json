@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "pathSanitization": "2026-10-17: personal checkout prefix replaced with <repo>; original validation fields and source identifiers retained.",
   "validatedAt": "2026-10-15T20:26:47.2265338Z",
-  "baseRevision": "7ee6ef58273c0c379082020567aa015a09dd150d",
+  "baseRevision": "2ad62fefc2f7c4f70eeae52ff1f9d9f129c1d740",
   "sourceIdentification": "SHA-256 identifies bytes in the validation worktree. Git blob IDs identify normalized source across CRLF/LF checkouts; the containing Git commit preserves this report.",
   "implementationFiles": [
     {

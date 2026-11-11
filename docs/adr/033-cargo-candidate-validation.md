@@ -70,7 +70,7 @@ states and operating limits.
 
 ## Integration update — 2026-10-26
 
-Rebased on `456c91d`, which completes feature 10 in ADR-034. This decision now
+Rebased on `9145783`, which completes feature 10 in ADR-034. This decision now
 uses migration V55 and review manifest schema 3, preserving ADR-034 risk fields,
 Intake policy snapshots and high-risk acknowledgement. Executed failed evidence
 remains negative evidence; inconclusive Cargo results do not satisfy coverage.

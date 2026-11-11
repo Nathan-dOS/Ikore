@@ -3,7 +3,7 @@
 Design references: [public summaries](../docs/adr/README.md); [historical archive context](README.md#historical-design-references).
 
 Data: 2026-08-28. Repositório: `C:\Dev\Hard-Vibe-Code`, branch `gpui-migration`.
-Base: `4d220ba` (M1). Implementação: `541ec1d`.
+Base: `b9a0512` (M1). Implementação: `63c024b`.
 Decisão: ADR-007 e REGRAS de sincronização do cérebro do projeto.
 
 Status: **M2 concluído; G2 aprovado**. Não é autorização de rollout M5.
@@ -53,7 +53,7 @@ Status: **M2 concluído; G2 aprovado**. Não é autorização de rollout M5.
 | `cargo fmt --all -- --check` | Aprovado |
 | `cargo clippy --workspace --all-targets --locked --offline --quiet -- -D warnings` | Aprovado, sem warnings do workspace |
 | `cargo test --workspace --locked --offline --quiet` | 270 aprovados: 162 core, 14 editor, 19 test-support, 16 integrações, 59 UI (254 unitários + 16 integrações) |
-| `cargo build --release --locked --offline -p hvc-app` | Aprovado no código final `541ec1d` |
+| `cargo build --release --locked --offline -p hvc-app` | Aprovado no código final `63c024b` |
 | `powershell -ExecutionPolicy Bypass -File scripts/smoke-windows.ps1` | Aprovado novamente no binário final: janela encontrada, banco isolado inicializado, shutdown gracioso, exit code 0 |
 | `git diff --check` | Aprovado no fechamento do código e da documentação |
 | Auditoria de licenças/fontes | Aprovada tecnicamente: 549 pacotes, sem licença negada/ausente ou fonte não aprovada |

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "sourceCommit": "a362f4f8adb79cd172ea7c2b9198c3f146ff4c33",
+  "sourceCommit": "72eecca7a1f3626f5a64453fb3d8b12d1cd24fae",
   "capturedAtUtc": "2026-11-08T18:54:03.302669+00:00",
   "scope": "Failed first three-stream preflight and separate closed-dock diagnostic; not a complete or paired gate.",
   "artifacts": {

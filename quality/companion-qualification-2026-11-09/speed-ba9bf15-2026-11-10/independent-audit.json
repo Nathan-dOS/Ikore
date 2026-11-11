@@ -3,7 +3,7 @@
   "kind": "independent-read-only-speed-audit",
   "auditedAtUtc": "2026-11-10T11:15:44.948443+00:00",
   "result": "passed",
-  "sourceCommit": "ba9bf15b5945e369ecb0ab8d9d97a5a364f80070",
+  "sourceCommit": "608cfd3262e8c7c634f5d02cbb5d9979932c87aa",
   "branch": "perf/companion-paragraph-layout",
   "scope": "Recalculation and read-only review of existing frozen evidence; no new test, Cargo, EXE, benchmark or network operation. Only this audit JSON was written.",
   "sampleInventory": {
@@ -284,7 +284,7 @@
   },
   "legacyViewportEvidence": {
     "scriptRequested": "1280x820",
-    "baselineSource": "ef2879a6ecc161f5910c6ee4402aea1206d644f8:crates/hvc-ui/src/shell.rs",
+    "baselineSource": "3a2c973a5bbe58e3d6e28cc88739c5f86e1ae9de:crates/hvc-ui/src/shell.rs",
     "baselineReleaseDefault": "1280x820",
     "baselineHonorsBenchmarkWindowSizeEnvironment": false,
     "observedViewportInBaselineJson": null,
@@ -299,7 +299,7 @@
     "The UI metric measures GPUI animation-frame callback intervals, not direct compositor presentation.",
     "The script requests 1280x820. Historical ef287 release ignores HVC_BENCHMARK_UI_WINDOW_SIZE and defaults in source to1280x820. Its 61 legacy idle JSON reports do not prove actual observed viewport; the helper explicitly permits this compatibility path. Candidate closed-dock and streaming viewports were checked directly.",
     "The existing median-delta versus A/A p95-noise rule passed. It proves neither statistical significance, confidence intervals nor speedup. Transition tolerances are large relative to observed deltas.",
-    "The comparison covers the complete frozen candidate versus ef2879a baseline and does not causally isolate only the paragraph change.",
+    "The comparison covers the complete frozen candidate versus 3a2c973 baseline and does not causally isolate only the paragraph change.",
     "Snapshots cannot certify transient changes restored between observations. OS DLLs, fonts, GPU drivers, ambient load and power policy are outside frozen identity.",
     "Cargo fingerprints are cached provenance evidence rather than an independent rebuild. Python preserved all integer fields, including values above2^53.",
     "No merge, push or branch/worktree cleanup was authorized or performed by this auditor."

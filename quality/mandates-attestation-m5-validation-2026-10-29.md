@@ -1,7 +1,7 @@
 # Execution mandates, scope grants and attestation (ADR-035, ADR-036 M5) — closing validation
 
 Date: 2026-10-29. Branch `feat/mandates-layers-attestation`, implementation
-`e739a65` (layout fix) and `34e71e0` (measurement, threat model, fixture) on top of the M4 commits (`6efa0d0`, `f18a0f7`, see the
+`f1f1a83` (layout fix) and `faa0137` (measurement, threat model, fixture) on top of the M4 commits (`363ac1d`, `9396f3f`, see the
 [M4 report](mandates-attestation-m4-validation-2026-10-29.md)). Decisions:
 [ADR-035](../docs/adr/035-execution-mandates.md) and
 [ADR-036](../docs/adr/036-pulsation-attestation.md). No migration. Nothing is
@@ -87,7 +87,7 @@ of real use are for Feature 17 to collect.
 
 Environment: Windows 11 Pro 10.0.26300, Rust/Cargo 1.98.0, `--locked`,
 `CARGO_BUILD_JOBS=6`, in the branch's own worktree, on the tree of
-`34e71e0`.
+`faa0137`.
 
 The Stage 7 gate (`scripts/gate-stage7.ps1`, 2026-10-29 12:23–12:51 local
 time, 1,648 s) ran every step. All passed except the advisories step:
@@ -104,7 +104,7 @@ time, 1,648 s) ran every step. All passed except the advisories step:
 | Rust licenses and sources (560 packages for `x86_64-pc-windows-msvc`, none denied) | PASS | 2.132 s |
 | Rust advisories (RustSec `ee1a49a`) | **FAIL: 1 vulnerability**; 14 `unmaintained` and 2 `unsound` informational warnings, the same crates as before | 5.600 s |
 
-Against the M4 gate (`f18a0f7`: 1,667 passed): two more passing tests,
+Against the M4 gate (`9396f3f`: 1,667 passed): two more passing tests,
 `a_record_replayed_on_another_pulsation_is_detected` and
 `governance_tolerates_an_older_database_and_flags_refused_writes`; four
 layout tests and one integration test gained assertions. The ignored tests
@@ -114,7 +114,7 @@ are the same opt-in ones.
 ("libz-sys build script leaks environment variables in the build
 directory", published 2026-10-28, patched in `>=1.1.31`) names `libz-sys`
 1.1.29. It entered the RustSec database after the M4 gate's `40f5be6`. The
-package has been in `Cargo.lock` since the baseline `175b3cb` and is on
+package has been in `Cargo.lock` since the baseline `9ebea09` and is on
 `main` too, through the optional `git2` dependency of `gpui_util`; `cargo
 tree` finds it in no build of this workspace, so no binary compiles it.
 `cargo audit` reads the whole lockfile, so the step fails. The fix is a
@@ -128,7 +128,7 @@ blocker, as before.
 
 `ring`: `cargo tree -i ring` shows `ring` 0.17.14 under `rustls` and
 `rustls-webpki`, as at the baseline, plus the direct edge from `hvc-core`.
-`Cargo.lock` has 794 packages at `175b3cb` and now; Feature 19 added
+`Cargo.lock` has 794 packages at `9ebea09` and now; Feature 19 added
 dependency edges only (`base64`, `ring` and `zeroize` in `hvc-core`,
 `keyring` in `hvc-test-support`), no package.
 
@@ -160,7 +160,7 @@ V58. The reports of M1 to M5 keep the branch numbers.
 
 `libz-sys` then moved to 1.1.31 in `Cargo.lock` (lockfile-only, nothing else
 re-resolved), which clears RUSTSEC-2026-0418. The Stage 7 gate on the
-integrated tree (`d87736f`, 2026-10-29 13:03–13:43 local time, 2,362 s)
+integrated tree (`1581911`, 2026-10-29 13:03–13:43 local time, 2,362 s)
 **passed every step**: structure, boundaries, fmt, Clippy, 59 test targets
 with **1,896 passed, 0 failed, 17 ignored** (main's canvas and Cargo tests
 included), release build, smoke, licences and advisories (0 vulnerabilities,

@@ -6,7 +6,7 @@
     "status": "completed",
     "runId": "boundary-final-r2-20261023",
     "preparedAtUtc": "2026-10-23T15:59:35.796296+00:00",
-    "baselineRevision": "325ddbdd392be36188fac1ffec549235ea340a1c",
+    "baselineRevision": "954bd6e424cb23225b1d5c0ab5da4955077f8a56",
     "baselineArchiveSha256": "6ea597c91fc5716e4f68f77ac1ca7225c034832d41a8dd1292c471fd549bc3ee",
     "snapshots": {
       "before": {

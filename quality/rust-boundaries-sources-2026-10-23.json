@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "baselineRevision": "325ddbdd392be36188fac1ffec549235ea340a1c",
+  "baselineRevision": "954bd6e424cb23225b1d5c0ab5da4955077f8a56",
   "scope": "Changed and added source/configuration files. Unchanged files are identified by the baseline Git revision; documentation and quality reports are excluded.",
   "sha256ByPath": {
     ".cargo/config.toml": "ef99ba076215130fdb943c54d3e061d0341a749b3b649e8c4c9647b91fa8d2dd",

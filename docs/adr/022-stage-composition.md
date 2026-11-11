@@ -1,6 +1,6 @@
 # ADR-022: host-coordinated stage composition
 
-Public summary of the implemented v4 boundary at `bee361b` (2026-10-17).
+Public summary of the implemented v4 boundary at `b66ea5d` (2026-10-17).
 The six outer stages and the human checkpoint contract remain in place.
 Legacy v1-v3 pulsations retain their original execution path.
 

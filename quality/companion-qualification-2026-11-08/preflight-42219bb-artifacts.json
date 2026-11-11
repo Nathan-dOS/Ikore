@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "sourceCommit": "42219bb7abdab2b4ac71f8ff18e5e5cc8b695251",
+  "sourceCommit": "86ff2eb466bf6124e861b24041b59a27070788ab",
   "capturedAtUtc": "2026-11-09T09:17:59.921093+00:00",
   "scope": "Failed first release preflight after bounded constraint cache. Not a complete or paired speed gate.",
   "artifacts": {

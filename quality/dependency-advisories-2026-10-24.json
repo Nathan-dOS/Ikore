@@ -1,7 +1,7 @@
 {
     "schemaVersion":  1,
     "auditedAt":  "2026-10-25T01:16:31Z",
-    "baseline":  "e8f4644",
+    "baseline":  "bde2d06",
     "branch":  "fix/dependency-advisories",
     "cargoAuditVersion":  "0.22.2",
     "database":  {
@@ -49,7 +49,7 @@
                            "rejectedCargoUpdateSideEffects":  "cargo update -p (with or without --precise) also re-pointed range dependency edges (windows-sys 0.61.2 -> 0.48/0.52/0.59/0.60, getrandom 0.4.3 -> 0.3.4 under tempfile) non-deterministically between identical runs; those edges were kept as on the baseline."
                        },
     "before":  {
-                   "lockfile":  "e8f4644",
+                   "lockfile":  "bde2d06",
                    "exitCode":  1,
                    "vulnerabilityCount":  9,
                    "informationalWarnings":  {

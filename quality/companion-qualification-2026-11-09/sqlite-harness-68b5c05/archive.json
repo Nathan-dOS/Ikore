@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "createdAtUtc": "2026-11-09T20:18:13.805772+00:00",
-  "sourceCommit": "68b5c0522fa642664f114e4bbdf8628c81db41c0",
+  "sourceCommit": "7559b27ee1ce5c5b770e3c0649cf6c215a0cce69",
   "sourceSnapshot": "quality/companion-qualification-2026-11-09/source-68b5c05.json",
   "sourceSnapshotSha256": "36886e17c3849b1ed90ad12c4a1c8fb22539f8e473cdb434adac2ff4a60d16ec",
   "sourceSnapshotFiles": 966,
@@ -36,7 +36,7 @@
     },
     {
       "path": "commit.patch",
-      "source": "git diff 68b5c05^ 68b5c05 -- crates/hvc-test-support/src/core_harness.rs docs/testing.md",
+      "source": "git diff 7559b27^ 7559b27 -- crates/hvc-test-support/src/core_harness.rs docs/testing.md",
       "bytes": 2863,
       "sha256": "aaca3bdc09b00ee28adb3e1242b17e63a8aa08259b085e59b94206e797f3facf"
     }

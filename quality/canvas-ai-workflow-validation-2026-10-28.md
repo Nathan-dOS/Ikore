@@ -5,13 +5,13 @@ Implementation started on 2026-10-28; final validation completed on 2026-10-29
 the actual UTC start/finish times.
 
 **Publication follow-up, 2026-10-29:** the selected Canvas source was published on
-main as [`e7dfe4e`](https://github.com/Nathan-dOS/HARD-VC/commit/e7dfe4e10691c2e7101839f89a0917d227fc4c9b).
+main as [`92f03c4`](https://github.com/Nathan-dOS/HARD-VC/commit/92f03c43bd73521c9f4ee55c51c697ba84f557a8).
 The [publication record](canvas-ai-publication-2026-10-29.md) covers its separate
 1,778-test/884-source qualification with unrelated voice work excluded. This
 report retains the earlier 1,782-test combined-checkout evidence.
 
 Status of the original qualification: all nine Stage 7 checks passed. Work used
-the existing dirty `main` checkout, based on `92f6a0c`, with pre-existing Canvas
+the existing dirty `main` checkout, based on `b3505a5`, with pre-existing Canvas
 refinements and voice changes preserved. No branch, worktree, commit, merge or
 push was created by that implementation continuation. This report describes its
 combined local candidate; the publication follow-up above identifies the source
@@ -199,7 +199,7 @@ Evidence:
 - [Source fingerprint](canvas-ai-workflow-source-fingerprint-2026-10-28.json): 887 files checked after the gate, zero drift
 
 The release SHA-256 is `3023af13265c2c094968339df7a78f91d3a3b327abfa02bc93bac2d1c298546d`.
-At the end of this historical run, the base was `92f6a0c` on local main, with no
+At the end of this historical run, the base was `b3505a5` on local main, with no
 staged files, task branch, worktree, commit or push. Other pre-existing worktrees
 and local voice changes were preserved. The maintainer subsequently approved
 publication; the [publication record](canvas-ai-publication-2026-10-29.md)

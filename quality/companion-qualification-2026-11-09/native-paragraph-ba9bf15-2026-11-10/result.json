@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "testedAtUtc": "2026-11-10T09:59:34.184622+00:00",
-  "sourceCommit": "ba9bf15b5945e369ecb0ab8d9d97a5a364f80070",
+  "sourceCommit": "608cfd3262e8c7c634f5d02cbb5d9979932c87aa",
   "nativeDebugExecutable": {
     "path": "<repo>\\target\\debug\\hard-vibe-code.exe",
     "sha256": "97a78f96d14986ccad40fe21322e50c597a9d572c3d00e4fea5c7cbf37cddc00"

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "capturedAtUtc": "2026-11-09T14:20:15.172382+00:00",
-  "baseCommit": "42219bb7abdab2b4ac71f8ff18e5e5cc8b695251",
+  "baseCommit": "86ff2eb466bf6124e861b24041b59a27070788ab",
   "scope": "Private vendor painting tests; application workspace gate and release speed remain pending.",
   "focused": {
     "passed": 12,

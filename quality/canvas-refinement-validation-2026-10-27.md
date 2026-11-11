@@ -1,7 +1,7 @@
 # Canvas interaction and grid refinement — 2026-10-27
 
 Status: implemented, measured and validated on 2026-10-27 (America/Sao_Paulo).
-Working directly on `main`, based on `92f6a0c`, at the maintainer's request. No branch,
+Working directly on `main`, based on `b3505a5`, at the maintainer's request. No branch,
 worktree, commit or push is created for this revision. Pre-existing Whisper changes
 remain in the checkout; validation runs against that combined working tree. The
 Mandates worktree is untouched. Cerebro documentation stays local.

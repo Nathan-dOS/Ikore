@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Freeze/verify the approved ba9bf15 benchmark inputs using Python stdlib only.
+"""Freeze/verify the approved 608cfd3 benchmark inputs using Python stdlib only.
 
 Run ONLY after the final Stage 7 gate and the separate standalone composition
 build have completed, with no Cargo, compiler, test or benchmark still running.
@@ -7,7 +7,7 @@ This utility runs read-only Git commands. It NEVER executes Cargo, rustc, a
 benchmark/test executable, or an application executable.
 
 Prerequisites reviewed by the operator:
-  * Stage 7 output.txt/timings.json/result.json belong to ba9bf15 and passed.
+  * Stage 7 output.txt/timings.json/result.json belong to 608cfd3 and passed.
   * The completed example build used precisely:
       cargo build --locked -p hvc-test-support --example composition_benchmark --example pulsation_ui_fixture
     This builds both examples with the same package/profile/feature graph; no
@@ -50,9 +50,9 @@ import subprocess
 import sys
 
 
-EXPECTED_HEAD = "ba9bf15b5945e369ecb0ab8d9d97a5a364f80070"
+EXPECTED_HEAD = "608cfd3262e8c7c634f5d02cbb5d9979932c87aa"
 EXPECTED_BRANCH = "perf/companion-paragraph-layout"
-BASELINE_HEAD = "ef2879a6ecc161f5910c6ee4402aea1206d644f8"
+BASELINE_HEAD = "3a2c973a5bbe58e3d6e28cc88739c5f86e1ae9de"
 SOURCE_COUNT = 966
 FIXTURE_COUNT = 20
 SOURCE_SCOPES = [
@@ -267,7 +267,7 @@ def fixture_files(root, expected):
         approved = expected_by_name[path.name]
         require(record["sha256"] == approved["sha256"].lower() and
                 record["bytes"] == approved["bytes"],
-                "Fixture bytes differ from ef2879a proof: " + path.name)
+                "Fixture bytes differ from 3a2c973 proof: " + path.name)
         record["path"] = approved["path"]
         records.append(record)
     return records

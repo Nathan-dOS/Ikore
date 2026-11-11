@@ -538,7 +538,7 @@ the default collector configuration. See [ADR-031](adr/031-terminal-boundary.md)
 ## Canvas AI authoring candidate
 
 The [authoring implementation](canvas-ai-authoring.md) is published on main in
-[`e7dfe4e`](https://github.com/Nathan-dOS/Ikore/commit/e7dfe4e10691c2e7101839f89a0917d227fc4c9b).
+[`92f03c4`](https://github.com/Nathan-dOS/Ikore/commit/92f03c43bd73521c9f4ee55c51c697ba84f557a8).
 Its selected source tree excluded unrelated local voice changes. On 2026-10-29,
 the complete suite passed 1,778 tests, zero failed, 16 ignored and zero filtered
 across 55 target summaries in 2,023.458 seconds. All nine gate checks passed in

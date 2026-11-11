@@ -1,7 +1,7 @@
 # Agent exchange M1 validation: provenance envelopes (ADR-037)
 
-Date: 2026-10-30. Source: branch `feat/agent-exchange`, M1 at `99cc886` plus
-the test fix `bfb02d2`. Compared with the
+Date: 2026-10-30. Source: branch `feat/agent-exchange`, M1 at `f03f26d` plus
+the test fix `dd50314`. Compared with the
 [baseline before M1](agent-exchange-baseline-2026-10-29.md).
 
 This report approves no distribution.
@@ -64,8 +64,8 @@ Per-call data:
 
 ## Stage 7 gate
 
-`scripts/gate-stage7.ps1` passed on `bfb02d2` in 2,220.5 s, in a second
-worktree with the build of an earlier run on `99cc886` (so `fmt` and Clippy
+`scripts/gate-stage7.ps1` passed on `dd50314` in 2,220.5 s, in a second
+worktree with the build of an earlier run on `f03f26d` (so `fmt` and Clippy
 were incremental).
 
 | Step | Result | Duration |
@@ -84,10 +84,10 @@ Against the baseline: one more target (`prompt_input_inventory`), 18 more
 passing tests, and 3 more ignored ones (the opt-in baseline harness). Binary
 distribution stays blocked by `zed-55470`.
 
-The first gate run on `99cc886` failed one test,
+The first gate run on `f03f26d` failed one test,
 `prompt_handoff_compacts_only_context_and_preserves_normative_content`: it
 required the legacy prompt's artifacts to equal the persisted ones, and M1
-labels them. `bfb02d2` strips and checks the two labels and keeps every other
+labels them. `dd50314` strips and checks the two labels and keeps every other
 field equal.
 
 ## Rerunning

@@ -2,11 +2,11 @@
   "schemaVersion": 1,
   "pathSanitization": "2026-10-17: personal checkout prefix replaced with <repo>; original validation fields and source identifiers retained.",
   "validatedAt": "2026-10-16T02:10:30.6547225Z",
-  "localParent": "45d641d6f8333d5ee8324b177df7ae567a4aac83",
-  "concurrentParent": "a7250a90da2e7d408c0e7024f15880c2a3da8b8a",
+  "localParent": "f7b61c33ab46a8f08bbf17f371b4ef63faa5cf78",
+  "concurrentParent": "0290734bbde787e425ceb50bdd29fd4a6955193a",
   "concurrentCommits": [
-    "dcfd09c0d0c593bdf26f9b704d85ed0f7b87ce48",
-    "a7250a90da2e7d408c0e7024f15880c2a3da8b8a"
+    "ffd5880d5412b521a47ca47a887fe9bbdf99514c",
+    "0290734bbde787e425ceb50bdd29fd4a6955193a"
   ],
   "sourceIdentification": "Normalized Git blobs identify the validated integration worktree, excluding concurrent uncommitted M3. The containing merge commit is the delivered app revision.",
   "sourceCodeBlobs": [

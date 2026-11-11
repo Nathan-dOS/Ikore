@@ -7,7 +7,7 @@ Historical 2026-09-06 baseline. The advisory-only triage contract below was supe
 ## Baseline and scope
 
 - Date: 2026-09-06.
-- Code HEAD at start: `afac99605d81d4fe2afa377f3be767c992d7f4c6`, branch `gpui-migration`.
+- Code HEAD at start: `ee898342bfb6df157035ec2c7d517649708a24b0`, branch `gpui-migration`.
 - Existing local UI, model-catalog and icon changes were preserved. Additional concurrent
   UI changes remained in the workspace; they were not reverted or claimed as Forge work.
 - Tracked baseline patches were saved under the temporary directory

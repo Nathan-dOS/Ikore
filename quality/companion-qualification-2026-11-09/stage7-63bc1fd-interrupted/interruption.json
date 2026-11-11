@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "sourceCommit": "63bc1fd4ae9bb05404adc5e7c798841888bf5ae3",
+  "sourceCommit": "01f57c5910ef28bb9bb9e873c7ba5ee627de4278",
   "stoppedAtUtc": "2026-11-10T01:28:56.609228+00:00",
   "outcome": "manually interrupted; not a full gate result",
   "reason": "Independent review found stale clipboard values could conceal a no-op copy in the new test. Strengthen each gesture with a sentinel and verify Ctrl+A starts from an empty selection. No production defect or failing application test reported before stop.",

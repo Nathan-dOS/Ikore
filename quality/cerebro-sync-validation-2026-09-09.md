@@ -4,10 +4,10 @@ Design references: [public summaries](../docs/adr/README.md); [historical archiv
 
 ## Scope
 
-Baseline: HVC `dev:f91f7d1c3ee1762f48831efacfaed32b73c96e6d`; Cerebro `main:df19cab`.
+Baseline: HVC `dev:26be06f62d2c0f8fc6f59631c0211e6406f240b5`; Cerebro `main:df19cab`.
 The audit confirmed missing runtime/Windows mechanisms and undocumented V26 Forge analysis/V27 stage-failure behavior within the mixed token-accounting commit.
 
-This change versions the existing failure UI, purpose-filtered checkpoint updates, cancellation cleanup, populated migration test and loopback recovery tests. Review additionally disarms Abort when selection or checkpoint identity/version changes and labels the persisted cumulative count as Attempts. The runtime correction remains in `1fdf9c8`, Windows activation in `afac996`, and general LF/CRLF checksum reconciliation in `7570cab`; the patch inventory now records HVC-GPUI-002.
+This change versions the existing failure UI, purpose-filtered checkpoint updates, cancellation cleanup, populated migration test and loopback recovery tests. Review additionally disarms Abort when selection or checkpoint identity/version changes and labels the persisted cumulative count as Attempts. The runtime correction remains in `2eded9a`, Windows activation in `ee89834`, and general LF/CRLF checksum reconciliation in `eb2266c`; the patch inventory now records HVC-GPUI-002.
 
 Nathan explicitly confirmed the existing V26 analysis authority on 2026-09-09. Cerebro ADR-016 now permits developer-started triage to approve eligible scope/create tasks and dependency analysis to apply agent-origin edges. Host validation, preservation of human relations, cycle prevention and explicit dispatch/final acceptance remain. ADR-021 records the failure checkpoint contract. No new Forge runtime behavior was introduced in this synchronization.
 

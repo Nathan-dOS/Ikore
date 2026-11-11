@@ -33,7 +33,7 @@
         "composition": {
           "note": "Reference from the pinned historical JSON; mutable original path is NOT read for baseline identity.",
           "originalPathHistoricalOnly": "<repo>\\target\\debug\\.fingerprint\\hvc-test-support-3b4c6d15a172cb96\\example-composition_benchmark.json",
-          "provenanceQualification": "Standalone example successfully rebuilt with --locked from clean original ef2879a under the pinned toolchain; separate build log, command and resulting artifact hash recorded. Original gate log qualification remains separate and does not claim this example was run there.",
+          "provenanceQualification": "Standalone example successfully rebuilt with --locked from clean original 3a2c973 under the pinned toolchain; separate build log, command and resulting artifact hash recorded. Original gate log qualification remains separate and does not claim this example was run there.",
           "recordedFields": {
             "compile_kind": 0,
             "config": 9396254390672932401,
@@ -108,7 +108,7 @@
       },
       "git": {
         "branch": "HEAD",
-        "head": "ef2879a6ecc161f5910c6ee4402aea1206d644f8",
+        "head": "3a2c973a5bbe58e3d6e28cc88739c5f86e1ae9de",
         "root": "<home>\\Documents\\Nathan\\HardVibeCode\\.worktrees\\companion-speed-baseline",
         "sourceDiffEmpty": true,
         "sourceScopes": [
@@ -633,7 +633,7 @@
       },
       "git": {
         "branch": "perf/companion-paragraph-layout",
-        "head": "ba9bf15b5945e369ecb0ab8d9d97a5a364f80070",
+        "head": "608cfd3262e8c7c634f5d02cbb5d9979932c87aa",
         "root": "<repo>",
         "sourceDiffEmpty": true,
         "sourceScopes": [

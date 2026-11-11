@@ -1,6 +1,6 @@
 # Checkpoint RS1 — Resolução estrutural Brownfield
 
-Data: 2026-08-31. Branch `gpui-migration`. Baseline do runtime: `2dbc9d6`. Estado: **RS1-G aprovado; Brownfield permanece opt-in e desativado por padrão**.
+Data: 2026-08-31. Branch `gpui-migration`. Baseline do runtime: `7205acf`. Estado: **RS1-G aprovado; Brownfield permanece opt-in e desativado por padrão**.
 
 ## Resultado
 

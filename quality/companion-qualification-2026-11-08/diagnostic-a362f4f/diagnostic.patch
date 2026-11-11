@@ -455,7 +455,7 @@ new file mode 100644
 +pub fn finish_present(ns:u64){with_trace(|s| {
 +    if let Some(last)=s.frames.last_mut(){last.scope_ns.insert("present",ns);}
 +    if s.finish {
-+        let report=json!({"diagnosticOnly":true,"releaseGate":false,"sourceCommit":"a362f4f","frames":s.frames,"events":*EVENTS.lock().unwrap(),"terminal":s.terminal});
++        let report=json!({"diagnosticOnly":true,"releaseGate":false,"sourceCommit":"72eecca","frames":s.frames,"events":*EVENTS.lock().unwrap(),"terminal":s.terminal});
 +        if let Some(parent)=s.path.parent(){let _=std::fs::create_dir_all(parent);}
 +        let _=std::fs::write(&s.path,serde_json::to_vec_pretty(&report).unwrap());
 +        s.finish=false;

@@ -1,6 +1,6 @@
 # Deterministic secret sanitization — implementation and validation
 
-Date: 2026-10-22. Implementation baseline: `adcf49b`; local working tree.
+Date: 2026-10-22. Implementation baseline: `e395b04`; local working tree.
 Policy: `hvc-secret-projection-v1`; additive SQLite migration: V49.
 
 This report qualifies the host-provided boundaries and compiled detector catalog.
@@ -142,7 +142,7 @@ payload-metadata regressions also passed as targeted checks before this run.
 
 The **overall gate is not approved** because RustSec reports
 9 existing dependency advisories. Dependency manifests and
-`Cargo.lock` remain unchanged from `adcf49b`. The audit used database commit
+`Cargo.lock` remain unchanged from `e395b04`. The audit used database commit
 `640bf5a9f06e66d8721e8772766531fe77c8630d`; the affected existing packages are
 `quinn-proto`, `rustls`, `rustls-webpki` and `webpki-roots`. The
 [dated advisory evidence](secret-sanitization-advisories-2026-10-22.json)

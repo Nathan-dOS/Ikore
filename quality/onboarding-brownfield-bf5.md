@@ -1,6 +1,6 @@
 # Checkpoint BF5 — Cobertura, benchmarks e ativação
 
-Data: 2026-08-31. Branch `gpui-migration`. Baseline: `a7e09fc` (BF4-G). Estado: **BF5-G aprovado; rollout Brownfield concluído em modo opt-in**.
+Data: 2026-08-31. Branch `gpui-migration`. Baseline: `72b53bd` (BF4-G). Estado: **BF5-G aprovado; rollout Brownfield concluído em modo opt-in**.
 
 ## Resultado
 

@@ -1,6 +1,6 @@
 # Agent exchange closing validation (ADR-037 M6)
 
-Date: 2026-10-30. Source: branch `feat/agent-exchange` at `9526c77`, the last
+Date: 2026-10-30. Source: branch `feat/agent-exchange` at `4e396ad`, the last
 code commit of the feature. Earlier milestones:
 [M1](agent-exchange-m1-validation-2026-10-30.md),
 [M2](agent-exchange-m2-validation-2026-10-30.md) and
@@ -27,7 +27,7 @@ This report approves no distribution.
 
 ## Stage 7 gate
 
-`scripts/gate-stage7.ps1` passed on `9526c77` in 2,251.6 s, in the second
+`scripts/gate-stage7.ps1` passed on `4e396ad` in 2,251.6 s, in the second
 worktree, incremental over the M3 and M4 gate.
 
 | Step | Result | Duration |
@@ -50,7 +50,7 @@ and M4 gate: the new target and 2 more passing tests.
 ## Measurements
 
 The plan's closing report: prompt growth, transition latency, and manifest
-and blob sizes, plus the other ceilings of the feature. All on `9526c77`.
+and blob sizes, plus the other ceilings of the feature. All on `4e396ad`.
 
 | Measure | Result | Ceiling | Verdict |
 |---|---|---|---|

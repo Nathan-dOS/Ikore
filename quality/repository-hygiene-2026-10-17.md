@@ -1,6 +1,6 @@
 # Repository hygiene — 2026-10-17
 
-Source baseline: `bee361b4a6ce059d6292cb9794b43ca358863793` (107 commits
+Source baseline: `b66ea5ddee8662cf36f92fe74e4df583fcdde052` (107 commits
 reachable from HEAD). The existing history is preserved. This change is a
 working-tree cleanup; it does not erase earlier versions from Git.
 

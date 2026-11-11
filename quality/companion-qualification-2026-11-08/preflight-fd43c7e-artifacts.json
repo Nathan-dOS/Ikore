@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "sourceCommit": "fd43c7e51a573297dcb6a959a1dcbb63211fec75",
+  "sourceCommit": "4947ab0d290e063b6140b97f540493e632c0845b",
   "capturedAtUtc": "2026-11-08T18:40:45.600308+00:00",
   "scope": "First failed preflight after persistent text-piece cache. Historical failure; no full paired gate or complete regression gate claimed for this source.",
   "artifacts": {

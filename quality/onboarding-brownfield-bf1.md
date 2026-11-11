@@ -1,6 +1,6 @@
 # Checkpoint BF1 — Onboarding Brownfield
 
-Data: 2026-08-29. Branch `gpui-migration`. Baseline: `1ae88a7` (M5 funcional e smoke visual concluídos). Estado: **BF1-G aprovado; BF2 não iniciada**.
+Data: 2026-08-29. Branch `gpui-migration`. Baseline: `37d99b6` (M5 funcional e smoke visual concluídos). Estado: **BF1-G aprovado; BF2 não iniciada**.
 
 ## Resultado
 

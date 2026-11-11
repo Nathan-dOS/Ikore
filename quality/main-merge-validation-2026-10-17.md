@@ -4,9 +4,9 @@ Design references: [public summaries](../docs/adr/README.md); [historical archiv
 
 ## Scope and provenance
 
-This integration joins `main` at `33373a560026c8cda296b3d987efdcef51416bbc`
+This integration joins `main` at `5275204632f3cf92b0454aad10b816168d5fc795`
 with `feat/adr-024-review-brief` at
-`dccd257140ea4dd976bd5e0bfd2a8b7880196b92`, preserving both histories.
+`2ac8d8c4cd01a7421bfe44459676f16b1cc54d4d`, preserving both histories.
 The feature includes the focused test workflow, Review Brief M0–M6,
 Visualizer, and the pulsation report (canonical ADR-027).
 

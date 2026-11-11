@@ -3,7 +3,7 @@
   "date": "2026-10-28",
   "phase": "P1",
   "qualification": "P1-regression-passed",
-  "baseRevision": "92f6a0c291c2d0e05703e228547e4faa26b95d8e",
+  "baseRevision": "b3505a5e118fd345d18960b5fbe5d161d3dfe7f2",
   "files": [
     {
       "path": "crates/hvc-core/src/companion_drawings/mod.rs",

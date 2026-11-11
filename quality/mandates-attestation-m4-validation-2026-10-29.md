@@ -1,7 +1,7 @@
 # Just-in-time scope grants (ADR-035 M4) — implementation and validation
 
 Date: 2026-10-29. Branch `feat/mandates-layers-attestation`, implementation
-`6efa0d0` (and the unrelated fixture fix `f18a0f7`) on top of the M3 commits (`66acb79` … `744c498`, see the
+`363ac1d` (and the unrelated fixture fix `9396f3f`) on top of the M3 commits (`dc1f3bb` … `8ed8f43`, see the
 [M3 report](mandates-attestation-m3-validation-2026-10-26.md)). Decision:
 [ADR-035](../docs/adr/035-execution-mandates.md). Migration V57. Nothing is
 pushed.
@@ -79,10 +79,10 @@ here.
   the same unit is refused for budget before the limit applies; a second
   request in a stage comes from another unit.
 - **A date in a quota fixture expired (not M4).** The first gate run on
-  `6efa0d0` failed two `hvc-terminal` meter tests: the Claude rate-limit
+  `363ac1d` failed two `hvc-terminal` meter tests: the Claude rate-limit
   fixture said both windows reset in October 2026, and since the weekly reset
   passed on 2026-10-28 the meter reads the frame as expired. The fixture's
-  reset times are in 2100 now (`f18a0f7`, test data only); the main branch
+  reset times are in 2100 now (`9396f3f`, test data only); the main branch
   carries the same fixture and fails the same way.
 - **Granted files come from the requests, not the mandate.** Reading the
   amendments from the mandate would keep granting a file after a revision,
@@ -94,7 +94,7 @@ here.
 Environment: Windows 11 Pro 10.0.26300, Rust/Cargo 1.98.0, `--locked`,
 `CARGO_BUILD_JOBS=6`, in the branch's own worktree.
 
-The Stage 7 gate (`scripts/gate-stage7.ps1`) on `f18a0f7` (2026-10-29
+The Stage 7 gate (`scripts/gate-stage7.ps1`) on `9396f3f` (2026-10-29
 08:24–09:00 local time, 2,189 s) **passed**:
 
 | Gate step | Result | Duration |
@@ -109,11 +109,11 @@ The Stage 7 gate (`scripts/gate-stage7.ps1`) on `f18a0f7` (2026-10-29
 | Rust licenses and sources (560 packages for `x86_64-pc-windows-msvc`, none denied) | PASS | 2.062 s |
 | Rust advisories (`cargo audit` exit 0, 0 vulnerabilities; 14 `unmaintained` and 2 `unsound` informational warnings; RustSec `40f5be6`) | PASS | 7.986 s |
 
-Against the M3 gate (`1512707`: 55 targets, 1,648 passed, 17 ignored): one
+Against the M3 gate (`f98c5a2`: 55 targets, 1,648 passed, 17 ignored): one
 more target (`scope_escalation`) and 19 more passing tests, all of them new
 (7 in `mandate::scope_tests`, 6 in `scope_escalation`, 1 upgrade test,
 3 layout tests and 2 `failure_checkpoint` tests); the ignored tests are the
-same opt-in ones. The run before it, on `6efa0d0`, stopped at the two quota
+same opt-in ones. The run before it, on `363ac1d`, stopped at the two quota
 meter tests described above. The RustSec database moved to a newer commit;
 the warnings are the same crates as before. The supply-chain summary still
 reports `distributionAllowed: false` for the existing GPUI binary blocker.

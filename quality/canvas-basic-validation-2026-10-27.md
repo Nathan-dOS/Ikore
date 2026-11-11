@@ -2,7 +2,7 @@
 
 Status: validated and integrated into main on 2026-10-27. See the
 [main integration record](canvas-main-integration-2026-10-27.md).
-Implementation branch: `feat/native-architecture-canvas`, based on `15d596c`.
+Implementation branch: `feat/native-architecture-canvas`, based on `d516f61`.
 Its isolated worktree and temporary branch were removed after the verified push.
 The validation snapshot below predates Git integration. Existing local Whisper
 edits were preserved outside the published commits; the Mandates worktree was
@@ -86,7 +86,7 @@ source publication is already approved by that policy.
 - Normalized element order no longer produces a false secret-protection warning.
   Real title/label redaction has a separate quiet notice. Connector labels clear
   the segment by six world units; GPUI, SVG and export bounds share that rule.
-- Existing base revision `c42afb0` had stopped rejecting truncated custom-check
+- Existing base revision `07d1fa8` had stopped rejecting truncated custom-check
   output. The failing `oversized_output_is_capped_and_marked_truncated_without_deadlock`
   regression required restoring that fail-closed condition. No parser was relaxed.
 - The initial full suite also reported unsupported qualified-Cargo stderr. The

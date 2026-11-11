@@ -1,9 +1,9 @@
 {
-  "purpose": "diagnostic only; does not replace the d71a573 preflight FAIL",
+  "purpose": "diagnostic only; does not replace the 2531a81 preflight FAIL",
   "original": "scripts\\benchmark-ui-latency.ps1",
   "originalSha256": "83d0555c3cca098d8577132dae13bdb83ea034a886cbbe46361c1f4de9de9f47",
   "sourceUnchanged": true,
-  "sourceCommit": "d71a5733ac73443992ffce5cadab3330f9289783",
+  "sourceCommit": "2531a817e1d564ccf293e87777f27dfcac683393",
   "requiredInvocation": {
     "Scenario": "dock-three-streams",
     "Samples": 140,

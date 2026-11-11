@@ -4,10 +4,10 @@
   "purpose": "Baseline-only build fingerprint summary, linked to the three previously approved executable hashes. No candidate artifact is captured by this record.",
   "baselineSource": {
     "root": "<repo>",
-    "head": "ef2879a6ecc161f5910c6ee4402aea1206d644f8",
+    "head": "3a2c973a5bbe58e3d6e28cc88739c5f86e1ae9de",
     "clean": true,
     "statusPorcelain": "",
-    "equivalentBaselineCommit": "c42f2a77dafd30ee0023b342f9a5f4bd7f28cef2",
+    "equivalentBaselineCommit": "790b450e044f449851a3d6b9a968ddaae9161d24",
     "sourceEquivalenceEvidence": [
       {
         "path": "crates",
@@ -120,16 +120,16 @@
         "config": 9396254390672932401,
         "compile_kind": 0
       },
-      "provenanceQualification": "Standalone example successfully rebuilt with --locked from clean original ef2879a under the pinned toolchain; separate build log, command and resulting artifact hash recorded. Original gate log qualification remains separate and does not claim this example was run there.",
+      "provenanceQualification": "Standalone example successfully rebuilt with --locked from clean original 3a2c973 under the pinned toolchain; separate build log, command and resulting artifact hash recorded. Original gate log qualification remains separate and does not claim this example was run there.",
       "logEvidence": [
         "     Running tests\\composition_benchmark.rs (target\\debug\\deps\\composition_benchmark-2f5cd5f4bba3c75d.exe)"
       ],
       "separateBuildEvidence": {
         "command": "cargo build --locked -p hvc-test-support --example composition_benchmark",
         "workingDirectory": "<repo>",
-        "headBefore": "ef2879a6ecc161f5910c6ee4402aea1206d644f8",
+        "headBefore": "3a2c973a5bbe58e3d6e28cc88739c5f86e1ae9de",
         "cleanBefore": true,
-        "headAfter": "ef2879a6ecc161f5910c6ee4402aea1206d644f8",
+        "headAfter": "3a2c973a5bbe58e3d6e28cc88739c5f86e1ae9de",
         "cleanAfter": true,
         "exitCode": 0,
         "logPath": "<repo>\\target\\companion-speed-baseline-build.log",
@@ -182,7 +182,7 @@
   },
   "processLimits": [
     "Only the three named baseline executables and small provenance files were hashed. No Cargo command, build, benchmark, executable invocation or candidate capture was performed.",
-    "The source checkout is clean at ef2879a; c42f2a differs only in the recorded documentation and CI paths. Existing cached core execution, the release build/smoke, and the separate locked standalone example build retain their distinct provenance.",
+    "The source checkout is clean at 3a2c973; c42f2a differs only in the recorded documentation and CI paths. Existing cached core execution, the release build/smoke, and the separate locked standalone example build retain their distinct provenance.",
     "This file is evidence for operational checks before and after a speed run, not a gate-enforced artifact allowlist. Get-CoreBinary still selects dynamically by modification time and exact probe inventory.",
     "Immediately before the speed gate, the operator must verify that its selected baseline trio and SHA-256 values match these approved artifacts; the resulting report must be checked afterwards as well.",
     "A later candidate must be captured separately after its build completes and compared by relevant compiler/profile/feature/flag fields. This record makes no claim about the in-progress candidate build.",

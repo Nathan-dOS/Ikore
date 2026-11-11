@@ -4,7 +4,7 @@ First implementation round for the periodic review REV-0001 (2026-10-24). The
 review's identifiers (`A0xx` findings, `C0xx` actions) are historical citations
 from the maintainers' design archive; this report is self-contained.
 
-Base: `main` at `e8f4644` plus the integration in
+Base: `main` at `bde2d06` plus the integration in
 [pull request #14](https://github.com/Nathan-dOS/HARD-VC/pull/14) (RustSec
 lockfile fix, compatible Dependabot updates, CI timeouts).
 
@@ -60,7 +60,7 @@ headless crates:
 
 | Tree | Targets | Passed | Failed | Ignored | Filtered | Duration |
 |---|---:|---:|---:|---:|---:|---:|
-| Base (pull request #14 head `59dc637`), hanging test skipped | 48 | 1,102 | 27 | 13 | 1 | 1,163 s |
+| Base (pull request #14 head `b055506`), hanging test skipped | 48 | 1,102 | 27 | 13 | 1 | 1,163 s |
 | This change | 48 | 1,117 | 28 | 13 | 0 | 1,148 s |
 
 The 15 additional passes are the new tests. The failure sets differ only by

@@ -1,6 +1,6 @@
 # Integrator review boundary, review policy and revision rounds — implementation and validation
 
-Date: 2026-10-24. Implementation baseline: `6810d94`; branch
+Date: 2026-10-24. Implementation baseline: `66beac0`; branch
 `feat/adr-032-review-policy`. Decision: [ADR-032](../docs/adr/032-integrator-review-boundary.md).
 Behavior contract: [review policy](../docs/review-policy.md). Additive SQLite migration: V51.
 
@@ -73,7 +73,7 @@ No real credentials or paid model calls were used.
 
 ## Validation results
 
-Baseline before the change (`6810d94`, same machine): 1,436 passed, 0 failed,
+Baseline before the change (`66beac0`, same machine): 1,436 passed, 0 failed,
 15 ignored across all targets except the `hvc-core`/`hvc-terminal` doctests,
 which the concurrent start of this work invalidated; those passed separately on
 the clean `main` checkout (2 passed).
@@ -109,11 +109,11 @@ configuration; the gated release build predates them.
 The **overall gate is not approved**. The advisory step could not run inside
 the gate. After `cargo-audit` 0.22.2 was installed under
 `target/tools/cargo-audit`, `scripts/audit-advisories.ps1` ran on merged `main`
-(`4ff7e00`, 2026-10-24 22:05 local time) with RustSec database commit
+(`341979c`, 2026-10-24 22:05 local time) with RustSec database commit
 `21d909e4c8bd4e14c7aea58bf980c881a0053ab1`. It reported the same
 9 dependency advisories recorded on 2026-10-22 (`quinn-proto`, `rustls`,
 `rustls-webpki` and `webpki-roots`) and no new vulnerability; `Cargo.toml`
-files and `Cargo.lock` are unchanged from `6810d94`. One informational
+files and `Cargo.lock` are unchanged from `66beac0`. One informational
 `unsound` warning is new since 2026-10-22: RUSTSEC-2026-0386 in the already
 resolved `tokio 1.53.1`. The
 [dated advisory evidence](review-policy-advisories-2026-10-24.json) lists each
@@ -136,7 +136,7 @@ report's Review inputs section matched.
 The QA found two problems, both fixed before the final run:
 
 - The fixture had been unable to reach the Test checkpoint since the secret
-  sanitization (reproduced on clean `6810d94`): its source declared
+  sanitization (reproduced on clean `66beac0`): its source declared
   `validate_token(token: &Token, …)`, which the redactor treats as a sensitive
   assignment, so the edit guard refused the scripted replacement. The fixture
   now names the parameter `candidate`.

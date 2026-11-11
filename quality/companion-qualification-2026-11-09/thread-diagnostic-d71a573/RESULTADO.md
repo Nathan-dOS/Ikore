@@ -1,4 +1,4 @@
-# Diagnóstico de CPU por thread — release d71a573
+# Diagnóstico de CPU por thread — release 2531a81
 
 Uma única execução diagnóstica usou o mesmo binário e fixture: 141 frames, 423 atualizações, três conversas, 120 amostras após 20 de aquecimento, viewport 1440×900. O diagnóstico não qualifica desempenho nem substitui o primeiro FAIL oficial (p95 12,3584 ms). Nesta execução instrumentada, p50=6,2829 ms, p95=9,5315 ms e p99=12,3067 ms; `passed=false`. O campo CIM de frequência do monitor ficou `null`; nenhum ajuste do monitor foi feito e não se presume uma frequência medida neste run.
 
@@ -20,4 +20,4 @@ Os contadores têm granularidade Windows. A soma visível capturada foi 1.578,12
 
 A revisão independente recalculou os totais user/kernel dos registros, confirmou zero deltas negativos e nenhum TID repetido, sem bloqueio de agregação. Nenhuma segunda execução foi feita.
 
-Após a coleta, os 965 arquivos do manifesto d71a573 continuam com os mesmos hashes. O binário continua SHA-256 `56c4ef95c818bf77caae37ddc90ecd0816f64681b6d336e201197c50e7827b45`; o script oficial continua `83d0555c3cca098d8577132dae13bdb83ea034a886cbbe46361c1f4de9de9f47`. Rust, manifests, lock e script oficial não foram alterados. O aplicativo encerrou pelo caminho gracioso original e o diretório de perfil isolado ficou vazio. Nenhuma configuração persistente foi modificada.
+Após a coleta, os 965 arquivos do manifesto 2531a81 continuam com os mesmos hashes. O binário continua SHA-256 `56c4ef95c818bf77caae37ddc90ecd0816f64681b6d336e201197c50e7827b45`; o script oficial continua `83d0555c3cca098d8577132dae13bdb83ea034a886cbbe46361c1f4de9de9f47`. Rust, manifests, lock e script oficial não foram alterados. O aplicativo encerrou pelo caminho gracioso original e o diretório de perfil isolado ficou vazio. Nenhuma configuração persistente foi modificada.

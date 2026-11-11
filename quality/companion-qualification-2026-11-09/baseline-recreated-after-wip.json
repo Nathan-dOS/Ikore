@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "capturedAtUtc": "2026-11-10T01:06:47.155017+00:00",
-  "baselineSourceCommit": "ef2879a6ecc161f5910c6ee4402aea1206d644f8",
+  "baselineSourceCommit": "3a2c973a5bbe58e3d6e28cc88739c5f86e1ae9de",
   "baselineRoot": "<home>\\Documents\\Nathan\\HardVibeCode\\.worktrees\\companion-speed-baseline",
-  "candidateHeadAtPreparation": "e61cdf1bc33be22a3bf7fac5320572afcd9b4837",
+  "candidateHeadAtPreparation": "5a4c8302bc065222cdfe883f04bd81095ff1630a",
   "baselineSourceClean": true,
   "artifacts": [
     {

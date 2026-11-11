@@ -561,7 +561,7 @@
       }
     }
   ],
-  "code_base": "4e330113295dade76b34781106b62a2c102c31b7",
+  "code_base": "1fde12a10e3589b3d932f9ce9d60916914f97332",
   "fixture_version": "rs2-relational-tasks-v1",
   "gate": {
     "aggregate_input_token_p50_delta_percent": 26.588203825063527,

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "capturedAtUtc": "2026-11-09T14:47:49.881994+00:00",
-  "sourceCommit": "d71a5733ac73443992ffce5cadab3330f9289783",
+  "sourceCommit": "2531a817e1d564ccf293e87777f27dfcac683393",
   "scope": "One exact-PID CPU diagnostic; does not replace archived official preflight FAIL",
   "diagnosticOnly": true,
   "applicationExecutions": 1,

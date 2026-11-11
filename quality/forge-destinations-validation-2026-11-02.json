@@ -1,7 +1,7 @@
 {
   "date": "2026-11-02",
   "platform": "Windows x64",
-  "base_commit": "28b454e2933746e875de2b0bd3065be2d40998c3",
+  "base_commit": "1469a2a63e0af68e5dc3e9e8a60fb3748b151a52",
   "branch": "fix/forge-repository-destinations",
   "workspace_tests": {
     "passed": 2059,

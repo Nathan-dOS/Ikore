@@ -1,7 +1,7 @@
 # Agent exchange M3 and M4 validation: resume after edits and pulsation digests (ADR-037)
 
-Date: 2026-10-30. Source: branch `feat/agent-exchange`, M3 at `ab648fc` and
-M4 at `d230cda`, gated together on `d230cda`. Compared with the
+Date: 2026-10-30. Source: branch `feat/agent-exchange`, M3 at `3f85b11` and
+M4 at `9adbe14`, gated together on `9adbe14`. Compared with the
 [M2 validation](agent-exchange-m2-validation-2026-10-30.md).
 
 This report approves no distribution.
@@ -105,7 +105,7 @@ Covered by the closing gate:
 
 ## Stage 7 gate
 
-`scripts/gate-stage7.ps1` passed on `d230cda` in 2,442.3 s, in the second
+`scripts/gate-stage7.ps1` passed on `9adbe14` in 2,442.3 s, in the second
 worktree, incremental over the M2 gate.
 
 | Step | Result | Duration |
@@ -129,7 +129,7 @@ not touch the exchange code.
 
 ## Measurements
 
-On `9526c77`, debug test profile:
+On `4e396ad`, debug test profile:
 
 - **Search** (`exchange_m4_pulsation_search`, 1,000 digests): `search_pulsations`
   with up to 20 results, p50 9.5 ms and **p95 11.3 ms** (target under 50 ms);

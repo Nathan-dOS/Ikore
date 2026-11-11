@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "createdAtUtc": "2026-11-09T21:01:57.772935+00:00",
-  "sourceCommit": "68b5c0522fa642664f114e4bbdf8628c81db41c0",
+  "sourceCommit": "7559b27ee1ce5c5b770e3c0649cf6c215a0cce69",
   "technicalGate": {
     "passed": true,
     "passedSteps": 9,
@@ -59,7 +59,7 @@
     "passed": true
   },
   "oldProfileNativeCompatibility": "pending; no claim until explicit native before/after result",
-  "speedQualification": "pending; d71a573 official preflight failure preserved; no speed result attributed to 68b5c05",
+  "speedQualification": "pending; 2531a81 official preflight failure preserved; no speed result attributed to 7559b27",
   "deliveryQualification": "in progress",
   "files": [
     {

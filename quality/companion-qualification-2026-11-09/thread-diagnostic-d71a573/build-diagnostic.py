@@ -45,8 +45,8 @@ assert "HVC_BENCHMARK_UI_SAMPLES = $Samples" in derived
 (OUT / "benchmark-ui-latency.original.ps1").write_bytes(raw)
 (OUT / "benchmark-ui-latency.diagnostic.ps1").write_text(derived, encoding="utf-8", newline="\n")
 (OUT / "diagnostic-script.patch").write_text("".join(difflib.unified_diff(base.splitlines(True), derived.splitlines(True), fromfile="original", tofile="diagnostic")), encoding="utf-8", newline="\n")
-metadata = {"purpose": "diagnostic only; does not replace the d71a573 preflight FAIL", "original": str(SOURCE.relative_to(ROOT)), "originalSha256": hashlib.sha256(raw).hexdigest(), "sourceUnchanged": SOURCE.read_bytes() == raw,
- "sourceCommit": "d71a5733ac73443992ffce5cadab3330f9289783", "requiredInvocation": {"Scenario":"dock-three-streams", "Samples":140,"WarmupSamples":20,"WindowSize":"1440x900","TimeoutSeconds":30,"EnforceThresholds":False},
+metadata = {"purpose": "diagnostic only; does not replace the 2531a81 preflight FAIL", "original": str(SOURCE.relative_to(ROOT)), "originalSha256": hashlib.sha256(raw).hexdigest(), "sourceUnchanged": SOURCE.read_bytes() == raw,
+ "sourceCommit": "2531a817e1d564ccf293e87777f27dfcac683393", "requiredInvocation": {"Scenario":"dock-three-streams", "Samples":140,"WarmupSamples":20,"WindowSize":"1440x900","TimeoutSeconds":30,"EnforceThresholds":False},
  "changes": ["root rebased for target-only derivative", "isolated runtime under diagnostic target directory", "bounded exact-PID CPU thread sampler", "no changes to fixture, readiness, cadence, limits or threshold evaluation"]}
 (OUT / "derivation.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8", newline="\n")
 print(json.dumps(metadata, indent=2))

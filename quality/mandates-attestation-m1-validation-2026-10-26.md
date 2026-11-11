@@ -1,8 +1,8 @@
 # Execution mandates and approval receipts (ADR-035 M1) — implementation and validation
 
 Date: 2026-10-26. Branch `feat/mandates-layers-attestation`: implementation
-`a5c0c3d`, test completion `10bde19` and `938a5d9`, and the lock fix
-`8b5c003`, on top of `59fa52b` (ADR summaries) and `6df8fb6` (formatting of
+`8946570`, test completion `a9d16fe` and `e913361`, and the lock fix
+`a85f46d`, on top of `585fe9e` (ADR summaries) and `2363b9d` (formatting of
 `tool_scope_ab.rs`). Decision:
 [ADR-035](../docs/adr/035-execution-mandates.md). Additive SQLite migration:
 V55. Nothing is pushed.
@@ -116,14 +116,14 @@ timed out: admission refused the re-run Specification with
 task_specifier`. The mandate now governs only the stages it was issued for
 (`mandate_governs`), at admission, acceptance and budget derivation alike.
 
-**Lock cycle in the preview** (fixed in `8b5c003`). The derivation read the
+**Lock cycle in the preview** (fixed in `a85f46d`). The derivation read the
 runtime settings through a second connection while the preview's read
 transaction was open. The database uses SQLite's rollback journal: a writer
 waiting to commit holds the pending lock until that read ends, and the second
 connection waits for the writer, so the preview failed with `database is
 locked` when the 5 s busy timeout expired. In the application the "What
 approving grants" card would fail to load while a pulsation or background job
-wrote. It surfaced after the gate on `10bde19` had passed:
+wrote. It surfaced after the gate on `a9d16fe` had passed:
 `a_composed_pulsation_runs_inside_the_mandate_its_specification_approval_issued`
 failed in 2 of 3 runs once a fourth test ran beside it. The regression test
 reproduced it before the fix (60 previews took 454 s and the last failed with
@@ -141,12 +141,12 @@ cycle cannot form there.
 Environment: Windows 11 Pro 10.0.26300, Rust/Cargo 1.98.0, `--locked`,
 `CARGO_BUILD_JOBS=6`, in the branch's own worktree.
 
-Baseline before the change (Etapa 0, `175b3cb` plus the formatting fix, same
+Baseline before the change (Etapa 0, `9ebea09` plus the formatting fix, same
 machine): 52 result targets, **1,551 passed, 0 failed, 16 ignored**; the Stage 7
 gate passed, with 0 vulnerabilities and 14 `unmaintained` plus 2 `unsound`
 informational advisory warnings.
 
-The Stage 7 gate (`scripts/gate-stage7.ps1`) on `8b5c003`
+The Stage 7 gate (`scripts/gate-stage7.ps1`) on `a85f46d`
 (2026-10-26 17:57–18:27 local time, 1,804 s) **passed**:
 
 | Gate step | Result | Duration |
@@ -185,13 +185,13 @@ Earlier gate runs on the same implementation:
   After `cargo-audit` 0.22.2 was copied from the main checkout,
   `scripts/audit-advisories.ps1` passed on its own: exit 0, 0 vulnerabilities,
   the same 14 + 2 informational warnings, RustSec commit `a78282a`.
-- `10bde19` added tests that complete the plan's M1 list: one new unit test,
+- `a9d16fe` added tests that complete the plan's M1 list: one new unit test,
   one new persistence test, receipt assertions in three existing tests and V55
   rows in the project-deletion test.
-- **Run 3** on `10bde19` passed every step (2026-10-26 16:54–17:31 local
+- **Run 3** on `a9d16fe` passed every step (2026-10-26 16:54–17:31 local
   time): 53 targets, 1,586 passed, 0 failed, 16 ignored. The lock cycle above
   was already in that tree and did not show in that run.
-- `938a5d9` added the derivation-failure test and `8b5c003` the lock fix with
+- `e913361` added the derivation-failure test and `a85f46d` the lock fix with
   its regression test.
 
 `Cargo.toml` files and `Cargo.lock` are unchanged from the baseline.

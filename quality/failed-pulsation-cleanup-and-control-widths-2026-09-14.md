@@ -1,6 +1,6 @@
 # Failed-pulsation cleanup and control widths — 2026-09-14
 
-Baseline: `beabe6a` plus the uncommitted work already in this checkout (pulsation observation
+Baseline: `dc18395` plus the uncommitted work already in this checkout (pulsation observation
 independence, and the concurrent agent-execution-target refactor being written by a Codex
 session in the same tree). Branch `feat/stage-composition-v4`, nothing committed.
 

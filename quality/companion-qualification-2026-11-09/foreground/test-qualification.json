@@ -1,6 +1,6 @@
 {
   "capturedAtUtc": "2026-11-09T14:16:30.527030+00:00",
-  "sourceBase": "42219bb7abdab2b4ac71f8ff18e5e5cc8b695251",
+  "sourceBase": "86ff2eb466bf6124e861b24041b59a27070788ab",
   "patch": "HVC-GPUI-008 and HVC-GPUI-009; uncommitted source",
   "focusedCommand": "cargo test --offline --locked -p gpui --lib --no-default-features --features test-support,windows-manifest text_system::line::tests -- --test-threads=2",
   "completeLibCommand": "cargo test --offline --locked -p gpui --lib --no-default-features --features test-support,windows-manifest -- --test-threads=2",

@@ -1,6 +1,6 @@
 # Sincronização de pulsações — checkpoint M0
 
-Data: 2026-08-27. Baseline: `f20dff5`. Estado: **M0 concluído; G0 aprovado**.
+Data: 2026-08-27. Baseline: `a4b475e`. Estado: **M0 concluído; G0 aprovado**.
 
 Este checkpoint entrega contratos, políticas puras e fixtures. **Não ativa a sincronização concorrente no aplicativo.** M1–M5 continuam pendentes; worker, migrations V1–V9 e UI de produção mantêm seu comportamento anterior.
 

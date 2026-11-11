@@ -1,7 +1,7 @@
 # Trust layers (ADR-035 M2) — implementation and validation
 
 Date: 2026-10-26. Branch `feat/mandates-layers-attestation`, implementation
-`b14f0f7` on top of the M1 commits (`a5c0c3d` … `eae55b5`, see the
+`3fd7803` on top of the M1 commits (`8946570` … `c054af8`, see the
 [M1 report](mandates-attestation-m1-validation-2026-10-26.md)). Decision:
 [ADR-035](../docs/adr/035-execution-mandates.md). No migration. Nothing is
 pushed.
@@ -117,7 +117,7 @@ the same machine).
 Environment: Windows 11 Pro 10.0.26300, Rust/Cargo 1.98.0, `--locked`,
 `CARGO_BUILD_JOBS=6`, in the branch's own worktree.
 
-The Stage 7 gate (`scripts/gate-stage7.ps1`) on `b14f0f7` (2026-10-26
+The Stage 7 gate (`scripts/gate-stage7.ps1`) on `3fd7803` (2026-10-26
 20:45–21:20 local time, 2,095 s) **passed**:
 
 | Gate step | Result | Duration |
@@ -132,7 +132,7 @@ The Stage 7 gate (`scripts/gate-stage7.ps1`) on `b14f0f7` (2026-10-26
 | Rust licenses and sources (560 packages for `x86_64-pc-windows-msvc`, none denied) | PASS | 2.257 s |
 | Rust advisories (`cargo audit` exit 0, 0 vulnerabilities; 14 `unmaintained` and 2 `unsound` informational warnings; RustSec `3279c99`) | PASS | 6.278 s |
 
-Against the M1 gate (`8b5c003`: 53 targets, 1,588 passed): one more target
+Against the M1 gate (`a85f46d`: 53 targets, 1,588 passed): one more target
 (`trust_layers`) and 29 more passing tests, all of them new (15 in
 `orchestration::layers`, 5 in `layers_persistence`, 1 report test, 4 in
 `trust_layers` and 4 layout tests); the 16 ignored tests are the same opt-in

@@ -2,10 +2,10 @@
 
 Design references: [public summaries](../docs/adr/README.md); [historical archive context](README.md#historical-design-references).
 
-Data: 2026-08-28. Branch `gpui-migration`. Base M4: `c627837`. Implementação: `8167313`.
+Data: 2026-08-28. Branch `gpui-migration`. Base M4: `c126425`. Implementação: `ed36942`.
 ADR-007 / REGRAS de sincronização do cérebro do projeto.
 
-Status: **implementação, validação automatizada e smoke visual entregues; G5 aberto**. O smoke isolado foi concluído após as correções `3a2e2f0`, `d5025c5` e `16a1706`; rollout não autorizado porque a cauda de latência com edição ainda não sustenta ativação. Preparação permanece desligada por default.
+Status: **implementação, validação automatizada e smoke visual entregues; G5 aberto**. O smoke isolado foi concluído após as correções `ea60c16`, `e24cea8` e `4802ba7`; rollout não autorizado porque a cauda de latência com edição ainda não sustenta ativação. Preparação permanece desligada por default.
 Esta avaliação não habilita onboarding Brownfield nem remove a política de distribuição.
 
 ## Implementação
@@ -20,7 +20,7 @@ Esta avaliação não habilita onboarding Brownfield nem remove a política de d
 
 1. **Disputa de escrita SQLite no início do estágio.** A fila real reproduziu `Code/planning` com job falho `database is locked`. A transação deferred lia antes de obter a reserva de escrita; outra conexão do background podia impedir o upgrade. Início e transição de falha do worker agora usam `BEGIN IMMEDIATE`, antes das leituras, preservando as validações de versão. Não foi adicionado retry que pudesse repetir efeito aceito.
 2. **Extensão de arquivo como falso match.** `auth.rs` selecionava arquivos não relacionados pelo token `rs`, preenchia o limite de 12 fontes e impedia reuso por cobertura parcial. O ranking lexical usa diretório/stem sem extensão, mantendo prioridade do path exato e símbolos no código. Política `rsp12-v2` invalida pacotes antigos. Teste com 21 arquivos comprova uma fonte selecionada e revalidação reutilizável.
-3. **Starvation do Learning por revisão humana em outro projeto.** A consulta de admissão considerava qualquer job principal pendente como trabalho foreground, mesmo quando a descrição estava bloqueada em revisão humana e não podia ser reivindicada. O smoke mostrou uma pulsação `Done` cujo Learning não iniciava. A admissão agora cede somente a slot/publicação principal ou job principal efetivamente reivindicável; revisão humana pendente não bloqueia background indefinidamente. Regressão cobre tanto o caso bloqueado quanto um sucessor realmente elegível (`16a1706`).
+3. **Starvation do Learning por revisão humana em outro projeto.** A consulta de admissão considerava qualquer job principal pendente como trabalho foreground, mesmo quando a descrição estava bloqueada em revisão humana e não podia ser reivindicada. O smoke mostrou uma pulsação `Done` cujo Learning não iniciava. A admissão agora cede somente a slot/publicação principal ou job principal efetivamente reivindicável; revisão humana pendente não bloqueia background indefinidamente. Regressão cobre tanto o caso bloqueado quanto um sucessor realmente elegível (`4802ba7`).
 
 ## Reprodução do benchmark
 
@@ -94,7 +94,7 @@ cargo run --release --locked --offline -p hvc-test-support --example pulsation_u
 
 A fixture oferece dois projetos, revisão de pedido pendente, resposta de esclarecimento para tarefas contendo `M5 Perguntas` (responder `JWT assinado`), conflito preservando `notes/conflict.md` para `M5 Conflito`, e Learning consultivo após Done. Apenas configuração/semeadura; o supervisor pertence exclusivamente ao aplicativo.
 
-Uma retomada após expiração pode usar `--resume`, mas o auxiliar recusa qualquer raiz sem o marcador exato, os dois projetos sintéticos e as conexões loopback esperadas (`d5025c5`).
+Uma retomada após expiração pode usar `--resume`, mas o auxiliar recusa qualquer raiz sem o marcador exato, os dois projetos sintéticos e as conexões loopback esperadas (`e24cea8`).
 
 ## Decisão de ativação
 
@@ -102,7 +102,7 @@ Uma retomada após expiração pode usar `--resume`, mas o auxiliar recusa qualq
 
 ### Resultados medidos
 
-[Dados brutos e metadados](../quality/pulsation-benchmark-m5.json), código `8167313feb7796ef873b5d11a828d3a584280530`, working diff de código vazio, Rust 1.98.0 / LLVM 22.1.8, release. **78 execuções**: seis aquecimentos excluídos + 72 medidas. Hash único dos 128 arquivos: `afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf`. Nenhuma compilação ou outra instância HVC estava concorrendo com a medição; o desktop e seus serviços não foram isolados como um laboratório.
+[Dados brutos e metadados](../quality/pulsation-benchmark-m5.json), código `ed369428a8042f8ec55dfdb20f05d90a7692c088`, working diff de código vazio, Rust 1.98.0 / LLVM 22.1.8, release. **78 execuções**: seis aquecimentos excluídos + 72 medidas. Hash único dos 128 arquivos: `afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf`. Nenhuma compilação ou outra instância HVC estava concorrendo com a medição; o desktop e seus serviços não foram isolados como um laboratório.
 
 Tempos em milissegundos, base observada → Specification aceita; 12 observações por célula/posição:
 

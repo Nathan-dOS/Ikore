@@ -5,8 +5,8 @@ cleanup after reviewing the completed Canvas validation.
 
 ## Published implementation
 
-- Feature commit: `efe5cf875ce6703c9544908de6d1fe2585731670`.
-- Main merge: `51c54c6b0e2fab8ae2fb1f4ec86277717c166938`.
+- Feature commit: `54c6142169dc403231d5e5bba15f537bdfd2da87`.
+- Main merge: `36b2b1251474cc493c2bb59bf46f4c59c714d1af`.
 - Origin main was updated and its SHA was independently verified after push.
 - The merge tree is `d1c35e8b3716c5b4969ebd8e4f8910de489e8a13`, exactly the
   qualified feature commit's tree. All 28 source files also matched the validated

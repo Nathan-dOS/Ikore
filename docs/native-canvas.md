@@ -120,7 +120,7 @@ hidden generation and an **Open Canvas** result button, plus shared semantic
 validation for generated and manually edited architecture/process drawings.
 The [authoring implementation](canvas-ai-authoring.md) describes V58, target
 freezing, recovery and the restricted BPMN profile. Source commit
-[`e7dfe4e`](https://github.com/Nathan-dOS/Ikore/commit/e7dfe4e10691c2e7101839f89a0917d227fc4c9b)
+[`92f03c4`](https://github.com/Nathan-dOS/Ikore/commit/92f03c43bd73521c9f4ee55c51c697ba84f557a8)
 was qualified independently of preserved local voice work: all nine gate checks
 passed, with 1,778 tests approved, zero failures and 16 existing ignored tests.
 No task branch or worktree was created. Authenticated providers and physical

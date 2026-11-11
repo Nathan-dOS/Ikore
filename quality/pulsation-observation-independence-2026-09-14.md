@@ -2,7 +2,7 @@
 
 ## Findings and implemented contract
 
-Baseline: `beabe6a`. Investigation used current code and a read-only connection to the local application database. The TaskSpecifier/OpenCode run ending at 2026-09-14 08:23 local time stopped at approximately 240 seconds. Both traditional and v4 request constructors passed the role base as the caller deadline; TerminalService used that value as the watchdog ceiling. This is a confirmed timeout-budget defect. The database contains no view-navigation history, so it cannot establish that the Pulsations view caused that failure.
+Baseline: `dc18395`. Investigation used current code and a read-only connection to the local application database. The TaskSpecifier/OpenCode run ending at 2026-09-14 08:23 local time stopped at approximately 240 seconds. Both traditional and v4 request constructors passed the role base as the caller deadline; TerminalService used that value as the watchdog ceiling. This is a confirmed timeout-budget defect. The database contains no view-navigation history, so it cannot establish that the Pulsations view caused that failure.
 
 - Both stage dispatchers now carry a CLI-specific initial policy and absolute deadline. API request/route/attempt limits remain independent. Explicit smaller CLI ceilings and callers without the override remain bounded.
 - Transport reads own activity; recognized stdout transitions own reasoning. Audit drain and stderr bookkeeping cannot create semantic delivery. The absolute ceiling remains effective under continuing output.

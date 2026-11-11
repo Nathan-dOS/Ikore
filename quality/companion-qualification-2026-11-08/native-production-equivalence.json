@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "nativeTestedSource": "29ed69a346feccdf4d7302bb27811ca0fab7c0d1",
-  "currentSource": "0c3cca5b07dbdc7097a92b1527702230bcd1f2e4",
+  "nativeTestedSource": "6c742d65190d9fdec64f1f69b99630a4149c0f0f",
+  "currentSource": "c16c816631b345d800e4b974485430e2a0519582",
   "onlyChangedRustFile": "crates/hvc-ui/src/companion_dock.rs",
   "productionPrefixUnchanged": true,
   "productionPrefixSha256": "dc47239624e4ffd7b042db8f3a013917e73ed50c08625e3858cbf424569ddd5a",

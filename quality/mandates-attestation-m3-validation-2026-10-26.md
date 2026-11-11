@@ -1,7 +1,7 @@
 # Signed local attestation (ADR-036 M3) — implementation and validation
 
 Date: 2026-10-26. Branch `feat/mandates-layers-attestation`, implementation
-`66acb79`, `dc1a418` and `1512707` on top of the M2 commits (`b14f0f7`, `0343818`, see the
+`dc1f3bb`, `709753c` and `f98c5a2` on top of the M2 commits (`3fd7803`, `8a33326`, see the
 [M2 report](mandates-attestation-m2-validation-2026-10-26.md)). Decision:
 [ADR-036](../docs/adr/036-pulsation-attestation.md). Format, key and the
 OpenSSL steps: [attestations](../docs/attestation.md). Migration V56. Nothing
@@ -101,11 +101,11 @@ Credential Manager. GitHub Actions was not used and is not evidence here.
   rest of the lane (`a_database_error_other_than_busy_leaves_the_queue`).
 - **Line endings of the vector.** With `core.autocrlf`, the envelope and the
   PEM fixtures would be checked out with CRLF and fail the byte comparison;
-  the fixtures folder is `-text` now (`dc1a418`).
+  the fixtures folder is `-text` now (`709753c`).
 - **"Verify a file" hid behind the key status.** The settings search test
   found the section missing when the key status could not be read; checking a
   saved bundle needs no key of this machine, so the section always renders now
-  (`1512707`).
+  (`f98c5a2`).
 - **Relative paths can carry the feature name.** The exported bundle of the
   integration test lists `knowledge/obsidian/features/token-expiry.md`: a stage
   note is named after the feature. Paths are kept as they are, and the
@@ -116,7 +116,7 @@ Credential Manager. GitHub Actions was not used and is not evidence here.
 Environment: Windows 11 Pro 10.0.26300, Rust/Cargo 1.98.0, `--locked`,
 `CARGO_BUILD_JOBS=6`, in the branch's own worktree.
 
-The Stage 7 gate (`scripts/gate-stage7.ps1`) on `1512707` (2026-10-26
+The Stage 7 gate (`scripts/gate-stage7.ps1`) on `f98c5a2` (2026-10-26
 23:05–23:34 local time, 1,708 s) **passed**:
 
 | Gate step | Result | Duration |
@@ -131,13 +131,13 @@ The Stage 7 gate (`scripts/gate-stage7.ps1`) on `1512707` (2026-10-26
 | Rust licenses and sources (560 packages for `x86_64-pc-windows-msvc`, none denied) | PASS | 1.697 s |
 | Rust advisories (`cargo audit` exit 0, 0 vulnerabilities; 14 `unmaintained` and 2 `unsound` informational warnings; RustSec `3279c99`) | PASS | 4.841 s |
 
-Against the M2 gate (`b14f0f7`: 54 targets, 1,617 passed, 16 ignored): one
+Against the M2 gate (`3fd7803`: 54 targets, 1,617 passed, 16 ignored): one
 more target (`attestation`) and 31 more passing tests, all of them new (6 in
 `attestation`, 18 in `attestation_persistence`, 1 report test, 2 in
 `tests/attestation.rs`, 1 upgrade test and 3 layout tests); the extra ignored
 test is the opt-in Credential Manager test. Two earlier gate runs on this
 branch stopped at Clippy (`result_large_err` in that test's helper) and at the
-settings search test (the "Verify a file" section, `1512707`); both are fixed
+settings search test (the "Verify a file" section, `f98c5a2`); both are fixed
 in the commits above. The supply-chain summary still reports
 `distributionAllowed: false` for the existing GPUI binary blocker.
 

@@ -1,6 +1,6 @@
 # Plano S3 — Eficiência do contexto estrutural brownfield
 
-Data: 2026-09-01. Branch `gpui-migration`. Baseline: `a1437be` (RS2-G). Estado: **aprovado para implementação**.
+Data: 2026-09-01. Branch `gpui-migration`. Baseline: `6860382` (RS2-G). Estado: **aprovado para implementação**.
 
 ## Objetivo
 

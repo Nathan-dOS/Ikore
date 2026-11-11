@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "productionReferenceCommit": "63bc1fd4ae9bb05404adc5e7c798841888bf5ae3",
+  "productionReferenceCommit": "01f57c5910ef28bb9bb9e873c7ba5ee627de4278",
   "selectedMessageProductionPrefixExactlyEqualAfterEolNormalization": true,
   "productionPrefixSha256": "8644295f169ca53858da7d2487abb2e0e95a12301a175ca4a2d3710fb348845c",
   "otherSourceFilesExactlyEqualAfterEolNormalization": [

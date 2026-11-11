@@ -3,7 +3,7 @@
 Design references: [public summaries](../docs/adr/README.md); [historical archive context](README.md#historical-design-references).
 
 Data: 2026-08-28. Repositório: `C:\Dev\Hard-Vibe-Code`, branch `gpui-migration`.
-Base: `66abe0d` (checkpoint M2). Implementação: `031420d`.
+Base: `ceeda15` (checkpoint M2). Implementação: `57ea7ef`.
 Decisão: ADR-007 e REGRAS de sincronização do cérebro do projeto.
 
 Status: **M3 concluído; G3 aprovado**. Preparação continua desligada por default; não é autorização de rollout M5 nem onboarding Brownfield.
@@ -55,7 +55,7 @@ Status: **M3 concluído; G3 aprovado**. Preparação continua desligada por defa
 
 | Verificação | Resultado |
 |---|---|
-| Baseline | M2: 270 testes; worktree inicial limpo, HEAD `66abe0d` |
+| Baseline | M2: 270 testes; worktree inicial limpo, HEAD `ceeda15` |
 | `cargo fmt --all -- --check` | Aprovado |
 | `cargo clippy --workspace --all-targets --locked --offline --quiet -- -D warnings` | Aprovado no código final, sem warnings do workspace |
 | `cargo test --workspace --locked --offline --quiet` | **288 aprovados**: 177 core, 14 editor, 19 test-support, 61 UI e 17 integrações (271 unitários + 17 integrações); zero falhas/ignorados |

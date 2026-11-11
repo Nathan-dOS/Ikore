@@ -16,7 +16,7 @@ Design references: [public summaries](../docs/adr/README.md); [historical archiv
 - O `Cargo.lock` não contém Tauri, Wry ou WebKit.
 - O ledger histórico preserva a rastreabilidade dos 51 testes frontend para os
   51 cenários Rust equivalentes.
-- O código removido é recuperável pelo checkpoint `6a06945`, criado antes do corte.
+- O código removido é recuperável pelo checkpoint `6a07338`, criado antes do corte.
 
 ## Otimizações avaliadas
 
@@ -70,7 +70,7 @@ Permanece somente o aviso de incompatibilidade futura de
 
 ## Windows activation follow-up — 2026-09-09
 
-HVC-GPUI-002 records the subsequent `afac996` startup/activation correction in `third_party/gpui/HVC-PATCHES.md`. Source review confirms normal-window visibility, hidden-window activation and the separate minimized-window restore path. A fresh physical Windows smoke for this patch is deferred; the historical Stage 7 results above do not certify this later change. Current synchronization evidence is in `quality/cerebro-sync-validation-2026-09-09.md`.
+HVC-GPUI-002 records the subsequent `ee89834` startup/activation correction in `third_party/gpui/HVC-PATCHES.md`. Source review confirms normal-window visibility, hidden-window activation and the separate minimized-window restore path. A fresh physical Windows smoke for this patch is deferred; the historical Stage 7 results above do not certify this later change. Current synchronization evidence is in `quality/cerebro-sync-validation-2026-09-09.md`.
 
 ## Persistent message text follow-up — 2026-11-08
 
@@ -204,10 +204,10 @@ Disposition: **deferred for integration** pending those checks.
 
 ## Paragraph layout and DPI test support — 2026-11-09 continuation
 
-The externally integrated WIP `e61cdf1` preserved the new paragraph tests and
+The externally integrated WIP `5a4c830` preserved the new paragraph tests and
 HVC-GPUI-010 test hooks, but did not qualify them. Continued work is isolated
 on `perf/companion-paragraph-layout` in the primary checkout. The prior
-`68b5c05` nine-check result remains historical and does not certify this change.
+`7559b27` nine-check result remains historical and does not certify this change.
 
 The initial UI selection passed two and failed two: the intended node-count
 RED plus a drag endpoint inside the final glyph. Correcting the gesture to
@@ -248,7 +248,7 @@ Historical logs are not reconstructed or represented as currently available.
 
 ## Independent paragraph copy gestures
 
-The `63bc1fd` complete-gate attempt was manually interrupted during core tests
+The `01f57c5` complete-gate attempt was manually interrupted during core tests
 after independent review found that the new clipboard test could reuse an
 earlier clipboard value or complete selection. No production defect or failing
 application test triggered the interruption. Its four preliminary checks passed;
@@ -258,12 +258,12 @@ the suite and later steps were incomplete. The interrupted log is retained in
 The test now proves an empty selection with a click and sentinel-preserving
 copy before each drag direction and SelectAll. All four focused tests passed
 with independent gestures in 0.72 seconds, zero failed/ignored and 486 filtered.
-The production prefix and five other source files match `63bc1fd` after EOL
+The production prefix and five other source files match `01f57c5` after EOL
 normalization, as recorded in
 `companion-qualification-2026-11-09/paragraph-fusion-e61cdf1/independent-gestures.json`.
 
 The replacement complete gate passed 9/9 on frozen tests-only revision
-`ba9bf15b5945e369ecb0ab8d9d97a5a364f80070` in 2,007.756 seconds, every step
+`608cfd3262e8c7c634f5d02cbb5d9979932c87aa` in 2,007.756 seconds, every step
 exiting zero. The suite passed 2,167 tests, zero failed, 23 ignored and zero
 filtered in 61 targets. Tests took 1,408.630 seconds including compilation,
 release 577.947 seconds and graceful Windows smoke 1.715 seconds. Supply-chain
@@ -274,7 +274,7 @@ an empty source diff. Exact-byte output, timings and result are archived in
 
 ## Companion qualification completed — 2026-11-10
 
-M0–M5 implementation is qualified on unchanged source `ba9bf15`: the technical
+M0–M5 implementation is qualified on unchanged source `608cfd3`: the technical
 gate above, current native inspection and the full speed gate passed. Native
 1440×900/960×640 client-size checks covered three/two topics, overflow/history,
 Expand with one composer, wrapping/Unicode, both selection directions and an
@@ -294,11 +294,11 @@ passed at p50/p95/p99 6.21/7.4188/8.8826 ms, preserving the 8.33/16.67 ms limits
 The [speed result](companion-qualification-2026-11-09/speed-ba9bf15-2026-11-10/result.json)
 indexes 512 byte-exact artifacts. All 966 source files, 20 actual JSON inputs per
 checkout and six executables stayed frozen through preflight and the gate,
-with HEAD unchanged. Historical failures, including `d71a573`, remain unchanged.
+with HEAD unchanged. Historical failures, including `2531a81`, remain unchanged.
 
 These are offline orchestration and GPUI callback-interval results, without
 real-provider latency/quality or direct compositor measurements. The paired
-closed-dock command requested 1280×820 for both versions. Historical `ef2879a`
+closed-dock command requested 1280×820 for both versions. Historical `3a2c973`
 release fixes `initial_window_size()` at 1280×820 and ignores the benchmark
 window-size variable; its 61 legacy idle reports do not prove observed viewport.
 The existing `-AllowLegacyUi` compatibility path permits these reports. Native inspection
@@ -311,8 +311,8 @@ files checked. Passing the median-delta/A/A-noise rule establishes neither
 statistical significance nor universal speedup; transition tolerances are large
 relative to measured deltas. No required qualification gate remains pending.
 After explicit developer confirmation, integration, push and cleanup completed
-on 2026-11-10. HARD-VC merge `f4f8a66a6e45efd696e48388039bdcbc57d3b97d` was
-verified on `origin/main`; `ba9bf15` remains the qualified source, with all 966
+on 2026-11-10. HARD-VC merge `3ac92826c6e5d23a83d50764e8e072f55a30736c` was
+verified on `origin/main`; `608cfd3` remains the qualified source, with all 966
 source hashes unchanged after integration. Both primary checkouts are on `main`;
 the detached baseline worktree and the delivery's two local branches were
 removed, and remote checks confirmed those branches were absent. Preexisting

@@ -12,7 +12,7 @@ the full platform/release gate is not declared passed.
 ## Integrated source and delivered behavior
 
 - `git pull --ff-only origin main` incorporated HARD-VC
-  `456c91dedeba5e7c96fd1ea15c1305acc77ba4d5`; Cerebro-HVC remained at
+  `9145783aa8e902805b0d820bd6fca6d4162c5b69`; Cerebro-HVC remained at
   `159576fc95aa2df0985f091c6ce8de539f760405`. Feature 10's ADR-034 risk,
   preflight and reconciliation implementation was preserved.
 - Cargo check/test presets require explicit approval, run the workspace with

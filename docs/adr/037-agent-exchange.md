@@ -105,12 +105,12 @@ attestation predicate (ADR-036).
 
 | Milestone | Commits | Validation |
 |---|---|---|
-| M1, provenance envelopes | `99cc886`, `bfb02d2` | [M1](../../quality/agent-exchange-m1-validation-2026-10-30.md) |
-| M2, exchange log and doorbell (V62) | `3d7ab74`, `2ddcb7c` | [M2](../../quality/agent-exchange-m2-validation-2026-10-30.md) |
-| M3, external changes on resume (V63) | `ab648fc` | [M3 and M4](../../quality/agent-exchange-m3-m4-validation-2026-10-30.md) |
-| M4, pulsation digests and two Companion tools (V64) | `d230cda` | [M3 and M4](../../quality/agent-exchange-m3-m4-validation-2026-10-30.md) |
+| M1, provenance envelopes | `f03f26d`, `dd50314` | [M1](../../quality/agent-exchange-m1-validation-2026-10-30.md) |
+| M2, exchange log and doorbell (V62) | `222b06e`, `bee6e68` | [M2](../../quality/agent-exchange-m2-validation-2026-10-30.md) |
+| M3, external changes on resume (V63) | `3f85b11` | [M3 and M4](../../quality/agent-exchange-m3-m4-validation-2026-10-30.md) |
+| M4, pulsation digests and two Companion tools (V64) | `9adbe14` | [M3 and M4](../../quality/agent-exchange-m3-m4-validation-2026-10-30.md) |
 | M5, ACP | none | Spike only; see below |
-| M6, reviewer contract and closing | `9526c77` | [Closing](../../quality/agent-exchange-closing-2026-10-30.md) |
+| M6, reviewer contract and closing | `4e396ad` | [Closing](../../quality/agent-exchange-closing-2026-10-30.md) |
 
 Where the implementation differs from the decision:
 

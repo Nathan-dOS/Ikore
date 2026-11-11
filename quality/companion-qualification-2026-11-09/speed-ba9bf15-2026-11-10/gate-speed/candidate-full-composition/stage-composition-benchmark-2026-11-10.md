@@ -2,7 +2,7 @@
 
 - generated_at: 2026-11-10T11:06:27.379632300+00:00
 - mode: fixture
-- code_base: ba9bf15b5945e369ecb0ab8d9d97a5a364f80070
+- code_base: 608cfd3262e8c7c634f5d02cbb5d9979932c87aa
 - fixture_version: stage-composition-fixtures-v1
 - fixtures_sha256: 786e5cc1da8409dc4985da0d27cea9c388d4c42fc82a82121ce1515c1f093c5e
 - host: windows x86_64

@@ -2,7 +2,7 @@
 
 **Data:** 2026-09-02  
 **Branch:** `gpui-migration`  
-**Baseline Git:** `6783743` mais a fatia vertical CLI ainda não commitada no worktree  
+**Baseline Git:** `2cdf27d` mais a fatia vertical CLI ainda não commitada no worktree  
 **Estado:** implementação concluída; gates automatizados aprovados em 2026-09-03  
 **Prioridade:** bloqueador do fechamento do MVP  
 **Plataforma de corte:** Windows x64

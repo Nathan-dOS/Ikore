@@ -1,6 +1,6 @@
 # Agent exchange baseline (ADR-037, before M1)
 
-Date: 2026-10-29. Source: `main` at `d5509be`, measured on the branch
+Date: 2026-10-29. Source: `main` at `d1b70e2`, measured on the branch
 `feat/agent-exchange` in a fresh worktree with an empty `target/`. The gate ran
 on the unchanged tree; the measurement harness was added afterwards and changes
 no product code.

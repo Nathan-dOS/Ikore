@@ -1,6 +1,6 @@
 # Plano RS1–RS2 — Resolução estrutural Brownfield
 
-Data: 2026-08-31. Branch `gpui-migration`. Baseline: `b980e73` (BF5-G). Estado: **aprovado para implementação; RS1 não iniciado**.
+Data: 2026-08-31. Branch `gpui-migration`. Baseline: `44196d4` (BF5-G). Estado: **aprovado para implementação; RS1 não iniciado**.
 
 ## Objetivo
 

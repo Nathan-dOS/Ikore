@@ -1,6 +1,6 @@
 # Checkpoint BF3 — Enriquecimento semântico gradual
 
-Data: 2026-08-30. Branch `gpui-migration`. Baseline: `4994b4f` (BF1-G e BF2-G consolidados). Estado: **BF3-G aprovado; BF4 não iniciada**.
+Data: 2026-08-30. Branch `gpui-migration`. Baseline: `179e88b` (BF1-G e BF2-G consolidados). Estado: **BF3-G aprovado; BF4 não iniciada**.
 
 ## Resultado
 

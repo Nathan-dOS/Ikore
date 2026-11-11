@@ -3,7 +3,7 @@
 Design references: [public summaries](../docs/adr/README.md); [historical archive context](README.md#historical-design-references).
 
 Data: 2026-08-28. Repositório: `C:\Dev\Hard-Vibe-Code`, branch `gpui-migration`.
-Base: `84c2163` (checkpoint M3). Implementação: `98afb91`.
+Base: `9c7384b` (checkpoint M3). Implementação: `47b1516`.
 Decisão: ADR-007 e REGRAS de sincronização do cérebro do projeto.
 
 Status: **M4 concluído; G4 aprovado**. M5 e onboarding Brownfield não fazem parte desta entrega.
@@ -48,7 +48,7 @@ Status: **M4 concluído; G4 aprovado**. M5 e onboarding Brownfield não fazem pa
 
 | Verificação | Resultado |
 |---|---|
-| Baseline M3 | 288 testes; worktree inicial limpo em `84c2163` |
+| Baseline M3 | 288 testes; worktree inicial limpo em `9c7384b` |
 | `cargo fmt --all -- --check` / `cargo clippy --workspace --all-targets --locked --offline --quiet -- -D warnings` | Aprovados; zero warnings do workspace |
 | `cargo test --workspace --locked --offline --quiet` | **309 aprovados**: 195 core, 14 editor, 19 test-support, 62 UI e 19 integrações; zero falhas/ignorados |
 | `cargo build --release --locked --offline -p hvc-app` / `scripts/smoke-windows.ps1` | Aprovados: janela encontrada, banco temporário inicializado, shutdown gracioso e exit code 0 |

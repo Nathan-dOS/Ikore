@@ -22,7 +22,7 @@
     "max_total_read_bytes": 16777216,
     "reason": "O corpus BF5 permanece abaixo do orçamento temporal e a invalidação é exata; o corpus não sustenta reduzir os limites de segurança nem ampliá-los sem evidência de repositórios maiores."
   },
-  "code_base": "a7e09fcac820311af4bba1202ed2b7a46658cd9a",
+  "code_base": "72b53bd2620f1babd59430457debcb7b1e2b2c8b",
   "fixture_version": "bf5-multilang-v1",
   "generated_at": "2026-08-31T11:11:33.320837500+00:00",
   "mapping_summary": {

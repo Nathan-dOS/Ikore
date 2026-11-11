@@ -18,7 +18,7 @@ test results below; those results alone do not qualify that final change.
 ## Source and environment
 
 - Implementation baseline: HARD-VC
-  `11af87eb2bc3132af2fe090f4c4964c5183706b8`; associated design baseline:
+  `c471ce186bbf1e5e091acca8884b4cf85f05caff`; associated design baseline:
   Cerebro-HVC `159576fc95aa2df0985f091c6ce8de539f760405`.
 - `git pull --ff-only` was run in both repositories before implementation and
   brought no delta. Source changes are currently a working-tree implementation;

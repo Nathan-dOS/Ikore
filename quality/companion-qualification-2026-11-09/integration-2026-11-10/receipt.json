@@ -2,13 +2,13 @@
   "schemaVersion": 1,
   "recordedAtUtc": "2026-11-10T11:38:08.760373+00:00",
   "authorization": "Developer explicitly confirmed merge, push and cleanup with sim after reviewing qualification.",
-  "qualifiedSourceCommit": "ba9bf15b5945e369ecb0ab8d9d97a5a364f80070",
+  "qualifiedSourceCommit": "608cfd3262e8c7c634f5d02cbb5d9979932c87aa",
   "integrationMerges": {
     "HARD-VC": {
-      "commit": "f4f8a66a6e45efd696e48388039bdcbc57d3b97d",
+      "commit": "3ac92826c6e5d23a83d50764e8e072f55a30736c",
       "parents": [
-        "e61cdf1bc33be22a3bf7fac5320572afcd9b4837",
-        "92c78bc22cc83f7556790c11ef634f2af5f19115"
+        "5a4c8302bc065222cdfe883f04bd81095ff1630a",
+        "d41a922a823cac3b9eb419692beb0b93039a3382"
       ],
       "mainRemoteVerifiedAfterPush": true
     },
@@ -48,5 +48,5 @@
     "temporaryStashRemoved": true,
     "backupContentsNotPublished": true
   },
-  "scope": "This receipt records the pushed integration merges and completed cleanup. Subsequent commits only close documentation; their hashes are not self-referenced. Existing technical/native/offline-speed qualification remains tied to ba9bf15. No binary distribution was performed."
+  "scope": "This receipt records the pushed integration merges and completed cleanup. Subsequent commits only close documentation; their hashes are not self-referenced. Existing technical/native/offline-speed qualification remains tied to 608cfd3. No binary distribution was performed."
 }

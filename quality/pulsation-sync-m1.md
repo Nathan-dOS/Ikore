@@ -3,7 +3,7 @@
 Design references: [public summaries](../docs/adr/README.md); [historical archive context](README.md#historical-design-references).
 
 Data: 2026-08-27. Repositório: `C:\Dev\Hard-Vibe-Code`, branch `gpui-migration`.
-Base: `429805f` (M0). Implementação M1: `b084f18`. Decisão: ADR-007 e REGRAS RSP-01–22 no cérebro.
+Base: `de6ab80` (M0). Implementação M1: `f4bc196`. Decisão: ADR-007 e REGRAS RSP-01–22 no cérebro.
 
 ## Entrega
 

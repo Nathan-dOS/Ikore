@@ -4,8 +4,8 @@
   "validatedAt": "2026-10-16T08:51:33.0529084Z",
   "clientDate": "2026-10-16",
   "clientTimezone": "America/Sao_Paulo",
-  "localParent": "dbe03eca59b82d28ef2a4878e94bae1905f7b1ad",
-  "m3Parent": "bb53d6c5099904a88d32fb5a00b8be1daf39c9d2",
+  "localParent": "3107cb5b9d369a4a9960561fc9b1ae6f5ebaeb75",
+  "m3Parent": "436bc7e4909a48f116075637339459c8487b0227",
   "sourceIdentification": "Normalized source Git blobs identify the validated worktree. The containing merge commit is the delivered integrated M0-M3 revision.",
   "sourceCodeBlobs": [
     {

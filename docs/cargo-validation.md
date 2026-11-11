@@ -159,7 +159,7 @@ compilation/test results or a passed qualification gate.
 
 ## Integration with feature 10
 
-The implementation is integrated on Ikore `456c91d` (ADR-034). Migration V55
+The implementation is integrated on Ikore `9145783` (ADR-034). Migration V55
 follows its V52–V54 migrations. Review manifest schema 3 preserves the risk,
 selection and Intake-frozen review policy fields introduced in schema 2.
 Reconciliation of ordinary project documentation remains part of freshness;

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "createdAtUtc": "2026-11-09T20:13:26.967757+00:00",
-  "sourceCommit": "5111c6117da219248f72e4844f3ebc593235ff33",
+  "sourceCommit": "fbb5f3904bb8278f1e20367145b48429d7e1b1a6",
   "sourceSnapshot": "quality/companion-qualification-2026-11-09/source-5111c61.json",
   "sourceSnapshotSha256": "0ce36427c195c5534306ef2a9f1fb236ca878c644b8f7b95cfecddbb31428dfe",
   "sourceSnapshotFiles": 966,
@@ -188,7 +188,7 @@
   },
   "sourceVerificationAfterGate": {
     "verifiedAtUtc": "2026-11-09T20:14:41.247560+00:00",
-    "sourceCommit": "5111c6117da219248f72e4844f3ebc593235ff33",
+    "sourceCommit": "fbb5f3904bb8278f1e20367145b48429d7e1b1a6",
     "checkedFiles": 966,
     "zeroDrift": true,
     "mismatches": []

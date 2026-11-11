@@ -22,7 +22,7 @@
     "max_total_read_bytes": 16777216,
     "reason": "O corpus RS1 permanece abaixo do orçamento temporal e a invalidação é exata; o corpus não sustenta reduzir os limites de segurança nem ampliá-los sem evidência de repositórios maiores."
   },
-  "code_base": "2dbc9d6b21988f2c6dbd7497f5e2a924ddde63af",
+  "code_base": "7205acf324fa61ececafb11c11d53dfa60435475",
   "fixture_version": "rs1-structural-multilang-v2",
   "generated_at": "2026-08-31T17:03:50.253733200+00:00",
   "mapping_summary": {

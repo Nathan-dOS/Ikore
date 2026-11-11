@@ -1,4 +1,4 @@
-# Exact-PID thread CPU diagnostic — d71a573
+# Exact-PID thread CPU diagnostic — 2531a81
 
 This is a diagnostic of the same release and three-stream workload. It cannot qualify a performance gate or replace the archived first preflight failure (p95 12.3584 ms).
 

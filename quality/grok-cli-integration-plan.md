@@ -2,7 +2,7 @@
 
 **Data:** 2026-09-21
 **Branch:** `main` (a decidir: branch de feature dedicada antes do primeiro commit)
-**Baseline Git:** `bf7fdbf`, mais o worktree em andamento de ADR-022/redesign de shell (não commitado)
+**Baseline Git:** `337443d`, mais o worktree em andamento de ADR-022/redesign de shell (não commitado)
 **Estado:** plano — nenhuma linha de código escrita
 **Prioridade:** definida pelo usuário
 **Plataforma de corte:** Windows x64

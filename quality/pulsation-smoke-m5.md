@@ -2,7 +2,7 @@
 
 Design references: [public summaries](../docs/adr/README.md); [historical archive context](README.md#historical-design-references).
 
-Data: 2026-08-28/29. Branch `gpui-migration`. Implementação visual e correções: `3a2e2f0`, `d5025c5`, `16a1706`. Complemento ao [checkpoint M5](../quality/pulsation-sync-m5.md).
+Data: 2026-08-28/29. Branch `gpui-migration`. Implementação visual e correções: `ea60c16`, `e24cea8`, `4802ba7`. Complemento ao [checkpoint M5](../quality/pulsation-sync-m5.md).
 
 Status: **smoke visual concluído; G5 permanece aberto**. A evidência aprova os fluxos exercitados, não autoriza rollout, distribuição ou onboarding Brownfield.
 
@@ -21,8 +21,8 @@ Status: **smoke visual concluído; G5 permanece aberto**. A evidência aprova os
 1. A fixture passou a criar workspaces pelo bootstrap greenfield real antes dos arquivos sintéticos. A proteção contra abrir Brownfields sem onboarding não foi relaxada.
 2. Descrições longas agora respeitam a largura do painel, mantêm cancelamento visível e não sobrepõem o cabeçalho do Companion. Campos de texto têm foco visual e pintura contida.
 3. Pulsações terminais não oferecem ações que reabram o fluxo principal; Learning consultivo continua independente.
-4. A fixture desativa conexões remotas, usa credenciais isoladas e só permite `--resume` em uma raiz marcada que contenha exatamente os dois projetos e as conexões esperadas (`d5025c5`).
-5. O smoke encontrou starvation real: a consulta de admissão do Learning considerava qualquer job principal pendente, inclusive uma descrição bloqueada em revisão humana de outro projeto. A admissão agora bloqueia Learning apenas quando há slot/publicação principal ou trabalho principal efetivamente reivindicável. O teste `human_blocked_foreground_does_not_starve_learning_but_claimable_work_does` cobre os dois lados (`16a1706`).
+4. A fixture desativa conexões remotas, usa credenciais isoladas e só permite `--resume` em uma raiz marcada que contenha exatamente os dois projetos e as conexões esperadas (`e24cea8`).
+5. O smoke encontrou starvation real: a consulta de admissão do Learning considerava qualquer job principal pendente, inclusive uma descrição bloqueada em revisão humana de outro projeto. A admissão agora bloqueia Learning apenas quando há slot/publicação principal ou trabalho principal efetivamente reivindicável. O teste `human_blocked_foreground_does_not_starve_learning_but_claimable_work_does` cobre os dois lados (`4802ba7`).
 
 ## Matriz executada
 

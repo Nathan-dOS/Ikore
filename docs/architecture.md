@@ -165,7 +165,7 @@ not permission. Native approval freezes the Companion target; publication commit
 one new drawing and its ready receipt. Completion never navigates. Manual semantic
 commands share core validation and preserve scene/history; no general repository
 write tool is exposed. Source commit
-[`e7dfe4e`](https://github.com/Nathan-dOS/Ikore/commit/e7dfe4e10691c2e7101839f89a0917d227fc4c9b)
+[`92f03c4`](https://github.com/Nathan-dOS/Ikore/commit/92f03c43bd73521c9f4ee55c51c697ba84f557a8)
 passed the nine-check gate on its selected source tree, excluding unrelated local
 voice changes. The [publication record](../quality/canvas-ai-publication-2026-10-29.md)
 distinguishes that qualification from the earlier combined checkout and states

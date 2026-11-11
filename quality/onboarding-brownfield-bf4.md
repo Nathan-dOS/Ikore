@@ -1,6 +1,6 @@
 # Checkpoint BF4 — Manutenção e indexação ampliada
 
-Data: 2026-08-30. Branch `gpui-migration`. Baseline: `5d1dc66` (BF3-G). Estado: **BF4-G aprovado; BF5 não iniciada**.
+Data: 2026-08-30. Branch `gpui-migration`. Baseline: `e9ca0fd` (BF3-G). Estado: **BF4-G aprovado; BF5 não iniciada**.
 
 ## Resultado
 

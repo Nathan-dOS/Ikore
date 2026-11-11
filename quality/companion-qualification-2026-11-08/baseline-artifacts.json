@@ -4,10 +4,10 @@
   "purpose": "Baseline artifact identity and evidence for the Companion speed comparison; not certification of a passing complete baseline gate.",
   "source": {
     "root": "<repo>",
-    "head": "ef2879a6ecc161f5910c6ee4402aea1206d644f8",
+    "head": "3a2c973a5bbe58e3d6e28cc88739c5f86e1ae9de",
     "clean": true,
     "statusPorcelain": "",
-    "equivalentBaselineCommit": "c42f2a77dafd30ee0023b342f9a5f4bd7f28cef2",
+    "equivalentBaselineCommit": "790b450e044f449851a3d6b9a968ddaae9161d24",
     "rustAndCargoDiffEmpty": true,
     "changedPaths": [],
     "gitObjects": [
@@ -370,13 +370,13 @@
         "     Running tests\\composition_benchmark.rs (target\\debug\\deps\\composition_benchmark-2f5cd5f4bba3c75d.exe)"
       ],
       "standaloneExecutableBuildExplicitInSuppliedLog": false,
-      "qualification": "Standalone example successfully rebuilt with --locked from clean original ef2879a under the pinned toolchain; separate build log, command and resulting artifact hash recorded. Original gate log qualification remains separate and does not claim this example was run there.",
+      "qualification": "Standalone example successfully rebuilt with --locked from clean original 3a2c973 under the pinned toolchain; separate build log, command and resulting artifact hash recorded. Original gate log qualification remains separate and does not claim this example was run there.",
       "separateBuildEvidence": {
         "command": "cargo build --locked -p hvc-test-support --example composition_benchmark",
         "workingDirectory": "<repo>",
-        "headBefore": "ef2879a6ecc161f5910c6ee4402aea1206d644f8",
+        "headBefore": "3a2c973a5bbe58e3d6e28cc88739c5f86e1ae9de",
         "cleanBefore": true,
-        "headAfter": "ef2879a6ecc161f5910c6ee4402aea1206d644f8",
+        "headAfter": "3a2c973a5bbe58e3d6e28cc88739c5f86e1ae9de",
         "cleanAfter": true,
         "exitCode": 0,
         "logPath": "<repo>\\target\\companion-speed-baseline-build.log",
@@ -407,6 +407,6 @@
   "limits": [
     "Artifact SHA-256 hashes identify the current bytes and must be checked at speed-gate start/end.",
     "The standalone composition example was independently rebuilt successfully after the original gate; no new performance measurements or full baseline test/release runs were performed for this qualification.",
-    "An empty Rust/Cargo diff establishes source equivalence between ef2879a and c42f2a; it does not turn the failed advisory gate into a passing one."
+    "An empty Rust/Cargo diff establishes source equivalence between 3a2c973 and c42f2a; it does not turn the failed advisory gate into a passing one."
   ]
 }

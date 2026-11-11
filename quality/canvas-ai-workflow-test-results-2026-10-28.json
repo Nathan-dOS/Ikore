@@ -9,7 +9,7 @@
   "testThreadsPerTarget": 2,
   "rustToolchain": "1.98.0",
   "platform": "Windows x64",
-  "baseCommit": "92f6a0c291c2d0e05703e228547e4faa26b95d8e",
+  "baseCommit": "b3505a5e118fd345d18960b5fbe5d161d3dfe7f2",
   "sourceFingerprint": "canvas-ai-workflow-source-fingerprint-2026-10-28.json",
   "verifiedSourceFiles": 887,
   "sourceDrift": 0,
