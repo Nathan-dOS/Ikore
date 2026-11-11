@@ -1,0 +1,13 @@
+   Compiling hvc-core v0.1.0 (<repo>\crates\hvc-core)
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\<repo>\target\debug\incremental\hvc_core-3bqi2v0ry79qe\s-ho1asydpum-0bt49ej-working`
+
+warning: `hvc-core` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 43.13s
+     Running unittests src\lib.rs (target\debug\deps\hvc_core-68cd0b45f4e17f34.exe)
+
+running 3 tests
+test feature_forge::preflight::tests::greenfield_principles_keep_the_original_path_and_do_not_number_decisions ... ok
+test feature_forge::preflight::tests::greenfield_principles_obey_byte_limits_and_root_refusals ... ok
+test persistence_service::forge_batches::tests::greenfield_principles_reach_the_triage_prompt_and_finding ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 1203 filtered out; finished in 1.16s

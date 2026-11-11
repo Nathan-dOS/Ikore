@@ -589,3 +589,10 @@ resets; captured files and production expiry rules remain unchanged.
 `claude_run_events_keep_expired_windows_out_of_the_live_meter` separately checks
 that expired windows stay out of the live meter. The historical workflow report retains the
 time-dependent third gate failure and the 17-test focused correction result.
+
+The `greenfield_principles` selection in `hvc-core` exercises Forge triage with a
+workspace created by the real greenfield bootstrap and a scripted Feature Agent.
+It checks the delivered prompt and the stored finding. Boundary fixtures cover
+root precedence, case and separators, UTF-8 byte budgets, the aggregate budget,
+changes to the effective digest, a refused root entry and a Windows junction.
+Run `cargo test --locked -p hvc-core --lib greenfield_principles -- --test-threads=2`.

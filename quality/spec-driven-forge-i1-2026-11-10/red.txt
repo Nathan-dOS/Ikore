@@ -1,0 +1,254 @@
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.24
+   Compiling windows-link v0.2.1
+   Compiling shlex v2.0.1
+   Compiling find-msvc-tools v0.1.11
+   Compiling stable_deref_trait v1.2.1
+   Compiling memchr v2.8.3
+   Compiling cfg-if v1.0.4
+   Compiling serde_core v1.0.229
+   Compiling itoa v1.0.18
+   Compiling litemap v0.8.3
+   Compiling windows-sys v0.61.2
+   Compiling writeable v0.6.4
+   Compiling icu_normalizer_data v2.3.0
+   Compiling utf8_iter v1.0.4
+   Compiling smallvec v1.15.2
+   Compiling icu_properties_data v2.3.0
+   Compiling serde v1.0.229
+   Compiling cc v1.4.4
+   Compiling pin-project-lite v0.2.17
+   Compiling equivalent v1.0.2
+   Compiling regex-syntax v0.8.11
+   Compiling futures-core v0.3.34
+   Compiling foldhash v0.2.0
+   Compiling zmij v1.0.23
+   Compiling bytes v1.12.1
+   Compiling autocfg v1.5.1
+   Compiling once_cell v1.21.4
+   Compiling percent-encoding v2.3.2
+   Compiling futures-sink v0.3.34
+   Compiling log v0.4.34
+   Compiling aho-corasick v1.1.5
+   Compiling futures-channel v0.3.34
+   Compiling num-traits v0.2.19
+   Compiling futures-io v0.3.34
+   Compiling futures-task v0.3.34
+   Compiling allocator-api2 v0.2.21
+   Compiling ring v0.17.14
+   Compiling slab v0.4.12
+   Compiling zeroize v1.9.1
+   Compiling syn v3.0.3
+   Compiling syn v2.0.119
+   Compiling hashbrown v0.17.1
+   Compiling http v1.5.0
+   Compiling bitflags v2.13.1
+   Compiling regex-automata v0.4.18
+   Compiling socket2 v0.6.5
+   Compiling mio v1.2.2
+   Compiling serde_json v1.0.154
+   Compiling http-body v1.1.0
+   Compiling rustls-pki-types v1.15.1
+   Compiling form_urlencoded v1.2.2
+   Compiling getrandom v0.2.17
+   Compiling untrusted v0.9.0
+   Compiling httparse v1.10.1
+   Compiling tree-sitter-language v0.1.7
+   Compiling libc v0.2.189
+   Compiling thiserror v2.0.21
+   Compiling num-integer v0.1.47
+   Compiling winapi-util v0.1.11
+   Compiling rustls v0.23.46
+   Compiling tower-service v0.3.3
+   Compiling vcpkg v0.2.15
+   Compiling synstructure v0.13.2
+   Compiling typenum v1.20.1
+   Compiling try-lock v0.2.5
+   Compiling pkg-config v0.3.34
+   Compiling want v0.3.1
+   Compiling same-file v1.0.6
+   Compiling tracing-core v0.1.36
+   Compiling atomic-waker v1.1.2
+   Compiling subtle v2.6.1
+   Compiling libsqlite3-sys v0.39.1
+   Compiling time-core v0.1.9
+   Compiling num-conv v0.2.2
+   Compiling powerfmt v0.2.0
+   Compiling windows_x86_64_msvc v0.53.1
+   Compiling hybrid-array v0.4.14
+   Compiling zerocopy v0.8.56
+   Compiling zerofrom-derive v0.1.7
+   Compiling yoke-derive v0.8.2
+   Compiling getrandom v0.3.4
+   Compiling version_check v0.9.5
+   Compiling getrandom v0.4.3
+   Compiling tracing v0.1.44
+   Compiling regex v1.13.1
+   Compiling walkdir v2.5.0
+   Compiling ahash v0.8.12
+   Compiling num-bigint v0.4.8
+   Compiling sync_wrapper v1.0.2
+   Compiling zerofrom v0.1.8
+   Compiling winnow v1.0.4
+   Compiling tower-layer v0.3.3
+   Compiling ipnet v2.12.1
+   Compiling yoke v0.8.3
+   Compiling zerovec-derive v0.11.6
+   Compiling displaydoc v0.2.7
+   Compiling serde_derive v1.0.229
+   Compiling tokio-macros v2.7.2
+   Compiling futures-macro v0.3.34
+   Compiling thiserror-impl v2.0.21
+   Compiling rustls-webpki v0.103.16
+   Compiling zerotrie v0.2.5
+   Compiling tokio v1.54.1
+   Compiling futures-util v0.3.34
+   Compiling parking_lot_core v0.9.12
+   Compiling ref-cast v1.0.27
+   Compiling zerovec v0.11.8
+   Compiling ryu v1.0.23
+   Compiling crossbeam-utils v0.8.22
+   Compiling base64 v0.22.1
+   Compiling indexmap v2.14.0
+   Compiling tinystr v0.8.4
+   Compiling potential_utf v0.1.6
+   Compiling num-rational v0.4.2
+   Compiling toml_parser v1.1.3+spec-1.1.0
+   Compiling icu_collections v2.3.0
+   Compiling icu_locale_core v2.3.0
+   Compiling ref-cast-impl v1.0.27
+   Compiling crypto-common v0.2.2
+   Compiling block-buffer v0.12.1
+   Compiling num-iter v0.1.46
+   Compiling webpki-roots v1.0.11
+   Compiling num-complex v0.4.6
+   Compiling serde_spanned v1.1.1
+   Compiling toml_datetime v1.1.1+spec-1.1.0
+   Compiling hashlink v0.12.2
+   Compiling icu_provider v2.3.1
+   Compiling toml_writer v1.1.2+spec-1.1.0
+   Compiling deranged v0.5.8
+   Compiling fallible-streaming-iterator v0.1.9
+   Compiling icu_properties v2.3.0
+   Compiling icu_normalizer v2.3.0
+   Compiling scopeguard v1.2.0
+   Compiling fallible-iterator v0.3.0
+   Compiling const-oid v0.10.2
+   Compiling crossbeam-epoch v0.9.20
+   Compiling siphasher v1.0.3
+   Compiling time v0.3.55
+   Compiling rusqlite v0.41.1
+   Compiling digest v0.11.3
+   Compiling futures-executor v0.3.34
+   Compiling lock_api v0.4.14
+   Compiling toml v1.1.4+spec-1.1.0
+   Compiling idna_adapter v1.2.2
+   Compiling idna v1.1.0
+   Compiling num v0.4.3
+   Compiling serde_urlencoded v0.7.1
+   Compiling windows-targets v0.53.5
+   Compiling url v2.5.8
+   Compiling hyper v1.11.0
+   Compiling tower v0.5.3
+   Compiling tokio-rustls v0.26.4
+   Compiling tokio-util v0.7.20
+   Compiling http-body-util v0.1.5
+   Compiling winapi v0.3.9
+   Compiling bit-vec v0.8.0
+   Compiling borrow-or-share v0.2.4
+   Compiling unicode-general-category v1.1.0
+   Compiling cpufeatures v0.3.0
+   Compiling jsonschema-value v0.59.0
+   Compiling tower-http v0.6.11
+   Compiling heck v0.5.0
+   Compiling crossbeam-deque v0.8.7
+   Compiling sha2 v0.11.0
+   Compiling fluent-uri v0.4.1
+   Compiling bit-set v0.8.0
+   Compiling refinery-core v0.10.1
+   Compiling hyper-util v0.1.20
+   Compiling strum_macros v0.28.0
+   Compiling parking_lot v0.12.5
+   Compiling tree-sitter v0.26.13
+   Compiling windows-sys v0.60.2
+   Compiling fraction v0.17.0
+   Compiling futures v0.3.34
+   Compiling uuid v1.28.0
+   Compiling tree-sitter-rust v0.24.2
+   Compiling tree-sitter-typescript v0.23.2
+   Compiling bstr v1.13.1
+   Compiling fastrand v2.5.0
+   Compiling hyper-rustls v0.27.9
+   Compiling bytecount v0.6.9
+   Compiling anyhow v1.0.104
+   Compiling vsimd v0.8.0
+   Compiling num-cmp v0.1.0
+   Compiling reqwest v0.12.28
+   Compiling outref v0.5.2
+   Compiling micromap v0.3.0
+   Compiling uuid-simd v0.8.0
+   Compiling globset v0.4.20
+   Compiling referencing v0.59.0
+   Compiling strum v0.28.0
+   Compiling tempfile v3.27.0
+   Compiling refinery-macros v0.10.0
+   Compiling fancy-regex v0.19.2
+   Compiling email_address v0.2.9
+   Compiling hvc-contracts v0.1.0 (<repo>\crates\hvc-contracts)
+   Compiling chrono v0.4.45
+   Compiling notify-types v2.1.0
+   Compiling jsonschema-regex v0.59.0
+   Compiling unsafe-libyaml v0.2.11
+   Compiling byteorder v1.5.0
+   Compiling data-encoding v2.11.1
+   Compiling streaming-iterator v0.1.9
+   Compiling keyring v3.6.3
+   Compiling serde_yaml v0.9.34+deprecated
+   Compiling jsonschema v0.59.0
+   Compiling fs2 v0.4.3
+   Compiling hvc-terminal v0.1.0 (<repo>\crates\hvc-terminal)
+   Compiling notify v8.2.0
+   Compiling refinery v0.10.0
+   Compiling hvc-voice v0.1.0 (<repo>\crates\hvc-voice)
+   Compiling ignore v0.4.33
+   Compiling hvc-core v0.1.0 (<repo>\crates\hvc-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 43s
+     Running unittests src\lib.rs (target\debug\deps\hvc_core-68cd0b45f4e17f34.exe)
+
+running 3 tests
+test feature_forge::preflight::tests::greenfield_principles_obey_byte_limits_and_root_refusals ... FAILED
+test feature_forge::preflight::tests::greenfield_principles_keep_the_original_path_and_do_not_number_decisions ... FAILED
+test persistence_service::forge_batches::tests::greenfield_principles_reach_the_triage_prompt_and_finding ... FAILED
+
+failures:
+
+---- feature_forge::preflight::tests::greenfield_principles_obey_byte_limits_and_root_refusals stdout ----
+
+thread 'feature_forge::preflight::tests::greenfield_principles_obey_byte_limits_and_root_refusals' (38676) panicked at crates\hvc-core\src\feature_forge\preflight.rs:671:13:
+assertion `left == right` failed
+  left: None
+ right: Some(Loaded)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- feature_forge::preflight::tests::greenfield_principles_keep_the_original_path_and_do_not_number_decisions stdout ----
+
+thread 'feature_forge::preflight::tests::greenfield_principles_keep_the_original_path_and_do_not_number_decisions' (34348) panicked at crates\hvc-core\src\feature_forge\preflight.rs:651:9:
+assertion `left == right` failed
+  left: None
+ right: Some("Docs\\Project_Agent.MD")
+
+---- persistence_service::forge_batches::tests::greenfield_principles_reach_the_triage_prompt_and_finding stdout ----
+
+thread 'persistence_service::forge_batches::tests::greenfield_principles_reach_the_triage_prompt_and_finding' (9212) panicked at crates\hvc-core\src\feature_forge\tests.rs:3457:5:
+assertion failed: prompts[0].contains("### `project_agent` (docs/PROJECT_AGENT.md)")
+
+
+failures:
+    feature_forge::preflight::tests::greenfield_principles_keep_the_original_path_and_do_not_number_decisions
+    feature_forge::preflight::tests::greenfield_principles_obey_byte_limits_and_root_refusals
+    persistence_service::forge_batches::tests::greenfield_principles_reach_the_triage_prompt_and_finding
+
+test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 1203 filtered out; finished in 4.91s
+
+error: test failed, to rerun pass `-p hvc-core --lib`

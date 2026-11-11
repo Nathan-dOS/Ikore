@@ -3447,6 +3447,23 @@ async fn triaged(f: &Fixture, feature: &Feature, reply: String) -> Arc<ScriptedG
 }
 
 #[tokio::test]
+async fn greenfield_principles_reach_the_triage_prompt_and_finding() {
+    let f = Fixture::new();
+    crate::workspace_service::bootstrap_greenfield_workspace(f.workspace.path()).unwrap();
+    let feature = f.feature("Export workflow");
+    let gateway = triaged(&f, &feature, triage_with_conflicts("approve", json!([]))).await;
+    let prompts = gateway.prompts();
+    assert_eq!(prompts.len(), 1);
+    assert!(prompts[0].contains("### `project_agent` (docs/PROJECT_AGENT.md)"));
+    assert!(prompts[0].contains("Greenfield project initialized by Ikore."));
+    let snapshot = f.forge().snapshot(&f.project).unwrap();
+    assert_eq!(
+        snapshot.preflight[0].inputs.handle_path("project_agent"),
+        Some("docs/PROJECT_AGENT.md"),
+    );
+}
+
+#[tokio::test]
 async fn triage_reads_the_accepted_decisions_and_a_blocking_conflict_stops_approval() {
     let f = Fixture::new();
     f.decisions();

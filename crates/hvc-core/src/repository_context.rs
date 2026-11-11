@@ -883,7 +883,7 @@ pub(crate) fn is_rust_binary_source_directory(path: &Path) -> bool {
         })
 }
 
-fn is_link(metadata: &fs::Metadata) -> bool {
+pub(crate) fn is_link(metadata: &fs::Metadata) -> bool {
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
