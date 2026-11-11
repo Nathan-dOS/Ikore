@@ -107,8 +107,8 @@ fn canvas_app_core_round_trip_bindings_export_and_project_isolation() {
     assert_eq!(service.sync_project(&project_a.id).unwrap().pending, 0);
     assert!(service.list_summaries(&project_b.id).unwrap().is_empty());
     assert!(service.get(&project_b.id, &drawing.id).is_err());
-    let directory = harness.workspace_dir().join(".hvc/drawings");
-    let json_path = directory.join(format!("{}.hvc-canvas.json", saved.basename));
+    let directory = harness.workspace_dir().join(".ikore/drawings");
+    let json_path = directory.join(format!("{}.ikore-canvas.json", saved.basename));
     let svg_path = directory.join(format!("{}.svg", saved.basename));
     let exported: serde_json::Value =
         serde_json::from_slice(&fs::read(&json_path).unwrap()).unwrap();

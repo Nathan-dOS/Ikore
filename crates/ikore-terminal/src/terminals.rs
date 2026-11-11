@@ -8293,7 +8293,7 @@ fn harden_spec(
             // (verified with 1.3.5, 2026-10-14). The deny rules matter more than
             // the isolation: a headless `agy` refuses shell commands by default
             // but writes files without asking.
-            let directory = tempfile::Builder::new().prefix("hvc-agy-").tempdir()?;
+            let directory = tempfile::Builder::new().prefix("ikore-agy-").tempdir()?;
             isolate_antigravity(directory.path(), mode, spec)?;
             settings_guard = Some(HardeningGuard::ConfigDirectory(directory));
         }
@@ -9296,7 +9296,7 @@ pub(crate) fn materialize_safe_workspace<H: TerminalHost + ?Sized>(
         MAX_SAFE_SNAPSHOT_BYTES,
     )?;
     let directory = tempfile::Builder::new()
-        .prefix("hvc-cli-workspace-")
+        .prefix("ikore-cli-workspace-")
         .tempdir()?;
     let mut digest = Sha256::new();
     digest.update(SANITIZATION_POLICY_VERSION.as_bytes());
@@ -9331,7 +9331,7 @@ pub(crate) fn materialize_safe_workspace<H: TerminalHost + ?Sized>(
     }
     let manifest_hash = lower_hex(&digest.finalize());
     fs::write(
-        directory.path().join(".hvc-cli-snapshot.json"),
+        directory.path().join(".ikore-cli-snapshot.json"),
         serde_json::to_vec(&serde_json::json!({
             "schemaVersion": 1, "sanitizationVersion": SANITIZATION_POLICY_VERSION,
             "manifestSha256": manifest_hash, "files": manifest_files,

@@ -159,10 +159,14 @@ fn mirror_job(root: &Path, job: &Job) -> Result<(), SyncFailure> {
     if !valid_basename(&job.basename) {
         return Err(SyncFailure::Unavailable);
     }
-    let json_path = directory.join(format!("{}.hvc-canvas.json", job.basename));
+    let json_path = directory.join(format!("{}.ikore-canvas.json", job.basename));
+    let legacy_json_path = directory.join(format!("{}.hvc-canvas.json", job.basename));
     let svg_path = directory.join(format!("{}.svg", job.basename));
     if job.operation == "delete" {
         remove_owned(&json_path, job.expected_json.as_deref())?;
+        if legacy_json_path.exists() {
+            let _ = remove_owned(&legacy_json_path, job.expected_json.as_deref());
+        }
         remove_owned(&svg_path, job.expected_svg.as_deref())?;
     } else {
         let json = job.json.as_deref().ok_or(SyncFailure::Unavailable)?;
@@ -181,6 +185,9 @@ fn mirror_job(root: &Path, job: &Job) -> Result<(), SyncFailure> {
             job.expected_json.as_deref(),
             json_hash,
         )?;
+        if legacy_json_path.exists() {
+            let _ = fs::remove_file(&legacy_json_path);
+        }
         write_owned(
             &svg_path,
             svg.as_bytes(),
@@ -202,6 +209,64 @@ fn valid_basename(value: &str) -> bool {
             .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok())
 }
 
+/// Migrates drawing files from `.hvc/drawings/*.hvc-canvas.json` to `.ikore/drawings/*.ikore-canvas.json`.
+/// Non-destructive: preserves existing files in `.ikore/drawings` without overwriting them.
+pub fn migrate_project_drawings(root: &Path) {
+    let legacy_drawings = root.join(".hvc").join("drawings");
+    let target_drawings = root.join(".ikore").join("drawings");
+    if legacy_drawings.is_dir() {
+        if !target_drawings.exists() {
+            let _ = fs::create_dir_all(&target_drawings);
+        }
+        if let Ok(entries) = fs::read_dir(&legacy_drawings) {
+            for entry in entries.filter_map(Result::ok) {
+                let path = entry.path();
+                if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+                    let new_file_name =
+                        if let Some(base) = file_name.strip_suffix(".hvc-canvas.json") {
+                            format!("{base}.ikore-canvas.json")
+                        } else {
+                            file_name.to_string()
+                        };
+                    let destination = target_drawings.join(&new_file_name);
+                    if !destination.exists() {
+                        let _ = fs::rename(&path, &destination)
+                            .or_else(|_| fs::copy(&path, &destination).map(|_| ()));
+                    }
+                }
+            }
+        }
+        let is_empty = fs::read_dir(&legacy_drawings)
+            .map(|mut i| i.next().is_none())
+            .unwrap_or(false);
+        if is_empty {
+            let _ = fs::remove_dir(&legacy_drawings);
+            let legacy_hvc = root.join(".hvc");
+            let hvc_empty = fs::read_dir(&legacy_hvc)
+                .map(|mut i| i.next().is_none())
+                .unwrap_or(false);
+            if hvc_empty {
+                let _ = fs::remove_dir(&legacy_hvc);
+            }
+        }
+    }
+    if target_drawings.is_dir()
+        && let Ok(entries) = fs::read_dir(&target_drawings)
+    {
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            if let Some(file_name) = path.file_name().and_then(|n| n.to_str())
+                && let Some(base) = file_name.strip_suffix(".hvc-canvas.json")
+            {
+                let destination = target_drawings.join(format!("{base}.ikore-canvas.json"));
+                if !destination.exists() {
+                    let _ = fs::rename(&path, &destination);
+                }
+            }
+        }
+    }
+}
+
 fn checked_directory(root: &Path) -> Result<PathBuf, SyncFailure> {
     if !root.is_absolute() {
         return Err(SyncFailure::Unavailable);
@@ -210,9 +275,10 @@ fn checked_directory(root: &Path) -> Result<PathBuf, SyncFailure> {
     for ancestor in root.ancestors() {
         checked_metadata(ancestor, true)?;
     }
+    migrate_project_drawings(root);
     let root = fs::canonicalize(root).map_err(|_| SyncFailure::Unavailable)?;
     let mut directory = root.clone();
-    for component in [".hvc", "drawings"] {
+    for component in [".ikore", "drawings"] {
         directory.push(component);
         match fs::symlink_metadata(&directory) {
             Ok(_) => checked_metadata(&directory, true)?,

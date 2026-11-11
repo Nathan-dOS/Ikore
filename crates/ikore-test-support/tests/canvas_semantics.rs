@@ -120,8 +120,8 @@ fn canvas_semantic_document_survives_sqlite_mirror_reopen_and_project_fencing() 
     service.sync_project(&project).unwrap();
     let json_path = harness
         .workspace_dir()
-        .join(".hvc/drawings")
-        .join(format!("{}.hvc-canvas.json", saved.basename));
+        .join(".ikore/drawings")
+        .join(format!("{}.ikore-canvas.json", saved.basename));
     let mirror: serde_json::Value = serde_json::from_slice(&fs::read(json_path).unwrap()).unwrap();
     assert_eq!(mirror["scene"]["document"]["profile"], "architecture");
     assert_eq!(mirror["scene"]["document"]["language"], "pt-BR");
@@ -264,8 +264,8 @@ fn canvas_semantic_narrative_redaction_precedes_database_journal_and_export() {
     let mirrored = fs::read_to_string(
         harness
             .workspace_dir()
-            .join(".hvc/drawings")
-            .join(format!("{}.hvc-canvas.json", saved.basename)),
+            .join(".ikore/drawings")
+            .join(format!("{}.ikore-canvas.json", saved.basename)),
     )
     .unwrap();
     assert!(!mirrored.contains(&secret));

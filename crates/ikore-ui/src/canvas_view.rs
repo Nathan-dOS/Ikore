@@ -249,7 +249,7 @@ fn master(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
         div()
             .text_xs()
             .text_color(theme::text_subtle())
-            .child("Local files: .hvc/drawings/"),
+            .child("Local files: .ikore/drawings/"),
     );
     column.into_any_element()
 }

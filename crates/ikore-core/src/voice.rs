@@ -599,7 +599,7 @@ mod tests {
                 .unwrap()
                 .parent()
                 .unwrap()
-                .join(".hvc-install"),
+                .join(".ikore-install"),
             format!(
                 "{} {}",
                 runtime.release().version,

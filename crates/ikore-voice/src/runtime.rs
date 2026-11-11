@@ -238,7 +238,15 @@ impl VoiceRuntime {
     }
 
     fn runtime_marker(&self) -> PathBuf {
-        self.runtime_dir().join(".hvc-install")
+        let canonical = self.runtime_dir().join(".ikore-install");
+        if canonical.exists() {
+            return canonical;
+        }
+        let legacy = self.runtime_dir().join(".hvc-install");
+        if legacy.exists() {
+            return legacy;
+        }
+        canonical
     }
 
     fn runtime_identity(&self) -> String {
@@ -387,7 +395,7 @@ impl VoiceRuntime {
         if cancellation.is_cancelled() {
             return Err(VoiceError::Cancelled);
         }
-        tokio::fs::write(unpacked.join(".hvc-install"), self.runtime_identity()).await?;
+        tokio::fs::write(unpacked.join(".ikore-install"), self.runtime_identity()).await?;
         let target = self.runtime_dir();
         if let Some(parent) = target.parent() {
             tokio::fs::create_dir_all(parent).await?;

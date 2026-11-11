@@ -112,7 +112,7 @@ impl PersistenceService {
         let parent = root
             .parent()
             .ok_or_else(|| Error::Validation("Cannot delete a filesystem root.".into()))?;
-        let quarantine = parent.join(format!(".hvc-delete-{}", Uuid::new_v4()));
+        let quarantine = parent.join(format!(".ikore-delete-{}", Uuid::new_v4()));
         let mut db = self.connection()?;
         {
             let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -352,10 +352,10 @@ fn rollback_prepared(
 }
 
 fn valid_quarantine(root: &Path, quarantine: &Path) -> Result<(), Error> {
-    let suffix = quarantine
-        .file_name()
-        .and_then(|n| n.to_str())
-        .and_then(|n| n.strip_prefix(".hvc-delete-"));
+    let file_name = quarantine.file_name().and_then(|n| n.to_str());
+    let suffix = file_name
+        .and_then(|n| n.strip_prefix(".ikore-delete-"))
+        .or_else(|| file_name.and_then(|n| n.strip_prefix(".hvc-delete-")));
     if root.parent() != quarantine.parent() || suffix.is_none_or(|id| Uuid::parse_str(id).is_err())
     {
         return Err(Error::Validation("Invalid project quarantine path.".into()));
@@ -990,7 +990,7 @@ mod tests {
         let root = fixture.path().join("repo");
         let quarantined = fixture
             .path()
-            .join(format!(".hvc-delete-{}", Uuid::new_v4()));
+            .join(format!(".ikore-delete-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("keep.txt"), "still here").unwrap();
         let service = PersistenceService::initialize(&data).unwrap();
@@ -1049,7 +1049,7 @@ mod tests {
         let original = fixture.path().join("removed");
         let quarantine = fixture
             .path()
-            .join(format!(".hvc-delete-{}", Uuid::new_v4()));
+            .join(format!(".ikore-delete-{}", Uuid::new_v4()));
         fs::create_dir_all(&quarantine).unwrap();
         fs::write(quarantine.join("private.txt"), "private content").unwrap();
         let service = PersistenceService::initialize(&data).unwrap();

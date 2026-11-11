@@ -150,7 +150,7 @@ fn materializer_preserves_safe_content_manifest_readonly_and_receipt()
     assert_eq!(fs::read_to_string(&source)?, "safe projection");
     assert!(fs::metadata(source)?.permissions().readonly());
     let manifest: Value =
-        serde_json::from_slice(&fs::read(safe.path().join(".hvc-cli-snapshot.json"))?)?;
+        serde_json::from_slice(&fs::read(safe.path().join(".ikore-cli-snapshot.json"))?)?;
     assert_eq!(manifest["manifestSha256"], safe.manifest_hash);
     assert_eq!(manifest["files"], serde_json::json!(["src/main.rs"]));
     assert_eq!(host.recorded.load(Ordering::SeqCst), 1);

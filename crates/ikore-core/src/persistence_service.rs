@@ -2657,6 +2657,10 @@ impl PersistenceService {
                 PersistenceServiceError::NotFound("Project not found after the update.".to_string())
             })?;
 
+        if let Ok(path) = std::fs::canonicalize(&project.workspace_path) {
+            crate::companion_drawings::workspace_sync::migrate_project_drawings(&path);
+        }
+
         Ok(OpenProjectResponse { project })
     }
 

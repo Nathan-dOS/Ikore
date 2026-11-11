@@ -40,9 +40,9 @@ impl Fixture {
     }
 
     fn paths(&self, drawing: &CompanionDrawing) -> (PathBuf, PathBuf) {
-        let directory = self.root.join(".hvc/drawings");
+        let directory = self.root.join(".ikore/drawings");
         (
-            directory.join(format!("{}.hvc-canvas.json", drawing.basename)),
+            directory.join(format!("{}.ikore-canvas.json", drawing.basename)),
             directory.join(format!("{}.svg", drawing.basename)),
         )
     }
@@ -674,7 +674,7 @@ fn companion_drawings_database_basename_cannot_escape_managed_directory() {
 fn companion_drawings_linked_managed_directory_is_rejected() {
     let fixture = Fixture::new();
     let external = tempfile::tempdir().unwrap();
-    std::os::unix::fs::symlink(external.path(), fixture.root.join(".hvc")).unwrap();
+    std::os::unix::fs::symlink(external.path(), fixture.root.join(".ikore")).unwrap();
     fixture.service.create(&fixture.project, "Linked").unwrap();
     assert_eq!(
         fixture
@@ -685,4 +685,48 @@ fn companion_drawings_linked_managed_directory_is_rejected() {
         1
     );
     assert_eq!(fs::read_dir(external.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn legacy_hvc_drawings_are_migrated_to_ikore_drawings_automatically() {
+    let fixture = Fixture::new();
+    let legacy_dir = fixture.root.join(".hvc").join("drawings");
+    fs::create_dir_all(&legacy_dir).unwrap();
+    let old_json =
+        legacy_dir.join("architecture-00000000-0000-4000-8000-000000000001.hvc-canvas.json");
+    let old_svg = legacy_dir.join("architecture-00000000-0000-4000-8000-000000000001.svg");
+    fs::write(&old_json, b"{\"test\": 1}").unwrap();
+    fs::write(&old_svg, b"<svg></svg>").unwrap();
+
+    super::workspace_sync::migrate_project_drawings(&fixture.root);
+
+    let target_dir = fixture.root.join(".ikore").join("drawings");
+    let target_json =
+        target_dir.join("architecture-00000000-0000-4000-8000-000000000001.ikore-canvas.json");
+    let target_svg = target_dir.join("architecture-00000000-0000-4000-8000-000000000001.svg");
+
+    assert!(target_json.exists());
+    assert!(target_svg.exists());
+    assert_eq!(fs::read(&target_json).unwrap(), b"{\"test\": 1}");
+    assert!(!old_json.exists());
+    assert!(!legacy_dir.exists());
+}
+
+#[test]
+fn migration_does_not_overwrite_existing_ikore_drawings() {
+    let fixture = Fixture::new();
+    let legacy_dir = fixture.root.join(".hvc").join("drawings");
+    let target_dir = fixture.root.join(".ikore").join("drawings");
+    fs::create_dir_all(&legacy_dir).unwrap();
+    fs::create_dir_all(&target_dir).unwrap();
+
+    let old_json = legacy_dir.join("doc-00000000-0000-4000-8000-000000000001.hvc-canvas.json");
+    let target_json = target_dir.join("doc-00000000-0000-4000-8000-000000000001.ikore-canvas.json");
+    fs::write(&old_json, b"legacy content").unwrap();
+    fs::write(&target_json, b"new content").unwrap();
+
+    super::workspace_sync::migrate_project_drawings(&fixture.root);
+
+    // Existing target must be preserved without overwrite
+    assert_eq!(fs::read(&target_json).unwrap(), b"new content");
 }

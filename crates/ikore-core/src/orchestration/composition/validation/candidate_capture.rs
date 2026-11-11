@@ -189,7 +189,12 @@ fn metadata_dir(target: &Path) -> Result<PathBuf, CompositionError> {
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| error("A validation destination must have a UTF-8 name."))?;
-    Ok(target.with_file_name(format!(".{name}.hvc-candidate")))
+    let canonical = target.with_file_name(format!(".{name}.ikore-candidate"));
+    let legacy = target.with_file_name(format!(".{name}.hvc-candidate"));
+    if !canonical.exists() && legacy.exists() {
+        return Ok(legacy);
+    }
+    Ok(canonical)
 }
 
 fn sensitive(name: &str) -> bool {
@@ -218,6 +223,7 @@ fn protected(relative: &str) -> bool {
                     | ".hg"
                     | ".svn"
                     | ".ikore"
+                    | ".hvc"
                     | ".hard-vibe-code"
                     | ".agents"
                     | ".claude"
@@ -622,7 +628,7 @@ fn write_copy(
         .map_err(|_| error("The validation destination parent is unavailable."))?;
     reject_links(parent)?;
     let staging = tempfile::Builder::new()
-        .prefix(".hvc-capture-")
+        .prefix(".ikore-capture-")
         .tempdir_in(parent)
         .map_err(|_| error("Temporary validation storage is unavailable."))?;
     let data = staging.path().join("data");
