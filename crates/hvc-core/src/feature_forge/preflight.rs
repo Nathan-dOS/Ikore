@@ -2,7 +2,7 @@
 //!
 //! Triage already asks the Feature Agent to judge a settled feature. The
 //! host adds the project's accepted decisions to that same call: the root
-//! `PROJECT_AGENT.md` and the decision notes, selected, budgeted and
+//! or greenfield principles file and the decision notes, selected, budgeted and
 //! sanitized by the host, each with a handle. The agent may report a
 //! conflict only against a delivered handle; a `blocking` one stops approval
 //! until the developer adjusts the feature, proposes a decision or dismisses
@@ -17,6 +17,7 @@ use sha2::{Digest, Sha256};
 
 pub const DECISIONS_DIR: &str = "knowledge/obsidian/decisions/";
 pub const PROJECT_AGENT: &str = "PROJECT_AGENT.md";
+pub const GREENFIELD_PROJECT_AGENT: &str = "docs/PROJECT_AGENT.md";
 pub const PROJECT_AGENT_HANDLE: &str = "project_agent";
 /// Budgets (hypothesis, ADR-034): a file above its budget is never truncated.
 pub const MAX_FILE_BYTES: usize = 16 * 1024;
@@ -212,20 +213,24 @@ pub fn select(
         .collect::<Vec<_>>();
     candidates.sort_by_key(|path| (!linked.contains(&stem(path)), path.to_ascii_lowercase()));
     candidates.dedup();
-    let has_agent = paths
-        .iter()
-        .any(|path| path.eq_ignore_ascii_case(PROJECT_AGENT));
-    let ordered = has_agent
-        .then(|| PROJECT_AGENT.to_owned())
+    let agent = [PROJECT_AGENT, GREENFIELD_PROJECT_AGENT]
         .into_iter()
-        .chain(candidates);
+        .find_map(|target| {
+            paths
+                .iter()
+                .find(|path| path.replace('\\', "/").eq_ignore_ascii_case(target))
+        });
+    let ordered = agent
+        .cloned()
+        .map(|path| (path, true))
+        .into_iter()
+        .chain(candidates.into_iter().map(|path| (path, false)));
 
     let mut files = Vec::new();
     let mut omitted = Vec::new();
     let mut total = 0usize;
     let mut delivered = 0usize;
-    for path in ordered {
-        let is_agent = path.eq_ignore_ascii_case(PROJECT_AGENT);
+    for (path, is_agent) in ordered {
         let content = match read(&path) {
             DecisionRead::Missing => continue,
             DecisionRead::Invalid => {
@@ -294,7 +299,9 @@ pub fn select(
                 "decision_{}",
                 files
                     .iter()
-                    .filter(|f| f.handle.is_some() && f.path != PROJECT_AGENT)
+                    .filter(
+                        |f| f.handle.is_some() && f.handle.as_deref() != Some(PROJECT_AGENT_HANDLE)
+                    )
                     .count()
                     + 1
             )
@@ -506,12 +513,35 @@ pub fn read_decisions(root: &std::path::Path, linked: &BTreeSet<String>) -> Deci
     let Ok(repository) = crate::repository_context::RepositoryContext::new(root) else {
         return invalid;
     };
-    let Ok(paths) = repository.document_paths(true) else {
+    let Ok(mut paths) = repository.document_paths(true) else {
         return invalid;
     };
+    // A refused root entry (e.g. a symlink, directory or ignored file) is
+    // omitted by the catalog. Its presence must still prevent fallback.
+    let refused_agent = [PROJECT_AGENT, GREENFIELD_PROJECT_AGENT]
+        .into_iter()
+        .find(|target| {
+            if paths.iter().any(|p| p.eq_ignore_ascii_case(target)) {
+                return false;
+            }
+            if *target == GREENFIELD_PROJECT_AGENT {
+                match std::fs::symlink_metadata(root.join("docs")) {
+                    Ok(parent) if crate::repository_context::is_link(&parent) => return true,
+                    Err(e) => return e.kind() != std::io::ErrorKind::NotFound,
+                    _ => {}
+                }
+            }
+            match std::fs::symlink_metadata(root.join(target)) {
+                Ok(_) => true,
+                Err(e) => e.kind() != std::io::ErrorKind::NotFound,
+            }
+        });
+    if let Some(path) = refused_agent {
+        paths.push(path.to_owned());
+    }
     select(&paths, linked, |path| {
-        if std::fs::symlink_metadata(root.join(path)).is_err() {
-            return DecisionRead::Missing;
+        if Some(path) == refused_agent {
+            return DecisionRead::Invalid;
         }
         match repository.read_document(path) {
             Ok(text) => DecisionRead::Loaded(text),
@@ -639,6 +669,99 @@ mod tests {
             Some("knowledge/obsidian/decisions/a-native.md")
         );
         assert_eq!(inputs.handle_path("decision_9"), None);
+    }
+
+    #[test]
+    fn greenfield_principles_keep_the_original_path_and_do_not_number_decisions() {
+        let files = [
+            ("Docs\\Project_Agent.MD", "Préserver les décisions."),
+            ("knowledge/obsidian/decisions/a.md", ACCEPTED),
+        ];
+        let selected = select(&paths(&files), &BTreeSet::new(), reader(&files));
+        assert_eq!(selected.handle_path("project_agent"), Some(files[0].0));
+        assert_eq!(selected.handle_path("decision_1"), Some(files[1].0));
+        let root = ("project_agent.MD", "Take precedence.");
+        let both = [files[0], root, files[1]];
+        let selected = select(&paths(&both), &BTreeSet::new(), reader(&both));
+        assert_eq!(selected.handle_path("project_agent"), Some(root.0));
+        assert_eq!(selected.files.len(), 2);
+    }
+
+    #[test]
+    fn greenfield_principles_obey_byte_limits_and_root_refusals() {
+        let path = "docs/PROJECT_AGENT.md";
+        let exact = "é".repeat(MAX_FILE_BYTES / 2);
+        let over = format!("{exact}!");
+        for (content, expected) in [
+            (exact.as_str(), DecisionFileState::Loaded),
+            (over.as_str(), DecisionFileState::OverBudget),
+        ] {
+            let files = [(path, content)];
+            let selected = select(&paths(&files), &BTreeSet::new(), reader(&files));
+            assert_eq!(selected.files.first().map(|f| f.state), Some(expected));
+        }
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("docs")).unwrap();
+        std::fs::write(root.path().join(path), "Valid fallback").unwrap();
+        // The catalog omits directories. An invalid root entry must still win.
+        std::fs::create_dir(root.path().join(PROJECT_AGENT)).unwrap();
+        let inputs = read_decisions(root.path(), &BTreeSet::new());
+        assert_eq!(inputs.state, DecisionInputsState::Invalid);
+        assert_eq!(inputs.files[0].path, PROJECT_AGENT);
+        assert_eq!(inputs.delivered().count(), 0);
+    }
+
+    #[test]
+    fn greenfield_principles_share_the_total_budget_and_change_the_finding_digest() {
+        let root = tempfile::tempdir().unwrap();
+        let base = root.path();
+        std::fs::create_dir(base.join("docs")).unwrap();
+        std::fs::create_dir_all(base.join(DECISIONS_DIR)).unwrap();
+        let full = "e".repeat(MAX_FILE_BYTES);
+        std::fs::write(base.join(GREENFIELD_PROJECT_AGENT), &full).unwrap();
+        std::fs::write(base.join(DECISIONS_DIR).join("a.md"), &full).unwrap();
+        std::fs::write(base.join(DECISIONS_DIR).join("b.md"), "x").unwrap();
+        let selected = read_decisions(base, &BTreeSet::new());
+        assert_eq!(
+            selected.delivered().map(|f| f.bytes).sum::<usize>(),
+            MAX_TOTAL_BYTES
+        );
+        assert_eq!(selected.omitted, ["knowledge/obsidian/decisions/b.md"]);
+        std::fs::write(base.join(PROJECT_AGENT), "Use the reviewed rules.").unwrap();
+        let shadowed = read_decisions(base, &BTreeSet::new());
+        assert_ne!(shadowed.sha256(), selected.sha256());
+        std::fs::write(base.join(GREENFIELD_PROJECT_AGENT), "Invisible edit").unwrap();
+        assert_eq!(
+            read_decisions(base, &BTreeSet::new()).sha256(),
+            shadowed.sha256()
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn greenfield_principles_refuse_a_docs_junction() {
+        use std::os::windows::process::CommandExt;
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join(PROJECT_AGENT), "Outside the project").unwrap();
+        let docs = root.path().join("docs");
+        let result = std::process::Command::new("cmd.exe")
+            .args(["/C", "mklink", "/J"])
+            .arg(&docs)
+            .arg(outside.path())
+            .creation_flags(0x08000000)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let inputs = read_decisions(root.path(), &BTreeSet::new());
+        std::fs::remove_dir(docs).unwrap();
+        assert_eq!(inputs.state, DecisionInputsState::Invalid);
+        assert_eq!(inputs.files[0].path, GREENFIELD_PROJECT_AGENT);
+        assert_eq!(inputs.delivered().count(), 0);
     }
 
     #[test]
