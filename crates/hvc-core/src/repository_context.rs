@@ -917,6 +917,7 @@ fn is_code_path(path: &Path) -> bool {
 fn excluded_directories() -> HashSet<&'static str> {
     HashSet::from([
         ".git",
+        ".ikore",
         ".hard-vibe-code",
         ".agents",
         ".claude",

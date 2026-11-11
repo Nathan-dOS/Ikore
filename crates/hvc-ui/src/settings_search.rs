@@ -91,7 +91,7 @@ pub(crate) static ENTRIES: &[SettingsEntry] = &[
         P::Usage,
         "Token usage",
         "Token usage",
-        "Generation usage recorded by Hard Vibe Code, kept when conversations are deleted.",
+        "Generation usage recorded by Ikore, kept when conversations are deleted.",
         "tokens cost input output chart model pulsation",
     ),
     entry(

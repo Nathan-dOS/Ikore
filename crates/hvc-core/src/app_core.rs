@@ -37,9 +37,10 @@ use crate::workspace_service::{
     WriteWorkspaceFileAtomicRequest, WriteWorkspaceFileAtomicResponse,
 };
 
-const APP_IDENTIFIER: &str = "com.hardvibecode.desktop";
-const DATABASE_NAME: &str = "hard-vibe-code.db";
-const LOCK_NAME: &str = "hard-vibe-code.lock";
+use crate::app_names::{
+    APP_IDENTIFIER, DATABASE_FILE_NAME as DATABASE_NAME, LEGACY_APP_IDENTIFIER,
+    LEGACY_LOCK_FILE_NAME, LOCK_FILE_NAME as LOCK_NAME, adopt_legacy_dir,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppPaths {
@@ -64,10 +65,19 @@ impl AppPaths {
             })
             .ok_or(AppCoreError::DataDirectoryUnavailable)?;
 
-        let mut paths = Self::from_data_dir(PathBuf::from(base).join(APP_IDENTIFIER));
+        // A folder from before the rename to Ikore is renamed once (`app_names`).
+        let base = PathBuf::from(base);
+        let mut paths = Self::from_data_dir(adopt_legacy_dir(
+            &base.join(LEGACY_APP_IDENTIFIER),
+            &base.join(APP_IDENTIFIER),
+        ));
         #[cfg(target_os = "windows")]
         if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-            paths.cache_dir = PathBuf::from(local).join(APP_IDENTIFIER);
+            let local = PathBuf::from(local);
+            paths.cache_dir = adopt_legacy_dir(
+                &local.join(LEGACY_APP_IDENTIFIER),
+                &local.join(APP_IDENTIFIER),
+            );
         }
         Ok(paths)
     }
@@ -101,7 +111,7 @@ impl AppPaths {
 pub enum AppCoreError {
     #[error("could not resolve the application data directory")]
     DataDirectoryUnavailable,
-    #[error("another Hard Vibe Code instance is already using this data directory")]
+    #[error("another Ikore instance is already using this data directory")]
     DataDirectoryInUse,
     #[error("I/O failure in the data directory: {0}")]
     Io(#[from] std::io::Error),
@@ -189,11 +199,13 @@ impl DataDirectoryLock {
                 .read(true)
                 .write(true)
                 .open(&lock_path)?;
-            file.try_lock_exclusive()
-                .map_err(|error| match error.kind() {
-                    std::io::ErrorKind::WouldBlock => AppCoreError::DataDirectoryInUse,
-                    _ => AppCoreError::Io(error),
-                })?;
+            file.try_lock_exclusive().map_err(lock_error)?;
+            // An instance built before the rename to Ikore holds the legacy lock
+            // file. If it is still running, this folder is in use; otherwise its
+            // stale lock file is removed.
+            if let Some(directory) = lock_path.parent() {
+                release_legacy_lock(&directory.join(LEGACY_LOCK_FILE_NAME))?;
+            }
             Ok(Self {
                 file,
                 lock_path: lock_path.clone(),
@@ -223,6 +235,36 @@ impl Drop for DataDirectoryLock {
 fn process_locks() -> &'static Mutex<HashSet<PathBuf>> {
     static LOCKS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
     LOCKS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// Maps a failed `try_lock_exclusive`. Another process holding the lock reports
+/// `WouldBlock` on Unix but `ERROR_LOCK_VIOLATION` on Windows; both mean the
+/// folder is in use.
+fn lock_error(error: std::io::Error) -> AppCoreError {
+    if error.kind() == std::io::ErrorKind::WouldBlock
+        || error.raw_os_error() == fs2::lock_contended_error().raw_os_error()
+    {
+        AppCoreError::DataDirectoryInUse
+    } else {
+        AppCoreError::Io(error)
+    }
+}
+
+/// Fails with [`AppCoreError::DataDirectoryInUse`] while an instance built before
+/// the rename to Ikore holds `legacy_lock`; removes the file when it is stale.
+fn release_legacy_lock(legacy_lock: &Path) -> Result<(), AppCoreError> {
+    if !legacy_lock.is_file() {
+        return Ok(());
+    }
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(legacy_lock)?;
+    file.try_lock_exclusive().map_err(lock_error)?;
+    let _ = FileExt::unlock(&file);
+    drop(file);
+    let _ = fs::remove_file(legacy_lock);
+    Ok(())
 }
 
 #[derive(Default)]
@@ -821,9 +863,35 @@ mod tests {
     }
 
     #[test]
-    fn app_paths_preserve_existing_database_name() {
-        let paths = AppPaths::from_data_dir("C:/data/com.hardvibecode.desktop");
-        assert!(paths.database_path().ends_with(DATABASE_NAME));
+    fn app_paths_use_the_current_database_name() {
+        let paths = AppPaths::from_data_dir("C:/data/com.ikore.desktop");
+        assert!(paths.database_path().ends_with("ikore.db"));
+        assert_eq!(DATABASE_NAME, "ikore.db");
+    }
+
+    #[test]
+    fn a_running_legacy_instance_keeps_the_folder_in_use() {
+        let temp = tempfile::tempdir().unwrap();
+        let legacy = temp.path().join(LEGACY_LOCK_FILE_NAME);
+        let held = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&legacy)
+            .unwrap();
+        held.try_lock_exclusive().unwrap();
+
+        let paths = AppPaths::from_data_dir(temp.path());
+        assert!(matches!(
+            DataDirectoryLock::acquire(&paths),
+            Err(AppCoreError::DataDirectoryInUse)
+        ));
+
+        FileExt::unlock(&held).unwrap();
+        drop(held);
+        let _lock = DataDirectoryLock::acquire(&paths).unwrap();
+        assert!(!legacy.exists(), "a stale legacy lock file is removed");
     }
 
     #[test]

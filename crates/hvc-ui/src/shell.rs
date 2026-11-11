@@ -146,10 +146,10 @@ pub fn open_main_window(core: Arc<AppCore>, cx: &mut App) -> anyhow::Result<()> 
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: Some(TitlebarOptions {
-                    title: Some("Hard Vibe Code".into()),
+                    title: Some("Ikore".into()),
                     ..Default::default()
                 }),
-                app_id: Some("com.hardvibecode.desktop".into()),
+                app_id: Some(hvc_core::app_names::APP_IDENTIFIER.into()),
                 window_min_size: Some(size(px(960.0), px(640.0))),
                 ..Default::default()
             },
@@ -406,7 +406,7 @@ fn header(
                                 .font_family(theme::FONT_MONO)
                                 .text_xs()
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .child("HARD VIBE CODE"),
+                                .child("IKORE"),
                         ),
                 )
                 .when_some(project, |left, name| {

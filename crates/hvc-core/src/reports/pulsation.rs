@@ -678,7 +678,7 @@ fn short_id(id: &str) -> &str {
 fn header(pulsation: &ReportPulsation) -> SafeHtml {
     let (tone, status) = status_look(pulsation.status);
     let mut html = SafeHtml::markup(
-        "<header><div class=\"top\"><div class=\"brand\"><div class=\"mark\" aria-hidden=\"true\">HV</div><div><b>Hard Vibe Code</b><span>Pulsation report</span></div></div><div class=\"ids\"><span>Pulsation <code",
+        "<header><div class=\"top\"><div class=\"brand\"><div class=\"mark\" aria-hidden=\"true\">IK</div><div><b>Ikore</b><span>Pulsation report</span></div></div><div class=\"ids\"><span>Pulsation <code",
     );
     html.push_attr("title", &pulsation.id)
         .push_markup(">")

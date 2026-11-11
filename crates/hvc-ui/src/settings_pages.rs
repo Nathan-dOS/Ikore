@@ -435,7 +435,7 @@ impl AppModel {
             .unwrap_or_else(|| "unavailable".into());
         let mut lines = vec![
             format!(
-                "Hard Vibe Code v{} ({})",
+                "Ikore v{} ({})",
                 env!("CARGO_PKG_VERSION"),
                 if cfg!(debug_assertions) {
                     "debug"

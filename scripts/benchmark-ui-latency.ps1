@@ -18,7 +18,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 if ([string]::IsNullOrWhiteSpace($BinaryPath)) {
-    $BinaryPath = Join-Path $repositoryRoot 'target\release\hard-vibe-code.exe'
+    $BinaryPath = Join-Path $repositoryRoot 'target\release\ikore.exe'
 }
 if ([string]::IsNullOrWhiteSpace($OutputPath)) {
     $OutputPath = Join-Path $repositoryRoot 'target\stage6\ui-latency.json'

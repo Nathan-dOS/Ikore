@@ -405,7 +405,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("fixture");
         seed_profile(&root);
-        let database = root.join("data/hard-vibe-code.db");
+        let database = root.join("data/ikore.db");
         let connection = rusqlite::Connection::open(database).unwrap();
         let leaked: u64 = connection
             .query_row(

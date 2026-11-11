@@ -16,7 +16,7 @@ pub const CODEX_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
 /// Every destination a token may be sent to.
 pub const PINNED_URLS: [&str; 2] = [CLAUDE_USAGE_URL, CODEX_USAGE_URL];
 /// Honest identification (G9): the app names itself, never another client.
-pub const USER_AGENT: &str = concat!("hard-vibe-code/", env!("CARGO_PKG_VERSION"));
+pub const USER_AGENT: &str = concat!("ikore/", env!("CARGO_PKG_VERSION"));
 
 const MAX_BODY_BYTES: usize = 64 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
@@ -342,7 +342,7 @@ mod tests {
         let server = serve(vec![reply("200 OK", &[], r#"{"ok":true}"#)]).await;
         // An invalid header value fails the builder, as a TLS backend that cannot start would.
         let mut http = QuotaHttp::from_builder(
-            restricted_builder(REQUEST_TIMEOUT).user_agent("hard-vibe-code\ninvalid"),
+            restricted_builder(REQUEST_TIMEOUT).user_agent("ikore\ninvalid"),
         );
         assert!(http.client.is_none());
         http.origin_override = Some(server.origin.clone());

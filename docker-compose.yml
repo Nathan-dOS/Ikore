@@ -8,7 +8,7 @@ x-hvc-base: &hvc-base
     args:
       RUST_IMAGE: ${RUST_IMAGE:-rust:1.98.0-bookworm}
       RUST_TOOLCHAIN: ${RUST_TOOLCHAIN:-1.98.0}
-  image: hard-vibe-code:1.98.0
+  image: ikore:1.98.0
   working_dir: /workspace
   environment:
     CI: ${CI:-false}

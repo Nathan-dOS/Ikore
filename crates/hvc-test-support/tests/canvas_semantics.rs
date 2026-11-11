@@ -159,7 +159,7 @@ fn canvas_semantic_invalid_save_preserves_revision_and_pending_mirror_count() {
     let loaded = service.get(&project, &initial.id).unwrap();
     assert_eq!(loaded.revision, initial.revision);
     assert_eq!(loaded.scene, initial.scene);
-    let db = Connection::open(harness.data_dir().join("hard-vibe-code.db")).unwrap();
+    let db = Connection::open(harness.data_dir().join("ikore.db")).unwrap();
     let pending: i64 = db
         .query_row(
             "SELECT count(*) FROM companion_drawing_sync_jobs",
@@ -243,7 +243,7 @@ fn canvas_semantic_narrative_redaction_precedes_database_journal_and_export() {
             .narrative
             .contains(&secret)
     );
-    let db = Connection::open(harness.data_dir().join("hard-vibe-code.db")).unwrap();
+    let db = Connection::open(harness.data_dir().join("ikore.db")).unwrap();
     let stored: String = db
         .query_row(
             "SELECT scene_json FROM companion_drawings WHERE id=?1",

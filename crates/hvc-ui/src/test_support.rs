@@ -131,7 +131,12 @@ mod tests {
         let model = harness.mount(cx);
         cx.run_until_parked();
 
-        assert!(harness.data_dir().join("hard-vibe-code.db").is_file());
+        assert!(
+            harness
+                .data_dir()
+                .join(hvc_core::app_names::DATABASE_FILE_NAME)
+                .is_file()
+        );
         cx.read(|cx| {
             assert_eq!(model.read(cx).active_view(), crate::AppView::Home);
         });

@@ -1000,7 +1000,7 @@ fn greenfield_file_specs() -> Vec<(&'static str, &'static str)> {
     vec![
         (
             "docs/PROJECT_AGENT.md",
-            "# PROJECT_AGENT\n\nGreenfield project initialized by Hard Vibe Code.\n",
+            "# PROJECT_AGENT\n\nGreenfield project initialized by Ikore.\n",
         ),
         ("knowledge/indexes/.gitkeep", ""),
         (

@@ -228,7 +228,7 @@ fn real_learning_request_is_bounded_and_unknown_evidence_never_publishes() {
             deps.http_client,
         )
         .unwrap();
-        let db = Connection::open(env.data_dir().join("hard-vibe-code.db")).unwrap();
+        let db = Connection::open(env.data_dir().join("ikore.db")).unwrap();
         let project = service
             .ensure_project_for_workspace(EnsureProjectForWorkspaceRequest {
                 workspace_path: env.workspace_dir().to_str().unwrap().into(),

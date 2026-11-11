@@ -5,7 +5,7 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 publish = false
-description = "Deterministic test harnesses for Hard Vibe Code"
+description = "Deterministic test harnesses for Ikore"
 
 [[example]]
 name = "pulsation_ui_fixture"

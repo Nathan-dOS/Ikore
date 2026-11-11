@@ -615,7 +615,7 @@ pub(crate) fn disclosure_text(disclosure: &CredentialDisclosure) -> String {
         _ => "Claude Code",
     };
     format!(
-        "To show your plan usage, HARD-VC reads {cli}'s sign-in token from {} and sends it only to {}. The token stays in memory; it is never saved, logged or refreshed, and never reaches agents.",
+        "To show your plan usage, Ikore reads {cli}'s sign-in token from {} and sends it only to {}. The token stays in memory; it is never saved, logged or refreshed, and never reaches agents.",
         disclosure.file, disclosure.host
     )
 }

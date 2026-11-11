@@ -7,6 +7,7 @@ pub mod agent_output_language;
 pub mod agent_runtime;
 pub mod agent_timeout;
 pub mod app_core;
+pub mod app_names;
 pub mod attestation;
 pub mod chat_service;
 pub mod companion_dock;

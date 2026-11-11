@@ -174,8 +174,7 @@ impl ApiModelCatalogService {
             state: ApiModelCatalogState::Unsupported,
             source: "provider_api".into(),
             diagnostic: Some(
-                "This provider does not yet publish an API catalog adapter in Hard Vibe Code."
-                    .into(),
+                "This provider does not yet publish an API catalog adapter in Ikore.".into(),
             ),
             refreshed_at: Utc::now().to_rfc3339(),
             models: Vec::new(),

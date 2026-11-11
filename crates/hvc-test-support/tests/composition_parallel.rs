@@ -203,7 +203,7 @@ fn independent_units_run_together_and_match_the_sequential_result() {
     // Parallel run (cap 2): every Code and Test reply waits until the
     // sibling attempt is durably running, so both were dispatched together.
     let env = fixture_env();
-    let db_path: PathBuf = env.data_dir().join("hard-vibe-code.db");
+    let db_path: PathBuf = env.data_dir().join("ikore.db");
     let seen = std::sync::Mutex::new(std::collections::BTreeMap::new());
     let parallel = Harness::start_with(
         env,
@@ -271,7 +271,7 @@ fn independent_units_run_together_and_match_the_sequential_result() {
 #[test]
 fn a_failed_sibling_parks_once_after_the_round_settles_and_is_reused_on_retry() {
     let env = fixture_env();
-    let db_path: PathBuf = env.data_dir().join("hard-vibe-code.db");
+    let db_path: PathBuf = env.data_dir().join("ikore.db");
     let seen = std::sync::Mutex::new(std::collections::BTreeMap::new());
     let harness = Harness::start_with(
         env,
@@ -387,7 +387,7 @@ fn a_failed_sibling_parks_once_after_the_round_settles_and_is_reused_on_retry() 
 #[test]
 fn cancelling_the_pulsation_reaches_every_unit_in_flight_and_nothing_is_accepted() {
     let env = fixture_env();
-    let db_path: PathBuf = env.data_dir().join("hard-vibe-code.db");
+    let db_path: PathBuf = env.data_dir().join("ikore.db");
     let cancel = std::sync::Arc::new(std::sync::Mutex::new(
         None::<hvc_core::persistence_service::PersistenceService>,
     ));

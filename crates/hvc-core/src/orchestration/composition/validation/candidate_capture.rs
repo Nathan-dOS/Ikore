@@ -217,6 +217,7 @@ fn protected(relative: &str) -> bool {
                 ".git"
                     | ".hg"
                     | ".svn"
+                    | ".ikore"
                     | ".hard-vibe-code"
                     | ".agents"
                     | ".claude"

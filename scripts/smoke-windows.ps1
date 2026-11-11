@@ -8,7 +8,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 if ([string]::IsNullOrWhiteSpace($BinaryPath)) {
-    $BinaryPath = Join-Path $repositoryRoot 'target\release\hard-vibe-code.exe'
+    $BinaryPath = Join-Path $repositoryRoot 'target\release\ikore.exe'
 }
 $resolvedBinary = (Resolve-Path -LiteralPath $BinaryPath).Path
 
@@ -106,7 +106,7 @@ try {
         throw "A janela GPUI não ficou disponível em $StartupTimeoutSeconds segundos."
     }
 
-    $databasePath = Join-Path $smokeDirectory 'hard-vibe-code.db'
+    $databasePath = Join-Path $smokeDirectory 'ikore.db'
     if (-not (Test-Path -LiteralPath $databasePath -PathType Leaf)) {
         throw "O AppCore não inicializou o banco isolado esperado: $databasePath"
     }

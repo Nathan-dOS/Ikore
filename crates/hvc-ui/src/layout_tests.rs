@@ -1440,7 +1440,7 @@ fn the_report_card_fits_overview_and_artifacts(cx: &mut TestAppContext) {
         .join("developer")
         .join("AppData")
         .join("Roaming")
-        .join("com.hardvibecode.desktop")
+        .join(hvc_core::app_names::APP_IDENTIFIER)
         .join("reports")
         .join("5d0c2a6e-8b1f-4c3a-9e27-61f0b4a9d2c8")
         .join("pulsation-report.html");

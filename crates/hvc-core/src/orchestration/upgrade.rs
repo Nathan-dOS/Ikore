@@ -24,7 +24,8 @@ pub(crate) fn backup_before_upgrade(db: &Connection, directory: &Path) -> Result
     // VACUUM INTO captures a consistent SQLite snapshot, including WAL contents.
     // A unique destination never overwrites an earlier recovery point.
     let backup = directory.join(format!(
-        "hard-vibe-code.pre-v24.{}.db",
+        "{}.pre-v24.{}.db",
+        crate::app_names::snapshot_prefix(),
         uuid::Uuid::new_v4()
     ));
     db.execute("VACUUM INTO ?1", params![backup.to_string_lossy()])?;

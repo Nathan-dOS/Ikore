@@ -262,7 +262,7 @@ fn a_pulsation_aborted_after_writing_is_sealed_as_failed_with_its_effects() {
 struct TestOnlyKeyring;
 
 impl TestOnlyKeyring {
-    const SERVICE: &'static str = "hard-vibe-code.attestation-test";
+    const SERVICE: &'static str = "ikore.attestation-test";
 
     fn entry(credential_ref: &str) -> keyring::Result<keyring::Entry> {
         keyring::Entry::new(Self::SERVICE, credential_ref)

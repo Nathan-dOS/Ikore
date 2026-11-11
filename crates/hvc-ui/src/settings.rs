@@ -839,7 +839,7 @@ impl SettingsPage {
     pub(crate) fn description(self) -> &'static str {
         match self {
             Self::General => "How the workbench behaves around you.",
-            Self::Usage => "Tokens recorded by Hard Vibe Code across projects and transports.",
+            Self::Usage => "Tokens recorded by Ikore across projects and transports.",
             Self::Projects => {
                 "Review local projects and permanently delete their repository and project data."
             }
@@ -1478,7 +1478,7 @@ mod tests {
                     .file_name()
                     .unwrap()
                     .to_string_lossy()
-                    .starts_with("hard-vibe-code.db")
+                    .starts_with(hvc_core::app_names::DATABASE_FILE_NAME)
             {
                 let bytes = std::fs::read(path).unwrap();
                 assert!(

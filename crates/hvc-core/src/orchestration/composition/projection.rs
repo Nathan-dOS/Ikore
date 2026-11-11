@@ -104,7 +104,7 @@ pub struct RenderedPrompt {
 
 pub fn system_prompt(policy: &ExecutorPolicy) -> String {
     format!(
-        "You are the `{}` worker of the `{}` stage in Hard Vibe Code.\n\n{}\n\n{}\n\n{}",
+        "You are the `{}` worker of the `{}` stage in Ikore.\n\n{}\n\n{}\n\n{}",
         policy.kind.as_str(),
         policy.stage.as_str(),
         policy.role_brief,

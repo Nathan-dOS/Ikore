@@ -27,7 +27,7 @@ fn latest_migration_version() -> i64 {
 fn v64_to_v65_preserves_resolution_history_and_adds_durable_unsent_drafts() {
     use hvc_core::companion_dock::{CompanionDockItem, CompanionDockLayout, CompanionDraft};
     let data = tempfile::tempdir().unwrap();
-    let path = data.path().join("hard-vibe-code.db");
+    let path = data.path().join("ikore.db");
     let mut db = Connection::open(&path).unwrap();
     cli_migrations::migrations::runner()
         .set_target(refinery::Target::Version(64))
@@ -112,7 +112,7 @@ fn v64_to_v65_preserves_resolution_history_and_adds_durable_unsent_drafts() {
 fn v57_to_v58_adds_canvas_authoring_without_rewriting_drawings_chat_or_history() {
     use hvc_core::companion_drawings::{CanvasSceneV1, CanvasViewportV1};
     let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("hard-vibe-code.db");
+    let path = root.path().join("ikore.db");
     let mut db = Connection::open(&path).unwrap();
     cli_migrations::migrations::runner()
         .set_target(refinery::Target::Version(57))
@@ -207,7 +207,7 @@ fn rebuilt_by_v54(sql: &str) -> bool {
 fn v23_cli_and_companion_schema_has_no_credential_columns() {
     let root = tempfile::tempdir().unwrap();
     PersistenceService::initialize(root.path()).unwrap();
-    let db = Connection::open(root.path().join("hard-vibe-code.db")).unwrap();
+    let db = Connection::open(root.path().join("ikore.db")).unwrap();
     let tables = [
         "chat_conversations",
         "chat_model_calls",
@@ -252,7 +252,7 @@ fn v23_cli_and_companion_schema_has_no_credential_columns() {
 #[test]
 fn v20_to_v24_backfills_slots_and_preserves_terminal_and_chat_history() {
     let root = tempfile::tempdir().unwrap();
-    let db_path = root.path().join("hard-vibe-code.db");
+    let db_path = root.path().join("ikore.db");
     let mut db = Connection::open(&db_path).unwrap();
     cli_migrations::migrations::runner()
         .set_target(refinery::Target::Version(20))
@@ -422,7 +422,7 @@ fn v20_to_v24_backfills_slots_and_preserves_terminal_and_chat_history() {
 #[test]
 fn v1_to_v24_is_idempotent_and_creates_the_cli_and_companion_schema() {
     let root = tempfile::tempdir().unwrap();
-    let db_path = root.path().join("hard-vibe-code.db");
+    let db_path = root.path().join("ikore.db");
     let mut db = Connection::open(&db_path).unwrap();
     cli_migrations::migrations::runner()
         .set_target(refinery::Target::Version(1))
@@ -551,7 +551,7 @@ fn v9_upgrade_preserves_outputs_checkpoints_and_restorable_wal_backup() {
         .filter(|p| {
             p.file_name()
                 .to_string_lossy()
-                .starts_with("hard-vibe-code.pre-v24.")
+                .starts_with("ikore.pre-v24.")
         })
         .collect::<Vec<_>>();
     assert_eq!(backups.len(), 1);
@@ -609,7 +609,7 @@ fn v9_upgrade_preserves_outputs_checkpoints_and_restorable_wal_backup() {
             .filter(|p| p
                 .file_name()
                 .to_string_lossy()
-                .starts_with("hard-vibe-code.pre-v24."))
+                .starts_with("ikore.pre-v24."))
             .count(),
         1
     );
@@ -790,7 +790,7 @@ fn v12_upgrade_backs_up_and_never_replays_historical_learning_intents() {
     use hvc_test_support::{DatabaseVersion, IsolatedTestEnvironment};
     let env = IsolatedTestEnvironment::new();
     env.prepare_database(DatabaseVersion::new(12));
-    let db = Connection::open(env.data_dir().join("hard-vibe-code.db")).unwrap();
+    let db = Connection::open(env.data_dir().join("ikore.db")).unwrap();
     db.execute("INSERT INTO projects(id,name,workspace_path,created_at,updated_at) VALUES('old-project','old',?1,'now','now')",[env.workspace_dir().to_str().unwrap()]).unwrap();
     db.execute("INSERT INTO pulsations(id,project_id,feature_name,stage,status,created_at,updated_at,pipeline_version,queue_sequence) VALUES('old-pulse','old-project','done','Integrator','done','now','now',2,1)",[]).unwrap();
     db.execute("INSERT INTO integration_learning_intents(pulsation_id,integration_epoch,report_version,state,created_at) VALUES('old-pulse',1,1,'unavailable','now')",[]).unwrap();
@@ -815,7 +815,7 @@ fn v12_upgrade_backs_up_and_never_replays_historical_learning_intents() {
         .filter(|p| {
             p.file_name()
                 .to_string_lossy()
-                .starts_with("hard-vibe-code.pre-v24.")
+                .starts_with("ikore.pre-v24.")
         })
         .collect::<Vec<_>>();
     assert_eq!(backups.len(), 1);
@@ -841,7 +841,7 @@ fn v12_upgrade_backs_up_and_never_replays_historical_learning_intents() {
 #[test]
 fn v23_upgrade_preserves_populated_agent_slots_and_legacy_pulsations() {
     let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("hard-vibe-code.db");
+    let path = root.path().join("ikore.db");
     let mut db = Connection::open(&path).unwrap();
     cli_migrations::migrations::runner()
         .set_target(refinery::Target::Version(23))
@@ -897,7 +897,7 @@ fn v23_upgrade_preserves_populated_agent_slots_and_legacy_pulsations() {
 #[test]
 fn line_ending_drift_in_an_applied_migration_is_reconciled() {
     let root = tempfile::tempdir().unwrap();
-    let db_path = root.path().join("hard-vibe-code.db");
+    let db_path = root.path().join("ikore.db");
     let mut db = Connection::open(&db_path).unwrap();
     let runner = cli_migrations::migrations::runner();
     runner.run(&mut db).unwrap();
@@ -944,7 +944,7 @@ fn line_ending_drift_in_an_applied_migration_is_reconciled() {
 #[test]
 fn genuinely_altered_migration_checksum_is_never_silently_reconciled() {
     let root = tempfile::tempdir().unwrap();
-    let db_path = root.path().join("hard-vibe-code.db");
+    let db_path = root.path().join("ikore.db");
     let mut db = Connection::open(&db_path).unwrap();
     let runner = cli_migrations::migrations::runner();
     runner.run(&mut db).unwrap();
@@ -981,7 +981,7 @@ fn genuinely_altered_migration_checksum_is_never_silently_reconciled() {
 #[test]
 fn v31_to_v32_admits_pipeline_v4_and_keeps_legacy_rows_and_constraints() {
     let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("hard-vibe-code.db");
+    let path = root.path().join("ikore.db");
     let mut db = Connection::open(&path).unwrap();
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
     cli_migrations::migrations::runner()
@@ -1136,7 +1136,7 @@ fn v31_to_v32_admits_pipeline_v4_and_keeps_legacy_rows_and_constraints() {
 #[test]
 fn v34_to_v36_admits_path_confirmation_and_keeps_legacy_checkpoints_and_question_sets() {
     let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("hard-vibe-code.db");
+    let path = root.path().join("ikore.db");
     let mut db = Connection::open(&path).unwrap();
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
     cli_migrations::migrations::runner()
@@ -1250,7 +1250,7 @@ fn v34_to_v36_admits_path_confirmation_and_keeps_legacy_checkpoints_and_question
 #[test]
 fn v44_to_v45_keeps_forge_turns_and_adds_failure_columns() {
     let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("hard-vibe-code.db");
+    let path = root.path().join("ikore.db");
     let mut db = Connection::open(&path).unwrap();
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
     cli_migrations::migrations::runner()
@@ -1318,7 +1318,7 @@ fn v44_to_v45_keeps_forge_turns_and_adds_failure_columns() {
 #[test]
 fn v45_to_v46_keeps_backend_rows_and_admits_antigravity() {
     let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("hard-vibe-code.db");
+    let path = root.path().join("ikore.db");
     let mut db = Connection::open(&path).unwrap();
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
     cli_migrations::migrations::runner()
@@ -1392,7 +1392,7 @@ fn v45_to_v46_keeps_backend_rows_and_admits_antigravity() {
 #[test]
 fn v46_to_v47_keeps_terminal_rows_and_admits_the_visualizer() {
     let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("hard-vibe-code.db");
+    let path = root.path().join("ikore.db");
     let mut db = Connection::open(&path).unwrap();
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
     cli_migrations::migrations::runner()
@@ -1495,7 +1495,7 @@ fn v46_to_v47_keeps_terminal_rows_and_admits_the_visualizer() {
 #[test]
 fn v47_to_v48_adds_quota_history_with_validated_columns() {
     let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("hard-vibe-code.db");
+    let path = root.path().join("ikore.db");
     let mut db = Connection::open(&path).unwrap();
     cli_migrations::migrations::runner()
         .set_target(refinery::Target::Version(47))
@@ -1543,7 +1543,7 @@ fn v48_to_v49_preserves_history_and_requires_new_sanitization_evidence() {
     let root = tempfile::tempdir().unwrap();
     let workspace = root.path().join("repo");
     fs::create_dir(&workspace).unwrap();
-    let path = root.path().join("hard-vibe-code.db");
+    let path = root.path().join("ikore.db");
     let mut db = Connection::open(&path).unwrap();
     cli_migrations::migrations::runner()
         .set_target(refinery::Target::Version(48))
@@ -1659,7 +1659,7 @@ fn v48_to_v49_preserves_history_and_requires_new_sanitization_evidence() {
 #[test]
 fn v49_to_v50_admits_the_notes_scribe_and_adds_companion_notes() {
     let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("hard-vibe-code.db");
+    let path = root.path().join("ikore.db");
     let mut db = Connection::open(&path).unwrap();
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
     cli_migrations::migrations::runner()
@@ -1827,7 +1827,7 @@ fn v49_to_v50_admits_the_notes_scribe_and_adds_companion_notes() {
 #[test]
 fn v50_to_v51_adds_the_review_boundary_tables_without_rebuilding_existing_ones() {
     let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("hard-vibe-code.db");
+    let path = root.path().join("ikore.db");
     let mut db = Connection::open(&path).unwrap();
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
     cli_migrations::migrations::runner()
@@ -1949,7 +1949,7 @@ fn v50_to_v51_adds_the_review_boundary_tables_without_rebuilding_existing_ones()
 #[test]
 fn v51_to_v52_adds_the_risk_scrutiny_tables_without_rebuilding_existing_ones() {
     let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("hard-vibe-code.db");
+    let path = root.path().join("ikore.db");
     let mut db = Connection::open(&path).unwrap();
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
     cli_migrations::migrations::runner()
@@ -2059,7 +2059,7 @@ fn v51_to_v52_adds_the_risk_scrutiny_tables_without_rebuilding_existing_ones() {
 #[test]
 fn v52_to_v53_adds_the_forge_preflight_findings_without_rebuilding_existing_ones() {
     let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("hard-vibe-code.db");
+    let path = root.path().join("ikore.db");
     let mut db = Connection::open(&path).unwrap();
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
     cli_migrations::migrations::runner()
@@ -2160,7 +2160,7 @@ fn v52_to_v53_adds_the_forge_preflight_findings_without_rebuilding_existing_ones
 #[test]
 fn v53_to_v54_adds_the_reconciler_role_and_the_reconciliation_tables() {
     let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("hard-vibe-code.db");
+    let path = root.path().join("ikore.db");
     let mut db = Connection::open(&path).unwrap();
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
     cli_migrations::migrations::runner()
@@ -2309,7 +2309,7 @@ fn v54_to_v55_adds_cargo_evidence_without_rewriting_or_enabling_legacy_profiles(
     use hvc_core::orchestration::composition::validation::profile::detect_presets;
 
     let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("hard-vibe-code.db");
+    let path = root.path().join("ikore.db");
     let mut db = Connection::open(&path).unwrap();
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
     cli_migrations::migrations::runner()
@@ -2433,7 +2433,7 @@ fn v54_to_v55_adds_cargo_evidence_without_rewriting_or_enabling_legacy_profiles(
 #[test]
 fn v55_to_v57_adds_canvas_tables_without_rewriting_legacy_data() {
     let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("hard-vibe-code.db");
+    let path = root.path().join("ikore.db");
     let mut db = Connection::open(&path).unwrap();
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
     cli_migrations::migrations::runner()
@@ -2672,7 +2672,7 @@ fn v55_to_v57_adds_canvas_tables_without_rewriting_legacy_data() {
 #[test]
 fn v58_to_v59_adds_mandates_and_receipts_without_touching_running_pulsations() {
     let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("hard-vibe-code.db");
+    let path = root.path().join("ikore.db");
     let mut db = Connection::open(&path).unwrap();
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
     cli_migrations::migrations::runner()
@@ -2786,7 +2786,7 @@ fn v58_to_v59_adds_mandates_and_receipts_without_touching_running_pulsations() {
 #[test]
 fn v59_to_v60_adds_attestations_without_sealing_pulsations_that_already_ended() {
     let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("hard-vibe-code.db");
+    let path = root.path().join("ikore.db");
     let mut db = Connection::open(&path).unwrap();
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
     cli_migrations::migrations::runner()
@@ -2913,7 +2913,7 @@ fn v59_to_v60_adds_attestations_without_sealing_pulsations_that_already_ended() 
 #[test]
 fn v60_to_v61_adds_scope_requests_without_touching_parked_failures() {
     let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("hard-vibe-code.db");
+    let path = root.path().join("ikore.db");
     let mut db = Connection::open(&path).unwrap();
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
     cli_migrations::migrations::runner()
@@ -3028,7 +3028,7 @@ fn v60_to_v61_adds_scope_requests_without_touching_parked_failures() {
 #[test]
 fn v61_to_v62_adds_the_exchange_log_without_backfilling_history() {
     let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("hard-vibe-code.db");
+    let path = root.path().join("ikore.db");
     let mut db = Connection::open(&path).unwrap();
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
     cli_migrations::migrations::runner()
@@ -3132,7 +3132,7 @@ fn v61_to_v62_adds_the_exchange_log_without_backfilling_history() {
 #[test]
 fn v62_to_v63_keeps_earlier_runs_strict_and_adds_the_resume_manifest() {
     let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("hard-vibe-code.db");
+    let path = root.path().join("ikore.db");
     let mut db = Connection::open(&path).unwrap();
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
     cli_migrations::migrations::runner()
@@ -3249,7 +3249,7 @@ fn v62_to_v63_keeps_earlier_runs_strict_and_adds_the_resume_manifest() {
 #[test]
 fn v63_to_v64_adds_pulsation_digests_without_backfilling_them() {
     let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("hard-vibe-code.db");
+    let path = root.path().join("ikore.db");
     let mut db = Connection::open(&path).unwrap();
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
     cli_migrations::migrations::runner()

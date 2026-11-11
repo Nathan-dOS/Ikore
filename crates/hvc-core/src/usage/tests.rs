@@ -403,10 +403,7 @@ fn read_only_query_does_not_create_a_missing_database() {
 fn interrupted_stream_retains_the_last_reported_snapshot_without_content() {
     use crate::llm::{domain::ProviderProtocol, streaming::SseParser};
     let (root, db) = database();
-    let recorder = api::UsageRecorder::new(
-        &root.path().join("hard-vibe-code.db"),
-        context("interrupted"),
-    );
+    let recorder = api::UsageRecorder::new(&root.path().join("ikore.db"), context("interrupted"));
     let mut parser = SseParser::new(ProviderProtocol::AnthropicMessages);
     let stream=b"event: message_start\ndata: {\"message\":{\"model\":\"claude-test\",\"usage\":{\"input_tokens\":4,\"output_tokens\":0,\"cache_read_input_tokens\":10}}}\n\nevent: message_delta\ndata: {\"usage\":{\"output_tokens\":3}}\n\n";
     for chunk in stream.chunks(7) {
@@ -430,12 +427,9 @@ fn cli_large_final_snapshot_is_not_cut_at_the_visible_log_limit() {
         transport: UsageTransport::Cli,
         ..context("cli-result")
     };
-    let recorder = cli::CliUsageRecorder::new(
-        &root.path().join("hard-vibe-code.db"),
-        source,
-        CliBackend::Claude,
-    )
-    .unwrap();
+    let recorder =
+        cli::CliUsageRecorder::new(&root.path().join("ikore.db"), source, CliBackend::Claude)
+            .unwrap();
     let snapshot = json!({"type":"result","result":"x".repeat(80_000),"modelUsage":{
         "claude-test":{"inputTokens":4,"outputTokens":2,"cacheReadInputTokens":10}}});
     for _ in 0..2 {
@@ -464,12 +458,9 @@ fn provider_owned_identifiers_cannot_persist_secret_shaped_text() {
         requested_model: None,
         ..context("cli-private")
     };
-    let recorder = cli::CliUsageRecorder::new(
-        &root.path().join("hard-vibe-code.db"),
-        source,
-        CliBackend::Claude,
-    )
-    .unwrap();
+    let recorder =
+        cli::CliUsageRecorder::new(&root.path().join("ikore.db"), source, CliBackend::Claude)
+            .unwrap();
     let snapshot = json!({"type":"result","modelUsage":{
         "sk-fixturesecret123456789":{"inputTokens":4,"outputTokens":2}}});
     recorder

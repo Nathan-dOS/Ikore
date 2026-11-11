@@ -2821,7 +2821,7 @@ impl TerminalRepository {
         canonicalize_terminal_export(&mut projection);
         let payload = terminal_export_bytes(&projection, true, MAX_RUN_OUTPUT_BYTES)?;
         let workspace = self.project_workspace(project_id)?;
-        let directory = workspace.join(".hard-vibe-code").join("terminal-exports");
+        let directory = workspace.join(".ikore").join("terminal-exports");
         fs::create_dir_all(&directory)?;
         let destination = directory.join(format!("terminal-{run_id}.json"));
         let mut temporary = tempfile::NamedTempFile::new_in(&directory)?;

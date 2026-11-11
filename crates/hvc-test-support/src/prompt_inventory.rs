@@ -248,7 +248,7 @@ const LEGEND_START: &str = "PROVENANCE: An item's \"> provenance:\" line";
 pub fn builder_of(system: &str) -> Option<Builder> {
     if system.starts_with("You are the `") && system.contains("` worker of the `") {
         Some(Builder::V4Unit)
-    } else if system.contains("` stage agent in Hard Vibe Code") {
+    } else if system.contains("` stage agent in Ikore") {
         Some(Builder::Legacy)
     } else {
         None

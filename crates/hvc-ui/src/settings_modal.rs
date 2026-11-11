@@ -631,7 +631,7 @@ fn settings_nav(model: &AppModel, current: SettingsPage, cx: &mut Context<AppMod
                         .child(
                             div()
                                 .font_family(theme::FONT_MONO)
-                                .child(format!("Hard Vibe Code v{}", env!("CARGO_PKG_VERSION"))),
+                                .child(format!("Ikore v{}", env!("CARGO_PKG_VERSION"))),
                         ),
                 ),
         )

@@ -101,7 +101,7 @@ impl PulsationFixture {
     }
 
     pub fn database_path(&self) -> PathBuf {
-        self.environment.data_dir().join("hard-vibe-code.db")
+        self.environment.data_dir().join("ikore.db")
     }
 
     pub fn project_a_root(&self) -> PathBuf {

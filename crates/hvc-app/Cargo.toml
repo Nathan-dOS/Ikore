@@ -4,10 +4,10 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Native GPUI desktop application for Hard Vibe Code"
+description = "Native GPUI desktop application for Ikore"
 
 [[bin]]
-name = "hard-vibe-code"
+name = "ikore"
 path = "src/main.rs"
 
 [features]

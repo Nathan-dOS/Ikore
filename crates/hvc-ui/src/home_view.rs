@@ -281,7 +281,7 @@ fn open_project(steps: Vec<NextStep>, cx: &mut Context<AppModel>) -> AnyElement 
             div()
                 .text_sm()
                 .text_color(theme::text_muted())
-                .child("Hard Vibe Code works inside one workspace folder at a time."),
+                .child("Ikore works inside one workspace folder at a time."),
         )
         .child(
             div()

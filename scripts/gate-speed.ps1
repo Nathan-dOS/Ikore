@@ -47,7 +47,7 @@ function Get-CoreBinary([string]$Root, [string]$Label) {
 }
 
 function Get-SpeedArtifacts([string]$Root, [string]$CoreBinary) {
-    $paths = [ordered]@{ core=$CoreBinary; ui=(Join-Path $Root 'target\release\hard-vibe-code.exe'); composition=(Join-Path $Root 'target\debug\examples\composition_benchmark.exe') }
+    $paths = [ordered]@{ core=$CoreBinary; ui=(Join-Path $Root 'target\release\ikore.exe'); composition=(Join-Path $Root 'target\debug\examples\composition_benchmark.exe') }
     $artifacts = [ordered]@{}
     foreach ($name in $paths.Keys) {
         if (-not (Test-Path -LiteralPath $paths[$name] -PathType Leaf)) { throw "Build the $name speed artifact first: $($paths[$name])" }
@@ -81,7 +81,7 @@ function Invoke-SpeedSample([string]$Root, [string]$CoreBinary, [string]$Label, 
     else { Assert-SpeedCompositionParity $script:canaryReference $canary $expectedArms | Out-Null }
     $wall = @($canary.observations | ForEach-Object { ConvertTo-SpeedNumber $_.wall_ms })
     $uiPath = Join-Path $OutputDirectory "$Label-ui.json"
-    & $uiScript -BinaryPath (Join-Path $Root 'target\release\hard-vibe-code.exe') -OutputPath $uiPath -Scenario 'dock-closed' -WindowSize '1280x820' |
+    & $uiScript -BinaryPath (Join-Path $Root 'target\release\ikore.exe') -OutputPath $uiPath -Scenario 'dock-closed' -WindowSize '1280x820' |
         Out-File -LiteralPath (Join-Path $OutputDirectory "$Label-ui.log") -Encoding utf8
     $ui = Get-SpeedUiSample (Get-Content -LiteralPath $uiPath -Raw | ConvertFrom-Json) 'dock-closed' -AllowLegacyIdle:$AllowLegacyUi -ExpectedWidth 1280 -ExpectedHeight 820
     $sample = [pscustomobject]@{
@@ -139,7 +139,7 @@ try {
     $after = Invoke-CompositionReport $CandidateRoot 'candidate-full'
     $report.compositionParity = Assert-SpeedCompositionParity $before $after $expectedArms -RequireHeldOut
     $streamPath = Join-Path $OutputDirectory 'three-streams.json'
-    & $uiScript -BinaryPath (Join-Path $CandidateRoot 'target\release\hard-vibe-code.exe') -OutputPath $streamPath -Scenario 'dock-three-streams' -WindowSize '1440x900' -EnforceThresholds |
+    & $uiScript -BinaryPath (Join-Path $CandidateRoot 'target\release\ikore.exe') -OutputPath $streamPath -Scenario 'dock-three-streams' -WindowSize '1440x900' -EnforceThresholds |
         Out-File -LiteralPath (Join-Path $OutputDirectory 'three-streams.log') -Encoding utf8
     $streamReport = Get-Content -LiteralPath $streamPath -Raw | ConvertFrom-Json
     $stream = Get-SpeedUiSample $streamReport 'dock-three-streams' -ExpectedWidth 1440 -ExpectedHeight 900

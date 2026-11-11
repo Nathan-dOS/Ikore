@@ -234,7 +234,7 @@ fn canvas_project_deletion_purges_pending_mirrors_and_cannot_recreate_workspace(
     assert!(service.sync_project(&project.id).is_err());
     assert!(service.create(&project.id, "Stale callback").is_err());
     assert!(!harness.workspace_dir().exists());
-    let db = Connection::open(harness.data_dir().join("hard-vibe-code.db")).unwrap();
+    let db = Connection::open(harness.data_dir().join("ikore.db")).unwrap();
     for table in ["companion_drawings", "companion_drawing_sync_jobs"] {
         let count: i64 = db
             .query_row(

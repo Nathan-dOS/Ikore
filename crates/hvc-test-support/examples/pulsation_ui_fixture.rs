@@ -72,7 +72,7 @@ fn validate_resume_root(root: &Path) -> Result<PathBuf, String> {
         _ => return Err("refuse to resume an unmarked profile".into()),
     }
     let db = rusqlite::Connection::open_with_flags(
-        root.join("data/hard-vibe-code.db"),
+        root.join("data/ikore.db"),
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
     )
     .map_err(|error| format!("invalid fixture database: {error}"))?;

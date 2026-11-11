@@ -47,7 +47,7 @@ fn unsigned_revisions_round_trip_and_reject_negative_or_overflow_values() {
 fn migrated_wal_databases_preserve_snapshots_rollback_and_reopen_at_page_size_limits() {
     for page_size in [512, 4096, 65536] {
         let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("hard-vibe-code.db");
+        let path = root.path().join("ikore.db");
         let mut writer = Connection::open(&path).unwrap();
         writer.pragma_update(None, "page_size", page_size).unwrap();
         let journal: String = writer

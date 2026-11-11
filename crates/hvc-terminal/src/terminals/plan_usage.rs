@@ -112,7 +112,7 @@ async fn read_codex_usage(
     send(
         &mut stdin,
         json!({"id": 1, "method": "initialize", "params": {
-            "clientInfo": {"name": "hard_vibe_code", "version": env!("CARGO_PKG_VERSION")}
+            "clientInfo": {"name": "ikore", "version": env!("CARGO_PKG_VERSION")}
         }}),
     )
     .await?;

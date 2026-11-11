@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Native text buffer and Markdown tooling for Hard Vibe Code"
+description = "Native text buffer and Markdown tooling for Ikore"
 
 [dependencies]
 pulldown-cmark = "0.13"

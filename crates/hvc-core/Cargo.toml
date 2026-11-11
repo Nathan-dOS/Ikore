@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Framework-agnostic domain and application core for Hard Vibe Code"
+description = "Framework-agnostic domain and application core for Ikore"
 
 [features]
 # ADR-028 G10: the plan-quota collectors that read a CLI's own access token. Off by

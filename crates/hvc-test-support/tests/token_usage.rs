@@ -131,7 +131,7 @@ async fn adapters_persist_native_usage_on_complete_streamed_and_failed_responses
 #[test]
 fn v28_imports_canonical_api_history_once_and_retains_it_after_deletion() {
     let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("hard-vibe-code.db");
+    let path = root.path().join("ikore.db");
     let mut db = Connection::open(&path).unwrap();
     migrations::migrations::runner()
         .set_target(refinery::Target::Version(27))
@@ -195,7 +195,7 @@ fn v28_imports_canonical_api_history_once_and_retains_it_after_deletion() {
 #[test]
 fn v29_attributes_existing_ledger_without_recounting_and_survives_source_deletion() {
     let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("hard-vibe-code.db");
+    let path = root.path().join("ikore.db");
     let mut db = Connection::open(&path).unwrap();
     migrations::migrations::runner()
         .set_target(refinery::Target::Version(28))

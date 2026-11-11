@@ -60,7 +60,7 @@ fn real_provider_results_are_accepted_failed_or_fenced_without_duplicate_effects
         ("unknown", false, true),
     ] {
         let env = IsolatedTestEnvironment::new();
-        let db_path = env.data_dir().join("hard-vibe-code.db");
+        let db_path = env.data_dir().join("ikore.db");
         let output=json!({"outputLanguage":"en","summary":"Evidence from fixture provider","statusUpdate":status,"contextUsage":[],"notes":[],"artifacts":[{"name":"result","kind":"stage_output","relativePath":"generated.md","content":"  exact provider bytes\r\n"}]}).to_string();
         let server = ScriptedHttpServer::respond_with(move |request| {
             let body: serde_json::Value = serde_json::from_str(&request.body).unwrap();

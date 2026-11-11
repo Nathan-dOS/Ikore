@@ -129,6 +129,7 @@ fn forbidden_component(component: &str) -> bool {
             name.as_str(),
             ".git"
                 | ".hvc"
+                | ".ikore"
                 | ".hard-vibe-code"
                 | ".agents"
                 | ".claude"

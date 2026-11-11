@@ -94,7 +94,7 @@ fn first_task_clarifies_through_companion_and_resumes_after_restart_without_extr
     let credentials = Arc::new(MemoryCredentialStore::default());
     credentials.set("openai", "fixture-only").unwrap();
     let service = initialize(&env, sink.clone(), credentials.clone());
-    let db = Connection::open(env.data_dir().join("hard-vibe-code.db")).unwrap();
+    let db = Connection::open(env.data_dir().join("ikore.db")).unwrap();
     db.execute("UPDATE provider_connections SET provider_id='ollama',endpoint_url=?1 WHERE id='legacy-openai'",[server.url("")]).unwrap();
     db.execute(
         "UPDATE runtime_settings SET value='off' WHERE key='runtime.routing_v2_mode'",
@@ -247,7 +247,7 @@ fn clarification_answer_files_tags_are_parsed_and_persisted_alongside_the_prose(
     let credentials = Arc::new(MemoryCredentialStore::default());
     credentials.set("openai", "fixture-only").unwrap();
     let service = initialize(&env, sink.clone(), credentials.clone());
-    let db = Connection::open(env.data_dir().join("hard-vibe-code.db")).unwrap();
+    let db = Connection::open(env.data_dir().join("ikore.db")).unwrap();
     db.execute("UPDATE provider_connections SET provider_id='ollama',endpoint_url=?1 WHERE id='legacy-openai'",[server.url("")]).unwrap();
     db.execute(
         "UPDATE runtime_settings SET value='off' WHERE key='runtime.routing_v2_mode'",

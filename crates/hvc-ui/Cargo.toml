@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "GPUI views and native design system for Hard Vibe Code"
+description = "GPUI views and native design system for Ikore"
 
 [features]
 # ADR-028 G10: off by default since 2026-11-10; see the hvc-core manifest.

@@ -1502,7 +1502,9 @@ impl PersistenceService {
         llm_client: Client,
     ) -> Result<Self, PersistenceServiceError> {
         fs::create_dir_all(app_data_dir)?;
-        let db_path = app_data_dir.join("hard-vibe-code.db");
+        // A database from before the rename to Ikore is renamed once, before opening.
+        crate::app_names::adopt_legacy_database(app_data_dir)?;
+        let db_path = app_data_dir.join(crate::app_names::DATABASE_FILE_NAME);
         let mut connection = Connection::open(&db_path)?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
         connection.busy_timeout(Duration::from_secs(5))?;
@@ -4467,7 +4469,7 @@ impl PersistenceService {
                 PersistenceServiceError::NotFound("Project workspace was not found.".into())
             })?;
         let directory = Path::new(&workspace_path)
-            .join(".hard-vibe-code")
+            .join(crate::app_names::WORKSPACE_DIR_NAME)
             .join("api-exports");
         fs::create_dir_all(&directory)?;
         let destination = directory.join(format!("api-{}.json", request.execution_id));
@@ -6920,9 +6922,52 @@ mod tests {
     }
 
     #[test]
+    fn a_database_from_before_the_rename_is_adopted_with_its_data() {
+        let root = tempfile::tempdir().expect("tempdir should be created");
+        let legacy = root
+            .path()
+            .join(crate::app_names::LEGACY_DATABASE_FILE_NAME);
+        let mut connection = Connection::open(&legacy).expect("legacy db should open");
+        embedded::migrations::runner()
+            .run(&mut connection)
+            .expect("migrations should apply");
+        let now = Utc::now().to_rfc3339();
+        connection
+            .execute(
+                "INSERT INTO projects(id,name,workspace_path,created_at,updated_at)
+             VALUES('project-legacy','Project from Hard Vibe Code',?1,?2,?2)",
+                params![root.path().to_string_lossy(), now],
+            )
+            .unwrap();
+        drop(connection);
+
+        let service = PersistenceService::initialize(root.path()).expect("service should open");
+
+        assert!(
+            !legacy.exists(),
+            "the legacy database is renamed, not copied"
+        );
+        assert!(
+            service
+                .database_path()
+                .ends_with(crate::app_names::DATABASE_FILE_NAME)
+        );
+        let name: String = service
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT name FROM projects WHERE id='project-legacy'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(name, "Project from Hard Vibe Code");
+    }
+
+    #[test]
     fn v33_to_v34_preserves_canonical_executions_and_bindings() {
         let root = tempfile::tempdir().expect("tempdir should be created");
-        let db_path = root.path().join("hard-vibe-code.db");
+        let db_path = root.path().join(crate::app_names::DATABASE_FILE_NAME);
         let mut connection = Connection::open(&db_path).expect("v33 db should open");
         embedded::migrations::runner()
             .set_target(refinery::Target::Version(33))
@@ -7090,7 +7135,7 @@ mod tests {
     #[test]
     fn v18_to_v19_is_additive_preserves_v1_learning_and_does_not_backfill_telemetry() {
         let root = tempfile::tempdir().expect("tempdir should be created");
-        let db_path = root.path().join("hard-vibe-code.db");
+        let db_path = root.path().join(crate::app_names::DATABASE_FILE_NAME);
         let mut connection = Connection::open(&db_path).expect("v18 db should open");
         embedded::migrations::runner()
             .set_target(refinery::Target::Version(18))
@@ -7145,7 +7190,7 @@ mod tests {
     #[test]
     fn v26_to_v27_rebuilds_checkpoints_without_losing_rows_or_references() {
         let root = tempfile::tempdir().expect("tempdir should be created");
-        let db_path = root.path().join("hard-vibe-code.db");
+        let db_path = root.path().join(crate::app_names::DATABASE_FILE_NAME);
         let mut connection = Connection::open(&db_path).expect("v26 db should open");
         connection
             .pragma_update(None, "foreign_keys", "ON")
@@ -7263,7 +7308,7 @@ mod tests {
     #[test]
     fn v19_to_v20_preserves_checkpoint_foreign_keys_and_extends_checkpoint_kind() {
         let root = tempfile::tempdir().expect("tempdir should be created");
-        let db_path = root.path().join("hard-vibe-code.db");
+        let db_path = root.path().join(crate::app_names::DATABASE_FILE_NAME);
         let mut connection = Connection::open(&db_path).expect("v19 db should open");
         connection
             .pragma_update(None, "foreign_keys", "ON")
@@ -9117,7 +9162,7 @@ mod tests {
     #[test]
     fn migrates_v4_database_to_v9_without_losing_legacy_settings() {
         let root = tempfile::tempdir().expect("tempdir should be created");
-        let db_path = root.path().join("hard-vibe-code.db");
+        let db_path = root.path().join(crate::app_names::DATABASE_FILE_NAME);
         let mut connection = Connection::open(&db_path).expect("v4 db should open");
         embedded::migrations::runner()
             .set_target(refinery::Target::Version(4))
@@ -9187,7 +9232,7 @@ mod tests {
     #[test]
     fn migrates_v1_database_to_v9_and_round_trips_legacy_session() {
         let root = tempfile::tempdir().expect("tempdir should be created");
-        let db_path = root.path().join("hard-vibe-code.db");
+        let db_path = root.path().join(crate::app_names::DATABASE_FILE_NAME);
         let mut connection = Connection::open(&db_path).expect("v1 db should open");
         embedded::migrations::runner()
             .set_target(refinery::Target::Version(1))
@@ -9259,7 +9304,7 @@ mod tests {
     #[test]
     fn migrates_v8_database_to_v9_without_losing_ui_session() {
         let root = tempfile::tempdir().expect("tempdir should be created");
-        let db_path = root.path().join("hard-vibe-code.db");
+        let db_path = root.path().join(crate::app_names::DATABASE_FILE_NAME);
         let mut connection = Connection::open(&db_path).expect("v8 db should open");
         embedded::migrations::runner()
             .set_target(refinery::Target::Version(8))

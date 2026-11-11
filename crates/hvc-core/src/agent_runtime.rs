@@ -984,7 +984,7 @@ fn synthetic_fallback_enabled() -> bool {
 fn build_system_prompt(input: &StageExecutionInput) -> String {
     let stage = crate::orchestration::catalog::canonical_stage(&input.stage_name);
     format!(
-        "You are the `{stage}` stage agent in Hard Vibe Code, acting as `{role}`.\n\n\
+        "You are the `{stage}` stage agent in Ikore, acting as `{role}`.\n\n\
          {brief}\n\n\
          {tools}\n\n\
          OUTPUT: Return only valid JSON matching the supplied schema. Never emit Markdown outside the JSON.\n\n\

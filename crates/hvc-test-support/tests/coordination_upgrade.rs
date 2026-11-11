@@ -75,7 +75,7 @@ fn v9_multiple_owners_open_ui_blocked_and_require_each_explicit_selection() {
 fn v10_upgrade_backs_up_and_preserves_m1_checkpoint_identity_without_reexecution() {
     let env = IsolatedTestEnvironment::new();
     env.prepare_database(DatabaseVersion::new(10));
-    let db = Connection::open(env.data_dir().join("hard-vibe-code.db")).unwrap();
+    let db = Connection::open(env.data_dir().join("ikore.db")).unwrap();
     db.execute_batch("INSERT INTO projects(id,name,workspace_path,created_at,updated_at) VALUES('p','P','fixture','t','t');
         INSERT INTO pulsations(id,project_id,feature_name,stage,status,created_at,updated_at,queue_sequence,pipeline_version) VALUES('a','p','A','SPECIFICATION','checkpoint','t','t',1,2);
         INSERT INTO checkpoints(id,pulsation_id,stage,status,created_at,updated_at) VALUES('checkpoint-m1','a','SPECIFICATION','waiting','t','t');").unwrap();
@@ -100,7 +100,7 @@ fn v10_upgrade_backs_up_and_preserves_m1_checkpoint_identity_without_reexecution
         .filter(|p| {
             p.file_name()
                 .to_string_lossy()
-                .starts_with("hard-vibe-code.pre-v24.")
+                .starts_with("ikore.pre-v24.")
         })
         .collect::<Vec<_>>();
     assert_eq!(backups.len(), 1);

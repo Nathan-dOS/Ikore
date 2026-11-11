@@ -544,7 +544,8 @@ fn finish_purged(db: &Connection, data_dir: &Path, id: &str) -> Result<(), Error
     // Compact pages freed by the project graph and FTS before creating a survivor backup.
     db.execute_batch("VACUUM")?;
     let clean_backup = data_dir.join(format!(
-        "hard-vibe-code.after-deletion.{}.db",
+        "{}.after-deletion.{}.db",
+        crate::app_names::snapshot_prefix(),
         Uuid::new_v4()
     ));
     db.execute("VACUUM INTO ?1", [clean_backup.to_string_lossy().as_ref()])?;
@@ -581,10 +582,10 @@ fn finish_purged(db: &Connection, data_dir: &Path, id: &str) -> Result<(), Error
             continue;
         }
         let name = entry.file_name().to_string_lossy().to_string();
-        let old = name
-            .strip_prefix("hard-vibe-code.pre-v13.")
-            .or_else(|| name.strip_prefix("hard-vibe-code.pre-v24."))
-            .or_else(|| name.strip_prefix("hard-vibe-code.after-deletion."));
+        // Snapshots written before the rename to Ikore carry the legacy prefix.
+        let old = ["pre-v13", "pre-v24", "after-deletion"]
+            .into_iter()
+            .find_map(|kind| crate::app_names::snapshot_suffix(&name, kind));
         if let Some(suffix) = old.and_then(|s| s.strip_suffix(".db"))
             && Uuid::parse_str(suffix).is_ok()
             && entry.file_type()?.is_file()
@@ -707,7 +708,7 @@ mod tests {
                 path.file_name()
                     .unwrap()
                     .to_string_lossy()
-                    .starts_with("hard-vibe-code.after-deletion.")
+                    .starts_with("ikore.after-deletion.")
             })
             .collect::<Vec<_>>();
         assert_eq!(clean_backups.len(), 1);
@@ -1069,7 +1070,7 @@ mod tests {
                 .filter(|entry| entry
                     .file_name()
                     .to_string_lossy()
-                    .starts_with("hard-vibe-code.after-deletion."))
+                    .starts_with("ikore.after-deletion."))
                 .count(),
             1
         );

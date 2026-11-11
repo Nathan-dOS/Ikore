@@ -2,9 +2,9 @@
 ARG RUST_IMAGE=rust:1.98.0-bookworm
 FROM ${RUST_IMAGE}
 
-LABEL org.opencontainers.image.title="hard-vibe-code-headless"
+LABEL org.opencontainers.image.title="ikore-headless"
 LABEL org.opencontainers.image.description="Linux headless harness for HVC contracts, terminal, core, editor and test-support"
-LABEL org.opencontainers.image.source="https://github.com/Nathan-dOS/HARD-VC"
+LABEL org.opencontainers.image.source="https://github.com/Nathan-dOS/Ikore"
 
 ENV DEBIAN_FRONTEND=noninteractive \
     CARGO_TERM_COLOR=always \

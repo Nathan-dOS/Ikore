@@ -644,7 +644,7 @@ async fn fetch(
         .https_only(artifact.url.starts_with("https://"))
         .connect_timeout(Duration::from_secs(20))
         .read_timeout(STALL_TIMEOUT)
-        .user_agent(concat!("hard-vibe-code/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("ikore/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|error| VoiceError::Network(error.to_string()))?;
     let response = cancellable(cancellation, client.get(&artifact.url).send())

@@ -71,7 +71,7 @@ impl IsolatedTestEnvironment {
     }
 
     pub fn prepare_database(&self, version: DatabaseVersion) {
-        let db_path = self.data_dir.join("hard-vibe-code.db");
+        let db_path = self.data_dir.join("ikore.db");
         let mut connection = Connection::open(db_path).expect("fixture database should open");
         embedded::migrations::runner()
             .set_target(Target::Version(
@@ -200,8 +200,7 @@ mod tests {
         for version in 1..=13 {
             let environment = IsolatedTestEnvironment::new();
             environment.prepare_database(DatabaseVersion::new(version));
-            let connection =
-                Connection::open(environment.data_dir().join("hard-vibe-code.db")).unwrap();
+            let connection = Connection::open(environment.data_dir().join("ikore.db")).unwrap();
             let (maximum, count): (u32, u32) = connection
                 .query_row(
                     "SELECT max(version),count(*) FROM refinery_schema_history",
@@ -229,7 +228,7 @@ mod tests {
             .set("provider-a", "fixture-secret")
             .unwrap();
 
-        assert!(harness.data_dir().join("hard-vibe-code.db").is_file());
+        assert!(harness.data_dir().join("ikore.db").is_file());
         assert!(harness.workspace_dir().join("notes/index.md").is_file());
         assert!(harness.credentials().contains("provider-a"));
         assert_eq!(
@@ -242,7 +241,7 @@ mod tests {
     #[test]
     fn v1_fixture_is_upgraded_by_app_core_to_v9() {
         let harness = CoreTestHarness::at_database_version(DatabaseVersion::new(1));
-        let connection = Connection::open(harness.data_dir().join("hard-vibe-code.db")).unwrap();
+        let connection = Connection::open(harness.data_dir().join("ikore.db")).unwrap();
         let chat_table: bool = connection
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='chat_messages')",
