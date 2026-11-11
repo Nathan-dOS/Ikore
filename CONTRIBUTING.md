@@ -113,7 +113,7 @@ Create a descriptive branch from an up-to-date `main`:
 3. Run the app with isolated data so it never touches your real profile:
 
    ```powershell
-   $env:HVC_DATA_DIR = "$PWD\target\dev-data"
+   $env:IKORE_DATA_DIR = "$PWD\target\dev-data"
    cargo run -p ikore-app
    ```
 

@@ -6,7 +6,7 @@
 //!
 //! With no selector it analyzes the most recent pulsation that reached `done`.
 //! With no `--db` it resolves the same path the desktop app uses, honouring
-//! `HVC_DATA_DIR`. `--html` writes the self-contained pulsation report of
+//! `IKORE_DATA_DIR` (or legacy `HVC_DATA_DIR`). `--html` writes the self-contained pulsation report of
 //! ADR-024 from the same telemetry.
 
 use std::path::PathBuf;

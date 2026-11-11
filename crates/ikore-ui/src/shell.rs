@@ -171,17 +171,15 @@ pub fn open_main_window(core: Arc<AppCore>, cx: &mut App) -> anyhow::Result<()> 
 }
 
 fn initial_window_size() -> (f32, f32) {
-    if std::env::var_os("HVC_BENCHMARK_UI_REPORT").is_some()
-        && let Some(size) = std::env::var("HVC_BENCHMARK_UI_WINDOW_SIZE")
-            .ok()
-            .and_then(|value| parse_qa_window_size(&value))
+    if ikore_contracts::var_os_with_legacy("BENCHMARK_UI_REPORT").is_some()
+        && let Ok(size_str) = ikore_contracts::var_with_legacy("BENCHMARK_UI_WINDOW_SIZE")
+        && let Some(size) = parse_qa_window_size(&size_str)
     {
         return size;
     }
     #[cfg(debug_assertions)]
-    if let Some(size) = std::env::var("HVC_QA_WINDOW_SIZE")
-        .ok()
-        .and_then(|value| parse_qa_window_size(&value))
+    if let Ok(size_str) = ikore_contracts::var_with_legacy("QA_WINDOW_SIZE")
+        && let Some(size) = parse_qa_window_size(&size_str)
     {
         return size;
     }

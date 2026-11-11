@@ -6,7 +6,7 @@
 //! roles, Learning included, all run on Antigravity's CLI (`agy`), driven by
 //! the same job worker the desktop app runs. Opt-in, it spends real quota:
 //!   cargo test -p ikore-test-support --test `antigravity_live_pulsation` -- --ignored --nocapture --test-threads=1
-//! `HVC_LIVE_DB_OUT=<directory>` keeps a copy of each database for
+//! `IKORE_LIVE_DB_OUT=<directory>` (or legacy `HVC_LIVE_DB_OUT`) keeps a copy of each database for
 //! `analyze_pulsation --db <copy>`.
 mod composition_support;
 
@@ -247,7 +247,9 @@ fn report(harness: &Harness, label: &str) {
         Ok(analysis) => eprintln!("{}", render_text(&analysis)),
         Err(error) => eprintln!("analysis unavailable: {error}"),
     }
-    if let Ok(directory) = std::env::var("HVC_LIVE_DB_OUT") {
+    if let Ok(directory) =
+        std::env::var("IKORE_LIVE_DB_OUT").or_else(|_| std::env::var("HVC_LIVE_DB_OUT"))
+    {
         let target = std::path::Path::new(&directory).join(format!("{label}.sqlite"));
         std::fs::create_dir_all(&directory).unwrap();
         db.execute("VACUUM INTO ?1", [target.to_string_lossy()])

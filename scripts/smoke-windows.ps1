@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$BinaryPath = '',
     [ValidateRange(1, 60)]
@@ -78,12 +78,13 @@ New-Item -ItemType Directory -Path $smokeRoot -Force | Out-Null
 $smokeDirectory = Join-Path $smokeRoot ([guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $smokeDirectory | Out-Null
 
-$previousDataDirectory = $env:HVC_DATA_DIR
+$previousDataDirectory = if ($env:IKORE_DATA_DIR) { $env:IKORE_DATA_DIR } else { $env:HVC_DATA_DIR }
 $process = $null
 $gracefulShutdown = $false
 $windowHandle = [IntPtr]::Zero
 
 try {
+    $env:IKORE_DATA_DIR = $smokeDirectory
     $env:HVC_DATA_DIR = $smokeDirectory
     $process = Start-Process -FilePath $resolvedBinary -PassThru -WindowStyle Hidden
     $deadline = [DateTime]::UtcNow.AddSeconds($StartupTimeoutSeconds)
@@ -135,9 +136,11 @@ finally {
     }
 
     if ($null -eq $previousDataDirectory) {
+        Remove-Item Env:IKORE_DATA_DIR -ErrorAction SilentlyContinue
         Remove-Item Env:HVC_DATA_DIR -ErrorAction SilentlyContinue
     }
     else {
+        $env:IKORE_DATA_DIR = $previousDataDirectory
         $env:HVC_DATA_DIR = $previousDataDirectory
     }
 

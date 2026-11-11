@@ -165,19 +165,19 @@ pub(crate) fn sample_statement() -> StatementV1 {
 }
 
 /// Compares `bytes` with the fixture, or rewrites it with
-/// `HVC_UPDATE_GOLDEN=1` after the change was reviewed.
+/// `IKORE_UPDATE_GOLDEN=1` after the change was reviewed.
 fn golden(name: &str, bytes: &[u8]) {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join(FIXTURES)
         .join(name);
-    if std::env::var_os("HVC_UPDATE_GOLDEN").is_some() {
+    if ikore_contracts::var_os_with_legacy("UPDATE_GOLDEN").is_some() {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, bytes).unwrap();
     }
     let expected = std::fs::read(&path).unwrap_or_default();
     assert!(
         expected == bytes,
-        "{FIXTURES}/{name} differs; rerun with HVC_UPDATE_GOLDEN=1 after reviewing the change"
+        "{FIXTURES}/{name} differs; rerun with IKORE_UPDATE_GOLDEN=1 after reviewing the change"
     );
 }
 

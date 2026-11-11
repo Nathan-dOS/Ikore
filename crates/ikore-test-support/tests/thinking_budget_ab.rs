@@ -11,9 +11,9 @@
 //! Intake stays on the scripted provider so both arms start from the same
 //! classification. Run with
 //! `cargo test -p ikore-test-support --test thinking_budget_ab -- --ignored --nocapture`;
-//! `HVC_AB_PAIRS` sets the number of pairs (default 3) and `HVC_AB_FIRST_PAIR`
+//! `IKORE_AB_PAIRS` (or legacy `HVC_AB_PAIRS`) sets the number of pairs (default 3) and `IKORE_AB_FIRST_PAIR`
 //! the number of the first one. One JSON line per arm
-//! is printed and appended to `HVC_AB_OUT` when set.
+//! is printed and appended to `IKORE_AB_OUT` when set.
 mod composition_support;
 
 use composition_support::*;
@@ -206,7 +206,7 @@ fn run_arm(pair: usize, arm: &'static str) -> Value {
     }
     let line = json!({"pair": pair, "arm": arm, "outcome": outcome, "stages": stages});
     println!("{line}");
-    if let Ok(path) = std::env::var("HVC_AB_OUT") {
+    if let Ok(path) = std::env::var("IKORE_AB_OUT").or_else(|_| std::env::var("HVC_AB_OUT")) {
         use std::io::Write;
         let mut file = std::fs::OpenOptions::new()
             .create(true)
@@ -221,13 +221,17 @@ fn run_arm(pair: usize, arm: &'static str) -> Value {
 #[test]
 #[ignore = "paid: runs the real Claude CLI (Haiku) for Specification and Contract"]
 fn claude_thinking_budget_paired_ab_on_specification_and_contract() {
-    let number = |name: &str, default: usize| {
+    let number = |name: &str, legacy_name: &str, default: usize| {
         std::env::var(name)
+            .or_else(|_| std::env::var(legacy_name))
             .ok()
             .and_then(|value| value.parse().ok())
             .unwrap_or(default)
     };
-    let (pairs, first) = (number("HVC_AB_PAIRS", 3), number("HVC_AB_FIRST_PAIR", 1));
+    let (pairs, first) = (
+        number("IKORE_AB_PAIRS", "HVC_AB_PAIRS", 3),
+        number("IKORE_AB_FIRST_PAIR", "HVC_AB_FIRST_PAIR", 1),
+    );
     for pair in first..first + pairs {
         std::thread::scope(|scope| {
             let default = scope.spawn(move || run_arm(pair, "default"));

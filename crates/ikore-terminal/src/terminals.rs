@@ -3430,12 +3430,24 @@ fn validate_cli_launch_model(
 ) -> Result<(), TerminalError> {
     let expected = require_verifiable_cli_selection(backend, model)?;
     if backend == CliBackend::Custom {
-        let mut bound = spec
+        let mut ikore_bound = spec
+            .environment
+            .iter()
+            .filter(|(name, _)| name == "IKORE_SELECTED_MODEL")
+            .map(|(_, value)| value.as_str());
+        let mut hvc_bound = spec
             .environment
             .iter()
             .filter(|(name, _)| name == "HVC_SELECTED_MODEL")
             .map(|(_, value)| value.as_str());
-        if bound.next() != Some(expected) || bound.next().is_some() {
+        let ikore_val = ikore_bound.next();
+        let hvc_val = hvc_bound.next();
+        if (ikore_val.is_none() && hvc_val.is_none())
+            || (ikore_val.is_some() && ikore_val != Some(expected))
+            || ikore_bound.next().is_some()
+            || (hvc_val.is_some() && hvc_val != Some(expected))
+            || hvc_bound.next().is_some()
+        {
             return Err(TerminalError::ModelMismatch {
                 expected: expected.to_owned(),
                 observed: "Custom CLI launch environment does not bind exactly the selected model"
@@ -8307,6 +8319,8 @@ fn harden_spec(
             // the JSON `artifacts` array, so files this CLI writes to disk never
             // enter the pipeline. The marker lets a cooperating CLI opt in.
             spec.environment
+                .push(("IKORE_STAGE_READ_ONLY".into(), "1".into()));
+            spec.environment
                 .push(("HVC_STAGE_READ_ONLY".into(), "1".into()));
         }
     }
@@ -8884,7 +8898,7 @@ pub fn extract_companion_envelope_json(output: &str) -> Option<String> {
 }
 
 fn cli_mode_disabled() -> bool {
-    crate::quota::env_flag("HVC_DISABLE_CLI_MODE")
+    ikore_contracts::env_flag_with_legacy("DISABLE_CLI_MODE")
 }
 
 /// One full probe of every CLI, with the local kill switch applied.

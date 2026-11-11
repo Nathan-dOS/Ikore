@@ -180,7 +180,9 @@ impl PersistenceService {
     fn current_builder(key_id: Option<String>) -> BuilderBlock {
         BuilderBlock {
             hvc_version: env!("CARGO_PKG_VERSION").to_owned(),
-            build_id: option_env!("HVC_BUILD_ID").map(str::to_owned),
+            build_id: option_env!("IKORE_BUILD_ID")
+                .or(option_env!("HVC_BUILD_ID"))
+                .map(str::to_owned),
             os: std::env::consts::OS.to_owned(),
             arch: std::env::consts::ARCH.to_owned(),
             key_id,

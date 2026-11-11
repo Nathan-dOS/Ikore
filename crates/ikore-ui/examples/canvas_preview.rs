@@ -2,7 +2,7 @@
 //! Run with `cargo run --locked --offline -p ikore-ui --example canvas_preview`.
 //! Add -- --elements 100 or -- --elements 500 for deterministic mixed scenes.
 //! Example: `cargo run --locked --offline -p ikore-ui --example canvas_preview -- --elements 500`
-//! The caller may set `HVC_BENCHMARK_UI_REPORT` to use the existing native callback probe.
+//! The caller may set `IKORE_BENCHMARK_UI_REPORT` (or legacy `HVC_BENCHMARK_UI_REPORT`) to use the existing native callback probe.
 //! Arguments and fixture construction never modify the process environment.
 #![allow(
     clippy::unwrap_used,

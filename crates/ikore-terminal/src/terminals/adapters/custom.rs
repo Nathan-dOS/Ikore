@@ -53,7 +53,12 @@ impl CliAdapter for CustomAdapter {
             args: request.custom_args,
             environment: request
                 .model
-                .map(|model| vec![("HVC_SELECTED_MODEL".into(), model)])
+                .map(|model| {
+                    vec![
+                        ("IKORE_SELECTED_MODEL".into(), model.clone()),
+                        ("HVC_SELECTED_MODEL".into(), model),
+                    ]
+                })
                 .unwrap_or_default(),
             stdin_payload: request.prompt.into_bytes(),
             resume_session_id: None,

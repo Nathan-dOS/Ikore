@@ -759,7 +759,7 @@ async fn authenticated_claude_model_identity_smoke() {
         &harness.project_id,
         Instant::now() + Duration::from_secs(120),
     );
-    probe.user_prompt = "Reply with exactly HVC_MODEL_IDENTITY_OK and no tools.".into();
+    probe.user_prompt = "Reply with exactly IKORE_MODEL_IDENTITY_OK and no tools.".into();
     probe.max_output_tokens = 32;
     let result = harness
         .terminals
@@ -904,7 +904,7 @@ async fn authenticated_antigravity_pipeline_smoke() {
         Instant::now() + Duration::from_secs(180),
     );
     probe.user_prompt =
-        "Reply with exactly HVC_ANTIGRAVITY_OK and nothing else. Do not use tools.".into();
+        "Reply with exactly IKORE_ANTIGRAVITY_OK and nothing else. Do not use tools.".into();
     let completion = harness
         .terminals
         .execute_llm_request(&probe, &CancellationToken::new())
@@ -912,7 +912,7 @@ async fn authenticated_antigravity_pipeline_smoke() {
         .unwrap()
         .unwrap();
     assert!(
-        completion.raw_output.contains("HVC_ANTIGRAVITY_OK"),
+        completion.raw_output.contains("IKORE_ANTIGRAVITY_OK"),
         "{}",
         completion.raw_output
     );
@@ -1194,7 +1194,7 @@ async fn codex_turn_context_probe(harness: &Harness, role: AgentRole, job_chain:
     );
     probe.target = AgentExecutionTarget::canonical(role);
     probe.job_chain = job_chain.into();
-    probe.user_prompt = "Reply with exactly HVC_CODEX_MODEL_OK and do not call tools.".into();
+    probe.user_prompt = "Reply with exactly IKORE_CODEX_MODEL_OK and do not call tools.".into();
     probe.max_output_tokens = 32;
     let result = tokio::time::timeout(
         Duration::from_secs(180),
@@ -1231,7 +1231,7 @@ async fn codex_turn_context_probe(harness: &Harness, role: AgentRole, job_chain:
             .unwrap()
             .unwrap()
             .raw_output
-            .contains("HVC_CODEX_MODEL_OK")
+            .contains("IKORE_CODEX_MODEL_OK")
     );
 }
 

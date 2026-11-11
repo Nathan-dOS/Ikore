@@ -975,10 +975,7 @@ async fn execute_stage_inner(
 
 fn synthetic_fallback_enabled() -> bool {
     cfg!(test)
-        || (cfg!(debug_assertions)
-            && std::env::var("HVC_ALLOW_SYNTHETIC_LLM")
-                .ok()
-                .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "on")))
+        || (cfg!(debug_assertions) && ikore_contracts::env_flag_with_legacy("ALLOW_SYNTHETIC_LLM"))
 }
 
 fn build_system_prompt(input: &StageExecutionInput) -> String {

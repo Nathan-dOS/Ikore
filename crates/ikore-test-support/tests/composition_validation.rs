@@ -32,7 +32,7 @@ fn profile(argv: &[&str], timeout_seconds: u32, max_log_bytes: u32) -> Validatio
         argv: argv.iter().map(|s| (*s).to_owned()).collect(),
         cwd_relative_path: ".".into(),
         input_globs: vec!["**/*".into()],
-        environment_names: vec!["HVC_FIXTURE_ALLOWED".into()],
+        environment_names: vec!["IKORE_FIXTURE_ALLOWED".into()],
         toolchain_identity: "fixture".into(),
         timeout_seconds,
         max_log_bytes,
@@ -71,7 +71,7 @@ fn context() -> ReceiptContext {
         stage_execution_id: Uuid::generate(),
         parent_generation: 1,
         profile_snapshot_id: Uuid::generate(),
-        extra_environment: vec![("HVC_FIXTURE_CACHE".into(), "cache".into())],
+        extra_environment: vec![("IKORE_FIXTURE_CACHE".into(), "cache".into())],
     }
 }
 
@@ -158,8 +158,8 @@ async fn failures_carry_parsed_or_exit_diagnostics_and_never_pass() {
 async fn argv_is_literal_and_the_environment_is_reduced() {
     // SAFETY: test-local variables read only by this test's child process.
     unsafe {
-        std::env::set_var("HVC_FIXTURE_ALLOWED", "yes");
-        std::env::set_var("HVC_FIXTURE_SECRET", "must-not-leak");
+        std::env::set_var("IKORE_FIXTURE_ALLOWED", "yes");
+        std::env::set_var("IKORE_FIXTURE_SECRET", "must-not-leak");
     }
     let hostile = "\"; rm -rf / & echo %PATH% $HOME `id` |";
     let echoed = run(&["echo-argv", hostile, "--flag=a b"], 30, 65_536).await;
@@ -173,16 +173,16 @@ async fn argv_is_literal_and_the_environment_is_reduced() {
     let env = run(&["dump-env"], 30, 65_536).await;
     let names = env.stdout.text.lines().collect::<Vec<_>>();
     assert!(
-        names.contains(&"HVC_FIXTURE_ALLOWED"),
+        names.contains(&"IKORE_FIXTURE_ALLOWED"),
         "selected project variables are forwarded"
     );
     assert!(
-        names.contains(&"HVC_FIXTURE_CACHE"),
+        names.contains(&"IKORE_FIXTURE_CACHE"),
         "host build-cache variables are forwarded"
     );
     assert!(names.contains(&"PATH"));
     assert!(
-        !names.contains(&"HVC_FIXTURE_SECRET"),
+        !names.contains(&"IKORE_FIXTURE_SECRET"),
         "unselected host variables never reach the command"
     );
     assert!(

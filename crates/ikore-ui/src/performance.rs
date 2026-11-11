@@ -46,12 +46,14 @@ pub(crate) struct FrameLatencyProbe {
 
 impl FrameLatencyProbe {
     fn from_environment() -> Option<Self> {
-        let output_path = std::env::var_os("HVC_BENCHMARK_UI_REPORT").map(PathBuf::from)?;
+        let output_path =
+            ikore_contracts::var_os_with_legacy("BENCHMARK_UI_REPORT").map(PathBuf::from)?;
         let scenario = BenchmarkScenario::parse(
-            &std::env::var("HVC_BENCHMARK_UI_SCENARIO").unwrap_or_else(|_| "idle".into()),
+            &ikore_contracts::var_with_legacy("BENCHMARK_UI_SCENARIO")
+                .unwrap_or_else(|_| "idle".into()),
         )?;
-        let samples = environment_count("HVC_BENCHMARK_UI_SAMPLES", DEFAULT_SAMPLES);
-        let warmup_samples = environment_count("HVC_BENCHMARK_UI_WARMUP", DEFAULT_WARMUP_SAMPLES)
+        let samples = environment_count("BENCHMARK_UI_SAMPLES", DEFAULT_SAMPLES);
+        let warmup_samples = environment_count("BENCHMARK_UI_WARMUP", DEFAULT_WARMUP_SAMPLES)
             .min(samples.saturating_sub(1));
         write_report(
             &output_path,
@@ -228,9 +230,10 @@ pub(crate) fn start_probe() -> Option<FrameLatencyProbe> {
     FrameLatencyProbe::from_environment()
 }
 
-fn environment_count(name: &str, default: usize) -> usize {
-    std::env::var(name)
+fn environment_count(suffix: &str, default: usize) -> usize {
+    ikore_contracts::var_with_legacy(suffix)
         .ok()
+        .as_deref()
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(default)

@@ -64,10 +64,10 @@ The myth also sets the roles. Hephaestus is the maker and Talos is his
 machine. In Ikore the developer thinks and decides, and the agents are the
 machine that does the heavy work, kept in rhythm by the host.
 
-Ikore was called Hard Vibe Code until November 2026. Crates, environment
-variables such as `HVC_DATA_DIR` and some internal identifiers keep the `hvc`
-prefix. Data, settings and stored credentials from Hard Vibe Code builds move
-to the new names automatically on the first start.
+Ikore was called Hard Vibe Code until November 2026. Environment
+variables use the `IKORE_` prefix (such as `IKORE_DATA_DIR`, with legacy
+`HVC_` fallbacks for compatibility). Data, settings and stored credentials
+from Hard Vibe Code builds move to the new names automatically on the first start.
 
 ## How it works
 
@@ -170,11 +170,11 @@ git clone https://github.com/Nathan-dOS/Ikore.git
 cd Ikore
 
 # Keep development data apart from your real profile.
-$env:HVC_DATA_DIR = "$PWD\target\dev-data"
+$env:IKORE_DATA_DIR = "$PWD\target\dev-data"
 cargo run --locked -p ikore-app
 ```
 
-Without `HVC_DATA_DIR`, data is stored in
+Without `IKORE_DATA_DIR`, data is stored in
 `%APPDATA%\com.ikore.desktop\`. API keys are entered in Settings and
 stored in the Windows Credential Manager; Ikore does not read them from `.env`
 files.
@@ -194,8 +194,8 @@ keys or internet access:
 cargo build --locked -p ikore-test-support --bin check_fixture
 cargo run --locked -p ikore-test-support --example review_brief_fixture -- target\demo-review --stage test --visualizer
 
-# Use the HVC_DATA_DIR value that the fixture prints.
-$env:HVC_DATA_DIR = "<printed data directory>"
+# Use the IKORE_DATA_DIR value that the fixture prints.
+$env:IKORE_DATA_DIR = "<printed data directory>"
 cargo run --locked -p ikore-app
 ```
 

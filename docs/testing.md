@@ -163,7 +163,7 @@ Do not run ignored tests merely to increase the passing count.
 For manual application checks, use an isolated profile:
 
 ```powershell
-$env:HVC_DATA_DIR = "$PWD\target\dev-data"
+$env:IKORE_DATA_DIR = "$PWD\target\dev-data"
 cargo run -p ikore-app
 ```
 
@@ -481,7 +481,7 @@ cargo test --locked -p ikore-test-support --test attestation -- --ignored --test
 ```
 
 To check a real bundle with OpenSSL as [attestation.md](attestation.md)
-describes, set `HVC_ATTESTATION_OUT` to a folder before the integration test;
+describes, set `IKORE_ATTESTATION_OUT` (or legacy `HVC_ATTESTATION_OUT`) to a folder before the integration test;
 it saves the finished pulsation's bundle and public key there.
 
 ## Governance metrics and visual checks
@@ -498,7 +498,7 @@ grant.
 `review_brief_fixture` prepares the screens for a manual pass in the real
 app: `--scope-request` makes the code unit ask for `src/util.rs` and grants
 it, `--stage scope` parks with the request pending, and `--stage done` waits
-for the signed record. Start `ikore` with the printed `HVC_DATA_DIR`.
+for the signed record. Start `ikore` with the printed `IKORE_DATA_DIR`.
 The fixture keeps its signing key in memory, so the app shows the sealed
 record without reading the credential store; avoid Settings → Security there,
 which reads the real store.

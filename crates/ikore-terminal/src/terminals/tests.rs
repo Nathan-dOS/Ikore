@@ -721,6 +721,11 @@ fn custom_is_marked_read_only_for_pipelines_and_refused_for_the_companion() {
     assert!(
         spec.environment
             .iter()
+            .any(|(name, value)| name == "IKORE_STAGE_READ_ONLY" && value == "1")
+    );
+    assert!(
+        spec.environment
+            .iter()
             .any(|(name, value)| name == "HVC_STAGE_READ_ONLY" && value == "1")
     );
 

@@ -32,7 +32,7 @@ fn main() {
         "o fixture se recusa a reutilizar um diretório"
     );
     seed_profile(&root);
-    println!("HVC_DATA_DIR={}", root.join("data").display());
+    println!("IKORE_DATA_DIR={}", root.join("data").display());
     println!("WORKSPACE={}", root.join("workspace").display());
 }
 

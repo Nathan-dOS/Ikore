@@ -39,9 +39,15 @@ fn main() {
     let fixture_state = official_backend
         .and_then(|backend| {
             env::var(format!(
-                "HVC_CLI_FIXTURE_{}_STATE",
+                "IKORE_CLI_FIXTURE_{}_STATE",
                 backend.to_ascii_uppercase()
             ))
+            .or_else(|_| {
+                env::var(format!(
+                    "HVC_CLI_FIXTURE_{}_STATE",
+                    backend.to_ascii_uppercase()
+                ))
+            })
             .ok()
             .or_else(|| {
                 let sibling = env::current_exe()

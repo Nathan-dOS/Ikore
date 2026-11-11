@@ -188,7 +188,7 @@ fn main() {
         }
         std::fs::write(root.join("M5_UI_FIXTURE"), FIXTURE_MARKER).unwrap();
     }
-    println!("HVC_DATA_DIR={}", data.display());
+    println!("IKORE_DATA_DIR={}", data.display());
     println!("MODE={}", if resume { "resume" } else { "new" });
     println!("Loopback provider ready; GUI is the sole worker. STOP file or 45 min ends fixture.");
     let deadline = Instant::now() + Duration::from_secs(45 * 60);

@@ -170,16 +170,18 @@ async fn a_runtime_archive_with_another_digest_is_never_unpacked() {
 }
 
 /// The pinned NVIDIA runtime and model, for a manual check on a real machine:
-/// `HVC_VOICE_LIVE_DIR=C:\voice HVC_VOICE_LIVE_WAV=note.wav cargo test --test
+/// `IKORE_VOICE_LIVE_DIR=C:\voice IKORE_VOICE_LIVE_WAV=note.wav cargo test --test
 /// voice_runtime -- --ignored`. Downloads about 712 MB on first use.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "downloads the real runtime and model"]
 async fn live_pinned_runtime_transcribes_a_recording() {
     let (Ok(dir), Ok(wav)) = (
-        std::env::var("HVC_VOICE_LIVE_DIR"),
-        std::env::var("HVC_VOICE_LIVE_WAV"),
+        std::env::var("IKORE_VOICE_LIVE_DIR").or_else(|_| std::env::var("HVC_VOICE_LIVE_DIR")),
+        std::env::var("IKORE_VOICE_LIVE_WAV").or_else(|_| std::env::var("HVC_VOICE_LIVE_WAV")),
     ) else {
-        panic!("set HVC_VOICE_LIVE_DIR and HVC_VOICE_LIVE_WAV");
+        panic!(
+            "set IKORE_VOICE_LIVE_DIR (or HVC_VOICE_LIVE_DIR) and IKORE_VOICE_LIVE_WAV (or HVC_VOICE_LIVE_WAV)"
+        );
     };
     let runtime = VoiceRuntime::new(dir);
     let none = CancellationToken::new();

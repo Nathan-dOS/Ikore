@@ -1844,7 +1844,7 @@ mod tests {
     fn frontier_html_cache_reports_only_the_eligible_paired_input_with_coverage() {
         let report = frontier_report_with_cache(frontier_cache_metadata());
         let html = render_pulsation_report(&report);
-        if let Some(path) = std::env::var_os("HVC_FRONTIER_REPORT_PREVIEW") {
+        if let Some(path) = ikore_contracts::var_os_with_legacy("FRONTIER_REPORT_PREVIEW") {
             std::fs::write(path, &html).unwrap();
         }
         assert!(html.contains("Cache reuse: 50.0% of eligible reported input."));
@@ -2352,13 +2352,13 @@ mod tests {
         assert_eq!(first, render_pulsation_report(&round_trip));
 
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(GOLDEN);
-        if std::env::var_os("HVC_UPDATE_GOLDEN").is_some() {
+        if ikore_contracts::var_os_with_legacy("UPDATE_GOLDEN").is_some() {
             std::fs::write(&path, &first).unwrap();
         }
         let golden = std::fs::read_to_string(&path).unwrap_or_default();
         assert!(
             golden == first,
-            "{GOLDEN} differs from the renderer output; rerun with HVC_UPDATE_GOLDEN=1 after reviewing the change"
+            "{GOLDEN} differs from the renderer output; rerun with IKORE_UPDATE_GOLDEN=1 after reviewing the change"
         );
     }
 

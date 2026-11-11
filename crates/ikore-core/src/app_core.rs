@@ -51,7 +51,7 @@ pub struct AppPaths {
 
 impl AppPaths {
     pub fn resolve() -> Result<Self, AppCoreError> {
-        if let Some(override_dir) = std::env::var_os("HVC_DATA_DIR") {
+        if let Some(override_dir) = ikore_contracts::var_os_with_legacy("DATA_DIR") {
             return Ok(Self::from_data_dir(override_dir));
         }
 
@@ -96,7 +96,7 @@ impl AppPaths {
 
     /// The voice runtime and model (ADR-029): `%LOCALAPPDATA%` on Windows,
     /// so downloaded models and runtimes never travel with a roaming profile; the data directory
-    /// when `HVC_DATA_DIR` isolates a run. Kept short for Windows' 260-character
+    /// when `IKORE_DATA_DIR` isolates a run. Kept short for Windows' 260-character
     /// path limit.
     pub fn voice_dir(&self) -> PathBuf {
         self.cache_dir.join("voice")

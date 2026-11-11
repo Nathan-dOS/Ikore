@@ -237,7 +237,7 @@ fn exchange_baseline_pulsation_transitions() {
 #[test]
 #[ignore = "ADR-037 baseline; run explicitly with --ignored --nocapture"]
 fn exchange_baseline_terminal_events() {
-    let events: u64 = std::env::var("HVC_EXCHANGE_BASELINE_EVENTS")
+    let events: u64 = ikore_contracts::var_with_legacy("EXCHANGE_BASELINE_EVENTS")
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(100_000);
@@ -293,10 +293,10 @@ fn exchange_baseline_terminal_events() {
 }
 
 #[test]
-#[ignore = "ADR-037 baseline; set HVC_EXCHANGE_BASELINE_WORKSPACE and run explicitly"]
+#[ignore = "ADR-037 baseline; set IKORE_EXCHANGE_BASELINE_WORKSPACE and run explicitly"]
 fn exchange_baseline_snapshot_manifest() {
-    let Some(workspace) = std::env::var_os("HVC_EXCHANGE_BASELINE_WORKSPACE") else {
-        eprintln!("HVC_EXCHANGE_BASELINE_WORKSPACE is not set; nothing was measured.");
+    let Some(workspace) = ikore_contracts::var_os_with_legacy("EXCHANGE_BASELINE_WORKSPACE") else {
+        eprintln!("IKORE_EXCHANGE_BASELINE_WORKSPACE is not set; nothing was measured.");
         return;
     };
     let workspace = PathBuf::from(workspace);

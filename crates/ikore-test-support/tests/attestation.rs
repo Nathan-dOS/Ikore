@@ -186,7 +186,9 @@ fn a_composed_pulsation_that_finishes_is_sealed_signed_and_verifiable() {
 
     let export = harness.service.export_attestation(&harness.pulse).unwrap();
     // For checking a real bundle with OpenSSL as `docs/attestation.md` says.
-    if let Ok(directory) = std::env::var("HVC_ATTESTATION_OUT") {
+    if let Ok(directory) =
+        std::env::var("IKORE_ATTESTATION_OUT").or_else(|_| std::env::var("HVC_ATTESTATION_OUT"))
+    {
         let directory = std::path::Path::new(&directory);
         std::fs::create_dir_all(directory).unwrap();
         std::fs::write(directory.join(&export.bundle_file_name), &export.bundle).unwrap();

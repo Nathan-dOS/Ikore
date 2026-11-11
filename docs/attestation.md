@@ -171,4 +171,4 @@ openssl pkeyutl -verify -pubin -inkey vector.pub.pem -rawin -in pae.bin -sigfile
 ```
 
 The unit test `the_test_vector_is_stable` fails when any of these bytes would
-change; `HVC_UPDATE_GOLDEN=1` rewrites them after the change was reviewed.
+change; `IKORE_UPDATE_GOLDEN=1` (or legacy `HVC_UPDATE_GOLDEN=1`) rewrites them after the change was reviewed.

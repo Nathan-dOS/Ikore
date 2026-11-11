@@ -133,7 +133,7 @@ sent only to fixed provider hosts, is never refreshed or written back, and never
 reaches agents, logs, events or the database. Responses are validated and the
 meter fails closed; it never shows a guessed number. A one-time notice
 names the file read and the host contacted, and a kill switch
-(`HVC_DISABLE_QUOTA_ENDPOINTS=1`) and a per-CLI setting turn the credential read
+(`IKORE_DISABLE_QUOTA_ENDPOINTS=1`, or legacy `HVC_DISABLE_QUOTA_ENDPOINTS=1`) and a per-CLI setting turn the credential read
 off; a build without the `quota-credential-collectors` feature has no credential
 reader at all. A pre-flight check before each stage is advisory and uses the
 existing human checkpoint; it never switches provider by itself.

@@ -11,7 +11,7 @@
 //! with. Build it once with the current policy tables (arm `workspace`) and
 //! once with `HostContextOnly` for the four executors (arm `host_context`),
 //! then run both binaries at the same time:
-//! `HVC_T1_ARM=<label> HVC_T1_OUT=<jsonl> <binary> --ignored --nocapture`.
+//! `IKORE_T1_ARM=<label> IKORE_T1_OUT=<jsonl> <binary> --ignored --nocapture`.
 mod composition_support;
 
 use composition_support::*;
@@ -108,8 +108,11 @@ fn executor_metrics(harness: &Harness) -> Vec<Value> {
 #[test]
 #[ignore = "paid: runs the real Claude CLI (Haiku) for Intake, Contract, Code and Test"]
 fn context_scope_real_run() {
-    let arm = std::env::var("HVC_T1_ARM").unwrap_or_else(|_| "unlabelled".into());
-    let run: usize = std::env::var("HVC_T1_RUN")
+    let arm = std::env::var("IKORE_T1_ARM")
+        .or_else(|_| std::env::var("HVC_T1_ARM"))
+        .unwrap_or_else(|_| "unlabelled".into());
+    let run: usize = std::env::var("IKORE_T1_RUN")
+        .or_else(|_| std::env::var("HVC_T1_RUN"))
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(1);
@@ -159,7 +162,7 @@ fn context_scope_real_run() {
         "trackedExecutors": EXECUTORS,
     });
     println!("{line}");
-    if let Ok(path) = std::env::var("HVC_T1_OUT") {
+    if let Ok(path) = std::env::var("IKORE_T1_OUT").or_else(|_| std::env::var("HVC_T1_OUT")) {
         use std::io::Write;
         let mut file = std::fs::OpenOptions::new()
             .create(true)

@@ -67,7 +67,8 @@ pub const METERED_BACKENDS: [CliBackend; 3] = [
 ];
 
 /// Turns off every credential-reading collector and nothing else (G7).
-pub const KILL_SWITCH: &str = "HVC_DISABLE_QUOTA_ENDPOINTS";
+pub const KILL_SWITCH: &str = "IKORE_DISABLE_QUOTA_ENDPOINTS";
+pub const LEGACY_KILL_SWITCH: &str = "HVC_DISABLE_QUOTA_ENDPOINTS";
 
 /// Spike S1 (2026-10-21): the Codex usage endpoint answered `200` to the app's honest
 /// `User-Agent` and no `originator` header. Were it `false`, that collector would stay off;
@@ -435,7 +436,7 @@ impl QuotaMeter {
         Self::with_collectors(
             db_path,
             Arc::new(LiveCollectors::from_environment()),
-            env_flag(KILL_SWITCH),
+            ikore_contracts::env_flag_with_legacy("DISABLE_QUOTA_ENDPOINTS"),
         )
     }
 
@@ -531,7 +532,7 @@ impl QuotaMeter {
         if !credential_collectors_compiled() {
             Some("This build does not include the sign-in usage readers.")
         } else if self.endpoints_killed {
-            Some("Sign-in usage readers are turned off by HVC_DISABLE_QUOTA_ENDPOINTS.")
+            Some("Sign-in usage readers are turned off by IKORE_DISABLE_QUOTA_ENDPOINTS.")
         } else {
             None
         }

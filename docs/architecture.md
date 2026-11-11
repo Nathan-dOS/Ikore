@@ -193,8 +193,8 @@ the [2026-10-29 Whisper report](../quality/whisper-cpp-validation-2026-10-29.md)
 ## Storage and context
 
 SQLite stores domain state, migrations, events, checkpoints and usage records.
-`HVC_DATA_DIR` isolates development and test data; the default database location
-is `%APPDATA%\com.ikore.desktop\ikore.db`. Provider credentials
+`IKORE_DATA_DIR` (or legacy `HVC_DATA_DIR`) isolates development and test data;
+the default database location is `%APPDATA%\com.ikore.desktop\ikore.db`. Provider credentials
 are managed through Settings and the operating system keyring.
 
 The project was called Hard Vibe Code until 2026-11-10. The first start of a
@@ -202,7 +202,7 @@ renamed build moves the old data and cache folders (`com.hardvibecode.desktop`)
 and the database (`hard-vibe-code.db`, with its WAL) to the new names, and a
 credential stored under the old keyring service (`hard-vibe-code.runtime`) moves
 the first time it is read. A running pre-rename instance keeps its folder in use.
-Crates, environment variables and identifiers keep the `hvc` prefix. See
+Crates and environment variables use the `ikore` prefix with backward-compatibility fallbacks. See
 [`app_names`](../crates/ikore-core/src/app_names.rs).
 
 Project context combines Markdown notes, repository reads, Tree-sitter and

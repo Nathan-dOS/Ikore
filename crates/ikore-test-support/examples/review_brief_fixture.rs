@@ -6,7 +6,7 @@
 //! checkpoint, so the real GUI can be opened on the Review Brief tab.
 //!
 //! Usage: `review_brief_fixture NEW_DIRECTORY [--revised] [--stage STAGE]`,
-//! then start `hvc-app` with `HVC_DATA_DIR` set to the printed data
+//! then start `ikore-app` with `IKORE_DATA_DIR` set to the printed data
 //! directory. Every provider reply comes from the scripted composition
 //! worker; the worker stops once the checkpoint is waiting, so the GUI never
 //! races it. Provider credentials point at fixture-only names, never the
@@ -705,5 +705,5 @@ fn main() {
         let path = service.write_pulsation_report(&pulse).unwrap();
         println!("Report: {}", path.display());
     }
-    println!("HVC_DATA_DIR={}", data.display());
+    println!("IKORE_DATA_DIR={}", data.display());
 }
