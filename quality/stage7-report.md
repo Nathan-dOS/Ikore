@@ -33,7 +33,7 @@ Design references: [public summaries](../docs/adr/README.md); [historical archiv
 | HVC-GPUI-005 | Foco por teclado visível: `Window::focus_visible`, estilo `focus_visible` e tooltip aberto no foco por Tab (2026-09-25) | Aceita | permite navegar pelo Tab com anel de foco só pelo teclado e ler as dicas "i" sem mouse; `.focus()` mantém o comportamento anterior |
 
 O GPUI vendorizado e o patch efetivamente adotado estão documentados em
-[`../third_party/gpui/HVC-PATCHES.md`](../third_party/gpui/HVC-PATCHES.md). Não
+[`../third_party/gpui/IKORE-PATCHES.md`](../third_party/gpui/IKORE-PATCHES.md). Não
 foram mantidas mudanças rejeitadas no código de produção.
 
 ## Aferição curta do corte

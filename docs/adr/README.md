@@ -23,7 +23,7 @@ records automated results and the remaining Windows/GPUI qualification.
 The desktop application uses Rust and GPUI in one process, with typed core/UI
 calls. Only GPUI is vendored; the project does not reuse Zed's editor crates.
 The [workspace overview](../architecture.md) and
-[GPUI patch ledger](../../third_party/gpui/HVC-PATCHES.md) describe the boundary.
+[GPUI patch ledger](../../third_party/gpui/IKORE-PATCHES.md) describe the boundary.
 
 ## ADR-007: synchronization and preparation
 

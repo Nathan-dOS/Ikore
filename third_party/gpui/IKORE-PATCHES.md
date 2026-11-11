@@ -3,9 +3,12 @@
 Esta pasta contém o pacote `gpui` 0.2.2 publicado no crates.io, sob a licença
 Apache-2.0 preservada em `LICENSE-APACHE`.
 
-O código é mantido localmente porque o primeiro corte do Hard Vibe Code é
-Windows x64 e precisa de um backport pequeno e auditável do backend oficial.
+O código é mantido localmente porque o primeiro corte do Ikore (anteriormente
+Hard Vibe Code) é Windows x64 e precisa de um backport pequeno e auditável do backend oficial.
 Não há componentes de editor ou UI do Zed nesta cópia.
+
+Os identificadores dos patches mantêm o prefixo histórico `HVC-GPUI-00N` (Recomendação R3),
+garantindo rastreabilidade e consistência com os relatórios de auditoria e ADRs.
 
 ## HVC-GPUI-001 — reutilização do dispositivo D3D11
 

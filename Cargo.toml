@@ -53,6 +53,6 @@ strip = true
 
 [patch.crates-io]
 # GPUI 0.2.2 is vendored so the Windows backport described in
-# third_party/gpui/HVC-PATCHES.md stays reproducible and auditable.
+# third_party/gpui/IKORE-PATCHES.md stays reproducible and auditable.
 # The vendored code keeps its own Apache-2.0 license.
 gpui = { path = "third_party/gpui" }

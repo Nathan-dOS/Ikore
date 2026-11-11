@@ -6,24 +6,24 @@ The terminal and shared-contract boundaries were separated in ADR-031 (2026-10-2
 
 | Crate | Responsibility |
 |---|---|
-| [hvc-app](../crates/ikore-app/src/main.rs) | Application startup and composition root |
-| [hvc-contracts](../crates/ikore-contracts/src/lib.rs) | Shared execution, stage, timeout, usage and redaction values |
-| [hvc-terminal](../crates/ikore-terminal/src/lib.rs) | CLI services, repository, adapters, process isolation, discovery and subscription quota |
-| [hvc-voice](../crates/ikore-voice/src/lib.rs) | Pinned speech runtime install, microphone capture, global push-to-talk and earcons |
-| [hvc-core](../crates/ikore-core/src/lib.rs) | Domain, migrations, workspace, provider routing, orchestration and terminal host integration |
-| [hvc-ui](../crates/ikore-ui/src/lib.rs) | Native views, review controls and design system |
-| [hvc-editor](../crates/ikore-editor/src/lib.rs) | Text model, selection, undo, diff and Markdown support |
-| [hvc-test-support](../crates/ikore-test-support/src/lib.rs) | Isolated harnesses, doubles and integration fixtures |
+| [ikore-app](../crates/ikore-app/src/main.rs) | Application startup and composition root |
+| [ikore-contracts](../crates/ikore-contracts/src/lib.rs) | Shared execution, stage, timeout, usage and redaction values |
+| [ikore-terminal](../crates/ikore-terminal/src/lib.rs) | CLI services, repository, adapters, process isolation, discovery and subscription quota |
+| [ikore-voice](../crates/ikore-voice/src/lib.rs) | Pinned speech runtime install, microphone capture, global push-to-talk and earcons |
+| [ikore-core](../crates/ikore-core/src/lib.rs) | Domain, migrations, workspace, provider routing, orchestration and terminal host integration |
+| [ikore-ui](../crates/ikore-ui/src/lib.rs) | Native views, review controls and design system |
+| [ikore-editor](../crates/ikore-editor/src/lib.rs) | Text model, selection, undo, diff and Markdown support |
+| [ikore-test-support](../crates/ikore-test-support/src/lib.rs) | Isolated harnesses, doubles and integration fixtures |
 
-`hvc-core` does not depend on GPUI. The vendored GPUI package and its local
-changes are documented in [HVC-PATCHES.md](../third_party/gpui/HVC-PATCHES.md).
+`ikore-core` does not depend on GPUI. The vendored GPUI package and its local
+changes are documented in [IKORE-PATCHES.md](../third_party/gpui/IKORE-PATCHES.md).
 
-The dependency direction is `hvc-core -> hvc-terminal -> hvc-contracts`, with
+The dependency direction is `ikore-core -> ikore-terminal -> ikore-contracts`, with
 core also using contracts directly. Terminal has no dependency on core, UI or
 the integration harness, including development dependencies. Shared values are
 reexported through their established core paths. Core service facades retain
 the existing constructors and adapt application requests to the CLI subsystem.
-Core also depends on `hvc-voice`, a leaf with no local dependency at all. The
+Core also depends on `ikore-voice`, a leaf with no local dependency at all. The
 [boundary check](../scripts/check-crate-boundaries.ps1) validates the Cargo
 graph, including optional features and build/development edges.
 

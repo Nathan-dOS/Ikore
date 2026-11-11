@@ -217,7 +217,7 @@ canvas example runs on its own with
 | `crates/ikore-editor` | Rope text model, selection, undo, diff, Markdown and Tree-sitter |
 | `crates/ikore-voice` | Local dictation: pinned speech runtimes, microphone capture and push-to-talk |
 | `crates/ikore-test-support` | Isolated harnesses, test doubles and the demo fixtures |
-| `third_party/gpui` | Vendored GPUI 0.2.2 and its [patch ledger](third_party/gpui/HVC-PATCHES.md) |
+| `third_party/gpui` | Vendored GPUI 0.2.2 and its [patch ledger](third_party/gpui/IKORE-PATCHES.md) |
 | `docs/` | Architecture, testing guide and design summaries |
 | `quality/` | Dated validation reports and the distribution policy |
 | `parity/` | Traceability from the retired Tauri frontend tests to their Rust equivalents |

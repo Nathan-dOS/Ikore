@@ -1,5 +1,5 @@
 # The maintainer reviews every change.
 * @Nathan-dOS
 
-# Vendored GPUI: every change needs an entry in HVC-PATCHES.md.
+# Vendored GPUI: every change needs an entry in IKORE-PATCHES.md.
 /third_party/gpui/ @Nathan-dOS

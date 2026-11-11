@@ -234,7 +234,7 @@ Scopes already used in the history: `core`, `ui`, `brownfield`, `terminals`,
 
 5. **Vendored GPUI**
    - Changes to `third_party/gpui` require a new entry in
-     [`third_party/gpui/HVC-PATCHES.md`](third_party/gpui/HVC-PATCHES.md)
+     [`third_party/gpui/IKORE-PATCHES.md`](third_party/gpui/IKORE-PATCHES.md)
      (`HVC-GPUI-00N`) with the file, reason, origin and validation. The GPUI
      Apache-2.0 license must be preserved.
 
@@ -305,7 +305,7 @@ The pull request template includes these items:
 - [ ] If you changed `Dockerfile`, `docker-compose.yml`, `.env.example` or the
       workflows: the Docker build still works and `README.md` is updated.
 - [ ] If you changed `third_party/gpui`: there is a new entry in
-      `HVC-PATCHES.md`.
+      `IKORE-PATCHES.md`.
 - [ ] No secret, personal path or private data was included.
 
 ---

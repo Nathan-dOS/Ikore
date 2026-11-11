@@ -12,7 +12,7 @@
 - [ ] The tests for the changed area pass locally (`cargo test-core`, `cargo test-ui`, ...). Cross-cutting changes also ran `cargo test-all`.
 - [ ] New migrations, contracts or dependencies are justified and covered by tests.
 - [ ] If `Dockerfile`, `docker-compose.yml`, `.env.example` or the workflows changed, the Docker build still works and `README.md` is updated.
-- [ ] If `third_party/gpui` changed, there is a new entry in `third_party/gpui/HVC-PATCHES.md`.
+- [ ] If `third_party/gpui` changed, there is a new entry in `third_party/gpui/IKORE-PATCHES.md`.
 - [ ] No secret, personal path or private data is included.
 - [ ] If an AI tool wrote a relevant part of this change, it is mentioned above.
 
