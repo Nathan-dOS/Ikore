@@ -85,6 +85,6 @@ mod workspace;
 mod workspace_view;
 
 pub use app_model::{AppModel, AppTab, AppView};
-pub use assets::HvcAssets;
+pub use assets::{HvcAssets, IkoreAssets};
 pub use native_editor::NativeEditor;
 pub use shell::open_main_window;

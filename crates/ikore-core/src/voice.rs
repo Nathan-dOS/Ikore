@@ -1,7 +1,7 @@
 //! Voice dictation for Companion notes (ADR-029 V1–V8). Composes the
-//! `hvc-voice` runtime, the global push-to-talk and the Notes Scribe: hold
+//! `ikore-voice` runtime, the global push-to-talk and the Notes Scribe: hold
 //! the shortcut, speak, release; the transcript becomes a voice note in the
-//! project open in HVC, and the Scribe structures it like any capture.
+//! project open in Ikore, and the Scribe structures it like any capture.
 use crate::companion_notes::{CaptureNoteRequest, NoteScribeRuntime, NoteSource};
 use crate::persistence_service::{PersistenceService, PersistenceServiceError};
 use crate::{AppEvent, AppEventBus};

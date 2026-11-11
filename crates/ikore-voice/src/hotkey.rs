@@ -176,7 +176,7 @@ mod windows {
         ) -> Result<Self, VoiceError> {
             let (ready_tx, ready_rx) = mpsc::channel();
             let thread = std::thread::Builder::new()
-                .name("hvc-push-to-talk".into())
+                .name("ikore-push-to-talk".into())
                 .spawn(move || listen(hotkey, ready_tx, on_event))
                 .map_err(VoiceError::Io)?;
             match ready_rx.recv() {

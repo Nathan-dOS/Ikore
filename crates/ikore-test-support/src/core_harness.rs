@@ -114,7 +114,7 @@ impl CoreTestHarness {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
-            .thread_name("hvc-test-runtime")
+            .thread_name("ikore-test-runtime")
             .build()
             .expect("test runtime should initialize");
         let credentials = Arc::new(MemoryCredentialStore::default());

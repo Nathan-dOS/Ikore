@@ -10,17 +10,17 @@ use ikore_core::{AppCore, AppPaths};
 fn main() -> anyhow::Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .thread_name("hvc-runtime")
+        .thread_name("ikore-runtime")
         .build()
         .context("failed to initialize the async runtime")?;
     let paths = AppPaths::resolve()?;
     let runtime_handle = runtime.handle().clone();
     let core_initialization = std::thread::Builder::new()
-        .name("hvc-core-init".into())
+        .name("ikore-core-init".into())
         .spawn(move || AppCore::initialize(paths, runtime_handle).map_err(anyhow::Error::from))
         .context("failed to start the parallel core initialization")?;
 
-    let application = Application::new().with_assets(ikore_ui::HvcAssets);
+    let application = Application::new().with_assets(ikore_ui::IkoreAssets);
     let core = core_initialization
         .join()
         .map_err(|_| anyhow::anyhow!("the core initialization worker ended unexpectedly"))??;

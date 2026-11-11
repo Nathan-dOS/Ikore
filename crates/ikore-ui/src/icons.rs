@@ -1,5 +1,5 @@
 //! The shell's icon vocabulary. One variant per vector glyph the UI uses; `path()` is the asset
-//! key served by `assets::HvcAssets`. Rendered through `widgets::icon` / `widgets::icon_button`.
+//! key served by `assets::IkoreAssets`. Rendered through `widgets::icon` / `widgets::icon_button`.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Icon {
@@ -235,7 +235,7 @@ impl Icon {
         Self::LockOpen,
     ];
 
-    /// Asset path served by `HvcAssets`; `icons/<lucide-name>.svg`.
+    /// Asset path served by `IkoreAssets`; `icons/<lucide-name>.svg`.
     pub(crate) const fn path(self) -> &'static str {
         match self {
             Self::House => "icons/house.svg",

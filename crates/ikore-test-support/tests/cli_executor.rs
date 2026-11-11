@@ -118,20 +118,20 @@ fn harness(custom_args: Vec<String>) -> Harness {
 }
 
 #[derive(Default)]
-struct NoHvcCredentials(AtomicUsize);
+struct NoIkoreCredentials(AtomicUsize);
 
-impl CredentialStore for NoHvcCredentials {
+impl CredentialStore for NoIkoreCredentials {
     fn get(&self, _credential_ref: &str) -> Result<Option<String>, LlmError> {
         self.0.fetch_add(1, Ordering::SeqCst);
         Ok(None)
     }
 
     fn set(&self, _credential_ref: &str, _secret: &str) -> Result<(), LlmError> {
-        panic!("CLI Companion must not store HVC credentials")
+        panic!("CLI Companion must not store Ikore credentials")
     }
 
     fn delete(&self, _credential_ref: &str) -> Result<bool, LlmError> {
-        panic!("CLI Companion must not delete HVC credentials")
+        panic!("CLI Companion must not delete Ikore credentials")
     }
 }
 
@@ -963,7 +963,7 @@ async fn authenticated_antigravity_companion_smoke() {
         .model_catalog(&harness.project_id, CliBackend::Antigravity, true)
         .await
         .unwrap();
-    let credentials = Arc::new(NoHvcCredentials::default());
+    let credentials = Arc::new(NoIkoreCredentials::default());
     let chat = Arc::new(ChatService::new(
         &harness.database_path,
         credentials.clone(),
@@ -1307,7 +1307,7 @@ async fn companion_cli_uses_existing_cli_auth_without_hvc_credentials_and_persis
 
     for backend in [CliBackend::Codex, CliBackend::Claude] {
         let harness = harness(Vec::new());
-        let credentials = Arc::new(NoHvcCredentials::default());
+        let credentials = Arc::new(NoIkoreCredentials::default());
         let chat = Arc::new(ChatService::new(
             &harness.database_path,
             credentials.clone(),
@@ -1393,7 +1393,7 @@ async fn companion_cli_uses_existing_cli_auth_without_hvc_credentials_and_persis
 #[ignore = "Requires local Codex authentication and network; sends only synthetic messages"]
 async fn authenticated_codex_companion_smoke() {
     let harness = harness(Vec::new());
-    let credentials = Arc::new(NoHvcCredentials::default());
+    let credentials = Arc::new(NoIkoreCredentials::default());
     let chat = Arc::new(ChatService::new(
         &harness.database_path,
         credentials.clone(),
@@ -1503,7 +1503,7 @@ async fn canvas_cli_offer_requires_consent_and_publishes_one_localized_drawing_o
         let harness = harness(Vec::new());
         let persistence = PersistenceService::initialize(harness._data.path()).unwrap();
         let drawings = CompanionDrawingsService::new(persistence);
-        let credentials = Arc::new(NoHvcCredentials::default());
+        let credentials = Arc::new(NoIkoreCredentials::default());
         let chat = Arc::new(ChatService::new(
             &harness.database_path,
             credentials.clone(),

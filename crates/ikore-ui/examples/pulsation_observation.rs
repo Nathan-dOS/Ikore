@@ -117,7 +117,7 @@ fn main() {
     let handle = core.runtime_handle().clone();
     let _entered = handle.enter();
     gpui::Application::new()
-        .with_assets(ikore_ui::HvcAssets)
+        .with_assets(ikore_ui::IkoreAssets)
         .run(move |cx| ikore_ui::open_main_window(core, cx).unwrap());
     worker.join().unwrap();
     drop(server);

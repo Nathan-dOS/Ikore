@@ -26,12 +26,12 @@ if ([string]::IsNullOrWhiteSpace($OutputPath)) {
 $resolvedBinary = (Resolve-Path -LiteralPath $BinaryPath).Path
 $resolvedOutput = [System.IO.Path]::GetFullPath($OutputPath)
 
-if ($null -eq ('HvcUiBenchmark.NativeWindow' -as [type])) {
+if ($null -eq ('IkoreUiBenchmark.NativeWindow' -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
 
-namespace HvcUiBenchmark
+namespace IkoreUiBenchmark
 {
     public static class NativeWindow
     {
@@ -199,9 +199,9 @@ try {
     }) -Force
     $report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $resolvedOutput -Encoding utf8
 
-    $window = [HvcUiBenchmark.NativeWindow]::FindVisibleForProcess($process.Id)
+    $window = [IkoreUiBenchmark.NativeWindow]::FindVisibleForProcess($process.Id)
     if ($window -ne [IntPtr]::Zero) {
-        [void][HvcUiBenchmark.NativeWindow]::RequestClose($window)
+        [void][IkoreUiBenchmark.NativeWindow]::RequestClose($window)
     }
     if (-not $process.WaitForExit(5000)) {
         throw 'O GPUI não concluiu o shutdown gracioso após o benchmark de latência.'

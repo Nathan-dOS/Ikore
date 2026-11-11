@@ -4,7 +4,7 @@ use ikore_core::companion_drawings::{
     CanvasSceneV1, CanvasViewportV1, CompanionDrawing, DrawingSyncStatus,
 };
 
-use crate::{AppModel, AppView, assets::HvcAssets, canvas::Tool};
+use crate::{AppModel, AppView, assets::IkoreAssets, canvas::Tool};
 
 fn install(model: &Entity<AppModel>, visual: &mut VisualTestContext) {
     model.update(visual, |model, cx| {
@@ -41,7 +41,7 @@ fn canvas_tools_have_distinct_glyphs_names_and_shortcuts() {
         assert!(paths.insert(tool.icon().path()), "duplicate tool glyph");
         assert!(shortcuts.insert(tool.shortcut()), "duplicate tool key");
         assert_eq!(old_label, format!("{} · {}", tool.name(), tool.shortcut()));
-        let svg = HvcAssets.load(tool.icon().path()).unwrap().unwrap();
+        let svg = IkoreAssets.load(tool.icon().path()).unwrap().unwrap();
         let svg = std::str::from_utf8(&svg).unwrap();
         assert!(svg.contains("viewBox=\"0 0 24 24\""));
         assert!(svg.contains("stroke=\"currentColor\""));

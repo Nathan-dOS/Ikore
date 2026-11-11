@@ -25,7 +25,7 @@ impl Recorder {
         let (opened_tx, opened_rx) = std::sync::mpsc::channel();
         let flag = stop.clone();
         let thread = std::thread::Builder::new()
-            .name("hvc-voice-capture".into())
+            .name("ikore-voice-capture".into())
             .spawn(move || platform::record(&flag, &opened_tx))
             .map_err(VoiceError::Io)?;
         match opened_rx.recv() {

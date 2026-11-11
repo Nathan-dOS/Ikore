@@ -73,7 +73,7 @@ impl ScriptedHttpServer {
         let shutdown = Arc::new(AtomicBool::new(false));
         let worker_shutdown = Arc::clone(&shutdown);
         let worker = thread::Builder::new()
-            .name("hvc-http-fixture".into())
+            .name("ikore-http-fixture".into())
             .spawn(move || {
                 while let Ok((mut stream, _)) = listener.accept() {
                     if worker_shutdown.load(Ordering::Acquire) {

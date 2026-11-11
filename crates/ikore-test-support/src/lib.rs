@@ -24,7 +24,7 @@ pub use doubles::{
     ScriptedPathPicker,
 };
 pub use http_fixture::{RecordedRequest, ScriptedHttpServer, ScriptedResponse};
-/// Moved to `hvc-core` so the app's pulsation report shares it (ADR-027 M6).
+/// Moved to `ikore-core` so the app's pulsation report shares it (ADR-027 M6).
 pub use ikore_core::reports::analysis as pulsation_analysis;
 pub use parity::{ParityArea, ParityCase, ParityLedger, ParityStatus};
 pub use pulsation_fixture::{LegacyPulseLayout, PulsationFixture};

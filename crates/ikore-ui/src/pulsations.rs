@@ -879,7 +879,7 @@ pub struct PulsationsModel {
     pub(crate) hitl: HitlReviewState,
     pub(crate) failure: FailureCheckpointState,
     /// The backend the active pulsation's current stage silently failed
-    /// over to (see `elect_next_backend` in hvc-core), when there is one.
+    /// over to (see `elect_next_backend` in ikore-core), when there is one.
     /// `None` means the stage is running on the project's configured
     /// default backend.
     pub backend_override: Option<ikore_core::terminals::BackendOverrideStatus>,

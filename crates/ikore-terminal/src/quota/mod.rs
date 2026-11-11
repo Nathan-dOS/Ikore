@@ -18,7 +18,7 @@ pub(crate) mod endpoints;
 #[cfg(feature = "quota-credential-collectors")]
 pub mod http;
 
-/// A synthetic reply from `hvc-test-support/fixtures/quota`.
+/// A synthetic reply from `fixtures/quota`.
 #[cfg(test)]
 pub(crate) fn fixture(name: &str) -> String {
     std::fs::read_to_string(

@@ -1,4 +1,4 @@
--- Native repository test fixture. Real migration compatibility is tested in hvc-test-support.
+-- Native repository test fixture. Real migration compatibility is tested in ikore-test-support.
 CREATE TABLE agent_runs (
   id TEXT PRIMARY KEY,
   job_id TEXT NOT NULL,

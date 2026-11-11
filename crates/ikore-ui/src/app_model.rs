@@ -2302,7 +2302,7 @@ impl AppModel {
     }
 
     /// Fetches whether the given pulsation's current stage is silently
-    /// running on a failover backend (`elect_next_backend` in hvc-core),
+    /// running on a failover backend (`elect_next_backend` in ikore-core),
     /// so the detail panel can offer an explicit way back to the project's
     /// configured default. Never applied to a pulsation the user has since
     /// navigated away from.

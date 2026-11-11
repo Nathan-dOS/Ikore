@@ -1,7 +1,7 @@
 //! Embedded static assets for the desktop shell.
 //!
 //! GPUI resolves `svg().path("icons/house.svg")` through the `AssetSource` registered on the
-//! `Application` (`hvc-app/src/main.rs`). The bytes live next to the widgets that name them so a
+//! `Application` (`ikore-app/src/main.rs`). The bytes live next to the widgets that name them so a
 //! test in this crate can prove every `Icon` variant maps to a real file; a typo in a path is
 //! otherwise an invisible icon at runtime, not an error.
 //!
@@ -14,7 +14,9 @@ use std::borrow::Cow;
 
 use gpui::{AssetSource, SharedString};
 
-pub struct HvcAssets;
+pub struct IkoreAssets;
+
+pub type HvcAssets = IkoreAssets;
 
 macro_rules! icon_asset {
     ($name:literal) => {
@@ -104,7 +106,7 @@ pub(crate) static ASSETS: &[(&str, &[u8])] = &[
     icon_asset!("zap"),
 ];
 
-impl AssetSource for HvcAssets {
+impl AssetSource for IkoreAssets {
     fn load(&self, path: &str) -> anyhow::Result<Option<Cow<'static, [u8]>>> {
         Ok(ASSETS
             .iter()
@@ -135,7 +137,7 @@ mod tests {
     #[test]
     fn every_icon_variant_resolves_to_an_embedded_svg() {
         for icon in Icon::ALL {
-            let bytes = HvcAssets
+            let bytes = IkoreAssets
                 .load(icon.path())
                 .unwrap()
                 .unwrap_or_else(|| panic!("{:?} has no embedded asset at {}", icon, icon.path()));
@@ -157,11 +159,11 @@ mod tests {
         paths.dedup();
         assert_eq!(paths.len(), total, "duplicate asset path in ASSETS");
 
-        let listed = HvcAssets.list("icons/").unwrap();
+        let listed = IkoreAssets.list("icons/").unwrap();
         assert_eq!(listed.len(), total);
-        assert_eq!(HvcAssets.list("icons").unwrap().len(), total);
-        assert!(HvcAssets.list("fonts").unwrap().is_empty());
-        assert!(HvcAssets.load("icons/missing.svg").unwrap().is_none());
+        assert_eq!(IkoreAssets.list("icons").unwrap().len(), total);
+        assert!(IkoreAssets.list("fonts").unwrap().is_empty());
+        assert!(IkoreAssets.load("icons/missing.svg").unwrap().is_none());
     }
 
     #[test]

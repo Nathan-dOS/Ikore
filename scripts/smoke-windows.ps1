@@ -12,13 +12,13 @@ if ([string]::IsNullOrWhiteSpace($BinaryPath)) {
 }
 $resolvedBinary = (Resolve-Path -LiteralPath $BinaryPath).Path
 
-if ($null -eq ('HvcSmoke.NativeWindow' -as [type])) {
+if ($null -eq ('IkoreSmoke.NativeWindow' -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
 using System.Text;
 
-namespace HvcSmoke
+namespace IkoreSmoke
 {
     public static class NativeWindow
     {
@@ -93,7 +93,7 @@ try {
         Start-Sleep -Milliseconds 200
         $process.Refresh()
         if (-not $process.HasExited) {
-            $windowHandle = [HvcSmoke.NativeWindow]::FindForProcess($process.Id)
+            $windowHandle = [IkoreSmoke.NativeWindow]::FindForProcess($process.Id)
         }
         if ($process.HasExited -or $windowHandle -ne [IntPtr]::Zero) {
             break
@@ -112,7 +112,7 @@ try {
         throw "O AppCore não inicializou o banco isolado esperado: $databasePath"
     }
 
-    $closeRequested = [HvcSmoke.NativeWindow]::RequestClose($windowHandle)
+    $closeRequested = [IkoreSmoke.NativeWindow]::RequestClose($windowHandle)
     $gracefulShutdown = $closeRequested -and $process.WaitForExit(5000)
     if (-not $gracefulShutdown) {
         throw 'O binário não concluiu o shutdown gracioso dentro de 5 segundos.'
