@@ -94,6 +94,8 @@ mod composition_cargo_validation;
 mod composition_coordinator;
 #[path = "orchestration/composition/host_persistence.rs"]
 mod composition_persistence;
+#[path = "orchestration/composition/host_recovery_context.rs"]
+mod composition_recovery_context;
 #[path = "orchestration/convergence.rs"]
 mod convergence;
 #[path = "orchestration/composition/risk_persistence.rs"]
@@ -1022,6 +1024,9 @@ pub struct StageFailureDetail {
     pub checkpoint_id: String,
     pub raw_output: Option<String>,
     pub validation_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub validation_context:
+        Option<crate::orchestration::composition::recovery::ValidationFailureContextV1>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -3582,6 +3587,7 @@ impl PersistenceService {
             checkpoint_id: checkpoint_id.to_string(),
             raw_output: raw_output.map(|text| sanitized_observation_text(&text)),
             validation_error: validation_error.map(|text| sanitized_observation_text(&text)),
+            validation_context: Self::validation_failure_context(&connection, checkpoint_id)?,
         })
     }
 
@@ -3849,7 +3855,8 @@ impl PersistenceService {
                     "stage_failure_revision_requested",
                     Some("Revision requested after a failure; later artifacts were superseded."),
                 )?;
-                Self::enqueue_stage_job(&transaction, &updated.id, target)?;
+                let recovery_job = Self::enqueue_stage_job(&transaction, &updated.id, target)?;
+                Self::bind_validation_failure_recovery(&transaction, checkpoint_id, &recovery_job)?;
                 updated
             }
         };

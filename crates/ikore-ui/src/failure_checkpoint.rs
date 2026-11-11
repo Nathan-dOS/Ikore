@@ -388,6 +388,7 @@ mod tests {
             checkpoint_id: "checkpoint-pulse-1".into(),
             raw_output: Some("{\"broken\":".into()),
             validation_error: Some("unexpected end of input".into()),
+            validation_context: None,
         }
     }
 

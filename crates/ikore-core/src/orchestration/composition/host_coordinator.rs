@@ -27,6 +27,9 @@ use crate::orchestration::composition::projection::{
     CorrectionContext, DeliveredSource, agent_producer, render_unit_prompt,
 };
 use crate::orchestration::composition::recipes::{self, SourceFile, StageInputs, StagePreparation};
+use crate::orchestration::composition::recovery::{
+    FailureCheckEvidence, ValidationFailureContextV1,
+};
 use crate::orchestration::composition::references::ReferenceTable;
 use crate::orchestration::composition::review_boundary::{
     self, CandidateFact, EvidenceClass, EvidenceGap, Freshness, GapCode, HostCheckRow,
@@ -550,6 +553,10 @@ impl PersistenceService {
                 return self.park_without_execution(job, parent_run_id, stage, &failure);
             }
         };
+        if handoff.revision_feedback.is_some() {
+            preparation.recovery_context =
+                Self::validation_failure_context_for_job(&self.connection()?, &job.id)?;
+        }
         let sanitization = crate::sanitization::SanitizationStore::new(self.database_path());
         let sanitization_policy = sanitization.policy_for_project(&project.id).map_err(|_| {
             PersistenceServiceError::Validation(
@@ -784,6 +791,7 @@ impl PersistenceService {
                     Some(unit),
                     failure,
                     scope,
+                    None,
                 )?;
                 return Ok(());
             }
@@ -885,11 +893,11 @@ impl PersistenceService {
                 .find(|u| u.id == unit.id)
                 .cloned()
                 .ok_or_else(|| PersistenceServiceError::Runtime("Missing unit.".into()))?;
-            let key = reuse_key(
+            let key = prepared_reuse_key(
                 &execution.plan,
                 &unit.spec,
                 &dependency_digests(&unit.spec, &rows),
-                review_digest(preparation),
+                preparation,
             );
             Self::accept_child(&tx, &fresh, None, &json, sha.as_str(), key.as_str(), None)?;
             tx.commit()?;
@@ -1585,6 +1593,21 @@ impl PersistenceService {
                     required(&snapshot.profile) && receipt.status != comp::ReceiptStatus::Passed
                 })
                 .collect::<Vec<_>>();
+            let failure_context = |failure: &UnitFailure| {
+                ValidationFailureContextV1::capture(
+                    &execution.id,
+                    &candidate,
+                    preparation,
+                    receipts
+                        .iter()
+                        .filter(|(_, receipt)| receipt.status != comp::ReceiptStatus::Passed)
+                        .map(|(snapshot, receipt)| {
+                            FailureCheckEvidence::from_receipt(receipt, required(&snapshot.profile))
+                        })
+                        .collect(),
+                    &failure.diagnostic,
+                )
+            };
             if failing.is_empty() {
                 let ids = receipts.iter().map(|(_, r)| r.receipt_id.clone()).collect();
                 return Ok(Some((summaries, ids)));
@@ -1623,7 +1646,15 @@ impl PersistenceService {
                     rejected_answer: false,
                     scope_ask: None,
                 };
-                self.park_execution(job, parent_run_id, execution, None, &failure)?;
+                self.park_execution_with_scope(
+                    job,
+                    parent_run_id,
+                    execution,
+                    None,
+                    &failure,
+                    None,
+                    Some(&failure_context(&failure)),
+                )?;
                 return Ok(None);
             }
             // Attribution: every error diagnostic of every failing required
@@ -1675,7 +1706,15 @@ impl PersistenceService {
                 match outcome {
                     RepairOutcome::Validated => continue,
                     RepairOutcome::Failed(failure) => {
-                        self.park_execution(job, parent_run_id, execution, Some(&unit), &failure)?;
+                        self.park_execution_with_scope(
+                            job,
+                            parent_run_id,
+                            execution,
+                            Some(&unit),
+                            &failure,
+                            None,
+                            Some(&failure_context(&failure)),
+                        )?;
                         return Ok(None);
                     }
                 }
@@ -1715,7 +1754,15 @@ impl PersistenceService {
                 rejected_answer: false,
                 scope_ask: None,
             };
-            self.park_execution(job, parent_run_id, execution, owner.as_ref(), &failure)?;
+            self.park_execution_with_scope(
+                job,
+                parent_run_id,
+                execution,
+                owner.as_ref(),
+                &failure,
+                None,
+                Some(&failure_context(&failure)),
+            )?;
             return Ok(None);
         }
     }
@@ -2869,8 +2916,7 @@ impl PersistenceService {
                     continue;
                 }
                 let old_key = old.reuse_key_sha256.clone().unwrap_or_default();
-                let new_key =
-                    reuse_key(&plan, &unit.spec, &dependencies, review_digest(preparation));
+                let new_key = prepared_reuse_key(&plan, &unit.spec, &dependencies, preparation);
                 if old_key != new_key.as_str() {
                     continue;
                 }
@@ -3008,12 +3054,13 @@ impl PersistenceService {
         unit: Option<&UnitRow>,
         failure: &UnitFailure,
     ) -> Result<(), PersistenceServiceError> {
-        self.park_execution_with_scope(job, parent_run_id, execution, unit, failure, None)
+        self.park_execution_with_scope(job, parent_run_id, execution, unit, failure, None, None)
     }
 
     /// `park_execution`, keeping a grantable scope request with the
     /// checkpoint. A request the stage may not take says why in the
     /// diagnostic, and the failure parks as it would without one.
+    #[allow(clippy::too_many_arguments)]
     fn park_execution_with_scope(
         &self,
         job: &Job,
@@ -3022,6 +3069,7 @@ impl PersistenceService {
         unit: Option<&UnitRow>,
         failure: &UnitFailure,
         scope: Option<super::scope_persistence::ScopeRequestDraft>,
+        validation_context: Option<&ValidationFailureContextV1>,
     ) -> Result<(), PersistenceServiceError> {
         let mut db = self.connection()?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -3069,6 +3117,13 @@ impl PersistenceService {
             )?,
             None => false,
         };
+        if parked && let Some(context) = validation_context {
+            let checkpoint: String = tx.query_row(
+                "SELECT checkpoint_id FROM stage_failure_requests WHERE stage_execution_id=?1 AND decision IS NULL ORDER BY created_at DESC,rowid DESC LIMIT 1",
+                [&execution.id], |row| row.get(0),
+            )?;
+            Self::store_validation_failure_context(&tx, &checkpoint, context)?;
+        }
         if parked && let Some(draft) = scope.filter(|draft| draft.derivation.grantable()) {
             let checkpoint: String = tx.query_row(
                 "SELECT checkpoint_id FROM stage_failure_requests WHERE stage_execution_id=?1 AND decision IS NULL ORDER BY created_at DESC,rowid DESC LIMIT 1",
@@ -3895,11 +3950,11 @@ impl PersistenceService {
                     .find(|u| u.id == unit.id)
                     .cloned()
                     .ok_or_else(|| PersistenceServiceError::Runtime("Missing unit.".into()))?;
-                let key = reuse_key(
+                let key = prepared_reuse_key(
                     &execution.plan,
                     &unit.spec,
                     &dependency_digests(&unit.spec, &units),
-                    review_digest(preparation),
+                    preparation,
                 );
                 Self::accept_child(
                     &tx,
@@ -4325,8 +4380,25 @@ fn review_digest(preparation: &StagePreparation) -> Option<&str> {
         .map(|review| review.manifest_sha256.as_str())
 }
 
-/// `review` is the Integrator's review-input digest. It enters the key only
-/// when present, so every other stage keeps its previous keys.
+/// Bind explicit recovery evidence to reuse while preserving every legacy key
+/// when no recovery context was admitted for this job.
+fn prepared_reuse_key(
+    plan: &comp::StageExecutionPlanV1,
+    spec: &comp::WorkUnitSpecV1,
+    dependency_digests: &[(String, String)],
+    preparation: &StagePreparation,
+) -> comp::Sha256Hex {
+    let base = reuse_key(plan, spec, dependency_digests, review_digest(preparation));
+    match &preparation.recovery_context {
+        None => base,
+        Some(context) => comp::canonical_sha256(
+            &serde_json::json!({"base": base, "recovery": context.digest()}),
+            &[],
+        )
+        .unwrap_or_else(|_| comp::Sha256Hex::of(b"unhashable-recovery-context")),
+    }
+}
+
 fn reuse_key(
     plan: &comp::StageExecutionPlanV1,
     spec: &comp::WorkUnitSpecV1,

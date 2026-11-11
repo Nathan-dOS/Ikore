@@ -1,5 +1,11 @@
 # Cargo candidate validation
 
+Composed validation failures now support [guided recovery evidence](guided-test-recovery.md)
+through an immutable V66 sidecar. A human Code revision receives bounded check
+diagnostics and available candidate test evidence. This preserves the runner's
+existing command authority, applicability, receipt semantics and failure gates;
+it does not automatically revise a test expectation or an approved requirement.
+
 Status: the first Rust/Cargo increment is implemented and integrated with
 ADR-034. Automated verification and the remaining Windows qualification are
 recorded in the [qualification report](../quality/cargo-validation-2026-10-26.md).

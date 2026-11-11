@@ -24,6 +24,76 @@ fn latest_migration_version() -> i64 {
 }
 
 #[test]
+fn v65_to_v66_preserves_legacy_failures_without_inventing_validation_evidence() {
+    let data = tempfile::tempdir().unwrap();
+    let path = data.path().join("ikore.db");
+    let mut db = Connection::open(&path).unwrap();
+    cli_migrations::migrations::runner()
+        .set_target(refinery::Target::Version(65))
+        .run(&mut db)
+        .unwrap();
+    db.execute("INSERT INTO projects(id,name,workspace_path,created_at,updated_at) VALUES('recovery-project','Preserved','C:/fixture-recovery-upgrade','before','before')",[]).unwrap();
+    db.execute("INSERT INTO pulsations(id,project_id,feature_name,stage,status,created_at,updated_at,pipeline_version,input_revision,state_version) VALUES('recovery-pulse','recovery-project','Fixture','Test','checkpoint','before','before',4,1,1)",[]).unwrap();
+    db.execute("INSERT INTO jobs(id,pulsation_id,project_id,kind,status,created_at,updated_at) VALUES('recovery-job','recovery-pulse','recovery-project','run_stage::Test','interrupted','before','before')",[]).unwrap();
+    db.execute("INSERT INTO checkpoints(id,pulsation_id,stage,status,created_at,updated_at,kind,purpose,input_revision,state_version,producer_job_id) VALUES('recovery-checkpoint','recovery-pulse','Test','waiting','before','before','stage_failure','stage_failure',1,1,'recovery-job')",[]).unwrap();
+    db.execute("INSERT INTO stage_failure_requests(checkpoint_id,pulsation_id,job_id,stage,failure_class,allow_retry,allow_revision,revision_stage,error_code,diagnostic,created_at,updated_at) VALUES('recovery-checkpoint','recovery-pulse','recovery-job','Test','validation_failed',0,1,'Code','validation_failed','Original failure','before','before')",[]).unwrap();
+    let before: Vec<(String, String)> = db.prepare("SELECT name,sql FROM sqlite_master WHERE type='table' AND sql IS NOT NULL ORDER BY name").unwrap().query_map([],|row|Ok((row.get(0)?,row.get(1)?))).unwrap().collect::<Result<_,_>>().unwrap();
+    drop(db);
+    let service = PersistenceService::initialize(data.path()).unwrap();
+    assert!(
+        service
+            .read_stage_failure_detail("recovery-checkpoint")
+            .unwrap()
+            .validation_context
+            .is_none()
+    );
+    drop(service);
+    let _reopened = PersistenceService::initialize(data.path()).unwrap();
+    let db = Connection::open(path).unwrap();
+    for (table, sql) in before {
+        assert_eq!(
+            db.query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
+                [&table],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            sql,
+            "additive migration preserves {table}"
+        );
+    }
+    for table in [
+        "validation_failure_contexts",
+        "validation_failure_recovery_jobs",
+    ] {
+        assert_eq!(
+            db.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| row
+                .get::<_, u32>(0))
+                .unwrap(),
+            0,
+            "legacy evidence is not invented"
+        );
+    }
+    assert_eq!(db.query_row("SELECT diagnostic FROM stage_failure_requests WHERE checkpoint_id='recovery-checkpoint'",[],|row|row.get::<_,String>(0)).unwrap(),"Original failure");
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM refinery_schema_history WHERE version=66",
+            [],
+            |row| row.get::<_, u32>(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| {
+            row.get::<_, u32>(0)
+        })
+        .unwrap(),
+        0
+    );
+}
+
+#[test]
 fn v64_to_v65_preserves_resolution_history_and_adds_durable_unsent_drafts() {
     use ikore_core::companion_dock::{CompanionDockItem, CompanionDockLayout, CompanionDraft};
     let data = tempfile::tempdir().unwrap();

@@ -9518,6 +9518,7 @@ mod tests {
                     checkpoint_id,
                     raw_output: None,
                     validation_error: None,
+                    validation_context: None,
                 })
             })
         }

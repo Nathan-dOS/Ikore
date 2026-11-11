@@ -22,6 +22,7 @@ pub mod planner;
 pub mod policy;
 pub mod projection;
 pub mod recipes;
+pub mod recovery;
 pub mod references;
 pub mod render;
 pub mod review_boundary;

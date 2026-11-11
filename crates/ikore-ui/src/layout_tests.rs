@@ -1297,6 +1297,41 @@ fn failure_decision_bar_fits_supported_window_sizes(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn validation_failure_evidence_keeps_recovery_actions_visible(cx: &mut TestAppContext) {
+    use ikore_core::orchestration::composition::recovery::ValidationFailureContextV1;
+    use ikore_core::persistence_service::StageFailureDetail;
+    let (model, visual) =
+        parked_failure_window(cx, "validation_failed", false, true, (960.0, 640.0));
+    let context: ValidationFailureContextV1 = serde_json::from_value(serde_json::json!({
+        "schemaVersion": 1, "stageExecutionId": "previous-execution", "candidateSha256": "digest",
+        "checks": [{"receiptId":"receipt", "checkRef":"unit_tests", "required":true, "status":"failed", "candidateSha256":"digest", "diagnostics":["Expected expired tokens to be rejected"], "diagnosticsOmitted":0, "stdout":"", "stderr":"", "outputTruncated":false}],
+        "omittedChecks":0, "requirements":[], "decisions":[], "interfaces":[],
+        "tests":[{"path":"tests/auth_test.rs", "sha256":"digest", "content":"assert!(!expired)", "contentSanitized":false, "unavailableReason":null}],
+        "omittedTests":0, "limitations":["Historical evidence does not establish the cause."]
+    })).unwrap();
+    model.update(visual, |model, cx| {
+        model.pulsations.update(cx, |state, _| {
+            state.failure.detail = Some(StageFailureDetail {
+                checkpoint_id: "layout-failure".into(),
+                raw_output: None,
+                validation_error: None,
+                validation_context: Some(context),
+            });
+        });
+        cx.notify();
+    });
+    select(&model, visual, AppView::Pulsations);
+    visual
+        .debug_bounds("failure-validation-evidence")
+        .expect("actual check results are visible");
+    let bar = visual.debug_bounds("failure-decision-bar").unwrap();
+    assert!(bar.bottom() <= px(640.0));
+    visual
+        .debug_bounds("failure-revision")
+        .expect("the operator can still request the agent's correction");
+}
+
+#[gpui::test]
 fn a_failure_offers_only_the_decisions_the_host_accepts(cx: &mut TestAppContext) {
     // The agent assessed the work and gave up; its answer is durable, so retrying it
     // is not on offer, but written guidance still is.

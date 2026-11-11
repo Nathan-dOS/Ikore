@@ -193,6 +193,7 @@ impl StageInputs {
 /// The frozen preparation of one stage before dispatch.
 #[derive(Clone)]
 pub struct StagePreparation {
+    pub recovery_context: Option<super::recovery::ValidationFailureContextV1>,
     pub table: ReferenceTable,
     pub drafts: Vec<UnitDraft>,
     pub approved: ApprovedContext,
@@ -940,6 +941,7 @@ pub fn prepare(stage: Stage, inputs: &StageInputs) -> Result<StagePreparation, C
         })
         .collect::<Result<BTreeMap<_, _>, _>>()?;
     Ok(StagePreparation {
+        recovery_context: None,
         table,
         drafts,
         approved,
@@ -1298,6 +1300,7 @@ pub fn prompt_inputs<'a>(
         correction: None,
         extra_instructions: preparation.extra_instructions.as_deref(),
         review: preparation.review.as_deref(),
+        recovery_context: preparation.recovery_context.as_ref(),
     }
 }
 

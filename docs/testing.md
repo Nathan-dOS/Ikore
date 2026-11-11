@@ -1,5 +1,28 @@
 # Testing and validation
 
+## Guided recovery evidence (I1)
+
+`composition_recovery_context` exercises two actual failing host checks,
+preservation of unpublished tests, immutable history and an empty-guidance Code
+revision across restart. The recovery unit tests cover changed candidate bytes,
+capture limits, Unicode and fenced untrusted diagnostics. `serial_upgrade`
+includes populated V65-to-V66 compatibility; the native layout test keeps the
+validation evidence and recovery controls accessible at 960×640.
+The existing SQLite WAL test now expects schema 66 while retaining all three
+page-size cases, snapshot isolation, rollback, reopen and integrity checks.
+
+```powershell
+cargo test --locked -p ikore-core --lib orchestration::composition::recovery -- --test-threads=2
+cargo test --locked -p ikore-test-support --test composition_recovery_context -- --test-threads=2
+cargo test --locked -p ikore-test-support --test serial_upgrade v65_to_v66 -- --test-threads=2
+cargo test --locked -p ikore-ui --lib validation_failure_evidence -- --test-threads=2
+```
+
+These focused selections accompany the complete workspace regression gate.
+The [behavior and limits](guided-test-recovery.md) distinguish I1 from later
+semantic recovery routes. Actual results are in the
+[validation report](../quality/guided-test-recovery-i1-2026-11-11.md).
+
 Run commands from the workspace root. `rust-toolchain.toml` pins Rust 1.98.0.
 The desktop application and GPUI validation target Windows x64.
 

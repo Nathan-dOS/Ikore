@@ -1,0 +1,111 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-11-11",
+  "timezone": "America/Sao_Paulo",
+  "scope": "Guided test recovery I0/I1",
+  "branch": "feat/guided-test-recovery-i1",
+  "sourceBase": "ee20e14",
+  "sourceManifestAlgorithm": "SHA256 of sorted path NUL file_sha256 NUL",
+  "sourceManifestSha256": "988282cf08dd7d87e419466a56e6544cb9676751d369e6373fcc95a503336dcc",
+  "sourceFiles": [
+    {
+      "path": "crates/ikore-core/migrations/V66__validation_failure_contexts.sql",
+      "sha256": "6d50d0dd29316582034ca206bd3c53cccd3b9b990deaaf1bcd0d4332daef8d0e"
+    },
+    {
+      "path": "crates/ikore-core/src/orchestration/composition/host_coordinator.rs",
+      "sha256": "c7326eb97c127bf4cdf67f6c411a5e30fa617925174cd29114fa79f7bc7e0267"
+    },
+    {
+      "path": "crates/ikore-core/src/orchestration/composition/host_recovery_context.rs",
+      "sha256": "f32a73073dcc6707bebed2b86b81646b2ef5b31c7f7af74b09aecd7249a02c8b"
+    },
+    {
+      "path": "crates/ikore-core/src/orchestration/composition/mod.rs",
+      "sha256": "d600f9d18fadb117ededa6708e21b40c8b66196d9d31f4348f462d78334f881a"
+    },
+    {
+      "path": "crates/ikore-core/src/orchestration/composition/projection.rs",
+      "sha256": "537193feae55f78cded52362113e0a03543ee813a7220634370cff8ed9453253"
+    },
+    {
+      "path": "crates/ikore-core/src/orchestration/composition/recipes.rs",
+      "sha256": "4ed98aabd53492f42d4b7df07c356e366da2aae0b592f456ff70fa04c7b048c8"
+    },
+    {
+      "path": "crates/ikore-core/src/orchestration/composition/recovery.rs",
+      "sha256": "7f0298cb940a14258c4246608d2471f6c8e91b7792dc99f3665f0c23bf46da15"
+    },
+    {
+      "path": "crates/ikore-core/src/persistence_service.rs",
+      "sha256": "bdafd9aaac7e894e57097a6c42ec2de49b187835555ef464f4c980f47df561dd"
+    },
+    {
+      "path": "crates/ikore-core/src/sqlite_runtime_tests.rs",
+      "sha256": "8c557fa0d31bf8c3e4f42e021159b8b00b0652e0652a55e83dd1c850bcd50214"
+    },
+    {
+      "path": "crates/ikore-test-support/tests/composition_recovery_context.rs",
+      "sha256": "b08606e78223d948c16426e17cf41bb0e502bd2a4f22ec5b4b1c61f999ae2032"
+    },
+    {
+      "path": "crates/ikore-test-support/tests/serial_upgrade.rs",
+      "sha256": "5f525f93d8cf0687209cd830981be209a59b3b84687eaaf2f104462eef938c4f"
+    },
+    {
+      "path": "crates/ikore-ui/src/app_model.rs",
+      "sha256": "7d57201d5436a13d3556f3fea0807d77107ce62fe8244e1b6ad38863a86b84ca"
+    },
+    {
+      "path": "crates/ikore-ui/src/failure_checkpoint.rs",
+      "sha256": "cd35864a48e841f3c84e20341651d30a2026a732ce44b744f59b49e56b95fd63"
+    },
+    {
+      "path": "crates/ikore-ui/src/layout_tests.rs",
+      "sha256": "977ba35701b7b144b51b1662d8943ddeb2e23c7fc97f44a34d638ca198bc6383"
+    },
+    {
+      "path": "crates/ikore-ui/src/review_view.rs",
+      "sha256": "2d34cd09ff513ff91a3a527dfb9592287ec5b5dca3ff85e9677c366b9f1027dd"
+    }
+  ],
+  "qualificationStatus": "i1_automated_passed",
+  "focusedChecks": {
+    "recoveryUnits": 4,
+    "recoveryIntegrations": 2,
+    "upgradeCases": 34,
+    "nativeLayout": 1,
+    "fmt": "passed",
+    "strictWorkspaceClippy": "passed",
+    "sqliteWalAtThreePageSizes": "passed"
+  },
+  "fullSuite": {
+    "status": "passed",
+    "command": "cargo test --locked --workspace -j 2 -- --test-threads=2",
+    "log": "target/guided-test-recovery-full-rerun.log",
+    "exitCode": 0,
+    "totals": {
+      "passed": 2203,
+      "failed": 0,
+      "ignored": 23,
+      "measured": 0,
+      "filtered": 0,
+      "targets": 62
+    },
+    "logSha256": "31d3aa3b1b1cb273cd7d0a818a882f8797e4be382a70a749b870541bc9b30feb"
+  },
+  "limitations": [
+    "I1 preserves evidence and current permissions; later semantic recovery routes are not implemented.",
+    "No release build, authenticated-provider run or physical native-app smoke performed for I1.",
+    "The earlier reference run mixed old compiled libraries with new source at doctest time and does not qualify I1."
+  ],
+  "firstFullAttempt": {
+    "exitCode": 101,
+    "corePassed": 1224,
+    "coreFailed": 1,
+    "coreIgnored": 7,
+    "reason": "Existing SQLite WAL test expected schema 65 after the intended V66 migration.",
+    "fix": "Expected version updated to 66; all WAL and integrity assertions retained.",
+    "log": "target/guided-test-recovery-full.log"
+  }
+}
