@@ -23,7 +23,7 @@ anyhow.workspace = true
 # ADR-036: Ed25519 signing of pulsation attestations with `ring`, `base64` for the
 # DSSE envelope and `zeroize` for the decoded key. All three were already in the
 # graph through rustls; none adds a package.
-base64 = "0.22"
+base64 = "0.23"
 chrono.workspace = true
 fs2 = "0.4"
 futures.workspace = true
