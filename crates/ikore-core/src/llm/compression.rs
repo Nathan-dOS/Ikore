@@ -121,7 +121,7 @@ pub fn preview_compression(request: CompressionPreviewRequest) -> CompressionPre
             CompressionEngine::Caveman => "caveman",
         }
         .to_string(),
-        engine_version: "hvc-1".to_string(),
+        engine_version: "ikore-1".to_string(),
         filter_name,
         content_kind: request.content_kind,
         original_bytes,

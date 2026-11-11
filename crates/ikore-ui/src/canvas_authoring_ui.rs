@@ -568,7 +568,7 @@ pub(crate) fn render_canvas_authoring_card(
                 "Architecture"
             }
             ikore_core::companion_drawings::semantics::CanvasProfileV1::Bpmn => {
-                "Process · HVC BPMN profile"
+                "Process · Ikore BPMN profile"
             }
         };
         let busy = pending.contains_key(&row.request_id);

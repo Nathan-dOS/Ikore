@@ -1,5 +1,5 @@
 //! The push-to-talk shortcut (ADR-029 V4): a modifier combination plus one of
-//! F1–F10, registered globally so it works while HVC is in the background.
+//! F1–F10, registered globally so it works while Ikore is in the background.
 use crate::VoiceError;
 use std::fmt;
 use std::time::Duration;

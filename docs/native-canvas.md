@@ -38,8 +38,8 @@ editor has separate text history while the label is being edited.
 
 SQLite owns each drawing, scoped by project and optimistic revision. Autosave waits
 600 ms after a completed edit. Camera preferences are stored separately and do not
-change the content revision. The project mirror contains `.hvc-canvas.json` and
-`.svg` files under `.hvc/drawings/`, with stable UUID-based names. Renaming a drawing
+change the content revision. The project mirror contains `.ikore-canvas.json` and
+`.svg` files under `.ikore/drawings/` (with automatic migration from legacy `.hvc/drawings/`), with stable UUID-based names. Renaming a drawing
 changes its title, not its filenames. JSON/SVG are one-way exports; external edits
 are not imported automatically and conflicting files are preserved.
 Copying/cloning the exported files into another workspace does not restore drawings
@@ -70,7 +70,7 @@ No new Cargo dependency is required. AI analysis, PNG export, import, freehand,
 rotation, multi-selection and collaboration are future work.
 
 Run `cargo test-all` for regression coverage and the Stage 7 gate for final checks.
-`cargo run --locked --offline -p hvc-ui --example canvas_preview` opens a disposable
+`cargo run --locked --offline -p ikore-ui --example canvas_preview` opens a disposable
 native walkthrough using temporary data and no model calls.
 
 The UX/grid revision was implemented and validated directly on main on 2026-10-27,

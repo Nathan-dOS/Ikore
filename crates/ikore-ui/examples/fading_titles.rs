@@ -62,7 +62,7 @@ fn main() {
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: Some(gpui::TitlebarOptions {
-                    title: Some("HVC Fading Titles QA".into()),
+                    title: Some("Ikore Fading Titles QA".into()),
                     ..Default::default()
                 }),
                 ..Default::default()

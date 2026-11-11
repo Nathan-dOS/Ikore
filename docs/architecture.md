@@ -155,7 +155,8 @@ and [companion_notes](../crates/ikore-core/src/companion_notes/mod.rs).
 Companion Canvas also sits outside the pipeline. Its framework-independent scene,
 geometry, validation and SVG exporter live in `companion_drawings`; GPUI owns input,
 camera and gesture history. SQLite commits content plus durable mirror intentions;
-a restricted writer materializes JSON/SVG under the project's `.hvc/drawings/`.
+a restricted writer materializes JSON/SVG under the project's `.ikore/drawings/`
+(with automatic migration from legacy `.hvc/drawings/`).
 Project deletion shares the drawing service's project guard. See
 [native canvas](native-canvas.md) for save, conflict and lifecycle behavior.
 

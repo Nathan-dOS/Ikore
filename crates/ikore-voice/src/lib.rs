@@ -1,6 +1,6 @@
 //! Local speech-to-text for Companion notes (ADR-029 V1–V8).
 //!
-//! HVC installs NVIDIA NeMo-Speech.cpp with Nemotron, or native whisper.cpp
+//! Ikore installs NVIDIA NeMo-Speech.cpp with Nemotron, or native whisper.cpp
 //! with Whisper large-v3-turbo `Q5_0` and Portuguese recognition. Models are pinned by URL,
 //! size and SHA-256 in [`runtime`]. A global
 //! push-to-talk shortcut ([`hotkey`]) records the default microphone at

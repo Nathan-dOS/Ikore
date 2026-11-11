@@ -200,7 +200,7 @@ and the [validation report](../../quality/secret-sanitization-validation-2026-10
 ## ADR-031: terminal and shared-contract boundaries
 
 CLI services, repository, adapters, processes and subscription quota belong to
-`hvc-terminal`; shared values belong to `hvc-contracts`. Core retains host
+`ikore-terminal`; shared values belong to `ikore-contracts`. Core retains host
 authorization, orchestration, migrations and compatibility facades. See the
 [decision and validation requirements](031-terminal-boundary.md). This decision
 was first numbered ADR-030; its 2026-10-23 report keeps that label.

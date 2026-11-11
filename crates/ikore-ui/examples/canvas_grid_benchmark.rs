@@ -363,7 +363,7 @@ fn main() -> anyhow::Result<()> {
                 titlebar: Some(gpui::TitlebarOptions {
                     title: Some(
                         format!(
-                            "HVC Grid benchmark · {} · zoom {}",
+                            "Ikore Grid benchmark · {} · zoom {}",
                             config.mode.name(),
                             config.zoom
                         )

@@ -246,7 +246,7 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                 .when(selected_transport == ChatTransportKind::Cli, |row| {
                                     row.child(crate::widgets::info_tip(
                                         "chat-cli-login",
-                                        "Uses the CLI's existing login. HVC does not request or store its API key. Changes apply to the open conversation from its next message and are remembered for this project.",
+                                        "Uses the CLI's existing login. Ikore does not request or store its API key. Changes apply to the open conversation from its next message and are remembered for this project.",
                                     ))
                                 }),
                         );
@@ -570,7 +570,7 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                     .border_color(theme::warning())
                                     .bg(theme::warning_soft())
                                     .child(if conversation.transport == ChatTransportKind::Cli {
-                                        "Content requested by the Companion may be transmitted to the provider configured in this CLI. HVC does not manage that credential."
+                                        "Content requested by the Companion may be transmitted to the provider configured in this CLI. Ikore does not manage that credential."
                                     } else {
                                         "Consulted snippets from the repository will be sent to this connection's API."
                                     })

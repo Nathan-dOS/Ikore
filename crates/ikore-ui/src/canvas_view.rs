@@ -614,7 +614,7 @@ fn semantic_controls(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
                 .text_color(theme::text_muted())
                 .child(match document.profile {
                     CanvasProfileV1::Architecture => "Architecture",
-                    CanvasProfileV1::Bpmn => "Process · HVC BPMN profile",
+                    CanvasProfileV1::Bpmn => "Process · Ikore BPMN profile",
                 }),
         )
         .child(crate::select_menu::compact_control(

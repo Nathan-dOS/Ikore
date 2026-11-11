@@ -2,7 +2,7 @@
 //!
 //! The GPUI panels answer "what is happening now"; this answers "where did
 //! this run spend its time". It backs `analyze-pulsation` in
-//! `hvc-test-support` and the run context of the in-app pulsation report
+//! `ikore-test-support` and the run context of the in-app pulsation report
 //! (ADR-027 §5). Without it, a pipeline change can only be argued about,
 //! never measured.
 //!

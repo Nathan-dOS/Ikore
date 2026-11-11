@@ -2063,7 +2063,7 @@ fn is_root_file_name(token: &str) -> bool {
 /// before, between or after a tag line are simply skipped, never scanned for
 /// a false-positive path mention, since a match still requires the trimmed
 /// line itself to start with one of the three prefixes. This is deliberately
-/// position-independent: `SYNTHESIS_PROMPT` (`hvc-ui/src/resolution_ui.rs`)
+/// position-independent: `SYNTHESIS_PROMPT` (`ikore-ui/src/resolution_ui.rs`)
 /// asks the Companion for a short prose summary *before* the tag lines, and a
 /// developer typing a manual answer writes the same way, so a leading-block-
 /// only scan would silently discard every tag it never reaches. Values are
@@ -2385,7 +2385,7 @@ mod tests {
         assert!(unresolved.is_empty());
     }
 
-    // Reproduces the exact shape `SYNTHESIS_PROMPT` (`hvc-ui/src/resolution_ui.rs`)
+    // Reproduces the exact shape `SYNTHESIS_PROMPT` (`ikore-ui/src/resolution_ui.rs`)
     // asks the Companion for -- and that a developer typing a manual answer
     // naturally writes too: a short prose summary first, tag lines after. A
     // leading-block-only scan silently discarded these (the bug this session

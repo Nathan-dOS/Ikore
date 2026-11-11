@@ -390,7 +390,7 @@ mod tests {
         );
         let error = resolve_profile(&profile, ProfileOrigin::Custom).unwrap_err();
         assert_eq!(error.code, ErrorCode::ValidationUnavailable);
-        profile.executable = "definitely-not-installed-hvc-tool".into();
+        profile.executable = "definitely-not-installed-ikore-tool".into();
         let snapshot = resolve_profile(&profile, ProfileOrigin::Custom).unwrap();
         assert!(snapshot.resolved_executable.is_none());
         assert!(snapshot.resolved_executable_sha256.is_none());
@@ -426,7 +426,7 @@ mod tests {
             "custom_check",
             CheckKind::Custom,
             false,
-            "definitely-not-installed-hvc-tool",
+            "definitely-not-installed-ikore-tool",
             &[],
             &["**/*"],
             "custom",

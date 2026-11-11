@@ -552,14 +552,15 @@ pub(crate) fn atomically<T, E: From<rusqlite::Error>>(
     db: &Connection,
     write: impl FnOnce() -> Result<T, E>,
 ) -> Result<T, E> {
-    db.execute_batch("SAVEPOINT hvc_exchange_write")?;
+    db.execute_batch("SAVEPOINT ikore_exchange_write")?;
     match write() {
         Ok(value) => {
-            db.execute_batch("RELEASE hvc_exchange_write")?;
+            db.execute_batch("RELEASE ikore_exchange_write")?;
             Ok(value)
         }
         Err(error) => {
-            let _ = db.execute_batch("ROLLBACK TO hvc_exchange_write; RELEASE hvc_exchange_write");
+            let _ =
+                db.execute_batch("ROLLBACK TO ikore_exchange_write; RELEASE ikore_exchange_write");
             Err(error)
         }
     }
@@ -927,7 +928,7 @@ pub(crate) fn spawn_notifier(
     interval: std::time::Duration,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
     std::thread::Builder::new()
-        .name("hvc-exchange-doorbell".into())
+        .name("ikore-exchange-doorbell".into())
         .spawn(move || {
             let open = || -> Result<Connection, rusqlite::Error> {
                 let db = Connection::open(&database_path)?;

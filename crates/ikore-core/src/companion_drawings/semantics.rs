@@ -1,6 +1,6 @@
 //! Explicit architectural/process semantics independent of visual containment and GPUI.
 //!
-//! This is a restricted HVC profile based on BPMN, not an execution engine or a
+//! This is a restricted Ikore profile based on BPMN, not an execution engine or a
 //! BPMN interchange/conformance implementation. Diagnostics are draft-completeness
 //! warnings; prohibited connections and broken references are validation errors.
 use super::{CanvasElementKindV1, CanvasElementV1, CanvasSceneV1, MAX_ELEMENTS, MAX_LABEL_CHARS};

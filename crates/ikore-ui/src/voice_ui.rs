@@ -1,7 +1,7 @@
 //! Voice dictation in the UI (ADR-029 V1–V8): the Settings page that
 //! downloads the speech model and configures push-to-talk, and the reactions
 //! to what the core reports while the developer dictates. Dictation itself
-//! runs in the core, so it works while HVC is in the background.
+//! runs in the core, so it works while Ikore is in the background.
 use crate::activity::ActivityKind;
 use crate::flow::FlowTarget;
 use crate::session::HeaderNoticeKind;
@@ -69,7 +69,7 @@ impl AppModel {
         cx.notify();
     }
 
-    /// Voice notes go to the project open in HVC.
+    /// Voice notes go to the project open in Ikore.
     pub(crate) fn sync_voice_project(&self, cx: &Context<Self>) {
         if let Some(core) = &self.core {
             core.voice().set_active_project(

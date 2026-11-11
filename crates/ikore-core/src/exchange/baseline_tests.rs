@@ -109,7 +109,7 @@ fn bulk_events(
     from: u64,
     to: u64,
 ) -> Vec<TerminalEvent> {
-    let line = "   Compiling hvc-core v0.1.0 (C:/workspace/crates/ikore-core) build step";
+    let line = "   Compiling ikore-core v0.1.0 (C:/workspace/crates/ikore-core) build step";
     let mut connection = service.connection().expect("connection");
     let transaction = connection.transaction().expect("transaction");
     let mut events = Vec::with_capacity((to + 1 - from) as usize);
@@ -249,7 +249,7 @@ fn exchange_baseline_terminal_events() {
     let run = running_cli_run(&repository, &project_id);
 
     // A typical CLI stdout line; 100,000 of them stay under the 32 MiB run cap.
-    let line = "   Compiling hvc-core v0.1.0 (C:/workspace/crates/ikore-core) build step";
+    let line = "   Compiling ikore-core v0.1.0 (C:/workspace/crates/ikore-core) build step";
     let mut appends = Vec::with_capacity(events as usize);
     let wall = Instant::now();
     for sequence in 1..=events {

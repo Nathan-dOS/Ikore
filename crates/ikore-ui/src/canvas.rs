@@ -1121,7 +1121,7 @@ impl AppModel {
                 match result {
                     Ok((report,drawings))=>{
                         model.canvas.apply_sync_snapshot(library_epoch,drawings);
-                        if report.conflicts>0 { model.canvas.notice=Some("A drawing file changed outside HVC. Preserve it or create an export copy.".into()); }
+                        if report.conflicts>0 { model.canvas.notice=Some("A drawing file changed outside Ikore. Preserve it or create an export copy.".into()); }
                     }
                     Err(_)=>model.canvas.notice=Some("Saved in the app. Drawing files are pending; retry when the workspace is available.".into()),
                 }

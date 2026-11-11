@@ -136,7 +136,7 @@ fn semantic_marker(output: &mut String, element: &CanvasElementV1, scene: &Canva
         Kind::EndEvent => {
             let _ = writeln!(
                 output,
-                "<ellipse data-hvc-end-ring=\"true\" cx=\"{}\" cy=\"{}\" rx=\"{}\" ry=\"{}\" fill=\"none\" stroke=\"#{color:06x}\" stroke-width=\"4\"/>",
+                "<ellipse data-ikore-end-ring=\"true\" cx=\"{}\" cy=\"{}\" rx=\"{}\" ry=\"{}\" fill=\"none\" stroke=\"#{color:06x}\" stroke-width=\"4\"/>",
                 number(element.x + element.width / 2.),
                 number(element.y + element.height / 2.),
                 number((element.width / 2. - 3.).max(0.5)),
@@ -188,7 +188,7 @@ fn element_svg(output: &mut String, element: &CanvasElementV1, scene: &CanvasSce
         let kind = serde_json::to_value(semantic.kind).expect("semantic kind is serializable");
         let _ = writeln!(
             output,
-            "<g data-hvc-kind=\"{}\">",
+            "<g data-ikore-kind=\"{}\">",
             kind.as_str().expect("semantic kind is a string")
         );
     }

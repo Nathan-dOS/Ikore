@@ -1,4 +1,4 @@
-//! ADR-029 voice runtime, end to end against a fixture runtime: HVC fetches a
+//! ADR-029 voice runtime, end to end against a fixture runtime: Ikore fetches a
 //! release archive and a model over HTTP, refuses anything whose pinned digest
 //! does not match, unpacks the runtime with the system `tar`, checks that it
 //! runs, and transcribes WAV images through it.
@@ -95,7 +95,7 @@ fn model(url: String, body: &[u8]) -> ModelRelease {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn hvc_installs_the_runtime_downloads_the_model_and_transcribes() {
+async fn ikore_installs_the_runtime_downloads_the_model_and_transcribes() {
     let scratch = tempfile::tempdir().unwrap();
     let archive = runtime_archive(scratch.path());
     let model_body = vec![42u8; 64 * 1024];

@@ -634,7 +634,7 @@ impl ChatService {
             runtime.spawn(task);
         } else {
             std::thread::Builder::new()
-                .name("hvc-canvas-authoring".into())
+                .name("ikore-canvas-authoring".into())
                 .spawn(move || {
                     if let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
                         .enable_all()

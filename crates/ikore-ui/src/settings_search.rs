@@ -407,7 +407,7 @@ pub(crate) static ENTRIES: &[SettingsEntry] = &[
         P::Voice,
         "Push-to-talk",
         "Push-to-talk",
-        "Hold the shortcut anywhere in Windows, speak and release. HVC saves the note to the project open in HVC, without opening a window.",
+        "Hold the shortcut anywhere in Windows, speak and release. Ikore saves the note to the project open in Ikore, without opening a window.",
         "push to talk hold record microphone dictate",
     ),
     entry(

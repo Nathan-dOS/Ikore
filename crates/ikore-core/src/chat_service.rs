@@ -1170,7 +1170,7 @@ impl ChatService {
         } else {
             let background_context = context.clone();
             std::thread::Builder::new()
-                .name("hvc-chat-turn".into())
+                .name("ikore-chat-turn".into())
                 .spawn(move || {
                     let runtime = tokio::runtime::Builder::new_current_thread()
                         .enable_all()

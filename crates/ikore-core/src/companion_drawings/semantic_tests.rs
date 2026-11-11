@@ -138,18 +138,18 @@ fn semantic_svg_preserves_profile_narrative_and_bpmn_markers_without_inference()
         "parallel_gateway",
     ] {
         assert!(
-            svg.contains(&format!("data-hvc-kind=\"{marker}\"")),
+            svg.contains(&format!("data-ikore-kind=\"{marker}\"")),
             "{marker}"
         );
     }
     assert!(svg.contains(">X</text>"));
     assert!(svg.contains(">+</text>"));
-    assert!(svg.contains("data-hvc-end-ring"));
+    assert!(svg.contains("data-ikore-end-ring"));
     let mut legacy = drawing;
     legacy.document = None;
     let svg = super::export_svg(&legacy).unwrap();
-    assert!(!svg.contains("data-hvc-kind"));
-    assert!(!svg.contains("data-hvc-end-ring"));
+    assert!(!svg.contains("data-ikore-kind"));
+    assert!(!svg.contains("data-ikore-end-ring"));
 }
 
 #[test]
@@ -166,7 +166,7 @@ fn semantic_svg_connection_style_follows_explicit_type_and_does_not_change_sourc
     let original = drawing.clone();
     let svg = super::export_svg(&drawing).unwrap();
     let connection = svg
-        .split("data-hvc-kind=\"message_flow\"")
+        .split("data-ikore-kind=\"message_flow\"")
         .nth(1)
         .unwrap()
         .split("</g>")
@@ -184,7 +184,7 @@ fn semantic_svg_connection_style_follows_explicit_type_and_does_not_change_sourc
     );
     let svg = super::export_svg(&association).unwrap();
     let connection = svg
-        .split("data-hvc-kind=\"association\"")
+        .split("data-ikore-kind=\"association\"")
         .nth(1)
         .unwrap()
         .split("</g>")

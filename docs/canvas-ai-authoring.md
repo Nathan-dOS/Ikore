@@ -125,7 +125,7 @@ matching other active work. Rejected deletion preserves requests/state; accepted
 deletion cascades them. The admission fence is released on every return path.
 
 SQLite remains authoritative. A ready drawing can have pending/conflicting
-JSON/SVG mirrors under `.hvc/drawings/`; the existing recoverable sync journal
+JSON/SVG mirrors under `.ikore/drawings/`; the existing recoverable sync journal
 preserves divergent external files. Ready does not certify synchronized files.
 The receipt fixes project, conversation, request, job, drawing ID and initial
 content revision. Opening resolves that receipt and rechecks current availability,
