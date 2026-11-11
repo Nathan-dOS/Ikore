@@ -1,6 +1,8 @@
 use crate::{
     AppModel,
-    forge::{FEATURE_STATE_GROUPS, ForgeAction, ForgeSection, feature_state_group_id},
+    forge::{
+        AssumptionInput, FEATURE_STATE_GROUPS, ForgeAction, ForgeSection, feature_state_group_id,
+    },
     sizing::{INPUT_LONG, INPUT_MEDIUM, StyledExt, sized_input, text_area},
     theme,
 };
@@ -1030,18 +1032,30 @@ fn incubation_aside(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -
     }
     let already_approved = f.approved_revision == Some(f.revision);
     let mut panel = card()
-        .child(brief(f))
+        .child(brief(f, model.forge.busy, cx))
         .child(feature_start_card(model, f, cx))
         .child(gated_button(
             "approve-feature",
             "Approve scope and create tasks",
             ForgeAction::Approve,
-            !already_approved,
+            !already_approved && f.brief.pending_decisions.is_empty(),
             cx,
         ));
     if already_approved {
         panel = panel.child(label(
             "This revision is already approved and its tasks exist. Keep talking to the agent to produce a new revision.",
+        ));
+    }
+    if !already_approved
+        && !f.brief.pending_decisions.is_empty()
+        && hvc_core::feature_forge::remaining_questions(&model.forge.history) == 0
+    {
+        panel = panel.child(gated_button(
+            "forge-continue-questions",
+            "Start another clarification round",
+            ForgeAction::ContinueClarification(f.id.clone(), f.revision),
+            !model.forge.busy,
+            cx,
         ));
     }
     if model.forge.busy {
@@ -1122,7 +1136,7 @@ fn feature_start_card(model: &AppModel, feature: &Feature, cx: &mut Context<AppM
     }
     panel
 }
-fn brief(f: &Feature) -> Div {
+fn brief(f: &Feature, busy: bool, cx: &mut Context<AppModel>) -> Div {
     let mut d = card().child(heading("Proposed specification"));
     for (title, value) in [
         ("Objective", &f.brief.objective),
@@ -1135,6 +1149,44 @@ fn brief(f: &Feature) -> Div {
     }
     for decision in &f.brief.decisions {
         d = d.child(label(format!("Decision: {decision}")));
+    }
+    if !f.brief.assumptions.is_empty() {
+        d = d.child(heading("Assumptions")).child(label(
+            "Approving this scope confirms the remaining assumptions.",
+        ));
+    }
+    for item in &f.brief.assumptions {
+        use hvc_core::feature_forge::AssumptionReviewAction;
+        d = d
+            .child(label(format!("{} · {:?}", item.id, item.category)))
+            .child(item.text.clone())
+            .child(label(item.reason.clone()));
+        if let Some(AssumptionReviewAction::Answer { text }) = &item.review {
+            d = d.child(label(format!("Your answer: {text}")));
+        }
+        let flagged = item.review == Some(AssumptionReviewAction::Flag);
+        if f.approved_revision != Some(f.revision) {
+            d = d.child(gated_button(
+                format!("forge-review-assumption-{}", item.id),
+                if flagged {
+                    "Save message draft as answer"
+                } else {
+                    "Flag assumption"
+                },
+                ForgeAction::ReviewAssumption(
+                    f.id.clone(),
+                    f.revision,
+                    item.id.clone(),
+                    if flagged {
+                        AssumptionInput::AnswerFromDraft
+                    } else {
+                        AssumptionInput::Flag
+                    },
+                ),
+                !busy,
+                cx,
+            ));
+        }
     }
     for pending in &f.brief.pending_decisions {
         d = d.child(

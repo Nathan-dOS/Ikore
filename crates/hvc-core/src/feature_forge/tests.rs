@@ -34,6 +34,9 @@ use crate::persistence_service::StageExecutionResult;
 use serde_json::json;
 use std::sync::Arc;
 
+#[path = "assumptions_tests.rs"]
+mod assumptions_tests;
+
 struct Fixture {
     _data: tempfile::TempDir,
     workspace: tempfile::TempDir,
@@ -1214,7 +1217,11 @@ fn planning_runtime(
         suggested_dependencies: vec![],
     };
     let gateway = Arc::new(PlanningGateway {
-        response: json(&response).unwrap(),
+        response: {
+            let mut wire = serde_json::to_value(&response).unwrap();
+            wire["brief"]["assumptions"] = json!(brief_assumptions_for_wire(&response.brief));
+            wire.to_string()
+        },
         calls: 0.into(),
         entered: tokio::sync::Semaphore::new(0),
         release: tokio::sync::Semaphore::new(0),
@@ -1788,6 +1795,7 @@ fn feature_discovery_response_schema_is_strictly_compliant_for_cli_adapters() {
             "alternatives": [],
             "decisions": [],
             "pendingDecisions": [],
+            "assumptions": [],
             "criteria": [{"id": "c1", "description": "Crit 1"}],
             "tasks": [{
                 "title": "Task 1",
@@ -1814,6 +1822,27 @@ fn feature_discovery_response_schema_is_strictly_compliant_for_cli_adapters() {
     });
     assert!(codex_validator.validate(&sample).is_ok());
     assert!(canonical_validator.validate(&sample).is_ok());
+    let mut assumed = sample.clone();
+    let item = json!({"id":"SEC-1","text":"Use project authentication.","category":"security","reason":"The project requires it."});
+    assumed["brief"]["assumptions"] = json!([item]);
+    for validator in [&codex_validator, &canonical_validator] {
+        assert!(validator.is_valid(&assumed));
+        for (key, bad) in [
+            ("id", json!("")),
+            ("id", json!("x".repeat(65))),
+            ("text", json!("x".repeat(2001))),
+            ("reason", json!("")),
+            ("category", json!("unknown")),
+            ("review", json!({"kind":"flag"})),
+        ] {
+            let mut invalid = assumed.clone();
+            invalid["brief"]["assumptions"][0][key] = bad;
+            assert!(!validator.is_valid(&invalid), "{key}");
+        }
+        let mut oversized = assumed.clone();
+        oversized["brief"]["assumptions"] = json!(vec![item.clone(); 33]);
+        assert!(!validator.is_valid(&oversized));
+    }
 
     // Strict wire schemas require every declared field. Historical responses
     // remain readable through Serde's default and the admission normalizer,
@@ -2940,6 +2969,7 @@ fn discovery_reply(feature: &Feature, message: &str, suggested: Vec<FeatureDepen
         .unwrap(),
     )
     .unwrap();
+    reply["brief"]["assumptions"] = json!(brief_assumptions_for_wire(&feature.brief));
     // The model's schema has no `origin`: the host stamps it when it stores an edge.
     for dependency in reply["suggestedDependencies"].as_array_mut().unwrap() {
         dependency.as_object_mut().unwrap().remove("origin");
@@ -3812,4 +3842,53 @@ async fn a_dismissed_conflict_reaches_the_specification_brief_of_the_batch() {
         items[0].refs,
         vec!["knowledge/obsidian/decisions/a-native.md".to_owned()]
     );
+}
+#[test]
+fn forge_assumptions_round_trip_and_reject_duplicate_ids() {
+    let fixture = Fixture::new();
+    let feature = fixture.feature("Export records");
+    let mut value = serde_json::to_value(&feature.brief).unwrap();
+    let assumption = json!({
+        "id": "A1", "text": "Export the visible records.",
+        "category": "scope", "reason": "The user is reviewing a filtered list."
+    });
+    value["assumptions"] = json!([assumption]);
+    let proposed: FeatureBrief = serde_json::from_value(value.clone()).unwrap();
+    let stored = fixture
+        .forge()
+        .revise(&fixture.project, &feature.id, feature.revision, proposed)
+        .unwrap();
+    let reopened =
+        FeatureForgeService::new(PersistenceService::initialize(fixture._data.path()).unwrap());
+    assert_eq!(
+        serde_json::to_value(reopened.get(&fixture.project, &feature.id).unwrap().brief).unwrap()["assumptions"],
+        value["assumptions"],
+    );
+    value["assumptions"] = json!([assumption, assumption]);
+    let invalid_brief = serde_json::from_value(value).unwrap();
+    assert!(
+        reopened
+            .revise(
+                &fixture.project,
+                &feature.id,
+                stored.revision,
+                invalid_brief
+            )
+            .is_err()
+    );
+    assert_eq!(
+        reopened
+            .get(&fixture.project, &feature.id)
+            .unwrap()
+            .revision,
+        stored.revision
+    );
+}
+
+fn brief_assumptions_for_wire(brief: &FeatureBrief) -> Vec<Value> {
+    brief
+        .assumptions
+        .iter()
+        .map(|a| json!({"id":a.id,"text":a.text,"category":a.category,"reason":a.reason}))
+        .collect()
 }

@@ -618,6 +618,12 @@ impl ForgeUi {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum AssumptionInput {
+    Flag,
+    AnswerFromDraft,
+}
+
 #[derive(Clone)]
 pub(crate) enum ForgeAction {
     Refresh,
@@ -653,6 +659,8 @@ pub(crate) enum ForgeAction {
     Approve,
     ApproveAndStart,
     ChooseQuestionOption(String, usize, usize),
+    ReviewAssumption(String, u64, String, AssumptionInput),
+    ContinueClarification(String, u64),
     Archive,
     Reopen,
     Complete,
@@ -691,6 +699,12 @@ enum Operation {
     CreateFeature(String, String),
     Dispatch(String, Vec<TaskSelection>),
     Send(String, u64, String),
+    ReviewAssumption(
+        String,
+        u64,
+        String,
+        hvc_core::feature_forge::AssumptionReviewAction,
+    ),
     Approve(String, u64),
     ApproveAndStart(String, u64),
     Archive(String, String),
@@ -1185,6 +1199,36 @@ impl AppModel {
                 };
                 Operation::Approve(f.id, f.revision)
             }
+            ForgeAction::ContinueClarification(id, revision) => {
+                let Some(f) = f.filter(|f| f.id == id && f.revision == revision) else {
+                    return;
+                };
+                Operation::Send(
+                    f.id,
+                    revision,
+                    hvc_core::feature_forge::CONTINUE_CLARIFICATION.into(),
+                )
+            }
+            ForgeAction::ReviewAssumption(id, revision, assumption_id, input) => {
+                let Some(f) = f.filter(|f| f.id == id && f.revision == revision) else {
+                    return;
+                };
+                use hvc_core::feature_forge::AssumptionReviewAction;
+                let action = match input {
+                    AssumptionInput::Flag => AssumptionReviewAction::Flag,
+                    AssumptionInput::AnswerFromDraft => {
+                        let answer = self.forge.message.read(cx).value().to_owned();
+                        if answer.trim().is_empty() {
+                            self.forge.error =
+                                Some("Write your answer in the Forge message field.".into());
+                            cx.notify();
+                            return;
+                        }
+                        AssumptionReviewAction::Answer { text: answer }
+                    }
+                };
+                Operation::ReviewAssumption(f.id, revision, assumption_id, action)
+            }
             ForgeAction::ApproveAndStart => {
                 let Some(f) = f else {
                     return;
@@ -1407,6 +1451,16 @@ impl AppModel {
                                 core.feature_agent()
                                     .start(&project, &id, revision, &key, &message)?;
                                 accepted_message = Some((id, message));
+                            }
+                            Operation::ReviewAssumption(id, revision, assumption_id, action) => {
+                                let request = hvc_core::feature_forge::ReviewAssumptionRequest {
+                                    project_id: project.clone(), feature_id: id, expected_revision: revision, assumption_id, request_id: key, action
+                                };
+                                forge.review_assumption(&request)?;
+                                if let hvc_core::feature_forge::AssumptionReviewAction::Answer { text } = request.action {
+                                    accepted_message = Some((request.feature_id, text));
+                                }
+                                notice = Some("Assumption review saved.".into());
                             }
                             Operation::Approve(id, revision) => {
                                 forge.approve(&project, &id, revision)?;
@@ -1795,6 +1849,119 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+    }
+
+    #[gpui::test]
+    fn forge_assumptions_native_review_saves_the_draft_without_a_model_turn(
+        cx: &mut TestAppContext,
+    ) {
+        use hvc_core::feature_forge::{
+            AssumptionCategory, AssumptionReviewAction, FeatureAssumption,
+        };
+        use hvc_core::persistence_service::EnsureProjectForWorkspaceRequest;
+        let harness = hvc_test_support::CoreTestHarness::new();
+        let core = harness.core();
+        let project = core
+            .persistence()
+            .ensure_project_for_workspace(EnsureProjectForWorkspaceRequest {
+                workspace_path: harness.workspace_dir().to_string_lossy().into(),
+                preferred_name: None,
+            })
+            .unwrap()
+            .project
+            .id;
+        let forge = FeatureForgeService::new(core.persistence().clone());
+        let initial = forge
+            .create(CreateFeatureRequest {
+                project_id: project.clone(),
+                request_id: "review-from-ui".into(),
+                title: "Export scope".into(),
+                idea: "Export a selection".into(),
+            })
+            .unwrap();
+        let mut brief = initial.brief;
+        brief.objective = "Export the selected records.".into();
+        brief.assumptions.push(FeatureAssumption {
+            id: "S1".into(),
+            text: "Use visible records.".into(),
+            category: AssumptionCategory::Scope,
+            reason: "The list is filtered.".into(),
+            review: None,
+        });
+        let feature = forge
+            .revise(&project, &initial.id, initial.revision, brief)
+            .unwrap();
+        let (model, visual) = cx.add_window_view(|_, cx| AppModel::new_for_test(cx));
+        visual.simulate_resize(size(px(1440.0), px(900.0)));
+        model.update(visual, |m, cx| {
+            m.workspace
+                .update(cx, |w, _| w.project_id = Some(project.clone().into()));
+            m.select_view(AppView::Forge, cx);
+            m.core = Some(core.clone());
+            m.forge.project_id = Some(project.clone());
+            m.forge.selected_feature = Some(feature.id.clone());
+            m.forge.snapshot.features = vec![feature.clone()];
+            m.forge.section = ForgeSection::Incubation;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("forge-review-assumption-S1").is_some());
+        model.update(visual, |m, cx| {
+            m.forge_action(
+                ForgeAction::ReviewAssumption(
+                    feature.id.clone(),
+                    feature.revision,
+                    "S1".into(),
+                    AssumptionInput::Flag,
+                ),
+                cx,
+            )
+        });
+        finish_request(&model, visual);
+        let flagged = forge.get(&project, &feature.id).unwrap();
+        assert_eq!(
+            flagged.brief.assumptions[0].review,
+            Some(AssumptionReviewAction::Flag)
+        );
+        let answer = "Only my selection 👋";
+        model.update(visual, |m, cx| {
+            m.forge.message.update(cx, |i, cx| i.set_value(answer, cx));
+            m.forge_action(
+                ForgeAction::ReviewAssumption(
+                    feature.id.clone(),
+                    feature.revision,
+                    "S1".into(),
+                    AssumptionInput::AnswerFromDraft,
+                ),
+                cx,
+            );
+            assert!(!m.forge.busy);
+            m.forge_action(
+                ForgeAction::ReviewAssumption(
+                    feature.id.clone(),
+                    flagged.revision,
+                    "S1".into(),
+                    AssumptionInput::AnswerFromDraft,
+                ),
+                cx,
+            );
+        });
+        finish_request(&model, visual);
+        let saved = forge.get(&project, &feature.id).unwrap();
+        assert!(model.read_with(visual, |m, cx| m.forge.message.read(cx).value().is_empty()));
+        assert_eq!(
+            saved.brief.assumptions[0].review,
+            Some(AssumptionReviewAction::Answer {
+                text: answer.into()
+            })
+        );
+        assert!(saved.brief.pending_decisions.is_empty());
+        assert!(
+            core.feature_agent()
+                .history(&project, &feature.id)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[gpui::test]

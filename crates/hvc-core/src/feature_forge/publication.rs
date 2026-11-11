@@ -29,9 +29,26 @@ pub(crate) fn queue_plan(db: &Connection, feature: &Feature) -> Result<(), Error
     for decision in &b.decisions {
         content.push_str(&format!("- {decision}\n"));
     }
+    if !b.assumptions.is_empty() {
+        content.push_str("\n## Assumptions\n\n");
+        for assumption in &b.assumptions {
+            content.push_str(&format!(
+                "- {} ({:?}): {} — {}\n",
+                assumption.id, assumption.category, assumption.text, assumption.reason
+            ));
+        }
+    }
     // Validate authored prose before adding opaque source paths.
     crate::agent_output_language::validate_english_prose("feature plan", &content)
         .map_err(invalid)?;
+    for item in &b.assumptions {
+        if let Some(super::AssumptionReviewAction::Answer { text }) = &item.review {
+            content.push_str(&format!("\nDeveloper answer to {}:\n", item.id));
+            for line in text.lines() {
+                content.push_str(&format!("> {line}\n"));
+            }
+        }
+    }
     content.push_str("\n## Observed sources\n\n");
     for s in &b.sources {
         content.push_str(&format!(

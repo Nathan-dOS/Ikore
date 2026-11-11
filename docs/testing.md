@@ -3,6 +3,19 @@
 Run commands from the workspace root. `rust-toolchain.toml` pins Rust 1.98.0.
 The desktop application and GPUI validation target Windows x64.
 
+## Forge assumption reviews
+
+The discovery tests exercise the three-question allowance across replies, an
+explicit new round after restart, and the assumption schemas for both provider
+formats. Host tests cover a conflicting retention policy, duplicate IDs, stale
+revisions, replayed flags, and Unicode answers in the published plan. The native
+Forge test saves the current draft as an answer and verifies that reviewing an
+assumption opens no model turn.
+
+```powershell
+cargo test --locked -p hvc-core -p hvc-ui forge_assumptions
+```
+
 ## Local commands
 
 The aliases in [.cargo/config.toml](../.cargo/config.toml) use `--locked` and
