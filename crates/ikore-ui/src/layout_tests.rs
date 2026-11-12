@@ -5395,7 +5395,10 @@ fn backlog_task_actions_sit_at_the_card_top_right(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn companion_conversation_is_a_centred_reading_column(cx: &mut TestAppContext) {
-    use ikore_core::chat_service::{ChatConversation, ChatMessage, ChatTransportKind};
+    use ikore_core::chat_service::{
+        ChatConversation, ChatMessage, ChatMessageModelEvidence, ChatModelVerification,
+        ChatTransportKind,
+    };
     let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
     visual.simulate_resize(size(px(1920.0), px(1080.0)));
     // Opening Chat hydrates it for the project; the conversation is injected afterwards.
@@ -5440,7 +5443,14 @@ fn companion_conversation_is_a_centred_reading_column(cx: &mut TestAppContext) {
                         error_code: None,
                         error_message: None,
                         target_label: None,
-                        model_evidence: None,
+                        model_evidence: (role == "assistant").then(|| ChatMessageModelEvidence {
+                            transport: ChatTransportKind::Cli,
+                            provider_id: "codex".into(),
+                            requested_model: "gpt-5".into(),
+                            model_profile: Some("high".into()),
+                            observed_model: Some("gpt-5".into()),
+                            verification: ChatModelVerification::Verified,
+                        }),
                         created_at: "now".into(),
                         updated_at: "now".into(),
                     })
@@ -5450,6 +5460,21 @@ fn companion_conversation_is_a_centred_reading_column(cx: &mut TestAppContext) {
         cx.notify();
     });
     visual.run_until_parked();
+    // The model line closes the answer, under its header and inside the message. A user
+    // message has none.
+    let answer = visual.debug_bounds("chat-message:message-1").unwrap();
+    let answer_copy = visual.debug_bounds("chat-copy-message:message-1").unwrap();
+    let model_line = visual.debug_bounds("chat-message-model:message-1").unwrap();
+    assert!(
+        model_line.top() >= answer_copy.bottom() && model_line.bottom() <= answer.bottom(),
+        "model line {model_line:?} is not under the answer {answer:?}"
+    );
+    assert!(model_line.left() >= answer.left() && model_line.right() <= answer.right());
+    assert!(
+        visual
+            .debug_bounds("chat-message-model:message-0")
+            .is_none()
+    );
     let conversation = visual
         .debug_bounds("chat-conversation:conversation-1")
         .unwrap();

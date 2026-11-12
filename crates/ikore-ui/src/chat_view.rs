@@ -700,7 +700,8 @@ fn render_message_with_canvas(
         message.status,
         crate::time::format_timestamp(&message.created_at)
     );
-    let model_line = message_model_line(&message);
+    let model_line = message_model_line(&message)
+        .map(|line| (format!("chat-message-model:{}", message.id), line));
     let body = div()
         .min_w_0()
         .flex()
@@ -793,10 +794,10 @@ fn render_message_with_canvas(
                             }),
                     )
                     .child(body)
-                    .when_some(model_line, |message, line| {
+                    .when_some(model_line, |message, (selector, line)| {
                         message.child(
                             div()
-                                .debug_selector(|| "chat-message-model".into())
+                                .debug_selector(move || selector)
                                 .text_xs()
                                 .text_color(theme::text_muted())
                                 .child(line),
@@ -887,7 +888,12 @@ fn cli_model_confirmation(evidence: &ChatMessageModelEvidence) -> String {
         (ChatModelVerification::FamilyVerified, _) => {
             format!("family match for {}", evidence.requested_model)
         }
-        (ChatModelVerification::Unverified, Some(_)) => "chosen by the CLI".into(),
+        // No specific model was requested, so the CLI picked its own default.
+        (ChatModelVerification::Unverified, Some(_)) if evidence.requested_model == "default" => {
+            "chosen by the CLI".into()
+        }
+        // A model was reported, but not by every completed call of the turn.
+        (ChatModelVerification::Unverified, Some(_)) => "partly confirmed".into(),
         (ChatModelVerification::Unverified, None) => "model not confirmed".into(),
     }
 }
@@ -1262,6 +1268,23 @@ mod tests {
                 },
             ),
             "requested gpt-4.1-mini · openai API"
+        );
+    }
+
+    #[test]
+    fn model_line_does_not_overstate_a_partly_confirmed_turn() {
+        assert_eq!(
+            model_line(
+                "completed",
+                cli_evidence(
+                    "claude",
+                    "claude-sonnet-5-5",
+                    None,
+                    Some("claude-sonnet-5-5"),
+                    ChatModelVerification::Unverified,
+                ),
+            ),
+            "claude-sonnet-5-5 · Claude CLI · partly confirmed"
         );
     }
 
