@@ -280,7 +280,55 @@ impl AppModel {
                     .map(|b| Choice::new(b.label(), b.label(), *b == chat.selected_cli_backend))
                     .collect();
             }
-            "chat-cli-profile" => {
+            "chat-composer-route" => {
+                // Transport and endpoint in one list. The Companion refuses Custom.
+                return chat
+                    .eligible_connections()
+                    .map(|connection| {
+                        Choice::new(
+                            format!("api:{}", connection.id),
+                            format!("API · {}", connection.display_name),
+                            chat.selected_transport
+                                == ikore_core::chat_service::ChatTransportKind::Api
+                                && chat
+                                    .selected_connection_id
+                                    .as_ref()
+                                    .is_some_and(|id| id.as_ref() == connection.id),
+                        )
+                    })
+                    .chain(
+                        BACKENDS
+                            .iter()
+                            .filter(|backend| **backend != CliBackend::Custom)
+                            .map(|backend| {
+                                let state = chat
+                                    .cli_availability
+                                    .iter()
+                                    .find(|item| item.backend == *backend)
+                                    .map(|item| item.state)
+                                    .filter(|state| {
+                                        *state
+                                            != ikore_core::terminals::CliAvailabilityState::Available
+                                    });
+                                Choice::new(
+                                    format!("cli:{}", backend.as_str()),
+                                    match state {
+                                        Some(state) => format!(
+                                            "{} CLI ({})",
+                                            backend.label(),
+                                            crate::chat_view::cli_availability_label(state)
+                                        ),
+                                        None => format!("{} CLI", backend.label()),
+                                    },
+                                    chat.selected_transport
+                                        == ikore_core::chat_service::ChatTransportKind::Cli
+                                        && *backend == chat.selected_cli_backend,
+                                )
+                            }),
+                    )
+                    .collect();
+            }
+            "chat-cli-profile" | "chat-composer-profile" => {
                 return std::iter::once(Choice::new(
                     "",
                     "Default",
@@ -674,10 +722,22 @@ impl AppModel {
             return;
         }
         if field.starts_with("chat-") {
-            if self.chat.read(cx).streaming || self.chat.read(cx).busy {
+            // A choice made during a reply is kept and applied when the reply ends.
+            if self.chat.read(cx).busy {
                 return;
             }
             match field {
+                "chat-composer-route" => match value.split_once(':') {
+                    Some(("api", connection_id)) => {
+                        self.set_chat_route_api(connection_id.into(), cx)
+                    }
+                    Some(("cli", id)) => {
+                        if let Some(backend) = CliBackend::parse(id) {
+                            self.set_chat_route_cli(backend, cx)
+                        }
+                    }
+                    _ => {}
+                },
                 "chat-transport" => self.set_chat_transport(
                     if value == "api" {
                         ikore_core::chat_service::ChatTransportKind::Api
@@ -691,7 +751,7 @@ impl AppModel {
                         self.set_chat_cli_backend(b, cx)
                     }
                 }
-                "chat-cli-profile" => {
+                "chat-cli-profile" | "chat-composer-profile" => {
                     self.set_chat_cli_profile((!value.is_empty()).then(|| value.into()), cx)
                 }
                 "chat-cycle-connection" | "chat-connections" => {

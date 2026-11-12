@@ -367,11 +367,14 @@ fn topic_window(
         let busy = chat.is_busy(id);
         let error = chat.error_for(id).map(|error| error.presentable());
         let accepted = chat.disclosure_accepted_for(id);
-        let available = chat
+        let conversation = chat
             .conversations
             .iter()
-            .find(|conversation| &conversation.id == id)
-            .is_some_and(|conversation| conversation.connection_available);
+            .find(|conversation| &conversation.id == id);
+        let available = conversation.is_some_and(|conversation| conversation.connection_available);
+        let target_line = conversation
+            .map(crate::chat_view::conversation_target_line)
+            .unwrap_or_default();
         let in_full_chat = model.active_view() == AppView::Chat
             && chat.active_conversation.as_ref().map(AsRef::as_ref) == Some(id.as_str());
         for message in messages {
@@ -418,6 +421,7 @@ fn topic_window(
                             .flex()
                             .items_center()
                             .justify_between()
+                            .gap_2()
                             .child(button(
                                 format!("dock-expand-{id}"),
                                 "Expand",
@@ -425,6 +429,21 @@ fn topic_window(
                                 cx,
                                 move |model, cx| model.expand_companion_chat(expand_id.clone(), cx),
                             ))
+                            .child(
+                                div()
+                                    .debug_selector({
+                                        let id = id.clone();
+                                        move || format!("dock-target-{id}")
+                                    })
+                                    .flex_1()
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .text_xs()
+                                    .text_color(theme::text_muted())
+                                    .child(target_line),
+                            )
                             .child(if streaming {
                                 button(
                                     format!("dock-cancel-{id}"),

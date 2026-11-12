@@ -394,6 +394,9 @@ pub struct ChatModel {
     pub(crate) selected_cli_model_source: CliModelSelectionSource,
     pub(crate) target_change_pending: bool,
     pub(crate) target_change_generation: u64,
+    /// A target was chosen while the open conversation was replying. It stays
+    /// in the panel and is applied when that reply ends.
+    pub(crate) target_change_deferred: bool,
     pub streaming: bool,
     pub(crate) loading: bool,
     pub(crate) busy: bool,
@@ -448,6 +451,7 @@ impl ChatModel {
             self.selected_cli_model_profile = None;
             self.selected_cli_model_source = CliModelSelectionSource::Default;
             self.target_change_pending = false;
+            self.target_change_deferred = false;
             self.target_change_generation = self.target_change_generation.saturating_add(1);
             self.pending_delete_conversation_id = None;
             self.creating = false;
@@ -767,6 +771,7 @@ impl ChatModel {
         self.active_conversation = Some(conversation_id.to_string().into());
         self.target_change_generation = self.target_change_generation.saturating_add(1);
         self.target_change_pending = false;
+        self.target_change_deferred = false;
         self.pending_delete_conversation_id = None;
         self.recompute_streaming();
         true
@@ -2018,7 +2023,7 @@ mod tests {
                 .chat
                 .update(cx, |chat, _| chat.begin_hydration("project-1".into(), None));
             model.chat.update(cx, |chat, _| {
-                chat.apply_hydration(generation, snapshot("project-1", "history", 1));
+                chat.apply_hydration(generation, settled_snapshot());
             });
             model.set_chat_transport(ChatTransportKind::Cli, cx);
             model.set_chat_cli_backend(CliBackend::Claude, cx);
@@ -2051,6 +2056,138 @@ mod tests {
             assert_eq!(active.cli_backend, Some(CliBackend::Claude));
             assert_eq!(chat.selected_cli_backend, CliBackend::Claude);
             assert_eq!(chat.selected_transport, ChatTransportKind::Cli);
+        });
+    }
+
+    /// A hydration whose only reply has ended.
+    fn settled_snapshot() -> ChatHydration {
+        let mut hydration = snapshot("project-1", "history", 1);
+        let reply = &mut hydration.selected.as_mut().unwrap().messages[0];
+        reply.status = "completed".into();
+        reply.execution_id = None;
+        hydration
+    }
+
+    fn retargets(backend: &RecordingChatBackend) -> Vec<(String, ChatExecutionTargetRequest)> {
+        backend
+            .retargeted
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    #[gpui::test]
+    fn the_composer_route_picks_transport_and_endpoint_in_one_step(cx: &mut TestAppContext) {
+        let backend = Arc::new(RecordingChatBackend::default());
+        let model_backend: Arc<dyn ChatBackend> = backend.clone();
+        let model = cx.new(|cx| AppModel::new_for_test_with_chat_backend(model_backend, cx));
+        model.update(cx, |model, cx| {
+            let generation = model
+                .chat
+                .update(cx, |chat, _| chat.begin_hydration("project-1".into(), None));
+            model.chat.update(cx, |chat, _| {
+                chat.apply_hydration(generation, settled_snapshot());
+            });
+            let options = model.choice_options("chat-composer-route", cx);
+            assert!(
+                options
+                    .iter()
+                    .any(|choice| choice.value == "api:eligible" && choice.selected)
+            );
+            assert!(options.iter().all(|choice| choice.value != "api:blocked"));
+            assert!(options.iter().all(|choice| choice.value != "cli:custom"));
+            assert!(
+                options
+                    .iter()
+                    .any(|choice| choice.value == "cli:claude" && choice.label == "Claude CLI")
+            );
+            model.apply_choice("chat-composer-route", "cli:claude", cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            retargets(&backend),
+            [(
+                "conversation-1".to_string(),
+                ChatExecutionTargetRequest::Cli {
+                    backend: CliBackend::Claude,
+                    model: None,
+                    model_profile: None,
+                }
+            )]
+        );
+        model.update(cx, |model, cx| {
+            let options = model.choice_options("chat-composer-route", cx);
+            assert!(
+                options
+                    .iter()
+                    .any(|choice| choice.value == "cli:claude" && choice.selected)
+            );
+            assert!(options.iter().filter(|choice| choice.selected).count() == 1);
+        });
+    }
+
+    #[gpui::test]
+    fn a_target_chosen_during_a_reply_is_applied_when_the_reply_ends(cx: &mut TestAppContext) {
+        let backend = Arc::new(RecordingChatBackend::default());
+        let model_backend: Arc<dyn ChatBackend> = backend.clone();
+        let model = cx.new(|cx| AppModel::new_for_test_with_chat_backend(model_backend, cx));
+        model.update(cx, |model, cx| {
+            let generation = model
+                .chat
+                .update(cx, |chat, _| chat.begin_hydration("project-1".into(), None));
+            model.chat.update(cx, |chat, _| {
+                chat.apply_hydration(generation, snapshot("project-1", "history", 1));
+            });
+            assert!(model.chat.read(cx).streaming);
+            model.apply_choice("chat-composer-route", "cli:claude", cx);
+            let chat = model.chat.read(cx);
+            assert!(chat.target_change_deferred);
+            assert!(!chat.target_change_pending);
+            // The composer already shows the choice; the conversation keeps its target.
+            assert_eq!(chat.selected_cli_backend, CliBackend::Claude);
+            assert_eq!(
+                chat.active_conversation_record().unwrap().transport,
+                ChatTransportKind::Api
+            );
+        });
+        cx.run_until_parked();
+        assert!(retargets(&backend).is_empty());
+
+        model.update(cx, |model, cx| {
+            model.chat.update(cx, |chat, _| {
+                let mut reply = message("history", 2);
+                reply.status = "completed".into();
+                assert!(chat.apply_turn_snapshot(
+                    "project-1",
+                    "generation-1",
+                    "conversation-1",
+                    GetChatTurnSnapshotResponse {
+                        message: reply,
+                        tool_calls: Vec::new(),
+                    },
+                ));
+            });
+            model.flush_deferred_chat_target(cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            retargets(&backend),
+            [(
+                "conversation-1".to_string(),
+                ChatExecutionTargetRequest::Cli {
+                    backend: CliBackend::Claude,
+                    model: None,
+                    model_profile: None,
+                }
+            )]
+        );
+        model.update(cx, |model, cx| {
+            let chat = model.chat.read(cx);
+            assert!(!chat.target_change_deferred);
+            assert_eq!(
+                chat.active_conversation_record().unwrap().cli_backend,
+                Some(CliBackend::Claude)
+            );
         });
     }
 

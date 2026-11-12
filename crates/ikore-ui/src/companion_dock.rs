@@ -1529,6 +1529,15 @@ mod tests {
         visual.simulate_resize(size(px(1440.0), px(900.0)));
         visual.run_until_parked();
         assert!(visual.debug_bounds("dock-composer-dock-c").is_some());
+        // The floating composer shows the target of its conversation between Expand and Send.
+        let dock_composer = visual.debug_bounds("dock-composer-dock-c").unwrap();
+        let dock_target = visual.debug_bounds("dock-target-dock-c").unwrap();
+        assert!(
+            dock_target.left() >= dock_composer.left()
+                && dock_target.right() <= dock_composer.right()
+                && dock_target.bottom() <= dock_composer.bottom(),
+            "{dock_target:?} leaves {dock_composer:?}"
+        );
         model.update(visual, |model, cx| {
             model.select_chat_conversation("dock-c".into(), cx);
             model.select_view(AppView::Chat, cx);

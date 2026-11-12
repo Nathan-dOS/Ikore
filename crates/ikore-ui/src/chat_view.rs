@@ -119,6 +119,7 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
     let draft_empty = draft.read(cx).value().trim().is_empty();
     let tool_activity_open = model.chat.read(cx).tool_activity_open;
     let config_collapsed = model.chat.read(cx).config_collapsed;
+    let target_change_deferred = model.chat.read(cx).target_change_deferred;
     let show_tool_activity = should_show_tool_activity(active_conversation.as_ref())
         && (active_conversation.is_some() || selected_transport == ChatTransportKind::Api);
     let cli_model_label = crate::agents_view::cli_model_label(
@@ -128,6 +129,41 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
     let cli_profile_label = selected_cli_model_profile
         .clone()
         .unwrap_or_else(|| "CLI default".into());
+    let cli_target = selected_transport == ChatTransportKind::Cli;
+    let composer_target = composer_target_controls(
+        ComposerTarget {
+            model: if cli_target {
+                cli_model_label.clone()
+            } else {
+                selected_connection
+                    .map(|connection| {
+                        visible_api_model(active_conversation.as_ref(), &connection.default_model)
+                            .to_owned()
+                    })
+                    .unwrap_or_else(|| "none".into())
+            },
+            model_selectable: cli_target,
+            effort: cli_target.then(|| {
+                (
+                    cli_profile_label.clone(),
+                    selected_cli_model.is_some()
+                        && !model
+                            .model_profiles(selected_cli_backend, selected_cli_model.as_deref(), cx)
+                            .is_empty(),
+                )
+            }),
+            route: if cli_target {
+                format!("{} CLI", selected_cli_backend.label())
+            } else {
+                selected_connection
+                    .map(|connection| format!("API · {}", connection.display_name))
+                    .unwrap_or_else(|| "API · no connection".into())
+            },
+            enabled: !busy && !target_change_pending,
+            deferred: target_change_deferred,
+        },
+        cx,
+    );
 
     div()
         .relative().overflow_hidden()
@@ -229,16 +265,7 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                                 format!(
                                                     "{} · {}",
                                                     selected_cli_backend.label(),
-                                                    match item.state {
-                                                        CliAvailabilityState::Available => "ready",
-                                                        CliAvailabilityState::AuthRequired => "login required",
-                                                        CliAvailabilityState::UnsupportedVersion => "unsupported version",
-                                                        CliAvailabilityState::CapabilityMissing => "adapter update required",
-                                                        CliAvailabilityState::Missing => "not installed",
-                                                        CliAvailabilityState::ProbeFailed => "probe failed",
-                                                        CliAvailabilityState::Probing => "probing",
-                                                        CliAvailabilityState::Unsupported => "unsupported",
-                                                    }
+                                                    cli_availability_label(item.state)
                                                 )
                                             })
                                             .unwrap_or_else(|| "CLI not detected".into())
@@ -601,12 +628,12 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                         .flex()
                                         .items_center()
                                         .justify_between()
-                                        .child(
-                                            div()
-                                                .text_xs()
-                                                .text_color(theme::text_muted())
-                                                .child("Enter sends · Shift+Enter adds a new line"),
-                                        )
+                                        .gap_2()
+                                        .child(composer_target)
+                                        .child(crate::widgets::info_tip(
+                                            "chat-composer-keys",
+                                            "Enter sends. Shift+Enter adds a new line.",
+                                        ))
                                         .child(if streaming {
                                             action(
                                                 "chat-cancel-turn",
@@ -847,6 +874,126 @@ fn render_message_with_canvas(
             )
             .into_any_element()
     }
+}
+
+pub(crate) fn cli_availability_label(state: CliAvailabilityState) -> &'static str {
+    match state {
+        CliAvailabilityState::Available => "ready",
+        CliAvailabilityState::AuthRequired => "login required",
+        CliAvailabilityState::UnsupportedVersion => "unsupported version",
+        CliAvailabilityState::CapabilityMissing => "adapter update required",
+        CliAvailabilityState::Missing => "not installed",
+        CliAvailabilityState::ProbeFailed => "probe failed",
+        CliAvailabilityState::Probing => "probing",
+        CliAvailabilityState::Unsupported => "unsupported",
+    }
+}
+
+/// What the composer shows and lets the developer change for the next message.
+struct ComposerTarget {
+    model: String,
+    /// API connections carry their own model; only a CLI model is picked here.
+    model_selectable: bool,
+    /// Effort profile and whether the selected model offers a choice. CLI only.
+    effort: Option<(String, bool)>,
+    route: String,
+    enabled: bool,
+    /// The choice waits for the running reply to end.
+    deferred: bool,
+}
+
+fn composer_target_controls(target: ComposerTarget, cx: &mut Context<AppModel>) -> AnyElement {
+    let enabled = target.enabled;
+    div()
+        .debug_selector(|| "chat-composer-target".into())
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap_2()
+        .child(composer_model_control(
+            target.model,
+            enabled && target.model_selectable,
+            cx,
+        ))
+        .when_some(target.effort, |row, (effort, selectable)| {
+            row.child(crate::select_menu::compact_control(
+                "chat-composer-profile",
+                "Effort",
+                effort,
+                enabled && selectable,
+                cx,
+            ))
+        })
+        .child(crate::select_menu::compact_control(
+            "chat-composer-route",
+            "Route",
+            target.route,
+            enabled,
+            cx,
+        ))
+        .when(target.deferred, |row| {
+            row.child(
+                div()
+                    .debug_selector(|| "chat-composer-target-deferred".into())
+                    .text_xs()
+                    .text_color(theme::text_muted())
+                    .child("Applies to the next message"),
+            )
+        })
+        .into_any_element()
+}
+
+/// Opens the Companion model picker. It matches `select_menu::compact_control`,
+/// whose menus cannot hold the picker's catalog, search and manual entry.
+fn composer_model_control(model: String, enabled: bool, cx: &mut Context<AppModel>) -> AnyElement {
+    crate::widgets::button_frame(
+        div()
+            .id("chat-composer-model")
+            .debug_selector(|| "chat-composer-model".into())
+            .tab_index(0),
+        crate::widgets::ButtonVariant::Secondary,
+        enabled,
+    )
+    .gap_2()
+    .child(div().text_color(theme::text_muted()).child("Model:"))
+    .child(model)
+    .when(enabled, |control| {
+        control
+            .child(crate::widgets::icon(
+                crate::icons::Icon::ChevronDown,
+                px(12.0),
+                theme::text_muted(),
+            ))
+            .on_click(cx.listener(|model, _, _, cx| model.open_companion_model_picker(cx)))
+            .on_key_down(cx.listener(|model, event: &gpui::KeyDownEvent, _, cx| {
+                if matches!(event.keystroke.key.as_str(), "enter" | "space" | "down") {
+                    model.open_companion_model_picker(cx);
+                    cx.stop_propagation();
+                }
+            }))
+    })
+    .into_any_element()
+}
+
+/// `model · effort · route` of a stored conversation, for a composer that
+/// shows the target without changing it.
+pub(crate) fn conversation_target_line(conversation: &ChatConversation) -> String {
+    let mut parts = vec![if conversation.model_id == "default" {
+        "CLI default".to_owned()
+    } else {
+        conversation.model_id.clone()
+    }];
+    if let Some(profile) = &conversation.model_profile {
+        parts.push(profile.clone());
+    }
+    parts.push(match (conversation.transport, conversation.cli_backend) {
+        (ChatTransportKind::Cli, Some(backend)) => format!("{} CLI", backend.label()),
+        (ChatTransportKind::Cli, None) => "CLI".into(),
+        (ChatTransportKind::Api, _) => format!("{} API", conversation.provider_id),
+    });
+    parts.join(" · ")
 }
 
 /// One line under an assistant answer: the model that served it, the effort
@@ -1351,6 +1498,10 @@ mod tests {
         };
         assert!(!should_show_tool_activity(Some(&conversation)));
         assert!(should_show_tool_activity(None));
+        assert_eq!(
+            conversation_target_line(&conversation),
+            "sonnet · high · Claude CLI"
+        );
         assert_eq!(
             visible_api_model(Some(&conversation), "configured"),
             "configured"

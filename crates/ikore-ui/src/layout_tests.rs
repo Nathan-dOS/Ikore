@@ -5456,6 +5456,7 @@ fn companion_conversation_is_a_centred_reading_column(cx: &mut TestAppContext) {
                     })
                     .collect(),
             );
+            chat.sync_panel_with_active_conversation();
         });
         cx.notify();
     });
@@ -5548,6 +5549,33 @@ fn companion_conversation_is_a_centred_reading_column(cx: &mut TestAppContext) {
     assert!(offset <= px(2.0), "composer off centre by {offset:?}");
     // The composer sits under the conversation, not beside it.
     assert!(composer.top() >= scroll.bottom());
+    // Model, effort and route are chosen in the composer, left of the keyboard hint and Send.
+    let target = visual.debug_bounds("chat-composer-target").unwrap();
+    let keys = visual.debug_bounds("info:chat-composer-keys").unwrap();
+    assert!(target.left() >= composer.left() && target.bottom() <= composer.bottom());
+    assert!(
+        target.right() <= keys.left() && keys.right() <= composer.right(),
+        "{target:?} overlaps {keys:?}"
+    );
+    for control in [
+        "chat-composer-model",
+        "chat-composer-profile",
+        "chat-composer-route",
+    ] {
+        let bounds = visual.debug_bounds(control).unwrap();
+        assert!(
+            bounds.left() >= target.left()
+                && bounds.right() <= target.right()
+                && bounds.top() >= target.top()
+                && bounds.bottom() <= target.bottom(),
+            "{control} {bounds:?} leaves the composer target {target:?}"
+        );
+    }
+    assert!(
+        visual
+            .debug_bounds("chat-composer-target-deferred")
+            .is_none()
+    );
     // A long draft grows the card with it: the Send row never spills past the border, whatever
     // the number of wrapped lines (the input caps at six rows and then scrolls).
     let sentence = "A long question about the architecture of this repository, typed at length. ";

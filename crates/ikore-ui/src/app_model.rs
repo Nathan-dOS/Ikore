@@ -4421,11 +4421,63 @@ impl AppModel {
         self.apply_chat_target_change(cx);
     }
 
+    /// Selects the API transport and its connection in one step, as the
+    /// composer's route menu does.
+    pub(crate) fn set_chat_route_api(&mut self, connection_id: String, cx: &mut Context<Self>) {
+        if self.chat.read(cx).target_change_pending {
+            return;
+        }
+        self.chat.update(cx, |chat, _| {
+            chat.selected_transport = ChatTransportKind::Api;
+            chat.selected_connection_id = Some(connection_id.into());
+        });
+        self.close_cli_model_picker(cx);
+        self.close_dropdown(cx);
+        self.apply_chat_target_change(cx);
+    }
+
+    /// Selects the CLI transport and its backend in one step. A different
+    /// backend starts from its own default model.
+    pub(crate) fn set_chat_route_cli(&mut self, backend: CliBackend, cx: &mut Context<Self>) {
+        let (pending, unchanged, same_backend) = {
+            let chat = self.chat.read(cx);
+            let same_backend = chat.selected_cli_backend == backend;
+            (
+                chat.target_change_pending,
+                same_backend && chat.selected_transport == ChatTransportKind::Cli,
+                same_backend,
+            )
+        };
+        if pending {
+            return;
+        }
+        if unchanged {
+            self.close_dropdown(cx);
+            return;
+        }
+        self.chat.update(cx, |chat, _| {
+            chat.selected_transport = ChatTransportKind::Cli;
+            if !same_backend {
+                chat.selected_cli_backend = backend;
+                chat.selected_cli_model = None;
+                chat.selected_cli_model_profile = None;
+                chat.selected_cli_model_source = CliModelSelectionSource::Default;
+            }
+        });
+        self.close_cli_model_picker(cx);
+        self.close_dropdown(cx);
+        if !self.agents.read(cx).model_catalogs.contains_key(&backend) {
+            self.load_cli_model_catalog(backend, false, cx);
+        }
+        self.apply_chat_target_change(cx);
+    }
+
     /// The Companion panel applies to the open conversation from its next
     /// message and is remembered per project (ADR-014 amendment,
     /// 2026-09-22). Without an open conversation it is only remembered. A
-    /// refused change (a reply still running, an invalid model) puts the
-    /// panel back on the conversation's real target.
+    /// change made during a reply waits for that reply to end. A refused
+    /// change (an invalid model) puts the panel back on the conversation's
+    /// real target.
     fn apply_chat_target_change(&mut self, cx: &mut Context<Self>) {
         let Some(backend) = self.chat_backend.clone() else {
             return;
@@ -4444,7 +4496,15 @@ impl AppModel {
                 target,
             )
         };
+        if conversation_id.is_some() && self.chat.read(cx).streaming {
+            // The running reply keeps the target it started with.
+            self.chat
+                .update(cx, |chat, _| chat.target_change_deferred = true);
+            cx.notify();
+            return;
+        }
         let generation = self.chat.update(cx, |chat, _| {
+            chat.target_change_deferred = false;
             chat.target_change_generation = chat.target_change_generation.saturating_add(1);
             chat.target_change_pending = true;
             chat.target_change_generation
@@ -4494,6 +4554,17 @@ impl AppModel {
                 });
             }
         }));
+    }
+
+    /// Applies the target chosen during a reply once that reply has ended.
+    pub(crate) fn flush_deferred_chat_target(&mut self, cx: &mut Context<Self>) {
+        let ready = {
+            let chat = self.chat.read(cx);
+            chat.target_change_deferred && !chat.streaming
+        };
+        if ready {
+            self.apply_chat_target_change(cx);
+        }
     }
 
     pub(crate) fn open_companion_model_picker(&mut self, cx: &mut Context<Self>) {
@@ -4674,6 +4745,17 @@ impl AppModel {
         let Some(backend) = self.chat_backend.clone() else {
             return;
         };
+        let deferred_here = {
+            let chat = self.chat.read(cx);
+            chat.target_change_deferred
+                && chat.active_conversation.as_ref().map(AsRef::as_ref)
+                    == Some(conversation_id.as_str())
+        };
+        if deferred_here {
+            // Never send to a target other than the one the composer shows.
+            self.flush_deferred_chat_target(cx);
+            return;
+        }
         let (project_id, expected_target) = {
             let chat = self.chat.read(cx);
             if content.trim().is_empty()
@@ -4826,6 +4908,7 @@ impl AppModel {
         {
             self.refresh_canvas_authoring(cx);
         }
+        self.flush_deferred_chat_target(cx);
     }
 
     fn resync_chat_turn(
@@ -4873,6 +4956,7 @@ impl AppModel {
                         }
                     }),
                 }
+                model.flush_deferred_chat_target(cx);
                 cx.notify();
             });
         });
