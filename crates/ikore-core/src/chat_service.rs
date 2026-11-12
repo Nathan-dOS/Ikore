@@ -290,6 +290,42 @@ pub enum ChatExecutionTargetRequest {
     },
 }
 
+/// How far the CLI output confirmed the model that served a turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatModelVerification {
+    /// No model was reported, or no specific model was requested.
+    Unverified,
+    /// The observed model belongs to the requested family alias.
+    FamilyVerified,
+    /// The observed model is exactly the requested one.
+    Verified,
+}
+
+impl ChatModelVerification {
+    fn parse(value: &str) -> Self {
+        match value {
+            "verified" => Self::Verified,
+            "family_verified" => Self::FamilyVerified,
+            _ => Self::Unverified,
+        }
+    }
+}
+
+/// Model identity of one assistant message, folded from its model calls.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatMessageModelEvidence {
+    pub transport: ChatTransportKind,
+    /// Provider id of an API turn, CLI backend id of a CLI turn.
+    pub provider_id: String,
+    pub requested_model: String,
+    pub model_profile: Option<String>,
+    /// Model reported by the CLI output. API turns do not record one.
+    pub observed_model: Option<String>,
+    pub verification: ChatModelVerification,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatMessage {
@@ -309,6 +345,8 @@ pub struct ChatMessage {
     pub error_message: Option<String>,
     /// Frozen at send time; older turns are reconstructed from their first model call.
     pub target_label: Option<String>,
+    /// `None` for user messages and for turns that never reached a model call.
+    pub model_evidence: Option<ChatMessageModelEvidence>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -1239,7 +1277,7 @@ impl ChatService {
     ) -> Result<GetChatTurnSnapshotResponse, ChatCommandError> {
         let generation_id = normalize_id(&request.generation_id, "generationId")?;
         let database = self.connection()?;
-        let message = database
+        let mut message = database
             .query_row(
                 "SELECT id, conversation_id, ordinal, role, content, status, execution_id,
                         generation_id, last_sequence, input_tokens, output_tokens,
@@ -1251,6 +1289,9 @@ impl ChatService {
             )
             .optional()?
             .ok_or_else(|| ChatCommandError::new("turn_not_found", "Turn not found."))?;
+        message.model_evidence =
+            load_model_evidence(&database, MESSAGE_MODEL_CALLS_SQL, &message.id)?
+                .remove(&message.id);
         let tool_calls = self.list_tool_calls_for_message(&message.id)?;
         Ok(GetChatTurnSnapshotResponse {
             message,
@@ -1416,8 +1457,13 @@ impl ChatService {
              FROM chat_messages WHERE conversation_id = ?1 ORDER BY ordinal",
         )?;
         let rows = statement.query_map(params![conversation_id], map_message)?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(ChatCommandError::from)
+        let mut messages = rows.collect::<Result<Vec<_>, _>>()?;
+        let mut evidence =
+            load_model_evidence(&connection, CONVERSATION_MODEL_CALLS_SQL, conversation_id)?;
+        for message in &mut messages {
+            message.model_evidence = evidence.remove(&message.id);
+        }
+        Ok(messages)
     }
 
     fn list_tool_calls_for_conversation(
@@ -1561,6 +1607,93 @@ fn map_message(row: &Row<'_>) -> rusqlite::Result<ChatMessage> {
         created_at: row.get(14)?,
         updated_at: row.get(15)?,
         target_label: row.get(16)?,
+        model_evidence: None,
+    })
+}
+
+const CONVERSATION_MODEL_CALLS_SQL: &str =
+    "SELECT mc.assistant_message_id, mc.transport_kind, mc.provider_id, mc.model_id,
+            mc.model_profile, mc.observed_model, mc.model_verification, mc.status
+     FROM chat_model_calls mc
+     JOIN chat_messages m ON m.id = mc.assistant_message_id
+     WHERE m.conversation_id = ?1
+     ORDER BY mc.started_at, mc.rowid";
+
+const MESSAGE_MODEL_CALLS_SQL: &str =
+    "SELECT mc.assistant_message_id, mc.transport_kind, mc.provider_id, mc.model_id,
+            mc.model_profile, mc.observed_model, mc.model_verification, mc.status
+     FROM chat_model_calls mc
+     WHERE mc.assistant_message_id = ?1
+     ORDER BY mc.started_at, mc.rowid";
+
+struct ModelCallEvidence {
+    completed: bool,
+    evidence: ChatMessageModelEvidence,
+}
+
+/// Reads the model calls selected by `sql`, oldest first, and folds them per
+/// assistant message.
+fn load_model_evidence(
+    connection: &Connection,
+    sql: &str,
+    key: &str,
+) -> Result<HashMap<String, ChatMessageModelEvidence>, ChatCommandError> {
+    let mut statement = connection.prepare(sql)?;
+    let rows = statement.query_map(params![key], |row| {
+        let transport: String = row.get(1)?;
+        let verification: String = row.get(6)?;
+        let status: String = row.get(7)?;
+        Ok((
+            row.get::<_, String>(0)?,
+            ModelCallEvidence {
+                completed: status == "completed",
+                evidence: ChatMessageModelEvidence {
+                    transport: ChatTransportKind::parse(&transport).ok_or_else(|| {
+                        rusqlite::Error::InvalidColumnType(
+                            1,
+                            transport,
+                            rusqlite::types::Type::Text,
+                        )
+                    })?,
+                    provider_id: row.get(2)?,
+                    requested_model: row.get(3)?,
+                    model_profile: row.get(4)?,
+                    observed_model: row.get(5)?,
+                    verification: ChatModelVerification::parse(&verification),
+                },
+            },
+        ))
+    })?;
+    let mut calls: HashMap<String, Vec<ModelCallEvidence>> = HashMap::new();
+    for row in rows {
+        let (message_id, call) = row?;
+        calls.entry(message_id).or_default().push(call);
+    }
+    Ok(calls
+        .into_iter()
+        .filter_map(|(message_id, calls)| {
+            fold_model_evidence(calls).map(|evidence| (message_id, evidence))
+        })
+        .collect())
+}
+
+/// The completed calls produced the answer, so they alone decide its evidence.
+/// A message without one (still running, or failed) folds every call instead.
+/// The weakest level wins: one unconfirmed call leaves the message unconfirmed.
+fn fold_model_evidence(mut calls: Vec<ModelCallEvidence>) -> Option<ChatMessageModelEvidence> {
+    if calls.iter().any(|call| call.completed) {
+        calls.retain(|call| call.completed);
+    }
+    let verification = calls.iter().map(|call| call.evidence.verification).min()?;
+    let observed_model = calls
+        .iter()
+        .rev()
+        .find_map(|call| call.evidence.observed_model.clone());
+    let latest = calls.pop()?.evidence;
+    Some(ChatMessageModelEvidence {
+        observed_model,
+        verification,
+        ..latest
     })
 }
 
@@ -7064,6 +7197,183 @@ mod tests {
             historical.messages[1].target_label,
             snapshot.message.target_label
         );
+    }
+
+    #[test]
+    fn messages_carry_model_evidence_folded_from_their_model_calls() {
+        let (_temp, _workspace, service) = prepare_chat();
+        let conversation = service
+            .create_conversation(CreateChatConversationRequest {
+                project_id: "project-a".into(),
+                target: ChatExecutionTargetRequest::Api {
+                    connection_id: "connection-a".into(),
+                },
+            })
+            .unwrap()
+            .conversation;
+        let database = service.connection().unwrap();
+        for (ordinal, (id, role, status)) in [
+            ("user-1", "user", "completed"),
+            ("assistant-repaired", "assistant", "completed"),
+            ("assistant-running", "assistant", "streaming"),
+            ("assistant-api", "assistant", "completed"),
+            ("assistant-failed", "assistant", "failed"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            database
+                .execute(
+                    "INSERT INTO chat_messages (
+                       id, conversation_id, ordinal, role, content, status, generation_id,
+                       created_at, updated_at
+                     ) VALUES (?1, ?2, ?3, ?4, '', ?5, ?1, ?6, ?6)",
+                    params![
+                        id,
+                        conversation.id.as_str(),
+                        ordinal as i64,
+                        role,
+                        status,
+                        now_iso()
+                    ],
+                )
+                .unwrap();
+        }
+        // (message, second, status, backend, model, profile, observed, verification)
+        let calls = [
+            // An invalid envelope reports nothing and is repaired by the next call.
+            (
+                "assistant-repaired",
+                1,
+                "failed",
+                Some("claude"),
+                "sonnet",
+                Some("high"),
+                None,
+                "unverified",
+            ),
+            (
+                "assistant-repaired",
+                2,
+                "completed",
+                Some("claude"),
+                "sonnet",
+                Some("high"),
+                Some("claude-sonnet-5-5"),
+                "verified",
+            ),
+            (
+                "assistant-repaired",
+                3,
+                "completed",
+                Some("claude"),
+                "sonnet",
+                Some("high"),
+                Some("claude-sonnet-5-5-latest"),
+                "family_verified",
+            ),
+            (
+                "assistant-running",
+                4,
+                "running",
+                Some("codex"),
+                "default",
+                None,
+                None,
+                "unverified",
+            ),
+            (
+                "assistant-api",
+                5,
+                "completed",
+                None,
+                "gpt-4.1-mini",
+                None,
+                None,
+                "unverified",
+            ),
+            (
+                "assistant-failed",
+                6,
+                "failed",
+                Some("codex"),
+                "gpt-5.6-luna",
+                Some("low"),
+                Some("gpt-5.6-luna"),
+                "verified",
+            ),
+        ];
+        for (message, second, status, backend, model, profile, observed, verification) in calls {
+            database
+                .execute(
+                    "INSERT INTO chat_model_calls (
+                       id, assistant_message_id, round_index, provider_id, model_id, started_at,
+                       status, transport_kind, cli_backend, model_profile, observed_model,
+                       model_verification
+                     ) VALUES (?1, ?2, 0, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    params![
+                        format!("call-{second}"),
+                        message,
+                        backend.unwrap_or("openai"),
+                        model,
+                        format!("2026-11-12T00:00:0{second}Z"),
+                        status,
+                        if backend.is_some() { "cli" } else { "api" },
+                        backend,
+                        profile,
+                        observed,
+                        verification
+                    ],
+                )
+                .unwrap();
+        }
+        drop(database);
+
+        let loaded = service
+            .get_conversation(GetChatConversationRequest {
+                conversation_id: conversation.id,
+            })
+            .unwrap();
+        let evidence = |id: &str| {
+            loaded
+                .messages
+                .iter()
+                .find(|message| message.id == id)
+                .unwrap()
+                .model_evidence
+                .clone()
+        };
+        assert_eq!(evidence("user-1"), None);
+        let repaired = evidence("assistant-repaired").unwrap();
+        assert_eq!(
+            repaired,
+            ChatMessageModelEvidence {
+                transport: ChatTransportKind::Cli,
+                provider_id: "claude".into(),
+                requested_model: "sonnet".into(),
+                model_profile: Some("high".into()),
+                observed_model: Some("claude-sonnet-5-5-latest".into()),
+                verification: ChatModelVerification::FamilyVerified,
+            }
+        );
+        let running = evidence("assistant-running").unwrap();
+        assert_eq!(running.requested_model, "default");
+        assert_eq!(running.observed_model, None);
+        assert_eq!(running.verification, ChatModelVerification::Unverified);
+        let api = evidence("assistant-api").unwrap();
+        assert_eq!(api.transport, ChatTransportKind::Api);
+        assert_eq!(api.provider_id, "openai");
+        assert_eq!(api.observed_model, None);
+        let failed = evidence("assistant-failed").unwrap();
+        assert_eq!(failed.observed_model.as_deref(), Some("gpt-5.6-luna"));
+        assert_eq!(failed.verification, ChatModelVerification::Verified);
+
+        let snapshot = service
+            .get_turn_snapshot(GetChatTurnSnapshotRequest {
+                generation_id: "assistant-repaired".into(),
+            })
+            .unwrap();
+        assert_eq!(snapshot.message.model_evidence, Some(repaired));
     }
 
     #[test]

@@ -1,8 +1,9 @@
 use gpui::{AnyElement, Context, IntoElement, SharedString, div, prelude::*, px};
 use ikore_core::chat_service::{
-    ChatConversation, ChatMessage, ChatToolArgumentValue, ChatToolCall, ChatTransportKind,
+    ChatConversation, ChatMessage, ChatMessageModelEvidence, ChatModelVerification,
+    ChatToolArgumentValue, ChatToolCall, ChatTransportKind,
 };
-use ikore_core::terminals::CliAvailabilityState;
+use ikore_core::terminals::{CliAvailabilityState, CliBackend};
 #[cfg(test)]
 use ikore_editor::{parse_chat_content, parse_markdown};
 
@@ -695,15 +696,11 @@ fn render_message_with_canvas(
     let assistant = message.role == "assistant";
     let copy_text = copyable_chat_message_text(&message);
     let meta = format!(
-        "{}{} · {}",
+        "{} · {}",
         message.status,
-        message
-            .target_label
-            .as_ref()
-            .map(|target| format!(" · requested: {target}"))
-            .unwrap_or_default(),
         crate::time::format_timestamp(&message.created_at)
     );
+    let model_line = message_model_line(&message);
     let body = div()
         .min_w_0()
         .flex()
@@ -796,6 +793,15 @@ fn render_message_with_canvas(
                             }),
                     )
                     .child(body)
+                    .when_some(model_line, |message, line| {
+                        message.child(
+                            div()
+                                .debug_selector(|| "chat-message-model".into())
+                                .text_xs()
+                                .text_color(theme::text_muted())
+                                .child(line),
+                        )
+                    })
                     .when_some(canvas_card, |message, card| message.child(card)),
             )
             .into_any_element()
@@ -839,6 +845,50 @@ fn render_message_with_canvas(
                     }),
             )
             .into_any_element()
+    }
+}
+
+/// One line under an assistant answer: the model that served it, the effort
+/// profile, the route, and how far the CLI output confirmed the model.
+///
+/// A turn that never reached a model call keeps the label frozen at send time.
+pub(crate) fn message_model_line(message: &ChatMessage) -> Option<String> {
+    let Some(evidence) = &message.model_evidence else {
+        return message
+            .target_label
+            .as_ref()
+            .map(|target| format!("requested: {target}"));
+    };
+    let mut parts = vec![match &evidence.observed_model {
+        Some(observed) => observed.clone(),
+        None => format!("requested {}", evidence.requested_model),
+    }];
+    if let Some(profile) = &evidence.model_profile {
+        parts.push(profile.clone());
+    }
+    parts.push(match evidence.transport {
+        ChatTransportKind::Cli => format!(
+            "{} CLI",
+            CliBackend::parse(&evidence.provider_id)
+                .map_or(evidence.provider_id.as_str(), |backend| backend.label())
+        ),
+        ChatTransportKind::Api => format!("{} API", evidence.provider_id),
+    });
+    let settled = !matches!(message.status.as_str(), "pending" | "streaming");
+    if settled && evidence.transport == ChatTransportKind::Cli {
+        parts.push(cli_model_confirmation(evidence));
+    }
+    Some(parts.join(" · "))
+}
+
+fn cli_model_confirmation(evidence: &ChatMessageModelEvidence) -> String {
+    match (evidence.verification, &evidence.observed_model) {
+        (ChatModelVerification::Verified, _) => "verified".into(),
+        (ChatModelVerification::FamilyVerified, _) => {
+            format!("family match for {}", evidence.requested_model)
+        }
+        (ChatModelVerification::Unverified, Some(_)) => "chosen by the CLI".into(),
+        (ChatModelVerification::Unverified, None) => "model not confirmed".into(),
     }
 }
 
@@ -1098,9 +1148,132 @@ mod tests {
             error_code: None,
             error_message: error.map(str::to_owned),
             target_label: None,
+            model_evidence: None,
             created_at: "now".into(),
             updated_at: "now".into(),
         }
+    }
+
+    fn cli_evidence(
+        backend: &str,
+        requested: &str,
+        profile: Option<&str>,
+        observed: Option<&str>,
+        verification: ChatModelVerification,
+    ) -> ChatMessageModelEvidence {
+        ChatMessageModelEvidence {
+            transport: ChatTransportKind::Cli,
+            provider_id: backend.into(),
+            requested_model: requested.into(),
+            model_profile: profile.map(str::to_owned),
+            observed_model: observed.map(str::to_owned),
+            verification,
+        }
+    }
+
+    fn model_line(status: &str, evidence: ChatMessageModelEvidence) -> String {
+        let mut message = message("assistant", "Answer", None);
+        message.status = status.into();
+        message.model_evidence = Some(evidence);
+        message_model_line(&message).unwrap()
+    }
+
+    #[test]
+    fn model_line_names_the_observed_model_the_route_and_the_evidence() {
+        assert_eq!(
+            model_line(
+                "completed",
+                cli_evidence(
+                    "codex",
+                    "gpt-5.6-luna",
+                    Some("low"),
+                    Some("gpt-5.6-luna"),
+                    ChatModelVerification::Verified,
+                ),
+            ),
+            "gpt-5.6-luna · low · Codex CLI · verified"
+        );
+        assert_eq!(
+            model_line(
+                "completed",
+                cli_evidence(
+                    "claude",
+                    "sonnet",
+                    Some("high"),
+                    Some("claude-sonnet-5-5"),
+                    ChatModelVerification::FamilyVerified,
+                ),
+            ),
+            "claude-sonnet-5-5 · high · Claude CLI · family match for sonnet"
+        );
+        assert_eq!(
+            model_line(
+                "completed",
+                cli_evidence(
+                    "gemini",
+                    "default",
+                    None,
+                    Some("gemini-3-pro"),
+                    ChatModelVerification::Unverified,
+                ),
+            ),
+            "gemini-3-pro · Gemini CLI · chosen by the CLI"
+        );
+        assert_eq!(
+            model_line(
+                "failed",
+                cli_evidence(
+                    "opencode",
+                    "glm-5",
+                    None,
+                    None,
+                    ChatModelVerification::Unverified
+                ),
+            ),
+            "requested glm-5 · OpenCode CLI · model not confirmed"
+        );
+    }
+
+    #[test]
+    fn model_line_claims_no_evidence_for_running_or_api_turns() {
+        assert_eq!(
+            model_line(
+                "streaming",
+                cli_evidence(
+                    "claude",
+                    "sonnet",
+                    Some("high"),
+                    None,
+                    ChatModelVerification::Unverified,
+                ),
+            ),
+            "requested sonnet · high · Claude CLI"
+        );
+        assert_eq!(
+            model_line(
+                "completed",
+                ChatMessageModelEvidence {
+                    transport: ChatTransportKind::Api,
+                    provider_id: "openai".into(),
+                    requested_model: "gpt-4.1-mini".into(),
+                    model_profile: None,
+                    observed_model: None,
+                    verification: ChatModelVerification::Unverified,
+                },
+            ),
+            "requested gpt-4.1-mini · openai API"
+        );
+    }
+
+    #[test]
+    fn model_line_falls_back_to_the_frozen_target_without_model_calls() {
+        let mut pending = message("assistant", "", None);
+        assert_eq!(message_model_line(&pending), None);
+        pending.target_label = Some("claude / sonnet / high".into());
+        assert_eq!(
+            message_model_line(&pending).as_deref(),
+            Some("requested: claude / sonnet / high")
+        );
     }
 
     #[test]

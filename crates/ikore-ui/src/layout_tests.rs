@@ -5440,6 +5440,7 @@ fn companion_conversation_is_a_centred_reading_column(cx: &mut TestAppContext) {
                         error_code: None,
                         error_message: None,
                         target_label: None,
+                        model_evidence: None,
                         created_at: "now".into(),
                         updated_at: "now".into(),
                     })
