@@ -21,6 +21,7 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
         conversations,
         active_conversation,
         (messages, hidden_messages),
+        question_span,
         tool_calls,
         selected_connection_id,
         selected_transport,
@@ -49,6 +50,10 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                 let (messages, hidden) = chat.rendered_messages();
                 (messages.to_vec(), hidden)
             },
+            crate::chat_questions::QuestionSpan::of(
+                chat.active_messages(),
+                chat.rendered_messages().1,
+            ),
             chat.active_tool_calls().to_vec(),
             chat.selected_connection_id.clone(),
             chat.selected_transport,
@@ -123,6 +128,17 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
         selected_cli_model_source,
         selected_cli_model.as_deref(),
     );
+    // The question navigator appears once there is a question to go to and somewhere to scroll.
+    let (show_question_rail, active_question) = {
+        let layout = model.chat_question_layout.borrow();
+        (
+            question_span.total() >= 2 && (layout.scrolls() || hidden_messages > 0),
+            layout.active(-model.chat_scroll.offset().y),
+        )
+    };
+    // Children of the messages column that come before its first message.
+    let leading_message_children =
+        usize::from(messages.is_empty()) + usize::from(hidden_messages > 0);
     let cli_target = selected_transport == ChatTransportKind::Cli;
     // Rendered once: in the composer of the open conversation, or in the start card without one.
     let mut composer_target = Some(composer_target_controls(
@@ -414,12 +430,27 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                         })
                         .child(
                             div()
-                                .id("chat-messages-scroll")
-                                .debug_selector(|| "chat-messages-scroll".into())
                                 .w_full()
                                 .flex_1()
                                 .min_h_0()
+                                .flex()
+                                .when(show_question_rail, |row| {
+                                    row.child(crate::chat_questions::question_rail(
+                                        question_span.total(),
+                                        active_question,
+                                        cx,
+                                    ))
+                                })
+                                .child(
+                            div()
+                                .id("chat-messages-scroll")
+                                .debug_selector(|| "chat-messages-scroll".into())
+                                .flex_1()
+                                .min_w_0()
+                                .h_full()
+                                .min_h_0()
                                 .overflow_y_scroll()
+                                .track_scroll(&model.chat_scroll)
                                 .flex()
                                 .flex_col()
                                 .items_center()
@@ -488,7 +519,23 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                         None
                                     };
                                     render_message_with_canvas(message, canvas_card, cx)
-                                })))),
+                                }))
+                                .on_children_prepainted(crate::chat_questions::measure_questions(
+                                    cx.entity_id(),
+                                    model.chat_question_layout.clone(),
+                                    model.chat_scroll.clone(),
+                                    question_span.clone(),
+                                    leading_message_children,
+                                )))),
+                                )
+                                // The same width on the other side keeps the conversation centred.
+                                .when(show_question_rail, |row| {
+                                    row.child(
+                                        div()
+                                            .w(px(crate::chat_questions::RAIL_WIDTH))
+                                            .flex_shrink_0(),
+                                    )
+                                }),
                         )
                         .when(disclosure_required && !disclosure_accepted, |panel| {
                             panel.child(centred(

@@ -397,6 +397,11 @@ pub struct AppModel {
     chat_initial_input: Entity<NativeTextInput>,
     pub(crate) chat_composer_inputs: HashMap<String, Entity<NativeTextInput>>,
     chat_composer_subscriptions: HashMap<String, Vec<Subscription>>,
+    /// Scroll of the open conversation, which the question navigator reads and moves.
+    pub(crate) chat_scroll: gpui::ScrollHandle,
+    /// Where the questions of the open conversation were laid out last; shared with its prepaint.
+    pub(crate) chat_question_layout:
+        std::rc::Rc<std::cell::RefCell<crate::chat_questions::QuestionLayout>>,
     pub(crate) cli_model_search_input: Entity<NativeTextInput>,
     pub(crate) agent_prompt_inputs: HashMap<ikore_core::llm::AgentRole, Entity<NativeTextInput>>,
     pub(crate) agent_model_inputs: HashMap<ikore_core::llm::AgentRole, Entity<NativeTextInput>>,
@@ -940,6 +945,8 @@ impl AppModel {
             chat_draft_input,
             chat_composer_inputs: HashMap::new(),
             chat_composer_subscriptions: HashMap::new(),
+            chat_scroll: gpui::ScrollHandle::new(),
+            chat_question_layout: Default::default(),
             cli_model_search_input,
             agent_prompt_inputs,
             agent_model_inputs,
@@ -4246,6 +4253,7 @@ impl AppModel {
             self.chat_resync_tasks.clear();
             self.chat_composer_subscriptions.clear();
             self.chat_composer_inputs.clear();
+            self.chat_question_layout.borrow_mut().reset();
             self.chat_draft_input = self.chat_initial_input.clone();
             self.chat_draft_input
                 .update(cx, |input, cx| input.clear(cx));
@@ -4294,10 +4302,15 @@ impl AppModel {
         conversation_id: String,
         cx: &mut Context<Self>,
     ) {
+        let previous = self.chat.read(cx).active_conversation.clone();
         if !self.chat.update(cx, |chat, _| {
             chat.select_conversation_locally(&conversation_id)
         }) {
             return;
+        }
+        if previous.as_ref().map(AsRef::as_ref) != Some(conversation_id.as_str()) {
+            // The questions measured so far belong to the conversation that closed.
+            self.chat_question_layout.borrow_mut().reset();
         }
         self.ensure_chat_composer(&conversation_id, cx);
         self.refresh_canvas_authoring(cx);

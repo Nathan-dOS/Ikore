@@ -13,6 +13,7 @@ mod canvas_authoring_ui;
 mod canvas_integration_tests;
 mod canvas_view;
 mod chat;
+mod chat_questions;
 mod chat_view;
 mod choices;
 mod cli_connections;

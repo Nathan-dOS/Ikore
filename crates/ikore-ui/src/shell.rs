@@ -46,6 +46,8 @@ actions!(
         RunPrimaryFlowStep,
         ToggleContextRail,
         ToggleCompanionDock,
+        PreviousChatQuestion,
+        NextChatQuestion,
         FocusNextControl,
         FocusPreviousControl
     ]
@@ -106,6 +108,9 @@ pub(crate) fn register_navigation_keybindings(cx: &mut App) {
             Some("Shell && !CompanionDock && !NativeTextInput"),
         ),
         KeyBinding::new("ctrl-shift-c", ToggleCompanionDock, None),
+        // Walks the questions of the open conversation, from the composer too.
+        KeyBinding::new("alt-up", PreviousChatQuestion, None),
+        KeyBinding::new("alt-down", NextChatQuestion, None),
         KeyBinding::new("ctrl-b", ToggleContextRail, None),
         // Tab walks the controls; the code editor keeps Tab for itself.
         // A bare `!NativeEditor` never matches: GPUI needs a context on the path to test.
@@ -281,6 +286,16 @@ impl Render for AppModel {
                 }
                 if let Some(step) = crate::flow::next_steps(model, cx).into_iter().next() {
                     model.run_next_step(step.target, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|model, _: &PreviousChatQuestion, _, cx| {
+                if model.active_view() == AppView::Chat && !model.settings_modal.open {
+                    model.step_chat_question(false, cx);
+                }
+            }))
+            .on_action(cx.listener(|model, _: &NextChatQuestion, _, cx| {
+                if model.active_view() == AppView::Chat && !model.settings_modal.open {
+                    model.step_chat_question(true, cx);
                 }
             }))
             .on_action(cx.listener(|model, _: &ToggleContextRail, _, cx| {

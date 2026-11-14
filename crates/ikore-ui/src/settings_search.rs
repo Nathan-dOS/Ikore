@@ -108,8 +108,8 @@ pub(crate) static ENTRIES: &[SettingsEntry] = &[
         P::Shortcuts,
         "Navigation",
         "Navigation",
-        "Views, Settings, sections, the suggested next step and the context rail.",
-        "ctrl home forge pulsations vault agents logs companion workspace settings section rail",
+        "Views, Settings, sections, the suggested next step, the context rail and the Companion's questions.",
+        "ctrl alt home forge pulsations vault agents logs companion question workspace settings section rail",
     ),
     entry(
         "shortcuts-review",

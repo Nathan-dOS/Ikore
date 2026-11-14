@@ -5689,6 +5689,248 @@ fn companion_without_a_conversation_chooses_its_target_in_the_start_card(cx: &mu
     assert!(visual.debug_bounds("chat-composer-profile").is_some());
 }
 
+/// Opens a conversation of `pairs` questions, `message-0`, `message-2`…, each followed by an
+/// answer of `answer_sentences` sentences.
+fn open_conversation_of(
+    model: &Entity<AppModel>,
+    visual: &mut VisualTestContext,
+    pairs: usize,
+    answer_sentences: usize,
+) {
+    use ikore_core::chat_service::{ChatConversation, ChatMessage, ChatTransportKind};
+    model.update(visual, |m, cx| {
+        m.chat.update(cx, |chat, _| {
+            chat.project_id = Some("layout-project".into());
+            chat.conversations = vec![ChatConversation {
+                id: "conversation-1".into(),
+                project_id: "layout-project".into(),
+                connection_id: None,
+                provider_id: "codex".into(),
+                model_id: "gpt-5".into(),
+                transport: ChatTransportKind::Cli,
+                cli_backend: Some(CliBackend::Codex),
+                model_profile: None,
+                model_source: CliModelSelectionSource::Default,
+                title: "Questions".into(),
+                connection_available: true,
+                created_at: "now".into(),
+                updated_at: "now".into(),
+            }];
+            chat.active_conversation = Some("conversation-1".into());
+            chat.history_expanded = None;
+            chat.messages_by_conversation.insert(
+                "conversation-1".into(),
+                (0..pairs * 2)
+                    .map(|ordinal| {
+                        let question = ordinal % 2 == 0;
+                        ChatMessage {
+                            id: format!("message-{ordinal}"),
+                            conversation_id: "conversation-1".into(),
+                            ordinal: ordinal as i64,
+                            role: if question { "user" } else { "assistant" }.into(),
+                            content: if question {
+                                format!("Question number {}?", ordinal / 2)
+                            } else {
+                                format!("Answer number {}. ", ordinal / 2)
+                                    + &"It goes on for a while. ".repeat(answer_sentences)
+                            },
+                            status: "completed".into(),
+                            execution_id: None,
+                            generation_id: None,
+                            last_sequence: 0,
+                            input_tokens: None,
+                            output_tokens: None,
+                            estimated_cost_usd: None,
+                            error_code: None,
+                            error_message: None,
+                            target_label: None,
+                            model_evidence: None,
+                            created_at: "now".into(),
+                            updated_at: "now".into(),
+                        }
+                    })
+                    .collect(),
+            );
+            chat.sync_panel_with_active_conversation();
+        });
+        m.chat_question_layout.borrow_mut().reset();
+        m.chat_scroll.set_offset(point(px(0.0), px(0.0)));
+        cx.notify();
+    });
+    visual.run_until_parked();
+}
+
+/// How far below the top of the conversation's viewport a message is drawn.
+fn message_offset(visual: &mut VisualTestContext, message: &'static str) -> gpui::Pixels {
+    let scroll = visual.debug_bounds("chat-messages-scroll").unwrap();
+    let message = visual
+        .debug_bounds(message)
+        .unwrap_or_else(|| panic!("missing {message}"));
+    message.top() - scroll.top()
+}
+
+#[gpui::test]
+fn companion_question_rail_goes_from_one_question_to_another(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.update(|_, cx| crate::shell::register_navigation_keybindings(cx));
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    select(&model, visual, AppView::Chat);
+    // One question has nowhere to go, and neither do two that fit the viewport.
+    open_conversation_of(&model, visual, 1, 200);
+    assert!(visual.debug_bounds("chat-question-rail").is_none());
+    open_conversation_of(&model, visual, 2, 1);
+    assert!(visual.debug_bounds("chat-question-rail").is_none());
+
+    open_conversation_of(&model, visual, 6, 120);
+    let rail = visual.debug_bounds("chat-question-rail").unwrap();
+    let scroll = visual.debug_bounds("chat-messages-scroll").unwrap();
+    let composer = visual.debug_bounds("chat-composer").unwrap();
+    assert_eq!(rail.size.width, px(26.0));
+    assert!(rail.right() <= scroll.left(), "{rail:?} covers {scroll:?}");
+    assert!(rail.top() >= scroll.top() && rail.bottom() <= scroll.bottom());
+    // A gutter of the same width on the other side keeps the conversation over the composer.
+    let offset = (composer.center().x - scroll.center().x).abs();
+    assert!(offset <= px(2.0), "conversation off centre by {offset:?}");
+    // One marker per question, top to bottom, inside the rail.
+    let mut previous = rail.top();
+    for marker in [
+        "chat-question:0",
+        "chat-question:1",
+        "chat-question:2",
+        "chat-question:3",
+        "chat-question:4",
+        "chat-question:5",
+    ] {
+        let bounds = visual
+            .debug_bounds(marker)
+            .unwrap_or_else(|| panic!("missing {marker}"));
+        assert!(
+            bounds.left() >= rail.left()
+                && bounds.right() <= rail.right()
+                && bounds.top() >= previous
+                && bounds.bottom() <= rail.bottom(),
+            "{marker} {bounds:?} leaves the rail {rail:?}"
+        );
+        previous = bounds.bottom();
+    }
+    assert!(visual.debug_bounds("chat-question:6").is_none());
+    let active = |model: &Entity<AppModel>, visual: &mut VisualTestContext| {
+        model.read_with(visual, |m, _| {
+            m.chat_question_layout
+                .borrow()
+                .active(-m.chat_scroll.offset().y)
+        })
+    };
+    assert_eq!(active(&model, visual), Some(0));
+
+    // A click brings the question under the top of the conversation and makes it the active one.
+    click(visual, "chat-question:2");
+    let landed = message_offset(visual, "chat-message:message-4");
+    assert!((landed - px(24.0)).abs() <= px(1.0), "landed at {landed:?}");
+    assert_eq!(active(&model, visual), Some(2));
+    // Reaching a marker with the keyboard previews its exchange under it, without a wait.
+    visual.simulate_keystrokes("shift-tab");
+    visual.simulate_keystrokes("tab");
+    visual.run_until_parked();
+    assert!(visual.update(|window, _| window.focus_visible()));
+    let focused = visual.debug_bounds("chat-question:2").unwrap();
+    let keyboard_preview = visual
+        .debug_bounds("chat-question-preview")
+        .expect("the preview must follow keyboard focus");
+    assert!(
+        keyboard_preview.top() >= focused.bottom() && keyboard_preview.size.width <= px(320.0),
+        "{keyboard_preview:?} is not under {focused:?}"
+    );
+    // Alt+Down and Alt+Up walk the questions from wherever the focus is.
+    visual.simulate_keystrokes("alt-down");
+    visual.run_until_parked();
+    let landed = message_offset(visual, "chat-message:message-6");
+    assert!((landed - px(24.0)).abs() <= px(1.0), "landed at {landed:?}");
+    assert_eq!(active(&model, visual), Some(3));
+    visual.simulate_keystrokes("alt-up alt-up");
+    visual.run_until_parked();
+    let landed = message_offset(visual, "chat-message:message-2");
+    assert!((landed - px(24.0)).abs() <= px(1.0), "landed at {landed:?}");
+    assert_eq!(active(&model, visual), Some(1));
+    // The same keys work while the developer is typing in the composer.
+    click(visual, "native-input:Message to Companion");
+    visual.simulate_keystrokes("alt-down");
+    visual.run_until_parked();
+    let landed = message_offset(visual, "chat-message:message-4");
+    assert!((landed - px(24.0)).abs() <= px(1.0), "landed at {landed:?}");
+    assert_eq!(active(&model, visual), Some(2));
+    model.read_with(visual, |m, cx| {
+        assert_eq!(m.chat_draft_input.read(cx).value(), "");
+    });
+    // The last question cannot reach the top: the conversation stops at its end, question in view.
+    click(visual, "chat-question:5");
+    let scroll = visual.debug_bounds("chat-messages-scroll").unwrap();
+    let last = visual.debug_bounds("chat-message:message-10").unwrap();
+    assert!(
+        last.top() >= scroll.top() && last.top() < scroll.bottom(),
+        "{last:?} is outside {scroll:?}"
+    );
+    assert_eq!(active(&model, visual), Some(5));
+    visual.simulate_keystrokes("alt-down");
+    visual.run_until_parked();
+    assert_eq!(active(&model, visual), Some(5));
+
+    // Resting on a marker previews the question and the start of its answer.
+    let marker = visual.debug_bounds("chat-question:1").unwrap();
+    visual.simulate_mouse_move(marker.center(), None, Modifiers::default());
+    visual
+        .executor()
+        .advance_clock(std::time::Duration::from_millis(600));
+    visual.run_until_parked();
+    let hover_preview = visual
+        .debug_bounds("chat-question-preview")
+        .expect("the preview must appear on hover");
+    assert_ne!(
+        hover_preview, keyboard_preview,
+        "the hover opened no preview"
+    );
+}
+
+#[gpui::test]
+fn companion_question_rail_reaches_the_history_that_is_not_rendered(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    select(&model, visual, AppView::Chat);
+    // Sixty messages: the first twenty, ten questions, are outside the rendered window.
+    open_conversation_of(&model, visual, 30, 4);
+    assert!(visual.debug_bounds("chat-message:message-0").is_none());
+    assert!(visual.debug_bounds("chat-message:message-20").is_some());
+    let rail = visual.debug_bounds("chat-question-rail").unwrap();
+    let first = visual.debug_bounds("chat-question:0").unwrap();
+    let last = visual.debug_bounds("chat-question:29").unwrap();
+    // Thirty markers still fit the rail, each one tall enough to point at.
+    assert!(first.top() >= rail.top() && last.bottom() <= rail.bottom());
+    assert!(first.size.height >= px(3.0), "{first:?}");
+    // Markers count the whole conversation: the rendered window opens on the eleventh question.
+    model.read_with(visual, |m, _| {
+        assert_eq!(
+            m.chat_question_layout
+                .borrow()
+                .active(-m.chat_scroll.offset().y),
+            Some(10)
+        );
+    });
+    click(visual, "chat-question:3");
+    model.read_with(visual, |m, cx| {
+        assert_eq!(
+            m.chat
+                .read(cx)
+                .history_expanded
+                .as_ref()
+                .map(ToString::to_string)
+                .as_deref(),
+            Some("conversation-1")
+        );
+    });
+    let landed = message_offset(visual, "chat-message:message-6");
+    assert!((landed - px(24.0)).abs() <= px(1.0), "landed at {landed:?}");
+}
+
 #[gpui::test]
 fn companion_composer_offers_the_effort_of_the_model_as_chips(cx: &mut TestAppContext) {
     use ikore_core::chat_service::{ChatConversation, ChatTransportKind};
