@@ -530,6 +530,8 @@ pub struct AppModel {
     agents_refresh_pending: Option<(bool, bool)>,
     agents_notice_timer: Option<Task<()>>,
     model_catalog_task: Option<Task<()>>,
+    /// Reads every CLI catalog in turn; separate from the picker's single load.
+    cli_catalogs_task: Option<Task<()>>,
     logs_task: Option<Task<()>>,
     logs_resync_tasks: HashMap<String, Task<()>>,
     chat_hydration_task: Option<Task<()>>,
@@ -1047,6 +1049,7 @@ impl AppModel {
             agents_refresh_pending: None,
             agents_notice_timer: None,
             model_catalog_task: None,
+            cli_catalogs_task: None,
             logs_task: None,
             logs_resync_tasks: HashMap::new(),
             chat_hydration_task: None,
@@ -5863,6 +5866,63 @@ impl AppModel {
         self.close_cli_model_picker(cx);
     }
 
+    /// Reads the model catalog of every CLI again, one after another, for the
+    /// lists that show a model with all the routes that serve it. The catalogs
+    /// belong to the open project; a project that changes meanwhile keeps none
+    /// of them.
+    pub(crate) fn refresh_cli_model_catalogs(&mut self, cx: &mut Context<Self>) {
+        let Some(backend) = self.agents_backend.clone() else {
+            return;
+        };
+        let Some(project_id) = self
+            .workspace
+            .read(cx)
+            .project_id
+            .as_ref()
+            .map(ToString::to_string)
+        else {
+            return;
+        };
+        if self.agents.read(cx).catalogs_refreshing {
+            return;
+        }
+        self.agents
+            .update(cx, |agents, _| agents.catalogs_refreshing = true);
+        cx.notify();
+        self.cli_catalogs_task = Some(cx.spawn(async move |this, cx| {
+            for kind in CliBackend::ALL {
+                if kind == CliBackend::Custom {
+                    continue;
+                }
+                let result = backend.model_catalog(project_id.clone(), kind, true).await;
+                let alive = this.update(cx, |model, cx| {
+                    let same_project = model
+                        .workspace
+                        .read(cx)
+                        .project_id
+                        .as_ref()
+                        .map(AsRef::as_ref)
+                        == Some(project_id.as_str());
+                    if let (true, Ok(catalog)) = (same_project, result) {
+                        model.agents.update(cx, |agents, _| {
+                            agents.model_catalogs.insert(catalog.backend, catalog);
+                        });
+                        cx.notify();
+                    }
+                });
+                if alive.is_err() {
+                    return;
+                }
+            }
+            let _ = this.update(cx, |model, cx| {
+                model
+                    .agents
+                    .update(cx, |agents, _| agents.catalogs_refreshing = false);
+                cx.notify();
+            });
+        }));
+    }
+
     /// Loads the catalog of `backend` when nothing has loaded it yet, so
     /// effort and models can be offered without opening the picker. It never
     /// replaces a load that is already running.
@@ -8819,6 +8879,7 @@ impl AppModel {
         self.agents_task.take();
         self.agents_notice_timer.take();
         self.model_catalog_task.take();
+        self.cli_catalogs_task.take();
         self.logs_task.take();
         self.logs_resync_tasks.clear();
         self.chat_hydration_task.take();

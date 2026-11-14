@@ -728,6 +728,8 @@ pub(crate) struct AgentsModel {
     pub(crate) active_model_picker: Option<CliModelPickerState>,
     pub(crate) catalog_loading_backend: Option<CliBackend>,
     pub(crate) catalog_error: Option<String>,
+    /// Every CLI catalog is being read again, one after another, for the model-first lists.
+    pub(crate) catalogs_refreshing: bool,
     pub(crate) viewer_enabled: bool,
     pub(crate) selected_api_target: Option<AgentIdentifier>,
     pub(crate) terminal_expanded: bool,
@@ -768,6 +770,7 @@ impl Default for AgentsModel {
             active_model_picker: None,
             catalog_loading_backend: None,
             catalog_error: None,
+            catalogs_refreshing: false,
             viewer_enabled: true,
             selected_api_target: None,
             terminal_expanded: false,

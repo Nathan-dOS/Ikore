@@ -240,6 +240,15 @@ pub(crate) static ENTRIES: &[SettingsEntry] = &[
         ),
         ConnectionDetail,
     ),
+    // Models & routes
+    entry(
+        "models-sources",
+        P::Models,
+        "Sources",
+        "Where models are listed",
+        "The CLIs and API connections whose catalogs feed this page. A model appears once, with every route that serves it.",
+        "model vendor catalog cli api gateway openai anthropic google gpt claude gemini refresh subscription identity",
+    ),
     // Routes
     entry(
         "routing-mode",

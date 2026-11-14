@@ -526,7 +526,7 @@ pub(crate) fn cli_model_picker_panel(
 }
 
 /// Renders a token context window compactly, e.g. `200_000` -> `"200k"`, `1_000_000` -> `"1M"`.
-fn format_context_window(window: u64) -> String {
+pub(crate) fn format_context_window(window: u64) -> String {
     if window >= 1_000_000 && window.is_multiple_of(1_000_000) {
         format!("{}M", window / 1_000_000)
     } else if window >= 1_000 && window.is_multiple_of(1_000) {

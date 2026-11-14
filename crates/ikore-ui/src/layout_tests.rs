@@ -6043,6 +6043,117 @@ fn companion_composer_offers_the_effort_of_the_model_as_chips(cx: &mut TestAppCo
 }
 
 #[gpui::test]
+fn settings_models_page_lists_each_model_once_with_its_routes(cx: &mut TestAppContext) {
+    use ikore_core::llm::ProviderConnection;
+    use ikore_core::terminals::{
+        CliModelCatalogEntry, CliModelCatalogSnapshot, CliModelCatalogSource, CliModelCatalogState,
+    };
+    let connection = |id: &str, provider: &str, name: &str, model: &str| ProviderConnection {
+        id: id.into(),
+        provider_id: provider.into(),
+        display_name: name.into(),
+        endpoint_url: None,
+        default_model: model.into(),
+        enabled: true,
+        state: "active".into(),
+        blocked_reason: None,
+        cooldown_until: None,
+        max_concurrency: 1,
+        version: 1,
+        has_api_key: true,
+        chat_eligible: true,
+        created_at: "now".into(),
+        updated_at: "now".into(),
+    };
+    let listed = |id: &str, profiles: &[&str]| CliModelCatalogEntry {
+        provider_id: Some("openai".into()),
+        model_id: Some(id.into()),
+        display_name: id.into(),
+        context_window: Some(400_000),
+        input_cost_usd_per_million: None,
+        output_cost_usd_per_million: None,
+        capabilities: vec![],
+        profiles: profiles.iter().map(ToString::to_string).collect(),
+        raw_metadata: Default::default(),
+    };
+    let (model, visual) = cx.add_window_view(|_, cx| {
+        let model = fixture(cx);
+        model.settings.update(cx, |settings, _| {
+            settings.snapshot.as_mut().unwrap().connections = vec![
+                connection("key", "openai", "OpenAI key", "gpt-5"),
+                connection(
+                    "router",
+                    "openrouter",
+                    "OpenRouter",
+                    "anthropic/claude-sonnet-4-5",
+                ),
+            ];
+        });
+        model.agents.update(cx, |agents, _| {
+            agents.model_catalogs.insert(
+                CliBackend::Codex,
+                CliModelCatalogSnapshot {
+                    project_id: "layout-project".into(),
+                    backend: CliBackend::Codex,
+                    adapter_contract_version: 2,
+                    state: CliModelCatalogState::Ready,
+                    source: CliModelCatalogSource::Cli,
+                    cli_version: None,
+                    diagnostic: None,
+                    refreshed_at: "now".into(),
+                    models: vec![
+                        listed("gpt-5", &["low", "high"]),
+                        listed("gpt-5-codex", &[]),
+                    ],
+                },
+            );
+        });
+        model
+    });
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    open_settings(&model, visual, Some(SettingsPage::Models));
+    let sources = visual.debug_bounds("settings-section:Sources").unwrap();
+    assert!(visual.debug_bounds("settings-row:models-sources").is_some());
+    assert!(
+        visual
+            .debug_bounds("settings-refresh-cli-catalogs")
+            .is_some()
+    );
+    // One section per vendor, in a fixed order, under the sources.
+    let openai = visual.debug_bounds("settings-section:OpenAI").unwrap();
+    let anthropic = visual.debug_bounds("settings-section:Anthropic").unwrap();
+    assert!(sources.bottom() <= openai.top() && openai.bottom() <= anthropic.top());
+    // `gpt-5` is one row, though the Codex CLI and the OpenAI key both list it.
+    let shared = visual
+        .debug_bounds("settings-row:model:openai:gpt-5")
+        .unwrap();
+    let cli_only = visual
+        .debug_bounds("settings-row:model:openai:gpt-5-codex")
+        .unwrap();
+    for row in [shared, cli_only] {
+        // Half a pixel of rounding separates a last row from the end of its section.
+        assert!(
+            row.top() >= openai.top() && row.bottom() <= openai.bottom() + px(1.0),
+            "{row:?} leaves {openai:?}"
+        );
+        assert!(row.size.width <= px(720.0), "{row:?}");
+    }
+    // A gateway's namespace is not part of the model: this one sits under its vendor.
+    let through_gateway = visual
+        .debug_bounds("settings-row:model:anthropic:claude-sonnet-4-5")
+        .unwrap();
+    assert!(
+        through_gateway.top() >= anthropic.top()
+            && through_gateway.bottom() <= anthropic.bottom() + px(1.0)
+    );
+    assert!(
+        visual
+            .debug_bounds("settings-row:model:other:anthropic/claude-sonnet-4-5")
+            .is_none()
+    );
+}
+
+#[gpui::test]
 fn a_keyboard_focus_ring_never_resizes_its_control(cx: &mut TestAppContext) {
     let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
     visual.update(|_, cx| crate::shell::register_navigation_keybindings(cx));

@@ -45,6 +45,7 @@ pub(crate) fn page_content(
         SettingsPage::Projects => crate::settings_view::projects_page(model, cx),
         SettingsPage::Shortcuts => shortcuts_page(),
         SettingsPage::Connections => crate::settings_view::connections_page(model, hl, cx),
+        SettingsPage::Models => crate::settings_models::models_page(model, hl, cx),
         SettingsPage::Routes => crate::settings_view::routes_page(model, hl, cx),
         SettingsPage::Embeddings => crate::settings_view::embeddings_page(model, hl, cx),
         SettingsPage::Voice => crate::voice_ui::voice_page(model, hl, cx),

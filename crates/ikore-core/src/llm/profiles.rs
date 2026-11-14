@@ -304,13 +304,17 @@ pub fn model_family_conflict(provider_id: &str, model_id: &str) -> Option<&'stat
             .map(|(_, prefixes)| *prefixes)
     };
     prefixes(provider_id)?;
+    model_family(model_id).filter(|owner| *owner != provider_id)
+}
+
+/// The first-party provider whose family the name of `model_id` belongs to, whatever serves it.
+pub fn model_family(model_id: &str) -> Option<&'static str> {
     let model = model_id.trim().to_ascii_lowercase();
     let model = model.strip_prefix("models/").unwrap_or(&model);
     MODEL_FAMILIES
         .iter()
         .find(|(_, family)| family.iter().any(|prefix| model.starts_with(prefix)))
         .map(|(owner, _)| *owner)
-        .filter(|owner| *owner != provider_id)
 }
 
 fn sanitize_provider_message(message: &str) -> String {

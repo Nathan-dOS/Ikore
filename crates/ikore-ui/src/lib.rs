@@ -63,6 +63,7 @@ mod selectable_message;
 mod session;
 mod settings;
 mod settings_modal;
+mod settings_models;
 mod settings_pages;
 mod settings_search;
 mod settings_ui;
