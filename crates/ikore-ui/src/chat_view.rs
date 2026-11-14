@@ -153,7 +153,6 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                     })
                     .unwrap_or_else(|| "none".into())
             },
-            model_selectable: cli_target,
             effort: cli_target.then(|| ComposerEffort {
                 selected: selected_cli_model_profile.clone(),
                 levels: model.model_profiles(
@@ -844,9 +843,8 @@ const COMPOSER_TIP: &str = "Enter sends. Shift+Enter adds a new line. Model, eff
 
 /// What the composer shows and lets the developer change for the next message.
 struct ComposerTarget {
+    /// The model in use. Its picker lists every model the Companion can reach, on any route.
     model: String,
-    /// API connections carry their own model; only a CLI model is picked here.
-    model_selectable: bool,
     /// Effort of a CLI target. An API connection has none.
     effort: Option<ComposerEffort>,
     route: String,
@@ -952,11 +950,7 @@ fn composer_target_controls(target: ComposerTarget, cx: &mut Context<AppModel>) 
         .flex_wrap()
         .items_center()
         .gap_2()
-        .child(composer_model_control(
-            target.model,
-            enabled && target.model_selectable,
-            cx,
-        ))
+        .child(composer_model_control(target.model, enabled, cx))
         .when_some(target.effort, |row, effort| {
             row.child(composer_effort_control(effort, enabled, cx))
         })

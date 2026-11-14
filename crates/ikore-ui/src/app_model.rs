@@ -31,9 +31,10 @@ use ikore_core::persistence_service::{
     StartFreeFormApiRunRequest, UiSessionState, UiTabSnapshot, UpdateAgentRuntimeConfigRequest,
 };
 use ikore_core::terminals::{
-    CliAgentConfig, CliBackend, CliModelSelectionSource, CreateFreeFormSlotRequest,
-    ResumeManualRunRequest, StartFreeFormRunRequest, StartManualRunRequest, TerminalRunStatus,
-    TerminalSlot, ThinkingLevel, UpdateCliAgentConfigRequest, UpdateFreeFormSlotRequest,
+    CliAgentConfig, CliAvailabilityState, CliBackend, CliModelSelectionSource,
+    CreateFreeFormSlotRequest, ResumeManualRunRequest, StartFreeFormRunRequest,
+    StartManualRunRequest, TerminalRunStatus, TerminalSlot, ThinkingLevel,
+    UpdateCliAgentConfigRequest, UpdateFreeFormSlotRequest,
 };
 use ikore_core::workspace_service::{
     FileNode, OpenWorkspaceRequest, ReadWorkspaceFileRequest, SearchMode, WorkspaceChangedEvent,
@@ -4424,13 +4425,22 @@ impl AppModel {
             self.close_dropdown(cx);
             return;
         }
+        // Changing the route keeps the model when the new CLI lists it; otherwise the CLI
+        // starts from its own default.
+        let kept = (!same_backend)
+            .then(|| self.panel_model_on(backend, cx))
+            .flatten();
         self.chat.update(cx, |chat, _| {
             chat.selected_transport = ChatTransportKind::Cli;
             if !same_backend {
                 chat.selected_cli_backend = backend;
-                chat.selected_cli_model = None;
+                chat.selected_cli_model_source = if kept.is_some() {
+                    CliModelSelectionSource::Catalog
+                } else {
+                    CliModelSelectionSource::Default
+                };
+                chat.selected_cli_model = kept;
                 chat.selected_cli_model_profile = None;
-                chat.selected_cli_model_source = CliModelSelectionSource::Default;
             }
         });
         self.close_cli_model_picker(cx);
@@ -4447,7 +4457,7 @@ impl AppModel {
     /// change made during a reply waits for that reply to end. A refused
     /// change (an invalid model) puts the panel back on the conversation's
     /// real target.
-    fn apply_chat_target_change(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn apply_chat_target_change(&mut self, cx: &mut Context<Self>) {
         let Some(backend) = self.chat_backend.clone() else {
             return;
         };
@@ -4581,9 +4591,29 @@ impl AppModel {
                 chat.shown_target(conversation_id),
             )
         };
-        let Some(target) = base.as_ref().and_then(|base| edit.apply_to(base)) else {
+        let Some(mut target) = base.as_ref().and_then(|base| edit.apply_to(base)) else {
             return;
         };
+        // A conversation that moves to another CLI keeps its model when that CLI lists it.
+        if let (
+            ChatTargetEdit::RouteCli(backend),
+            Some(base),
+            ChatExecutionTargetRequest::Cli {
+                model: model @ None,
+                ..
+            },
+        ) = (&edit, &base, &mut target)
+        {
+            *model = crate::companion_models::target_identity(self.chat.read(cx), base).and_then(
+                |identity| {
+                    crate::companion_models::model_on_backend(
+                        &self.agents.read(cx).model_catalogs,
+                        &identity,
+                        *backend,
+                    )
+                },
+            );
+        }
         if base.as_ref() == Some(&target) {
             self.close_dropdown(cx);
             return;
@@ -4691,6 +4721,7 @@ impl AppModel {
     pub(crate) fn open_companion_model_picker(&mut self, cx: &mut Context<Self>) {
         let backend = self.chat.read(cx).selected_cli_backend;
         self.open_cli_model_picker(CliModelPickerTarget::Companion, backend, cx);
+        self.read_missing_cli_model_catalogs(cx);
     }
 
     pub(crate) fn create_chat_conversation(&mut self, cx: &mut Context<Self>) {
@@ -5809,14 +5840,14 @@ impl AppModel {
     }
 
     pub(crate) fn refresh_cli_model_catalog(&mut self, cx: &mut Context<Self>) {
-        let backend = self
-            .agents
-            .read(cx)
-            .active_model_picker
-            .as_ref()
-            .map(|picker| picker.backend);
-        if let Some(backend) = backend {
-            self.load_cli_model_catalog(backend, true, cx);
+        let picker = self.agents.read(cx).active_model_picker.clone();
+        match picker {
+            // The Companion's picker spans every route: it reads every catalog again.
+            Some(picker) if picker.target == CliModelPickerTarget::Companion => {
+                self.refresh_cli_model_catalogs(cx)
+            }
+            Some(picker) => self.load_cli_model_catalog(picker.backend, true, cx),
+            None => {}
         }
     }
 
@@ -5871,6 +5902,16 @@ impl AppModel {
     /// belong to the open project; a project that changes meanwhile keeps none
     /// of them.
     pub(crate) fn refresh_cli_model_catalogs(&mut self, cx: &mut Context<Self>) {
+        self.read_cli_model_catalogs(true, cx);
+    }
+
+    /// Reads the catalogs nothing has read yet, of the CLIs that are ready, so
+    /// the Companion's picker can list a model on every route.
+    pub(crate) fn read_missing_cli_model_catalogs(&mut self, cx: &mut Context<Self>) {
+        self.read_cli_model_catalogs(false, cx);
+    }
+
+    fn read_cli_model_catalogs(&mut self, refresh: bool, cx: &mut Context<Self>) {
         let Some(backend) = self.agents_backend.clone() else {
             return;
         };
@@ -5883,18 +5924,37 @@ impl AppModel {
         else {
             return;
         };
-        if self.agents.read(cx).catalogs_refreshing {
+        let kinds: Vec<CliBackend> = {
+            let agents = self.agents.read(cx);
+            if agents.catalogs_refreshing {
+                return;
+            }
+            let chat = self.chat.read(cx);
+            CliBackend::ALL
+                .into_iter()
+                .filter(|kind| *kind != CliBackend::Custom)
+                .filter(|kind| {
+                    refresh
+                        || (!agents.model_catalogs.contains_key(kind)
+                            && agents.catalog_loading_backend != Some(*kind)
+                            && chat.cli_availability.iter().any(|item| {
+                                item.backend == *kind
+                                    && item.state == CliAvailabilityState::Available
+                            }))
+                })
+                .collect()
+        };
+        if kinds.is_empty() {
             return;
         }
         self.agents
             .update(cx, |agents, _| agents.catalogs_refreshing = true);
         cx.notify();
         self.cli_catalogs_task = Some(cx.spawn(async move |this, cx| {
-            for kind in CliBackend::ALL {
-                if kind == CliBackend::Custom {
-                    continue;
-                }
-                let result = backend.model_catalog(project_id.clone(), kind, true).await;
+            for kind in kinds {
+                let result = backend
+                    .model_catalog(project_id.clone(), kind, refresh)
+                    .await;
                 let alive = this.update(cx, |model, cx| {
                     let same_project = model
                         .workspace

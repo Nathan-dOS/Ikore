@@ -2676,6 +2676,133 @@ mod tests {
         });
     }
 
+    fn cli_catalog(
+        backend: CliBackend,
+        models: &[&str],
+    ) -> ikore_core::terminals::CliModelCatalogSnapshot {
+        use ikore_core::terminals::{
+            CliModelCatalogEntry, CliModelCatalogSnapshot, CliModelCatalogSource,
+            CliModelCatalogState,
+        };
+        CliModelCatalogSnapshot {
+            project_id: "project-1".into(),
+            backend,
+            adapter_contract_version: 2,
+            state: CliModelCatalogState::Ready,
+            source: CliModelCatalogSource::Cli,
+            cli_version: None,
+            diagnostic: None,
+            refreshed_at: "now".into(),
+            models: models
+                .iter()
+                .map(|id| CliModelCatalogEntry {
+                    provider_id: None,
+                    model_id: Some((*id).into()),
+                    display_name: (*id).into(),
+                    context_window: None,
+                    input_cost_usd_per_million: None,
+                    output_cost_usd_per_million: None,
+                    capabilities: Vec::new(),
+                    profiles: Vec::new(),
+                    raw_metadata: Default::default(),
+                })
+                .collect(),
+        }
+    }
+
+    #[gpui::test]
+    fn choosing_a_model_keeps_the_route_in_use_and_a_new_route_keeps_the_model(
+        cx: &mut TestAppContext,
+    ) {
+        use ikore_core::llm::{ModelIdentity, ModelVendor};
+        let backend = Arc::new(RecordingChatBackend::default());
+        let model_backend: Arc<dyn ChatBackend> = backend.clone();
+        let model = cx.new(|cx| AppModel::new_for_test_with_chat_backend(model_backend, cx));
+        let named = |vendor, name: &str| ModelIdentity {
+            vendor,
+            model: name.into(),
+        };
+        let cli = |backend, model: &str| ChatExecutionTargetRequest::Cli {
+            backend,
+            model: Some(model.into()),
+            model_profile: None,
+        };
+        // The open conversation is on the OpenAI key, whose default model is `gpt-4.1-mini`.
+        model.update(cx, |model, cx| {
+            let generation = model
+                .chat
+                .update(cx, |chat, _| chat.begin_hydration("project-1".into(), None));
+            model.chat.update(cx, |chat, _| {
+                chat.apply_hydration(generation, settled_snapshot());
+            });
+            model.agents.update(cx, |agents, _| {
+                for catalog in [
+                    cli_catalog(CliBackend::Codex, &["gpt-4.1-mini", "gpt-5"]),
+                    cli_catalog(CliBackend::Claude, &["claude-sonnet-4-5"]),
+                    cli_catalog(CliBackend::Opencode, &["anthropic/claude-sonnet-4-5"]),
+                ] {
+                    agents.model_catalogs.insert(catalog.backend, catalog);
+                }
+            });
+            // The key and the Codex CLI both serve this model: the route in use stays.
+            model.select_companion_model(&named(ModelVendor::OpenAi, "gpt-4.1-mini"), cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            retargets(&backend).last().map(|(_, target)| target.clone()),
+            Some(ChatExecutionTargetRequest::Api {
+                connection_id: "eligible".into()
+            })
+        );
+        // Only the Codex CLI serves this one: the host moves the route to it.
+        model.update(cx, |model, cx| {
+            model.select_companion_model(&named(ModelVendor::OpenAi, "gpt-5"), cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            retargets(&backend).last().map(|(_, target)| target.clone()),
+            Some(cli(CliBackend::Codex, "gpt-5"))
+        );
+        // A model no route lists changes nothing.
+        let before = retargets(&backend).len();
+        model.update(cx, |model, cx| {
+            model.select_companion_model(&named(ModelVendor::Google, "gemini-2.5-pro"), cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(retargets(&backend).len(), before);
+
+        model.update(cx, |model, cx| {
+            model.select_companion_model(&named(ModelVendor::Anthropic, "claude-sonnet-4-5"), cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            retargets(&backend).last().map(|(_, target)| target.clone()),
+            Some(cli(CliBackend::Claude, "claude-sonnet-4-5"))
+        );
+        // Another CLI that lists the same model under its own id keeps the model.
+        model.update(cx, |model, cx| {
+            model.apply_choice("chat-composer-route", "cli:opencode", cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            retargets(&backend).last().map(|(_, target)| target.clone()),
+            Some(cli(CliBackend::Opencode, "anthropic/claude-sonnet-4-5"))
+        );
+        // One that does not list it starts from its own default.
+        model.update(cx, |model, cx| {
+            model.apply_choice("chat-composer-route", "cli:codex", cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            retargets(&backend).last().map(|(_, target)| target.clone()),
+            Some(ChatExecutionTargetRequest::Cli {
+                backend: CliBackend::Codex,
+                model: None,
+                model_profile: None,
+            })
+        );
+    }
+
     #[gpui::test]
     fn starts_and_cancels_chat_turns_without_ipc(cx: &mut TestAppContext) {
         let backend = Arc::new(RecordingChatBackend::default());

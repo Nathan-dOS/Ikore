@@ -172,6 +172,26 @@ impl ModelRoute {
             Self::Gateway { .. } => 2,
         }
     }
+
+    /// The route goes through `source`: that CLI, or that connection.
+    pub fn is_from(&self, source: ModelSource<'_>) -> bool {
+        match (self, source) {
+            (Self::Cli(backend), ModelSource::Cli(other)) => *backend == other,
+            (
+                Self::Api { connection_id } | Self::Gateway { connection_id },
+                ModelSource::Connection { id, .. },
+            ) => connection_id == id,
+            _ => false,
+        }
+    }
+}
+
+/// A route that serves a model, and the id the model has there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RouteOffer {
+    pub route: ModelRoute,
+    /// As the source spells it: what a run on this route has to ask for.
+    pub model_id: String,
 }
 
 /// A place that lists models: the catalog of a CLI, or an API connection.
@@ -208,21 +228,26 @@ impl ModelSource<'_> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RoutedModel {
     pub identity: ModelIdentity,
-    pub routes: Vec<ModelRoute>,
+    pub routes: Vec<RouteOffer>,
 }
 
 impl RoutedModel {
-    /// The route the host would take: `current` when it still serves the model, so choosing a
-    /// model never moves the developer off a route that works; otherwise the best usable one.
+    /// The route the host would take: the one through `current` when it serves the model, so
+    /// choosing a model never moves the developer off a route that works; otherwise the best
+    /// usable one.
     pub fn preferred(
         &self,
-        current: Option<&ModelRoute>,
+        current: Option<ModelSource<'_>>,
         usable: impl Fn(&ModelRoute) -> bool,
-    ) -> Option<&ModelRoute> {
+    ) -> Option<&RouteOffer> {
         current
-            .and_then(|current| self.routes.iter().find(|route| *route == current))
-            .filter(|route| usable(route))
-            .or_else(|| self.routes.iter().find(|route| usable(route)))
+            .and_then(|current| {
+                self.routes
+                    .iter()
+                    .find(|offer| offer.route.is_from(current))
+            })
+            .filter(|offer| usable(&offer.route))
+            .or_else(|| self.routes.iter().find(|offer| usable(&offer.route)))
     }
 }
 
@@ -238,7 +263,7 @@ pub struct VendorModels {
 pub fn models_by_vendor<'a>(
     sources: impl IntoIterator<Item = (ModelSource<'a>, &'a [String])>,
 ) -> Vec<VendorModels> {
-    let mut routed: BTreeMap<ModelIdentity, Vec<ModelRoute>> = BTreeMap::new();
+    let mut routed: BTreeMap<ModelIdentity, Vec<RouteOffer>> = BTreeMap::new();
     for (source, models) in sources {
         for model_id in models {
             let Some(identity) = ModelIdentity::of(model_id, source.served_by()) else {
@@ -246,15 +271,19 @@ pub fn models_by_vendor<'a>(
             };
             let route = source.route(identity.vendor);
             let routes = routed.entry(identity).or_default();
-            if !routes.contains(&route) {
-                routes.push(route);
+            // A source that lists one model under two spellings offers it once.
+            if routes.iter().all(|offer| offer.route != route) {
+                routes.push(RouteOffer {
+                    route,
+                    model_id: model_id.clone(),
+                });
             }
         }
     }
     let mut vendors: Vec<VendorModels> = Vec::new();
     // The map is ordered by vendor, then by model name.
     for (identity, mut routes) in routed {
-        routes.sort_by_key(ModelRoute::rank);
+        routes.sort_by_key(|offer| offer.route.rank());
         let model = RoutedModel { identity, routes };
         match vendors.last_mut() {
             Some(group) if group.vendor == model.identity.vendor => group.models.push(model),
@@ -364,13 +393,22 @@ mod tests {
                         model
                             .routes
                             .iter()
-                            .map(route)
+                            .map(|offer| route(&offer.route))
                             .collect::<Vec<_>>()
                             .join(", ")
                     )
                 })
             })
             .collect();
+        // Each route keeps the id the model has there.
+        let gpt = &vendors[0].models[1];
+        assert_eq!(
+            gpt.routes
+                .iter()
+                .map(|offer| offer.model_id.as_str())
+                .collect::<Vec<_>>(),
+            ["gpt-5", "gpt-5", "openai/gpt-5"]
+        );
         assert_eq!(
             listed,
             [
@@ -386,30 +424,44 @@ mod tests {
 
     #[test]
     fn the_preferred_route_keeps_the_current_one_and_skips_what_cannot_run() {
-        let model = RoutedModel {
-            identity: identity(ModelVendor::OpenAi, "gpt-5").unwrap(),
-            routes: vec![
-                ModelRoute::Cli(CliBackend::Codex),
-                ModelRoute::Api {
-                    connection_id: "key".into(),
-                },
-            ],
-        };
         let codex = ModelRoute::Cli(CliBackend::Codex);
         let key = ModelRoute::Api {
             connection_id: "key".into(),
         };
+        let model = RoutedModel {
+            identity: identity(ModelVendor::OpenAi, "gpt-5").unwrap(),
+            routes: vec![
+                RouteOffer {
+                    route: codex.clone(),
+                    model_id: "gpt-5".into(),
+                },
+                RouteOffer {
+                    route: key.clone(),
+                    model_id: "gpt-5".into(),
+                },
+            ],
+        };
+        let on_codex = ModelSource::Cli(CliBackend::Codex);
+        let on_key = ModelSource::Connection {
+            id: "key",
+            provider_id: "openai",
+        };
+        let chosen = |current, usable: &dyn Fn(&ModelRoute) -> bool| {
+            model
+                .preferred(current, usable)
+                .map(|offer| offer.route.clone())
+        };
         // Nothing chosen yet: the subscription comes before the key.
-        assert_eq!(model.preferred(None, |_| true), Some(&codex));
+        assert_eq!(chosen(None, &|_| true), Some(codex.clone()));
         // The developer is on the key: choosing the model does not move the route.
-        assert_eq!(model.preferred(Some(&key), |_| true), Some(&key));
+        assert_eq!(chosen(Some(on_key), &|_| true), Some(key.clone()));
         // A route that does not serve this model is no reason to keep it.
-        let elsewhere = ModelRoute::Cli(CliBackend::Claude);
-        assert_eq!(model.preferred(Some(&elsewhere), |_| true), Some(&codex));
+        let elsewhere = ModelSource::Cli(CliBackend::Claude);
+        assert_eq!(chosen(Some(elsewhere), &|_| true), Some(codex.clone()));
         // A CLI that is signed out is skipped, and so is a current route that stopped working.
         let signed_in = |route: &ModelRoute| *route != codex;
-        assert_eq!(model.preferred(None, signed_in), Some(&key));
-        assert_eq!(model.preferred(Some(&codex), signed_in), Some(&key));
-        assert_eq!(model.preferred(None, |_| false), None);
+        assert_eq!(chosen(None, &signed_in), Some(key.clone()));
+        assert_eq!(chosen(Some(on_codex), &signed_in), Some(key));
+        assert_eq!(chosen(None, &|_| false), None);
     }
 }

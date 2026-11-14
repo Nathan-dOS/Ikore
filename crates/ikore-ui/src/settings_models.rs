@@ -214,8 +214,12 @@ fn overview(model: &AppModel, cx: &gpui::App) -> ModelsOverview {
 /// The models of a vendor in the order the page lists them: the ones a subscription or a key of
 /// the vendor serves first, then the ones only a gateway reaches. Names keep their order in each.
 fn listed(group: &VendorModels) -> Vec<&RoutedModel> {
-    let direct =
-        |model: &&RoutedModel| !matches!(model.routes.first(), Some(ModelRoute::Gateway { .. }));
+    let direct = |model: &&RoutedModel| {
+        !matches!(
+            model.routes.first().map(|offer| &offer.route),
+            Some(ModelRoute::Gateway { .. })
+        )
+    };
     group
         .models
         .iter()
@@ -329,7 +333,7 @@ pub(crate) fn models_page(
                         model
                             .routes
                             .iter()
-                            .filter_map(|route| overview.routes.get(route))
+                            .filter_map(|offer| overview.routes.get(&offer.route))
                             .map(route_chip),
                     );
                 row_with(
@@ -368,7 +372,13 @@ mod tests {
     fn routed(model: &str, routes: Vec<ModelRoute>) -> RoutedModel {
         RoutedModel {
             identity: ModelIdentity::of(model, "openai").unwrap(),
-            routes,
+            routes: routes
+                .into_iter()
+                .map(|route| ikore_core::llm::RouteOffer {
+                    route,
+                    model_id: model.into(),
+                })
+                .collect(),
         }
     }
 

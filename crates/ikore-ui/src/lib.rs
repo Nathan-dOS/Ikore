@@ -20,6 +20,7 @@ mod cli_connections;
 mod companion_dock;
 mod companion_dock_view;
 mod companion_forge;
+mod companion_models;
 mod composition_ui;
 mod context_rail;
 mod convergence_view;
