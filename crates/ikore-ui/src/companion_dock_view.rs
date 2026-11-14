@@ -1,6 +1,10 @@
 //! Floating presentation of project chats and host-authored decision cards.
-use gpui::{AnyElement, Context, IntoElement, SharedString, Window, deferred, div, prelude::*, px};
+use gpui::{
+    AnyElement, Bounds, Context, IntoElement, SharedString, Window, canvas, deferred, div,
+    prelude::*, px,
+};
 use ikore_core::orchestration::decisions::{PendingDecision, PendingDecisionAction};
+use std::{cell::Cell, rc::Rc};
 
 use crate::{AppModel, app_model::AppView, companion_dock::DockWindow, theme};
 
@@ -39,6 +43,101 @@ fn button(
                 }))
         })
         .child(label.into())
+        .into_any_element()
+}
+
+/// The one control a floating window has room for: `model · effort · route` of its conversation.
+/// It opens a single menu that changes any of the three.
+fn target_control(
+    conversation_id: &str,
+    line: String,
+    deferred: bool,
+    enabled: bool,
+    cx: &mut Context<AppModel>,
+) -> AnyElement {
+    let selector = format!("dock-target-{conversation_id}");
+    let click_id = conversation_id.to_owned();
+    let key_id = conversation_id.to_owned();
+    let bounds = Rc::new(Cell::new(Bounds::default()));
+    let measured = bounds.clone();
+    let key_bounds = bounds.clone();
+    let tip = SharedString::from(if deferred {
+        "Model, effort and route. This choice applies to the next message."
+    } else {
+        "Model, effort and route of this chat."
+    });
+    div()
+        .id(SharedString::from(selector.clone()))
+        .debug_selector(move || selector.clone())
+        .tab_index(0)
+        .relative()
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .items_center()
+        .gap_1()
+        .px_2()
+        .py_1()
+        .rounded_md()
+        .border_1()
+        .border_color(if deferred {
+            theme::accent()
+        } else {
+            theme::border()
+        })
+        .text_xs()
+        .text_color(if enabled {
+            theme::text_muted()
+        } else {
+            theme::text_subtle()
+        })
+        .focus_visible(|style| style.border_color(theme::accent()))
+        .child(
+            canvas(move |b, _, _| measured.set(b), |_, _, _, _| {})
+                .absolute()
+                .size_full(),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .child(if deferred {
+                    format!("Next: {line}")
+                } else {
+                    line
+                }),
+        )
+        .child(crate::widgets::icon(
+            crate::icons::Icon::ChevronDown,
+            px(12.0),
+            theme::text_muted(),
+        ))
+        .tooltip(move |_, cx| cx.new(|_| crate::widgets::Tooltip::new(tip.clone())).into())
+        .when(enabled, |control| {
+            control
+                .cursor_pointer()
+                .hover(|style| style.border_color(theme::accent()))
+                .on_click(cx.listener(move |model, _, window, cx| {
+                    model.open_conversation_target_menu(&click_id, bounds.get(), window, cx);
+                    cx.stop_propagation();
+                }))
+                .on_key_down(
+                    cx.listener(move |model, event: &gpui::KeyDownEvent, window, cx| {
+                        if matches!(event.keystroke.key.as_str(), "enter" | "space" | "down") {
+                            model.open_conversation_target_menu(
+                                &key_id,
+                                key_bounds.get(),
+                                window,
+                                cx,
+                            );
+                            cx.stop_propagation();
+                        }
+                    }),
+                )
+        })
         .into_any_element()
 }
 
@@ -372,9 +471,17 @@ fn topic_window(
             .iter()
             .find(|conversation| &conversation.id == id);
         let available = conversation.is_some_and(|conversation| conversation.connection_available);
-        let target_line = conversation
-            .map(crate::chat_view::conversation_target_line)
-            .unwrap_or_default();
+        // A target chosen during a reply is shown at once and applied when the reply ends.
+        let target_deferred = chat.target_deferred_for(id);
+        let target_line = if target_deferred {
+            chat.shown_target(id)
+                .map(|target| crate::chat_view::target_request_line(chat, &target))
+        } else {
+            conversation.map(crate::chat_view::conversation_target_line)
+        }
+        .unwrap_or_default();
+        let target_known = conversation.is_some();
+        let retargeting = chat.is_retargeting(id);
         let in_full_chat = model.active_view() == AppView::Chat
             && chat.active_conversation.as_ref().map(AsRef::as_ref) == Some(id.as_str());
         for message in messages {
@@ -429,21 +536,13 @@ fn topic_window(
                                 cx,
                                 move |model, cx| model.expand_companion_chat(expand_id.clone(), cx),
                             ))
-                            .child(
-                                div()
-                                    .debug_selector({
-                                        let id = id.clone();
-                                        move || format!("dock-target-{id}")
-                                    })
-                                    .flex_1()
-                                    .min_w_0()
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
-                                    .text_ellipsis()
-                                    .text_xs()
-                                    .text_color(theme::text_muted())
-                                    .child(target_line),
-                            )
+                            .child(target_control(
+                                id,
+                                target_line,
+                                target_deferred,
+                                target_known && !busy,
+                                cx,
+                            ))
                             .child(if streaming {
                                 button(
                                     format!("dock-cancel-{id}"),
@@ -457,7 +556,11 @@ fn topic_window(
                             } else {
                                 button(
                                     format!("dock-send-{id}"),
-                                    if busy { "Sending…" } else { "Send" },
+                                    if busy && !retargeting {
+                                        "Sending…"
+                                    } else {
+                                        "Send"
+                                    },
                                     !empty && accepted && !busy && available,
                                     cx,
                                     move |model, cx| {

@@ -5626,6 +5626,181 @@ fn companion_conversation_is_a_centred_reading_column(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn companion_without_a_conversation_chooses_its_target_in_the_start_card(cx: &mut TestAppContext) {
+    use ikore_core::chat_service::ChatTransportKind;
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    select(&model, visual, AppView::Chat);
+    model.update(visual, |m, cx| {
+        m.chat.update(cx, |chat, _| {
+            chat.project_id = Some("layout-project".into());
+            chat.conversations.clear();
+            chat.active_conversation = None;
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    // The left column lists conversations and starts one; it no longer chooses the target.
+    assert!(visual.debug_bounds("chat-new-conversation").is_some());
+    for removed in [
+        "chat-toggle-config",
+        "chat-transport",
+        "chat-cli-backend",
+        "chat-cli-profile",
+        "chat-cycle-connection",
+    ] {
+        assert!(visual.debug_bounds(removed).is_none(), "{removed} is back");
+    }
+    // The start card holds the composer's controls and the button that starts the conversation.
+    let start = visual.debug_bounds("chat-start").unwrap();
+    assert!(start.size.width <= px(760.0), "{start:?}");
+    assert!(visual.debug_bounds("chat-composer").is_none());
+    let target = visual.debug_bounds("chat-composer-target").unwrap();
+    let begin = visual.debug_bounds("chat-start-conversation").unwrap();
+    for (name, bounds) in [("target", target), ("start button", begin)] {
+        assert!(
+            bounds.left() >= start.left()
+                && bounds.right() <= start.right()
+                && bounds.top() >= start.top()
+                && bounds.bottom() <= start.bottom(),
+            "{name} {bounds:?} leaves the start card {start:?}"
+        );
+    }
+    assert!(
+        target.right() <= begin.left(),
+        "{target:?} overlaps {begin:?}"
+    );
+    for control in ["chat-composer-model", "chat-composer-route"] {
+        let bounds = visual.debug_bounds(control).unwrap();
+        assert!(
+            bounds.left() >= target.left() && bounds.right() <= target.right(),
+            "{control} {bounds:?} leaves {target:?}"
+        );
+    }
+    // With no conversation open, the route chosen here is where the next one starts.
+    click(visual, "chat-composer-route");
+    click(visual, "choice:cli:claude");
+    model.read_with(visual, |m, cx| {
+        let chat = m.chat.read(cx);
+        assert_eq!(chat.selected_transport, ChatTransportKind::Cli);
+        assert_eq!(chat.selected_cli_backend, CliBackend::Claude);
+        assert!(m.choice_menu.is_none());
+    });
+    assert!(visual.debug_bounds("chat-composer-profile").is_some());
+}
+
+#[gpui::test]
+fn companion_composer_offers_the_effort_of_the_model_as_chips(cx: &mut TestAppContext) {
+    use ikore_core::chat_service::{ChatConversation, ChatTransportKind};
+    use ikore_core::terminals::{
+        CliModelCatalogEntry, CliModelCatalogSnapshot, CliModelCatalogSource, CliModelCatalogState,
+    };
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    select(&model, visual, AppView::Chat);
+    model.update(visual, |m, cx| {
+        m.agents.update(cx, |agents, _| {
+            agents.model_catalogs.insert(
+                CliBackend::Codex,
+                CliModelCatalogSnapshot {
+                    project_id: "layout-project".into(),
+                    backend: CliBackend::Codex,
+                    adapter_contract_version: 2,
+                    state: CliModelCatalogState::Ready,
+                    source: CliModelCatalogSource::Cli,
+                    cli_version: None,
+                    diagnostic: None,
+                    refreshed_at: "now".into(),
+                    models: vec![CliModelCatalogEntry {
+                        provider_id: Some("openai".into()),
+                        model_id: Some("gpt-5".into()),
+                        display_name: "GPT-5".into(),
+                        context_window: None,
+                        input_cost_usd_per_million: None,
+                        output_cost_usd_per_million: None,
+                        capabilities: vec![],
+                        profiles: vec!["low".into(), "medium".into(), "high".into()],
+                        raw_metadata: Default::default(),
+                    }],
+                },
+            );
+        });
+        m.chat.update(cx, |chat, _| {
+            chat.project_id = Some("layout-project".into());
+            chat.conversations = vec![ChatConversation {
+                id: "conversation-1".into(),
+                project_id: "layout-project".into(),
+                connection_id: None,
+                provider_id: "codex".into(),
+                model_id: "gpt-5".into(),
+                transport: ChatTransportKind::Cli,
+                cli_backend: Some(CliBackend::Codex),
+                model_profile: Some("medium".into()),
+                model_source: CliModelSelectionSource::Catalog,
+                title: "Effort".into(),
+                connection_available: true,
+                created_at: "now".into(),
+                updated_at: "now".into(),
+            }];
+            chat.active_conversation = Some("conversation-1".into());
+            chat.sync_panel_with_active_conversation();
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    // The levels sit side by side in the composer's target row, `Default` first.
+    let target = visual.debug_bounds("chat-composer-target").unwrap();
+    let track = visual.debug_bounds("chat-composer-profile").unwrap();
+    assert!(
+        track.left() >= target.left()
+            && track.right() <= target.right()
+            && track.top() >= target.top()
+            && track.bottom() <= target.bottom(),
+        "{track:?} leaves {target:?}"
+    );
+    let mut previous = track.left();
+    for chip in [
+        "chat-composer-profile:",
+        "chat-composer-profile:low",
+        "chat-composer-profile:medium",
+        "chat-composer-profile:high",
+    ] {
+        let bounds = visual
+            .debug_bounds(chip)
+            .unwrap_or_else(|| panic!("missing {chip}"));
+        assert!(
+            bounds.left() >= previous
+                && bounds.right() <= track.right()
+                && bounds.top() >= track.top()
+                && bounds.bottom() <= track.bottom(),
+            "{chip} {bounds:?} leaves {track:?}"
+        );
+        previous = bounds.right();
+    }
+    // The chips are no taller than the buttons beside them, and the row stays on one line.
+    let model_control = visual.debug_bounds("chat-composer-model").unwrap();
+    let route = visual.debug_bounds("chat-composer-route").unwrap();
+    assert!(track.size.height <= model_control.size.height, "{track:?}");
+    assert!(
+        model_control.right() <= track.left() && track.right() <= route.left(),
+        "{model_control:?} {track:?} {route:?}"
+    );
+    assert!(route.top() < model_control.bottom(), "the route wrapped");
+    // One click changes the effort of the next message.
+    click(visual, "chat-composer-profile:high");
+    model.read_with(visual, |m, cx| {
+        assert_eq!(
+            m.chat.read(cx).selected_cli_model_profile.as_deref(),
+            Some("high")
+        );
+    });
+    click(visual, "chat-composer-profile:");
+    model.read_with(visual, |m, cx| {
+        assert_eq!(m.chat.read(cx).selected_cli_model_profile, None);
+    });
+}
+
+#[gpui::test]
 fn a_keyboard_focus_ring_never_resizes_its_control(cx: &mut TestAppContext) {
     let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
     visual.update(|_, cx| crate::shell::register_navigation_keybindings(cx));

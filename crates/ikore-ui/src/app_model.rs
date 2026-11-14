@@ -15,7 +15,7 @@ use gpui::{
     Task, Window,
 };
 use ikore_core::agent_runtime::{AdaptiveContextMode, ContextStrategy, DynamicContextPolicy};
-use ikore_core::chat_service::{ChatEventEnvelope, ChatTransportKind};
+use ikore_core::chat_service::{ChatEventEnvelope, ChatExecutionTargetRequest, ChatTransportKind};
 use ikore_core::llm::{
     DeleteProviderConnectionRequest, DeleteProviderRouteRequest, ResetLlmResilienceStateRequest,
     RouteTarget, RoutingMode, TestProviderConnectionRequest,
@@ -48,7 +48,9 @@ use crate::agents::{
     AgentIdentifier, AgentsBackend, AgentsDashboardSnapshot, AgentsModel, ApiActivityFilter,
     CliModelPickerState, CliModelPickerTarget, CoreAgentsBackend,
 };
-use crate::chat::{ChatBackend, ChatEventOutcome, ChatModel, ChatOperation, CoreChatBackend};
+use crate::chat::{
+    ChatBackend, ChatEventOutcome, ChatModel, ChatOperation, ChatTargetEdit, CoreChatBackend,
+};
 use crate::errors::UiCommandError;
 use crate::flow::FlowTarget;
 use crate::icons::Icon;
@@ -4361,61 +4363,12 @@ impl AppModel {
         self.chat_tasks.insert(task_key, task);
     }
 
-    pub(crate) fn set_chat_transport(
-        &mut self,
-        transport: ChatTransportKind,
-        cx: &mut Context<Self>,
-    ) {
-        if self.chat.read(cx).target_change_pending {
-            return;
-        }
-        self.chat.update(cx, |chat, _| {
-            chat.selected_transport = transport;
-        });
-        self.close_cli_model_picker(cx);
-        self.close_dropdown(cx);
-        self.apply_chat_target_change(cx);
-    }
-
-    pub(crate) fn set_chat_cli_backend(&mut self, backend: CliBackend, cx: &mut Context<Self>) {
-        if self.chat.read(cx).target_change_pending {
-            return;
-        }
-        if self.chat.read(cx).selected_cli_backend == backend {
-            self.close_dropdown(cx);
-            return;
-        }
-        self.chat.update(cx, |chat, _| {
-            chat.selected_cli_backend = backend;
-            chat.selected_cli_model = None;
-            chat.selected_cli_model_profile = None;
-            chat.selected_cli_model_source = CliModelSelectionSource::Default;
-        });
-        self.close_cli_model_picker(cx);
-        self.close_dropdown(cx);
-        if !self.agents.read(cx).model_catalogs.contains_key(&backend) {
-            self.load_cli_model_catalog(backend, false, cx);
-        }
-        self.apply_chat_target_change(cx);
-    }
-
     pub(crate) fn set_chat_cli_profile(&mut self, profile: Option<String>, cx: &mut Context<Self>) {
         if self.chat.read(cx).target_change_pending {
             return;
         }
         self.chat.update(cx, |chat, _| {
             chat.selected_cli_model_profile = profile;
-        });
-        self.close_dropdown(cx);
-        self.apply_chat_target_change(cx);
-    }
-
-    pub(crate) fn set_chat_connection(&mut self, connection_id: String, cx: &mut Context<Self>) {
-        if self.chat.read(cx).target_change_pending {
-            return;
-        }
-        self.chat.update(cx, |chat, _| {
-            chat.selected_connection_id = Some(connection_id.into());
         });
         self.close_dropdown(cx);
         self.apply_chat_target_change(cx);
@@ -4556,15 +4509,167 @@ impl AppModel {
         }));
     }
 
-    /// Applies the target chosen during a reply once that reply has ended.
+    /// Applies the targets chosen during a reply once that reply has ended:
+    /// the panel's for the open conversation, and the ones the floating
+    /// window chose for the others.
     pub(crate) fn flush_deferred_chat_target(&mut self, cx: &mut Context<Self>) {
-        let ready = {
+        let (ready, settled) = {
             let chat = self.chat.read(cx);
-            chat.target_change_deferred && !chat.streaming
+            (
+                chat.target_change_deferred && !chat.streaming,
+                chat.deferred_targets
+                    .iter()
+                    .filter(|(id, _)| !chat.is_streaming(id) && !chat.is_busy(id))
+                    .map(|(id, target)| (id.clone(), target.clone()))
+                    .collect::<Vec<_>>(),
+            )
         };
         if ready {
             self.apply_chat_target_change(cx);
         }
+        for (conversation_id, target) in settled {
+            self.retarget_conversation(conversation_id, target, cx);
+        }
+    }
+
+    fn set_chat_cli_model(
+        &mut self,
+        model_id: Option<String>,
+        source: CliModelSelectionSource,
+        cx: &mut Context<Self>,
+    ) {
+        if self.chat.read(cx).target_change_pending {
+            return;
+        }
+        self.chat.update(cx, |chat, _| {
+            chat.selected_cli_model = model_id;
+            chat.selected_cli_model_profile = None;
+            chat.selected_cli_model_source = source;
+        });
+        self.apply_chat_target_change(cx);
+    }
+
+    /// Changes the target of a conversation from its own composer, as the
+    /// floating window does. The open conversation goes through the panel,
+    /// which mirrors it; any other is changed in place.
+    pub(crate) fn edit_conversation_target(
+        &mut self,
+        conversation_id: &str,
+        edit: ChatTargetEdit,
+        cx: &mut Context<Self>,
+    ) {
+        let (active, base) = {
+            let chat = self.chat.read(cx);
+            (
+                chat.active_conversation.as_ref().map(AsRef::as_ref) == Some(conversation_id),
+                chat.shown_target(conversation_id),
+            )
+        };
+        let Some(target) = base.as_ref().and_then(|base| edit.apply_to(base)) else {
+            return;
+        };
+        if base.as_ref() == Some(&target) {
+            self.close_dropdown(cx);
+            return;
+        }
+        if active {
+            match edit {
+                ChatTargetEdit::RouteApi(connection_id) => {
+                    self.set_chat_route_api(connection_id, cx)
+                }
+                ChatTargetEdit::RouteCli(backend) => self.set_chat_route_cli(backend, cx),
+                ChatTargetEdit::Profile(profile) => self.set_chat_cli_profile(profile, cx),
+                ChatTargetEdit::Model(model_id, source) => {
+                    self.close_dropdown(cx);
+                    self.set_chat_cli_model(model_id, source, cx);
+                }
+            }
+            return;
+        }
+        self.close_dropdown(cx);
+        if let ChatExecutionTargetRequest::Cli { backend, .. } = &target {
+            self.ensure_cli_model_catalog(*backend, cx);
+        }
+        self.retarget_conversation(conversation_id.to_owned(), target, cx);
+    }
+
+    /// Applies `target` to a conversation the panel does not hold. While that
+    /// conversation replies, the choice waits for the reply to end.
+    fn retarget_conversation(
+        &mut self,
+        conversation_id: String,
+        target: ChatExecutionTargetRequest,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(backend) = self.chat_backend.clone() else {
+            return;
+        };
+        let (project_id, stored, streaming) = {
+            let chat = self.chat.read(cx);
+            let Some(project_id) = chat.project_id.as_ref().map(ToString::to_string) else {
+                return;
+            };
+            (
+                project_id,
+                chat.conversation_target(&conversation_id),
+                chat.is_streaming(&conversation_id),
+            )
+        };
+        if stored.as_ref() == Some(&target) {
+            // Back on the stored target: nothing waits any more.
+            self.chat.update(cx, |chat, _| {
+                chat.deferred_targets.remove(&conversation_id);
+            });
+            cx.notify();
+            return;
+        }
+        let generation = self.chat.update(cx, |chat, _| {
+            let generation = (!streaming)
+                .then(|| chat.begin_operation(&conversation_id, ChatOperation::Retarget))
+                .flatten();
+            match generation {
+                Some(_) => chat.deferred_targets.remove(&conversation_id),
+                // The running reply, or the send still leaving, keeps its target.
+                None => chat
+                    .deferred_targets
+                    .insert(conversation_id.clone(), target.clone()),
+            };
+            generation
+        });
+        cx.notify();
+        let Some(generation) = generation else {
+            return;
+        };
+        let task_key = (conversation_id.clone(), ChatOperation::Retarget);
+        let task = cx.spawn(async move |this, cx| {
+            let result = backend
+                .update_conversation_target(conversation_id.clone(), target)
+                .await;
+            let _ = this.update(cx, |model, cx| {
+                model.chat.update(cx, |chat, _| {
+                    if !chat.finish_operation(
+                        &project_id,
+                        &conversation_id,
+                        ChatOperation::Retarget,
+                        generation,
+                    ) {
+                        return;
+                    }
+                    match result {
+                        Ok(snapshot)
+                            if chat.active_conversation.as_ref().map(AsRef::as_ref)
+                                == Some(conversation_id.as_str()) =>
+                        {
+                            chat.apply_retargeted(snapshot)
+                        }
+                        Ok(snapshot) => chat.store_conversation_snapshot(snapshot),
+                        Err(error) => chat.set_conversation_error(&conversation_id, error),
+                    }
+                });
+                cx.notify();
+            });
+        });
+        self.chat_tasks.insert(task_key, task);
     }
 
     pub(crate) fn open_companion_model_picker(&mut self, cx: &mut Context<Self>) {
@@ -4745,12 +4850,7 @@ impl AppModel {
         let Some(backend) = self.chat_backend.clone() else {
             return;
         };
-        let deferred_here = {
-            let chat = self.chat.read(cx);
-            chat.target_change_deferred
-                && chat.active_conversation.as_ref().map(AsRef::as_ref)
-                    == Some(conversation_id.as_str())
-        };
+        let deferred_here = self.chat.read(cx).target_deferred_for(&conversation_id);
         if deferred_here {
             // Never send to a target other than the one the composer shows.
             self.flush_deferred_chat_target(cx);
@@ -4816,6 +4916,9 @@ impl AppModel {
                     input.update(cx, |input, cx| input.clear(cx));
                     model.companion_draft_changed(conversation_id.clone(), String::new(), cx);
                 }
+                // A target chosen while this send was leaving waits for the reply; if the
+                // send failed there is no reply to wait for.
+                model.flush_deferred_chat_target(cx);
                 model.schedule_session_persistence(cx);
                 cx.notify();
             });
@@ -5742,20 +5845,23 @@ impl AppModel {
                 }
                 self.save_free_form_slot(slot, cx);
             }
-            CliModelPickerTarget::Companion => {
-                if self.chat.read(cx).target_change_pending {
-                    self.close_cli_model_picker(cx);
-                    return;
-                }
-                self.chat.update(cx, |chat, _| {
-                    chat.selected_cli_model = model_id;
-                    chat.selected_cli_model_profile = None;
-                    chat.selected_cli_model_source = source;
-                });
-                self.apply_chat_target_change(cx);
-            }
+            CliModelPickerTarget::Companion => self.set_chat_cli_model(model_id, source, cx),
         }
         self.close_cli_model_picker(cx);
+    }
+
+    /// Loads the catalog of `backend` when nothing has loaded it yet, so
+    /// effort and models can be offered without opening the picker. It never
+    /// replaces a load that is already running.
+    pub(crate) fn ensure_cli_model_catalog(&mut self, backend: CliBackend, cx: &mut Context<Self>) {
+        let wanted = {
+            let agents = self.agents.read(cx);
+            !agents.model_catalogs.contains_key(&backend)
+                && agents.catalog_loading_backend.is_none()
+        };
+        if wanted {
+            self.load_cli_model_catalog(backend, false, cx);
+        }
     }
 
     pub(crate) fn select_manual_cli_model(&mut self, cx: &mut Context<Self>) {

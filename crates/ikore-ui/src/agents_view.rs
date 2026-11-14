@@ -190,16 +190,15 @@ pub(crate) fn cli_model_picker_panel(
         .trim()
         .to_string();
     let query = raw_query.to_lowercase();
+    // The Companion's picker starts with the models this project's chats used last.
+    let recent = if picker.target == CliModelPickerTarget::Companion {
+        model.chat.read(cx).recent_cli_models(picker.backend)
+    } else {
+        Vec::new()
+    };
     let entries = catalog
         .as_ref()
-        .map(|catalog| {
-            catalog
-                .models
-                .iter()
-                .filter(|entry| model_entry_matches(entry, &query))
-                .cloned()
-                .collect::<Vec<_>>()
-        })
+        .map(|catalog| picker_rows(&catalog.models, &query, &recent))
         .unwrap_or_default();
     let entries = Arc::new(entries);
     let list_entries = Arc::clone(&entries);
@@ -346,15 +345,14 @@ pub(crate) fn cli_model_picker_panel(
                                 move |_model, range: std::ops::Range<usize>, _window, cx| {
                                     range
                                         .filter_map(|index| {
-                                            let entry = list_entries.get(index)?.clone();
+                                            let PickerRow {
+                                                entry,
+                                                recent,
+                                                source,
+                                            } = list_entries.get(index)?.clone();
                                             let model_id = entry.model_id.clone();
                                             let is_default_entry = model_id.is_none();
                                             let has_profiles = !entry.profiles.is_empty();
-                                            let source = if model_id.is_some() {
-                                                CliModelSelectionSource::Catalog
-                                            } else {
-                                                CliModelSelectionSource::Default
-                                            };
                                             let provider = entry
                                                 .provider_id
                                                 .clone()
@@ -372,6 +370,9 @@ pub(crate) fn cli_model_picker_panel(
                                             }
                                             if has_profiles {
                                                 details.push(entry.profiles.join(", "));
+                                            }
+                                            if source == CliModelSelectionSource::Manual {
+                                                details.push("manual ID".into());
                                             }
                                             if let (Some(input_cost), Some(output_cost)) = (
                                                 entry.input_cost_usd_per_million,
@@ -433,6 +434,12 @@ pub(crate) fn cli_model_picker_panel(
                                                             .when(is_default_entry, |row| {
                                                                 row.child(chip(
                                                                     "DEFAULT",
+                                                                    theme::accent(),
+                                                                ))
+                                                            })
+                                                            .when(recent, |row| {
+                                                                row.child(chip(
+                                                                    "RECENT",
                                                                     theme::accent(),
                                                                 ))
                                                             })
@@ -527,6 +534,68 @@ fn format_context_window(window: u64) -> String {
     } else {
         window.to_string()
     }
+}
+
+/// A row of the model picker: a catalog entry, or a recent model the catalog does not list.
+#[derive(Debug, Clone, PartialEq)]
+struct PickerRow {
+    entry: CliModelCatalogEntry,
+    /// One of the models the Companion used last in this project.
+    recent: bool,
+    source: CliModelSelectionSource,
+}
+
+/// The rows the picker lists. Without a search the recent models come first, newest on top,
+/// then the catalog without them. A search filters the catalog and only marks the recent ones.
+fn picker_rows(catalog: &[CliModelCatalogEntry], query: &str, recent: &[String]) -> Vec<PickerRow> {
+    let is_recent = |entry: &CliModelCatalogEntry| {
+        entry
+            .model_id
+            .as_ref()
+            .is_some_and(|id| recent.contains(id))
+    };
+    let row = |entry: &CliModelCatalogEntry| PickerRow {
+        entry: entry.clone(),
+        recent: is_recent(entry),
+        source: if entry.model_id.is_some() {
+            CliModelSelectionSource::Catalog
+        } else {
+            CliModelSelectionSource::Default
+        },
+    };
+    if !query.is_empty() {
+        return catalog
+            .iter()
+            .filter(|entry| model_entry_matches(entry, query))
+            .map(row)
+            .collect();
+    }
+    recent
+        .iter()
+        .map(|id| {
+            catalog
+                .iter()
+                .find(|entry| entry.model_id.as_ref() == Some(id))
+                .map(row)
+                // A model typed by hand stays one click away.
+                .unwrap_or_else(|| PickerRow {
+                    entry: CliModelCatalogEntry {
+                        provider_id: None,
+                        model_id: Some(id.clone()),
+                        display_name: id.clone(),
+                        context_window: None,
+                        input_cost_usd_per_million: None,
+                        output_cost_usd_per_million: None,
+                        capabilities: Vec::new(),
+                        profiles: Vec::new(),
+                        raw_metadata: serde_json::Value::Null,
+                    },
+                    recent: true,
+                    source: CliModelSelectionSource::Manual,
+                })
+        })
+        .chain(catalog.iter().filter(|entry| !is_recent(entry)).map(row))
+        .collect()
 }
 
 fn model_entry_matches(entry: &CliModelCatalogEntry, query: &str) -> bool {
@@ -3875,6 +3944,66 @@ mod tests {
                 .filter(|entry| model_entry_matches(entry, "provider-3"))
                 .count(),
             100
+        );
+    }
+
+    #[test]
+    fn the_picker_lists_recent_models_first_and_a_search_only_marks_them() {
+        let entry = |id: Option<&str>| CliModelCatalogEntry {
+            provider_id: Some("anthropic".into()),
+            model_id: id.map(Into::into),
+            display_name: id.unwrap_or("CLI default").into(),
+            context_window: None,
+            input_cost_usd_per_million: None,
+            output_cost_usd_per_million: None,
+            capabilities: Vec::new(),
+            profiles: Vec::new(),
+            raw_metadata: serde_json::json!({}),
+        };
+        let catalog = [
+            entry(None),
+            entry(Some("haiku")),
+            entry(Some("opus")),
+            entry(Some("sonnet")),
+        ];
+        // A recent model carries a star here.
+        let listed = |rows: &[PickerRow]| {
+            rows.iter()
+                .map(|row| {
+                    format!(
+                        "{}{}",
+                        row.entry.model_id.as_deref().unwrap_or("default"),
+                        if row.recent { "*" } else { "" }
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            listed(&picker_rows(&catalog, "", &[])),
+            ["default", "haiku", "opus", "sonnet"]
+        );
+
+        let recent = ["sonnet".to_string(), "typed/by-hand".into(), "haiku".into()];
+        let rows = picker_rows(&catalog, "", &recent);
+        assert_eq!(
+            listed(&rows),
+            ["sonnet*", "typed/by-hand*", "haiku*", "default", "opus"]
+        );
+        // A recent model the catalog does not list is applied as the manual id it was.
+        assert_eq!(
+            rows.iter().map(|row| row.source).collect::<Vec<_>>(),
+            [
+                CliModelSelectionSource::Catalog,
+                CliModelSelectionSource::Manual,
+                CliModelSelectionSource::Catalog,
+                CliModelSelectionSource::Default,
+                CliModelSelectionSource::Catalog,
+            ]
+        );
+        // A search keeps the catalog order and lists nothing the catalog lacks.
+        assert_eq!(
+            listed(&picker_rows(&catalog, "s", &recent)),
+            ["opus", "sonnet*"]
         );
     }
 }

@@ -290,7 +290,6 @@ fn install(
                 updated_at: "now".into(),
             }],
         );
-        chat.config_collapsed = true;
     });
     model.canvas_authoring.backend = Some(backend);
     model.refresh_canvas_authoring(cx);
