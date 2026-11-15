@@ -442,6 +442,130 @@ async fn official_adapters_capture_and_resume_the_exact_native_session() {
 }
 
 #[tokio::test]
+async fn a_resume_on_another_model_opens_a_new_session_with_the_earlier_answers() {
+    let _path_lock = PATH_TEST_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let binaries = tempfile::tempdir().unwrap();
+    for backend in ["codex", "claude"] {
+        std::fs::copy(
+            env!("CARGO_BIN_EXE_cli_fixture"),
+            binaries.path().join(format!("{backend}.exe")),
+        )
+        .unwrap();
+    }
+    let original_path = std::env::var_os("PATH");
+    let _restore = PathRestore(original_path.clone());
+    let mut paths = vec![binaries.path().to_path_buf()];
+    if let Some(original_path) = original_path {
+        paths.extend(std::env::split_paths(&original_path));
+    }
+    let joined = std::env::join_paths(paths).unwrap();
+    // SAFETY: guarded and restored by PATH_TEST_LOCK/PathRestore for the duration of this test.
+    unsafe { std::env::set_var("PATH", joined) };
+
+    let harness = harness(vec!["--mode".into(), "success".into()]);
+    harness.terminals.refresh_discovery().await;
+    let configure = |backend: CliBackend, model: &str| {
+        let current = harness
+            .terminals
+            .repository()
+            .get_config(&harness.project_id, AgentRole::BackendAgent)
+            .unwrap();
+        harness
+            .terminals
+            .update_config(UpdateCliAgentConfigRequest {
+                project_id: harness.project_id.clone(),
+                agent_role: AgentRole::BackendAgent,
+                execution_mode: AgentExecutionMode::CliProcess,
+                backend,
+                model: Some(model.into()),
+                model_profile: None,
+                model_source: CliModelSelectionSource::Manual,
+                thinking_level: ThinkingLevel::Default,
+                custom_executable: None,
+                custom_args: Vec::new(),
+                custom_risk_ack: false,
+                expected_version: current.version,
+            })
+            .unwrap();
+    };
+    configure(CliBackend::Codex, "gpt-5.6-luna");
+    let initial = harness
+        .terminals
+        .start_manual(StartManualRunRequest {
+            project_id: harness.project_id.clone(),
+            agent_role: AgentRole::BackendAgent,
+            prompt: "primeiro turno".into(),
+        })
+        .await
+        .unwrap();
+    wait_for_status(&harness, &initial.id, TerminalRunStatus::Completed).await;
+
+    // The same session on another backend and model: a new session that
+    // opens with the earlier answer, then the developer's message.
+    configure(CliBackend::Claude, "haiku");
+    let continued = harness
+        .terminals
+        .resume_manual(ResumeManualRunRequest {
+            project_id: harness.project_id.clone(),
+            source_run_id: initial.id.clone(),
+            prompt: "segundo turno".into(),
+        })
+        .await
+        .unwrap();
+    wait_for_status(&harness, &continued.id, TerminalRunStatus::Completed).await;
+    let continued = harness
+        .terminals
+        .repository()
+        .get_run(&continued.id)
+        .unwrap();
+    assert_eq!(continued.backend, Some(CliBackend::Claude));
+    assert_eq!(continued.model.as_deref(), Some("haiku"));
+    assert_eq!(continued.parent_run_id, None);
+    assert_eq!(continued.continuation_reason, None);
+    assert!(continued.native_session_id.is_some());
+
+    let started = std::fs::read_to_string(binaries.path().join("claude.handoff")).unwrap();
+    let (args, stdin) = started.split_once('\n').unwrap();
+    assert!(!args.contains("--resume"), "{args}");
+    assert!(
+        stdin.contains("from Codex \u{b7} gpt-5.6-luna to Claude \u{b7} haiku"),
+        "{stdin}"
+    );
+    let [label, answer, heading, message] = [
+        "> provenance: agent_output \u{b7} terminal/session",
+        "ok codex fixture",
+        "## The developer's message",
+        "segundo turno",
+    ]
+    .map(|part| {
+        stdin
+            .find(part)
+            .unwrap_or_else(|| panic!("{part} not in {stdin}"))
+    });
+    assert!(
+        label < answer && answer < heading && heading < message,
+        "{stdin}"
+    );
+
+    let events = harness
+        .terminals
+        .repository()
+        .list_events(&continued.id, 0, 50)
+        .unwrap();
+    assert!(
+        events.iter().any(|event| {
+            event.kind == TerminalEventKind::System
+                && event.content
+                    == "New session on Claude \u{b7} haiku, opened with a summary of the earlier one on Codex \u{b7} gpt-5.6-luna."
+        }),
+        "{events:?}"
+    );
+}
+
+#[tokio::test]
 async fn claude_sonnet_generation_rejects_haiku_output_and_terminates_the_process_tree() {
     let _path_lock = PATH_TEST_LOCK
         .get_or_init(|| tokio::sync::Mutex::new(()))

@@ -268,6 +268,8 @@ pub enum AgentProducer {
     /// The Code and Test candidate the Integrator reviews as a whole.
     Candidate,
     CompanionAssistant,
+    /// An agent in a CLI session the developer runs from the Agents view.
+    TerminalSession,
 }
 
 impl AgentProducer {
@@ -286,6 +288,7 @@ impl AgentProducer {
             Self::ForgeBatch => "forge/batch".into(),
             Self::Candidate => "candidate/units".into(),
             Self::CompanionAssistant => "companion/assistant".into(),
+            Self::TerminalSession => "terminal/session".into(),
         }
     }
 }
@@ -500,6 +503,21 @@ pub const fn stage_label(stage: PulsationStage) -> &'static str {
         PulsationStage::Test => "test",
         PulsationStage::Integrator => "integrator",
     }
+}
+
+/// A backtick fence longer than any backtick run in `content`, and never
+/// shorter than three, so the content cannot close it (ADR-037 D3).
+pub fn fence_for(content: &str) -> String {
+    let (mut longest, mut run) = (0usize, 0usize);
+    for c in content.chars() {
+        if c == '`' {
+            run += 1;
+            longest = longest.max(run);
+        } else {
+            run = 0;
+        }
+    }
+    "`".repeat(longest.max(2) + 1)
 }
 
 /// Keeps a label to ASCII identifier characters, so no dynamic part can

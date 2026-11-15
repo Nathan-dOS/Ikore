@@ -6506,11 +6506,15 @@ impl AppModel {
         }));
     }
 
+    /// Resumes the session of `source_run_id`, or, when `new_session` says its
+    /// backend or model changed since, continues it in a new session that opens
+    /// with a summary of it (PI-Desktop PD10).
     pub(crate) fn resume_agent_run(
         &mut self,
         source_run_id: String,
         slot_id: String,
         role: Option<ikore_core::llm::AgentRole>,
+        new_session: bool,
         cx: &mut Context<Self>,
     ) {
         let Some(backend) = self.agents_backend.clone() else {
@@ -6539,21 +6543,30 @@ impl AppModel {
         cx.notify();
         self.agents_task = Some(cx.spawn(async move |this, cx| {
             // ADR-037 M3: say what the agent will be told. A refusal comes
-            // from the resume itself, with the count.
-            let told = match backend
-                .preview_resume(project_id.clone(), source_run_id.clone())
-                .await
-            {
-                Ok(Some(ikore_core::terminals::ResumePreview::Changes(changes)))
-                    if changes.decision
-                        == ikore_core::exchange::external_changes::ExternalChangesDecision::Notice =>
+            // from the resume itself, with the count. A new session reads the
+            // workspace afresh, so only the handoff needs saying.
+            let told = if new_session {
+                Some(
+                    "The model changed since this session, so a new session started with a \
+                     summary of it."
+                        .to_owned(),
+                )
+            } else {
+                match backend
+                    .preview_resume(project_id.clone(), source_run_id.clone())
+                    .await
                 {
-                    Some(format!(
-                        "{} files changed since this session; the agent will be told",
-                        changes.changed_files()
-                    ))
+                    Ok(Some(ikore_core::terminals::ResumePreview::Changes(changes)))
+                        if changes.decision
+                            == ikore_core::exchange::external_changes::ExternalChangesDecision::Notice =>
+                    {
+                        Some(format!(
+                            "{} files changed since this session; the agent will be told",
+                            changes.changed_files()
+                        ))
+                    }
+                    _ => None,
                 }
-                _ => None,
             };
             let result = backend
                 .resume_manual(ResumeManualRunRequest {

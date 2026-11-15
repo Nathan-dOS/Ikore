@@ -1375,6 +1375,51 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_model_change_continues_the_session_in_a_new_one() {
+        use crate::agents_view::session_continuation;
+
+        let mut finished = run(TerminalRunStatus::Completed);
+        finished.model = Some("gpt-5".into());
+        finished.native_session_id = Some("session-1".into());
+        finished.session_fingerprint = Some("fingerprint-1".into());
+        // Same backend and model: a native resume, which the CLI must offer.
+        assert_eq!(
+            session_continuation(&finished, CliBackend::Codex, Some("gpt-5"), true, true),
+            (true, false)
+        );
+        assert_eq!(
+            session_continuation(&finished, CliBackend::Codex, Some("gpt-5"), false, true),
+            (false, false)
+        );
+        // Another model or backend: a new session, which needs the CLI ready.
+        assert_eq!(
+            session_continuation(
+                &finished,
+                CliBackend::Codex,
+                Some("gpt-5-mini"),
+                false,
+                true
+            ),
+            (true, true)
+        );
+        assert_eq!(
+            session_continuation(&finished, CliBackend::Claude, Some("gpt-5"), true, false),
+            (false, true)
+        );
+        // A run still going, or one that never opened a session, cannot go on.
+        let running = TerminalRun {
+            status: TerminalRunStatus::Running,
+            ..finished.clone()
+        };
+        assert!(!session_continuation(&running, CliBackend::Claude, None, true, true).0);
+        let sessionless = TerminalRun {
+            native_session_id: None,
+            ..finished
+        };
+        assert!(!session_continuation(&sessionless, CliBackend::Claude, None, true, true).0);
+    }
+
     fn event_envelope(status: TerminalRunStatus, sequence: u64) -> TerminalEventEnvelope {
         TerminalEventEnvelope {
             protocol_version: 2,

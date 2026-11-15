@@ -1888,13 +1888,19 @@ fn free_form_card(
         .model_profile
         .clone()
         .unwrap_or_else(|| "CLI default".into());
-    let can_resume = selected_run.is_some_and(|run| {
-        !run.status.is_active()
-            && run.native_session_id.is_some()
-            && run.session_fingerprint.is_some()
-            && availability.is_some_and(|item| item.capabilities.native_resume)
-    }) && slot.session_policy
-        == ikore_core::terminals::SessionPolicy::ResumeExplicit;
+    let (can_resume, new_session) = selected_run
+        .map(|run| {
+            session_continuation(
+                run,
+                slot.backend,
+                slot.model.as_deref(),
+                availability.is_some_and(|item| item.capabilities.native_resume),
+                executable_ready,
+            )
+        })
+        .unwrap_or_default();
+    let can_resume =
+        can_resume && slot.session_policy == ikore_core::terminals::SessionPolicy::ResumeExplicit;
     let status = active_run
         .map(|run| run_status(run.status))
         .unwrap_or_else(|| {
@@ -2179,7 +2185,7 @@ fn free_form_card(
                     .when_some(selected_run_id, |row, source_run_id| {
                         row.child(action_button(
                             SharedString::from(format!("free-form-resume:{}", slot.id)),
-                            "Resume session".into(),
+                            resume_label(new_session),
                             !busy && !running && prompt_ready && can_resume,
                             false,
                             cx,
@@ -2190,6 +2196,7 @@ fn free_form_card(
                                         source_run_id.clone(),
                                         slot_id.clone(),
                                         None,
+                                        new_session,
                                         cx,
                                     )
                                 }
@@ -2248,12 +2255,17 @@ fn agent_card(
         && prompt_ready
         && executable_ready
         && agent.config.execution_mode == AgentExecutionMode::CliProcess;
-    let can_resume = selected_run.is_some_and(|run| {
-        !run.status.is_active()
-            && run.native_session_id.is_some()
-            && run.session_fingerprint.is_some()
-            && availability.is_some_and(|item| item.capabilities.native_resume)
-    });
+    let (can_resume, new_session) = selected_run
+        .map(|run| {
+            session_continuation(
+                run,
+                agent.config.backend,
+                agent.config.model.as_deref(),
+                availability.is_some_and(|item| item.capabilities.native_resume),
+                executable_ready,
+            )
+        })
+        .unwrap_or_default();
     let cli_identity = availability.map(|item| {
         format!(
             "Version {} · {}",
@@ -2644,7 +2656,7 @@ fn agent_card(
                     .when_some(resume_run_id, |row, source_run_id| {
                         row.child(action_button(
                             SharedString::from(format!("agent-resume:{}", role.as_str())),
-                            "Resume session".into(),
+                            resume_label(new_session),
                             !busy && !running && prompt_ready && can_resume,
                             false,
                             cx,
@@ -2653,6 +2665,7 @@ fn agent_card(
                                     source_run_id.clone(),
                                     format!("canonical:{}", role.as_str()),
                                     Some(role),
+                                    new_session,
                                     cx,
                                 )
                             },
@@ -3901,6 +3914,37 @@ fn follow_button(
         "Follow paused"
     })
     .into_any_element()
+}
+
+/// Whether the selected run's session can go on, and whether it goes on in a
+/// new session. A CLI session keeps its backend and model, so after either
+/// changed the resume opens a new session with a summary of this one (PD10):
+/// that needs the CLI ready, not native resuming.
+pub(crate) fn session_continuation(
+    run: &ikore_core::terminals::TerminalRun,
+    backend: ikore_core::terminals::CliBackend,
+    model: Option<&str>,
+    native_resume: bool,
+    executable_ready: bool,
+) -> (bool, bool) {
+    let new_session = ikore_core::terminals::needs_handoff(run, backend, model);
+    let possible = !run.status.is_active()
+        && run.native_session_id.is_some()
+        && run.session_fingerprint.is_some()
+        && if new_session {
+            executable_ready
+        } else {
+            native_resume
+        };
+    (possible, new_session)
+}
+
+fn resume_label(new_session: bool) -> SharedString {
+    if new_session {
+        "Continue with summary".into()
+    } else {
+        "Resume session".into()
+    }
 }
 
 fn action_button(

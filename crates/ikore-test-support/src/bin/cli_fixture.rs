@@ -161,6 +161,16 @@ fn main() {
         eprintln!("stdin mismatch fixture");
         std::process::exit(12);
     }
+    // A resume on another model opens a new session with a summary of the
+    // earlier one (PD10): record how this one was started, for the test.
+    if stdin.contains("## Handoff from an earlier session")
+        && let Ok(path) = env::current_exe()
+    {
+        let _ = std::fs::write(
+            path.with_file_name(format!("{executable_name}.handoff")),
+            format!("{}\n{stdin}", args.join(" ")),
+        );
+    }
     // The Notes Scribe and the Documentation Reconciler (ADR-034 M5) run
     // under the same Companion restrictions as discovery.
     if stdin.contains("feature-discovery-fixture")
