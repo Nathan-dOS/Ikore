@@ -10126,6 +10126,116 @@ mod tests {
         assert_eq!(requests[0].active_view, "chat");
     }
 
+    /// ADR-040 Etapa 0 baseline: what a burst of 500 terminal envelopes, as a
+    /// run's end publishes them, costs the model from the event bus on, with the
+    /// Agents view open. The test platform does not paint, so frame times need the
+    /// running app's probe. Debug build: only comparable with this harness.
+    #[gpui::test]
+    #[ignore = "ADR-040 baseline; run explicitly with --ignored --nocapture"]
+    fn agent_console_baseline_terminal_burst(cx: &mut TestAppContext) {
+        use ikore_core::llm::AgentRole;
+        use ikore_core::terminals::{
+            AgentExecutionMode, CliBackend, CliModelSelectionSource, ExecutionOrigin, SessionSlot,
+            TerminalEvent, TerminalEventEnvelope, TerminalEventKind, TerminalRun,
+            TerminalRunStatus,
+        };
+
+        let (model, visual) = cx.add_window_view(|_, cx| crate::layout_tests::fixture(cx));
+        model.update(visual, |model, cx| model.select_view(AppView::Agents, cx));
+        visual.run_until_parked();
+        let mut bursts = Vec::new();
+        for burst in 0..5 {
+            let run = TerminalRun {
+                id: format!("run-burst-{burst}"),
+                project_id: "layout-project".into(),
+                slot: SessionSlot::Canonical {
+                    agent_role: AgentRole::TaskSpecifier,
+                },
+                slot_id: "canonical:layout-project:task_specifier".into(),
+                agent_role: Some(AgentRole::TaskSpecifier),
+                origin: ExecutionOrigin::Manual,
+                execution_mode: AgentExecutionMode::CliProcess,
+                backend: Some(CliBackend::Codex),
+                model: None,
+                requested_model_profile: None,
+                model_source: CliModelSelectionSource::Default,
+                observed_model: None,
+                native_session_id: None,
+                pulsation_id: None,
+                job_id: None,
+                agent_run_id: None,
+                llm_execution_id: None,
+                status: TerminalRunStatus::Running,
+                exit_code: None,
+                error_code: None,
+                error_message: None,
+                created_at: "2026-11-15T00:00:00Z".into(),
+                started_at: None,
+                finished_at: None,
+                updated_at: "2026-11-15T00:00:00Z".into(),
+                deadline_at: None,
+                termination_reason: None,
+                output_bytes: 0,
+                event_count: 0,
+                workspace_snapshot_hash: None,
+                launch_identity_sha256: None,
+                detected_cli_version: None,
+                adapter_contract_version: 1,
+                parent_run_id: None,
+                continuation_reason: None,
+                session_fingerprint: None,
+                observation_trial_id: None,
+            };
+            let envelopes = (1..=500u64)
+                .map(|sequence| TerminalEventEnvelope {
+                    protocol_version: 2,
+                    project_id: "layout-project".into(),
+                    agent_role: Some(AgentRole::TaskSpecifier),
+                    run_id: run.id.clone(),
+                    sequence,
+                    run: run.clone(),
+                    event: TerminalEvent {
+                        id: format!("{}-{sequence}", run.id),
+                        run_id: run.id.clone(),
+                        sequence,
+                        kind: if sequence % 5 == 0 {
+                            TerminalEventKind::ToolUse
+                        } else {
+                            TerminalEventKind::Message
+                        },
+                        stream: Some("stdout".into()),
+                        content: format!("Reading crates/ikore-core/src/module_{sequence}.rs"),
+                        redaction_count: 0,
+                        redaction_categories: Vec::new(),
+                        created_at: "2026-11-15T00:00:00Z".into(),
+                    },
+                })
+                .collect::<Vec<_>>();
+            let processed = model.update(visual, |model, cx| {
+                let started = std::time::Instant::now();
+                for envelope in envelopes {
+                    model.handle_event(AppEvent::Terminal(Box::new(envelope)), cx);
+                }
+                started.elapsed()
+            });
+            visual.run_until_parked();
+            let buffered = model.read_with(visual, |model, cx| {
+                model
+                    .agents
+                    .read(cx)
+                    .events_by_run
+                    .get(&run.id)
+                    .map_or(0, Vec::len)
+            });
+            assert_eq!(buffered, 500);
+            bursts.push(processed.as_micros());
+        }
+        println!(
+            "AGENT_CONSOLE_BASELINE {}",
+            serde_json::json!({ "measurement": "terminal_burst_500", "processedUs": bursts })
+        );
+    }
+
     #[gpui::test]
     fn rehydrates_all_domain_selections(cx: &mut TestAppContext) {
         let model = cx.new(AppModel::new_for_test);

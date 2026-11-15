@@ -671,6 +671,122 @@ fn real_frames_normalize_and_carry_the_pairing_keys_the_console_needs() {
     assert_eq!(tool_frames.get(&CliBackend::Codex), None);
 }
 
+/// What the coordinator spends per frame on the corpus, end to end: adapter,
+/// identity checks, held audit events and their SQLite writes. ADR-040 Etapa 0
+/// baseline; the M5 pulse tracker may add at most 2 % to it. Debug build: only
+/// comparable with this same harness on the same machine.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "ADR-040 baseline; run explicitly with --ignored --nocapture"]
+async fn corpus_coordinator_cost_per_frame() {
+    use std::sync::Mutex;
+
+    use ikore_contracts::AgentRole;
+    use tokio_util::sync::CancellationToken;
+
+    use super::{
+        AgentExecutionMode, CreateTerminalRunRequest, ExecutionOrigin, ProcessStreamItem,
+        TerminalRepository, TerminalRunStatus, coordinate_process_events_blocking,
+    };
+    use crate::test_support::host;
+
+    /// The corpus over and over, so a run is long enough to time.
+    const ROUNDS: usize = 200;
+    let mut by_backend: Vec<(CliBackend, Vec<String>)> = Vec::new();
+    for (backend, _, _, lines) in committed_corpus() {
+        match by_backend.iter_mut().find(|(known, _)| *known == backend) {
+            Some((_, all)) => all.extend(lines),
+            None => by_backend.push((backend, lines)),
+        }
+    }
+    for (backend, lines) in by_backend
+        .into_iter()
+        .filter(|(_, lines)| !lines.is_empty())
+    {
+        let data = tempfile::tempdir().unwrap();
+        let database = TestDatabase::initialize(data.path()).unwrap();
+        let project = database.insert_project(data.path(), None).unwrap().id;
+        let repository = TerminalRepository::new(database.database_path(), host());
+        repository.ensure_project_configs(&project, false).unwrap();
+        // The model the corpus was recorded with, so the identity guard does not
+        // stop the run at its first generation.
+        let model = match backend {
+            CliBackend::Antigravity => Some("gemini-3.8-flash".to_owned()),
+            CliBackend::Opencode => Some("groq/openai/gpt-oss-20b".to_owned()),
+            _ => None,
+        };
+        let run = repository
+            .create_run(CreateTerminalRunRequest {
+                project_id: project,
+                agent_role: AgentRole::BackendAgent,
+                origin: ExecutionOrigin::Manual,
+                execution_mode: AgentExecutionMode::CliProcess,
+                backend: Some(backend),
+                model,
+                pulsation_id: None,
+                job_id: None,
+                agent_run_id: None,
+                llm_execution_id: None,
+            })
+            .unwrap();
+        for status in [TerminalRunStatus::Starting, TerminalRunStatus::Running] {
+            repository
+                .set_run_status(&run.id, status, None, None, None)
+                .unwrap();
+        }
+        let run = repository.get_run(&run.id).unwrap();
+        let (sender, receiver) = mpsc::channel(256);
+        let started = Instant::now();
+        let coordinator = tokio::task::spawn_blocking({
+            let repository = repository.clone();
+            move || {
+                coordinate_process_events_blocking(
+                    repository,
+                    Arc::new(NoEvents),
+                    run,
+                    backend,
+                    receiver,
+                    CancellationToken::new(),
+                    Arc::new(Mutex::new(None)),
+                    None,
+                    None,
+                )
+            }
+        });
+        let mut sent = 0usize;
+        'feed: for _ in 0..ROUNDS {
+            for line in &lines {
+                let frame = ProcessStreamItem::Frame {
+                    stream: "stdout",
+                    bytes: line.clone().into_bytes(),
+                    received_at: Instant::now(),
+                };
+                if sender.send(frame).await.is_err() {
+                    break 'feed;
+                }
+                sent += 1;
+            }
+        }
+        drop(sender);
+        let outcome = coordinator.await.unwrap();
+        let elapsed = started.elapsed();
+        println!(
+            "AGENT_CONSOLE_BASELINE {}",
+            json!({
+                "measurement": "coordinator_per_frame",
+                "backend": backend.as_str(),
+                "corpusFrames": lines.len(),
+                "framesSent": sent,
+                "totalMs": elapsed.as_millis(),
+                "perFrameUs": elapsed.as_micros() / sent.max(1) as u128,
+                "outcome": match &outcome {
+                    Ok(_) => "completed".to_owned(),
+                    Err(error) => error.code().to_owned(),
+                },
+            })
+        );
+    }
+}
+
 #[test]
 fn the_scrubber_keeps_pairs_and_drops_what_identifies_the_machine() {
     let extra = ["Secret Project".to_owned()];

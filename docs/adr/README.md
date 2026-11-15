@@ -278,3 +278,13 @@ change, lets a lagging UI reread from its cursor instead of reloading
 everything. An explicit CLI resume after workspace edits tells the agent what
 changed, within a budget. The Companion has two more read-only tools, over
 deterministic pulsation digests. See the [decision](037-agent-exchange.md).
+
+## ADR-040: agent console and bottom dock
+
+Accepted on 2026-11-08; not implemented yet. One console renders on the Agents
+page and in a bottom dock that follows the active agent. During a run the host
+publishes action summaries and a live phase pulse, never free text before
+completion; a failed run publishes only its action summaries; reasoning is an
+opt-in per project. The preparation stage recorded a corpus of real CLI frames
+on 2026-11-15. See the [decision](040-agent-console.md) and the
+[corpus notes](../../crates/ikore-terminal/fixtures/cli/CORPUS.md).
