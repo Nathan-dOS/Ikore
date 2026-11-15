@@ -6222,6 +6222,173 @@ fn projects_sidebar_lists_every_project_beside_the_rail(cx: &mut TestAppContext)
 }
 
 #[gpui::test]
+fn work_panel_tabs_reach_the_project_files_from_any_view(cx: &mut TestAppContext) {
+    use gpui::Focusable as _;
+    use ikore_core::workspace_service::{FileNode, FileNodeKind};
+    use std::sync::Arc;
+    let file = |path: &str| FileNode {
+        name: path.rsplit('/').next().unwrap().into(),
+        relative_path: path.into(),
+        kind: FileNodeKind::File,
+        children: Vec::new(),
+    };
+    let backend = Arc::new(crate::work_panel::tests::SearchOnly::default());
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.update(|_, cx| crate::shell::register_navigation_keybindings(cx));
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    select(&model, visual, AppView::Agents);
+    model.update(visual, |m, cx| {
+        m.vault_backend = Some(backend.clone());
+        m.workspace.update(cx, |workspace, _| {
+            workspace.root_path = Some("C:/work/layout".into());
+            workspace.tree = vec![
+                FileNode {
+                    name: "docs".into(),
+                    relative_path: "docs".into(),
+                    kind: FileNodeKind::Directory,
+                    children: vec![file("docs/a.md")],
+                },
+                file("README.md"),
+            ];
+            workspace.open_tab_evicting("src/beta.rs", "fn main() {}\n".into(), "r1".into());
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    // General is the panel as it was: the context cards, under the tabs.
+    let panel = visual.debug_bounds("context-rail").unwrap();
+    assert_eq!(panel.size.width, crate::sizing::CONTEXT_RAIL_WIDTH);
+    let toggle = visual.debug_bounds("context-rail-toggle").unwrap();
+    for tab in ["work-tab:general", "work-tab:files", "work-tab:search"] {
+        let bounds = visual.debug_bounds(tab).unwrap();
+        assert!(
+            bounds.left() >= panel.left() && bounds.right() <= toggle.left(),
+            "{tab} {bounds:?} overlaps the toggle {toggle:?}"
+        );
+    }
+    let pipeline = visual.debug_bounds("rail-card-pipeline").unwrap();
+    assert!(pipeline.top() >= toggle.bottom(), "{pipeline:?}");
+
+    // Files: the project's tree, in the panel, and the view stays.
+    click(visual, "work-tab:files");
+    for row in [
+        "work-file:docs",
+        "work-file:docs/a.md",
+        "work-file:README.md",
+    ] {
+        let bounds = visual
+            .debug_bounds(row)
+            .unwrap_or_else(|| panic!("missing {row}"));
+        assert!(
+            bounds.left() >= panel.left() && bounds.right() <= panel.right(),
+            "{row} {bounds:?} leaves {panel:?}"
+        );
+    }
+    assert_eq!(
+        model.read_with(visual, |m, _| m.active_view()),
+        AppView::Agents
+    );
+    // One tree: a folder folded here is folded in Workspace too.
+    click(visual, "work-file:docs");
+    assert!(model.read_with(visual, |m, cx| {
+        m.workspace.read(cx).folders.toggled.contains("docs")
+    }));
+
+    // Search: the field takes the focus, Enter searches, and the matches stay in the panel.
+    click(visual, "work-tab:search");
+    let input = model.read_with(visual, |m, _| m.work_panel.search_input().unwrap());
+    assert!(visual.update(|window, cx| input.read(cx).focus_handle(cx).is_focused(window)));
+    model.update(visual, |_, cx| {
+        input.update(cx, |input, cx| input.set_value("alpha beta", cx));
+    });
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    assert_eq!(
+        *backend.queries.lock().unwrap(),
+        vec![("alpha beta".to_string(), 100)]
+    );
+    assert_eq!(
+        input.read_with(visual, |input, _| input.value().to_owned()),
+        "alpha beta",
+        "Enter searches; it does not type into the field"
+    );
+    let field = visual.debug_bounds("work-search-field").unwrap();
+    assert!(field.left() >= panel.left() && field.right() <= panel.right());
+    for result in ["work-result:0", "work-result:1"] {
+        let bounds = visual
+            .debug_bounds(result)
+            .unwrap_or_else(|| panic!("missing {result}"));
+        assert!(
+            bounds.left() >= panel.left() && bounds.right() <= panel.right(),
+            "{result} {bounds:?} leaves {panel:?}"
+        );
+        assert!(bounds.top() > field.bottom());
+    }
+    // A match opens its file in Workspace.
+    click(visual, "work-result:1");
+    assert_eq!(
+        model.read_with(visual, |m, cx| (
+            m.active_view(),
+            m.workspace
+                .read(cx)
+                .active_relative_path
+                .as_ref()
+                .map(ToString::to_string)
+        )),
+        (AppView::Workspace, Some("src/beta.rs".to_string()))
+    );
+
+    // Folded, the strip opens the panel on a tab, and the focus stays in the shell: the
+    // shortcut that folded the panel unfolds it again.
+    visual.simulate_keystrokes("ctrl-b");
+    visual.run_until_parked();
+    assert!(model.read_with(visual, |m, cx| m.context_rail_collapsed(cx)));
+    click(visual, "rail-strip-files");
+    assert_eq!(
+        model.read_with(visual, |m, cx| (
+            m.context_rail_collapsed(cx),
+            m.work_panel.tab
+        )),
+        (false, crate::work_panel::WorkPanelTab::Files)
+    );
+    assert!(visual.update(|window, cx| window.focused(cx).is_some()));
+    visual.simulate_keystrokes("ctrl-b");
+    visual.run_until_parked();
+    visual.simulate_keystrokes("ctrl-b");
+    visual.run_until_parked();
+    assert!(!model.read_with(visual, |m, cx| m.context_rail_collapsed(cx)));
+    // The search shortcut opens the Search tab, from Home too, with the field focused.
+    click(visual, "rail-nav-home");
+    visual.simulate_keystrokes("ctrl-shift-f");
+    visual.run_until_parked();
+    assert_eq!(
+        model.read_with(visual, |m, _| (m.active_view(), m.work_panel.tab)),
+        (AppView::Workspace, crate::work_panel::WorkPanelTab::Search)
+    );
+    assert!(visual.update(|window, cx| input.read(cx).focus_handle(cx).is_focused(window)));
+    // A window too narrow for the panel says so instead of opening it.
+    visual.simulate_resize(size(px(960.0), px(640.0)));
+    visual.run_until_parked();
+    model.update(visual, |m, cx| {
+        m.work_panel.tab = crate::work_panel::WorkPanelTab::General;
+        cx.notify();
+    });
+    visual.simulate_keystrokes("ctrl-shift-f");
+    visual.run_until_parked();
+    assert_eq!(
+        model.read_with(visual, |m, _| m.work_panel.tab),
+        crate::work_panel::WorkPanelTab::General
+    );
+    assert!(
+        model
+            .read_with(visual, |m, _| m
+                .current_notice()
+                .map(|notice| notice.message.clone()))
+            .is_some_and(|message| message.contains("Widen the window"))
+    );
+}
+
+#[gpui::test]
 fn settings_models_page_lists_each_model_once_with_its_routes(cx: &mut TestAppContext) {
     use ikore_core::llm::ProviderConnection;
     use ikore_core::terminals::{

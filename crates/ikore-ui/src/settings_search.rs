@@ -73,9 +73,9 @@ pub(crate) static ENTRIES: &[SettingsEntry] = &[
         "context-rail",
         P::General,
         "Layout",
-        "Show the context rail",
-        "The right-hand column with the pipeline, what is waiting on you and runtime health.",
-        "sidebar right panel rail ctrl-b",
+        "Show the work panel",
+        "The right-hand column. General has the pipeline, what is waiting on you and runtime health; Files and Search reach the project's files.",
+        "context rail sidebar right panel ctrl-b files search ctrl-shift-f",
     ),
     entry(
         "reduced-motion",
@@ -108,8 +108,8 @@ pub(crate) static ENTRIES: &[SettingsEntry] = &[
         P::Shortcuts,
         "Navigation",
         "Navigation",
-        "Views, Settings, sections, the suggested next step, the context rail and the Companion's questions.",
-        "ctrl alt home forge pulsations vault agents logs companion question workspace settings section rail",
+        "Views, Settings, sections, the suggested next step, the work panel, the projects sidebar, project search and the Companion's questions.",
+        "ctrl alt home forge pulsations vault agents logs companion question workspace settings section rail panel projects search",
     ),
     entry(
         "shortcuts-review",

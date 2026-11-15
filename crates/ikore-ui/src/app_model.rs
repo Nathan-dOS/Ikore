@@ -325,7 +325,7 @@ pub struct AppModel {
     session_persistence: Option<Arc<dyn SessionPersistence>>,
     workspace_backend: Option<Arc<dyn WorkspaceBackend>>,
     pub(crate) pulsations_backend: Option<Arc<dyn PulsationsBackend>>,
-    vault_backend: Option<Arc<dyn VaultBackend>>,
+    pub(crate) vault_backend: Option<Arc<dyn VaultBackend>>,
     pub(crate) settings_backend: Option<Arc<dyn SettingsBackend>>,
     pub(crate) agents_backend: Option<Arc<dyn AgentsBackend>>,
     logs_backend: Option<Arc<dyn LogsBackend>>,
@@ -400,6 +400,7 @@ pub struct AppModel {
     chat_composer_subscriptions: HashMap<String, Vec<Subscription>>,
     /// Every project and its recent work, beside the nav rail (ADR-042).
     pub(crate) projects_sidebar: crate::projects_sidebar::ProjectsSidebar,
+    pub(crate) work_panel: crate::work_panel::WorkPanel,
     /// Scroll of the open conversation, which the question navigator reads and moves.
     pub(crate) chat_scroll: gpui::ScrollHandle,
     /// Where the questions of the open conversation were laid out last; shared with its prepaint.
@@ -951,6 +952,7 @@ impl AppModel {
             chat_composer_inputs: HashMap::new(),
             chat_composer_subscriptions: HashMap::new(),
             projects_sidebar: Default::default(),
+            work_panel: Default::default(),
             chat_scroll: gpui::ScrollHandle::new(),
             chat_question_layout: Default::default(),
             cli_model_search_input,

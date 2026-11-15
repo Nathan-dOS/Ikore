@@ -195,11 +195,17 @@ pub(crate) fn shortcut_catalog() -> Vec<Shortcut> {
             true,
         ),
         shortcut(NAV, "ctrl-enter", "Run the suggested next step", true),
-        shortcut(NAV, "ctrl-b", "Show or hide the context rail", true),
+        shortcut(NAV, "ctrl-b", "Show or hide the work panel", true),
         shortcut(
             NAV,
             "ctrl-shift-e",
             "Show or hide the projects sidebar",
+            true,
+        ),
+        shortcut(
+            NAV,
+            "ctrl-shift-f",
+            "Search the project in the work panel",
             true,
         ),
         shortcut(

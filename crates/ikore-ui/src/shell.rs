@@ -47,6 +47,7 @@ actions!(
         ToggleContextRail,
         ToggleCompanionDock,
         ToggleProjectsSidebar,
+        SearchProject,
         PreviousChatQuestion,
         NextChatQuestion,
         FocusNextControl,
@@ -114,6 +115,8 @@ pub(crate) fn register_navigation_keybindings(cx: &mut App) {
         KeyBinding::new("alt-down", NextChatQuestion, None),
         KeyBinding::new("ctrl-b", ToggleContextRail, None),
         KeyBinding::new("ctrl-shift-e", ToggleProjectsSidebar, None),
+        // The work panel's Search tab, from any view (ADR-042).
+        KeyBinding::new("ctrl-shift-f", SearchProject, None),
         // Tab walks the controls; the code editor keeps Tab for itself.
         // A bare `!NativeEditor` never matches: GPUI needs a context on the path to test.
         KeyBinding::new("tab", FocusNextControl, Some("Shell && !NativeEditor")),
@@ -215,6 +218,7 @@ impl Render for AppModel {
         self.observe_companion_dock(cx);
         self.observe_companion_dock_focus(window, cx);
         let projects_trigger = self.observe_projects_sidebar_focus(window, cx);
+        self.observe_work_panel_focus(window, cx);
         let unread = self.notifications.queue.unread();
         if self.agents.read(cx).active_model_picker.is_some()
             && matches!(active, AppView::Agents | AppView::Chat)
@@ -303,6 +307,9 @@ impl Render for AppModel {
             }))
             .on_action(cx.listener(|model, _: &ToggleProjectsSidebar, _, cx| {
                 model.toggle_projects_sidebar(cx);
+            }))
+            .on_action(cx.listener(|model, _: &SearchProject, window, cx| {
+                model.open_work_panel_tab(crate::work_panel::WorkPanelTab::Search, window, cx);
             }))
             .on_action(cx.listener(|model, _: &ToggleContextRail, _, cx| {
                 model.toggle_context_rail(cx);

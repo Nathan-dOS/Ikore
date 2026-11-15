@@ -85,6 +85,7 @@ mod vault_view;
 mod views;
 mod voice_ui;
 mod widgets;
+mod work_panel;
 mod workspace;
 mod workspace_view;
 
