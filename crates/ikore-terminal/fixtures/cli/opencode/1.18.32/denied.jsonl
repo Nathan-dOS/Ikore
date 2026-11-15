@@ -1,0 +1,2 @@
+{"type":"step_start","timestamp":1794764106387,"sessionID":"ses_corpus0001","part":{"id":"prt_corpus0002","messageID":"msg_corpus0003","sessionID":"ses_corpus0001","type":"step-start"}}
+{"type":"error","timestamp":1794764106755,"sessionID":"ses_corpus0001","error":{"name":"UnknownError","data":{"message":"{\"message\":\"Tool call validation failed: tool call validation failed: attempted to call tool 'apply_patch' which was not in request.tools\",\"type\":\"invalid_request_error\"}"}}}

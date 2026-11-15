@@ -1,0 +1,1 @@
+2026-11-15T17:32:54.771650Z ERROR codex_core::tools::router: error=exec_command failed: CreateProcess { message: "Rejected(\"`\\\"C:\\\\\\\\Windows\\\\\\\\System32\\\\\\\\WindowsPowerShell\\\\\\\\v1.0\\\\\\\\powershell.exe\\\" -Command \\\"Get-Content -LiteralPath 'notes.txt' -TotalCount 2 | Select-Object -Skip 1\\\"` rejected: blocked by policy\")" }

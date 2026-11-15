@@ -1,0 +1,3 @@
+{"type":"step_start","timestamp":1794764133549,"sessionID":"ses_corpus0001","part":{"id":"prt_corpus0002","messageID":"msg_corpus0003","sessionID":"ses_corpus0001","type":"step-start"}}
+{"type":"text","timestamp":1794764133921,"sessionID":"ses_corpus0001","part":{"id":"prt_corpus0004","messageID":"msg_corpus0003","sessionID":"ses_corpus0001","type":"text","text":"0.05","time":{"start":1794764133897,"end":1794764133903}}}
+{"type":"step_finish","timestamp":1794764133921,"sessionID":"ses_corpus0001","part":{"id":"prt_corpus0005","reason":"stop","messageID":"msg_corpus0003","sessionID":"ses_corpus0001","type":"step-finish","tokens":{"total":3064,"input":2872,"output":12,"reasoning":180,"cache":{"write":0,"read":0}},"cost":0.000273}}

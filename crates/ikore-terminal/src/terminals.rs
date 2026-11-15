@@ -9366,6 +9366,8 @@ pub(crate) fn materialize_safe_workspace<H: TerminalHost + ?Sized>(
 }
 
 #[cfg(test)]
+mod corpus_capture;
+#[cfg(test)]
 mod recovery_tests;
 #[cfg(test)]
 mod snapshot_tests;
