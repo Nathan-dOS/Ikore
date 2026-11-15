@@ -251,6 +251,7 @@ fn seed_profile(root: &Path) {
             scroll_top: Some(0.0),
             tabs: Vec::new(),
             auto_open_review: false,
+            work_panel_tab: None,
         })
         .unwrap();
     std::fs::write(root.join("AGENTS_UI_FIXTURE"), FIXTURE_MARKER).unwrap();

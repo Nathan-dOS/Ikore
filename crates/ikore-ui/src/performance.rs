@@ -197,6 +197,7 @@ pub(crate) fn apply_streaming_fixture(
                         error_code: None,
                         error_message: None,
                         target_label: None,
+                        model_evidence: None,
                         created_at: "2026-11-07T00:00:00Z".into(),
                         updated_at: "2026-11-07T00:00:00Z".into(),
                     }],

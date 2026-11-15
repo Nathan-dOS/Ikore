@@ -5396,8 +5396,145 @@ fn backlog_task_actions_sit_at_the_card_top_right(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn companion_list_pins_folds_the_archive_searches_and_queues(cx: &mut TestAppContext) {
+    use ikore_core::chat_service::{
+        ChatConversation, ChatConversationMatch, ChatMessage, ChatTransportKind, ConversationMarks,
+    };
+    let conversation = |id: &str, title: &str| ChatConversation {
+        id: id.into(),
+        project_id: "layout-project".into(),
+        connection_id: None,
+        provider_id: "openai".into(),
+        model_id: "gpt-5".into(),
+        transport: ChatTransportKind::Cli,
+        cli_backend: Some(CliBackend::Codex),
+        model_profile: None,
+        model_source: CliModelSelectionSource::Default,
+        title: title.into(),
+        connection_available: true,
+        created_at: "now".into(),
+        updated_at: "now".into(),
+    };
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    select(&model, visual, AppView::Chat);
+    model.update(visual, |m, cx| {
+        m.chat.update(cx, |chat, _| {
+            chat.project_id = Some("layout-project".into());
+            chat.conversations = vec![
+                conversation("recent", "Recent work"),
+                conversation("older", "Older work"),
+                conversation("old", "Old notes"),
+            ];
+            chat.marks = ConversationMarks {
+                pinned: vec!["older".into()],
+                archived: vec!["old".into()],
+            };
+            chat.active_conversation = Some("recent".into());
+            chat.messages_by_conversation.insert(
+                "recent".into(),
+                vec![ChatMessage {
+                    id: "message-0".into(),
+                    conversation_id: "recent".into(),
+                    ordinal: 0,
+                    role: "user".into(),
+                    content: "A question.".into(),
+                    status: "completed".into(),
+                    execution_id: None,
+                    generation_id: None,
+                    last_sequence: 0,
+                    input_tokens: None,
+                    output_tokens: None,
+                    estimated_cost_usd: None,
+                    error_code: None,
+                    error_message: None,
+                    target_label: None,
+                    model_evidence: None,
+                    created_at: "now".into(),
+                    updated_at: "now".into(),
+                }],
+            );
+            chat.sync_panel_with_active_conversation();
+            chat.enqueue("recent", "A follow-up written while it replied".into());
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    // The pinned conversation comes first; the archived one waits under its fold.
+    let pinned = visual.debug_bounds("chat-conversation:older").unwrap();
+    let recent = visual.debug_bounds("chat-conversation:recent").unwrap();
+    let fold = visual.debug_bounds("chat-archived-toggle").unwrap();
+    assert!(pinned.bottom() <= recent.top(), "{pinned:?} {recent:?}");
+    assert!(recent.bottom() <= fold.top());
+    // Pin, archive and delete fit in the row, after the title.
+    for action in [
+        "chat-pin:recent",
+        "chat-archive:recent",
+        "chat-delete:recent",
+    ] {
+        let bounds = visual.debug_bounds(action).unwrap();
+        assert!(
+            bounds.left() >= recent.left() && bounds.right() <= recent.right(),
+            "{action} {bounds:?} leaves {recent:?}"
+        );
+    }
+    click(visual, "chat-archived-toggle");
+    assert!(model.read_with(visual, |m, cx| m.chat.read(cx).show_archived));
+    let archived = visual.debug_bounds("chat-conversation:old").unwrap();
+    assert!(archived.top() >= fold.bottom());
+    // A finished message can be branched; the queue sits above the composer's field.
+    let message = visual.debug_bounds("chat-message:message-0").unwrap();
+    let branch = visual.debug_bounds("chat-branch:message-0").unwrap();
+    assert!(branch.top() >= message.top() && branch.bottom() <= message.bottom());
+    let composer = visual.debug_bounds("chat-composer").unwrap();
+    let queue = visual.debug_bounds("chat-queue").unwrap();
+    let queued = visual.debug_bounds("chat-queued:0").unwrap();
+    assert!(queue.top() >= composer.top() && queued.bottom() <= composer.bottom());
+    // Free again with a message waiting, the conversation offers to send it now.
+    assert!(visual.debug_bounds("chat-queued-send:0").is_some());
+    // Search results replace the list while they are shown.
+    model.update(visual, |m, cx| {
+        m.chat.update(cx, |chat, _| {
+            chat.conversation_search = Some(crate::chat::ConversationSearch {
+                query: "work".into(),
+                matches: vec![ChatConversationMatch {
+                    conversation_id: "older".into(),
+                    title: "Older work".into(),
+                    excerpt: Some("…the work on the login…".into()),
+                    updated_at: "now".into(),
+                }],
+                searching: false,
+            });
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let field = visual.debug_bounds("chat-search-field").unwrap();
+    let found = visual.debug_bounds("chat-search-result:older").unwrap();
+    assert!(found.top() > field.bottom());
+    assert!(found.left() >= field.left() - px(1.0) && found.right() <= field.right() + px(1.0));
+    click(visual, "chat-search-result:older");
+    assert_eq!(
+        model.read_with(visual, |m, cx| m
+            .chat
+            .read(cx)
+            .active_conversation
+            .as_ref()
+            .map(ToString::to_string)),
+        Some("older".to_string())
+    );
+    click(visual, "chat-search-clear");
+    assert!(model.read_with(visual, |m, cx| {
+        m.chat.read(cx).conversation_search.is_none()
+    }));
+}
+
+#[gpui::test]
 fn companion_conversation_is_a_centred_reading_column(cx: &mut TestAppContext) {
-    use ikore_core::chat_service::{ChatConversation, ChatMessage, ChatTransportKind};
+    use ikore_core::chat_service::{
+        ChatConversation, ChatMessage, ChatMessageModelEvidence, ChatModelVerification,
+        ChatTransportKind,
+    };
     let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
     visual.simulate_resize(size(px(1920.0), px(1080.0)));
     // Opening Chat hydrates it for the project; the conversation is injected afterwards.
@@ -5442,15 +5579,39 @@ fn companion_conversation_is_a_centred_reading_column(cx: &mut TestAppContext) {
                         error_code: None,
                         error_message: None,
                         target_label: None,
+                        model_evidence: (role == "assistant").then(|| ChatMessageModelEvidence {
+                            transport: ChatTransportKind::Cli,
+                            provider_id: "codex".into(),
+                            requested_model: "gpt-5".into(),
+                            model_profile: Some("high".into()),
+                            observed_model: Some("gpt-5".into()),
+                            verification: ChatModelVerification::Verified,
+                        }),
                         created_at: "now".into(),
                         updated_at: "now".into(),
                     })
                     .collect(),
             );
+            chat.sync_panel_with_active_conversation();
         });
         cx.notify();
     });
     visual.run_until_parked();
+    // The model line closes the answer, under its header and inside the message. A user
+    // message has none.
+    let answer = visual.debug_bounds("chat-message:message-1").unwrap();
+    let answer_copy = visual.debug_bounds("chat-copy-message:message-1").unwrap();
+    let model_line = visual.debug_bounds("chat-message-model:message-1").unwrap();
+    assert!(
+        model_line.top() >= answer_copy.bottom() && model_line.bottom() <= answer.bottom(),
+        "model line {model_line:?} is not under the answer {answer:?}"
+    );
+    assert!(model_line.left() >= answer.left() && model_line.right() <= answer.right());
+    assert!(
+        visual
+            .debug_bounds("chat-message-model:message-0")
+            .is_none()
+    );
     let conversation = visual
         .debug_bounds("chat-conversation:conversation-1")
         .unwrap();
@@ -5524,6 +5685,33 @@ fn companion_conversation_is_a_centred_reading_column(cx: &mut TestAppContext) {
     assert!(offset <= px(2.0), "composer off centre by {offset:?}");
     // The composer sits under the conversation, not beside it.
     assert!(composer.top() >= scroll.bottom());
+    // Model, effort and route are chosen in the composer, left of the keyboard hint and Send.
+    let target = visual.debug_bounds("chat-composer-target").unwrap();
+    let keys = visual.debug_bounds("info:chat-composer-keys").unwrap();
+    assert!(target.left() >= composer.left() && target.bottom() <= composer.bottom());
+    assert!(
+        target.right() <= keys.left() && keys.right() <= composer.right(),
+        "{target:?} overlaps {keys:?}"
+    );
+    for control in [
+        "chat-composer-model",
+        "chat-composer-profile",
+        "chat-composer-route",
+    ] {
+        let bounds = visual.debug_bounds(control).unwrap();
+        assert!(
+            bounds.left() >= target.left()
+                && bounds.right() <= target.right()
+                && bounds.top() >= target.top()
+                && bounds.bottom() <= target.bottom(),
+            "{control} {bounds:?} leaves the composer target {target:?}"
+        );
+    }
+    assert!(
+        visual
+            .debug_bounds("chat-composer-target-deferred")
+            .is_none()
+    );
     // A long draft grows the card with it: the Send row never spills past the border, whatever
     // the number of wrapped lines (the input caps at six rows and then scrolls).
     let sentence = "A long question about the architecture of this repository, typed at length. ";
@@ -5570,6 +5758,885 @@ fn companion_conversation_is_a_centred_reading_column(cx: &mut TestAppContext) {
     assert!(
         answer.bottom() <= scroll.bottom(),
         "the end of {answer:?} cannot be scrolled into {scroll:?}"
+    );
+}
+
+#[gpui::test]
+fn companion_without_a_conversation_chooses_its_target_in_the_start_card(cx: &mut TestAppContext) {
+    use ikore_core::chat_service::ChatTransportKind;
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    select(&model, visual, AppView::Chat);
+    model.update(visual, |m, cx| {
+        m.chat.update(cx, |chat, _| {
+            chat.project_id = Some("layout-project".into());
+            chat.conversations.clear();
+            chat.active_conversation = None;
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    // The left column lists conversations and starts one; it no longer chooses the target.
+    assert!(visual.debug_bounds("chat-new-conversation").is_some());
+    for removed in [
+        "chat-toggle-config",
+        "chat-transport",
+        "chat-cli-backend",
+        "chat-cli-profile",
+        "chat-cycle-connection",
+    ] {
+        assert!(visual.debug_bounds(removed).is_none(), "{removed} is back");
+    }
+    // The start card holds the composer's controls and the button that starts the conversation.
+    let start = visual.debug_bounds("chat-start").unwrap();
+    assert!(start.size.width <= px(760.0), "{start:?}");
+    assert!(visual.debug_bounds("chat-composer").is_none());
+    let target = visual.debug_bounds("chat-composer-target").unwrap();
+    let begin = visual.debug_bounds("chat-start-conversation").unwrap();
+    for (name, bounds) in [("target", target), ("start button", begin)] {
+        assert!(
+            bounds.left() >= start.left()
+                && bounds.right() <= start.right()
+                && bounds.top() >= start.top()
+                && bounds.bottom() <= start.bottom(),
+            "{name} {bounds:?} leaves the start card {start:?}"
+        );
+    }
+    assert!(
+        target.right() <= begin.left(),
+        "{target:?} overlaps {begin:?}"
+    );
+    for control in ["chat-composer-model", "chat-composer-route"] {
+        let bounds = visual.debug_bounds(control).unwrap();
+        assert!(
+            bounds.left() >= target.left() && bounds.right() <= target.right(),
+            "{control} {bounds:?} leaves {target:?}"
+        );
+    }
+    // With no conversation open, the route chosen here is where the next one starts.
+    click(visual, "chat-composer-route");
+    click(visual, "choice:cli:claude");
+    model.read_with(visual, |m, cx| {
+        let chat = m.chat.read(cx);
+        assert_eq!(chat.selected_transport, ChatTransportKind::Cli);
+        assert_eq!(chat.selected_cli_backend, CliBackend::Claude);
+        assert!(m.choice_menu.is_none());
+    });
+    assert!(visual.debug_bounds("chat-composer-profile").is_some());
+}
+
+/// Opens a conversation of `pairs` questions, `message-0`, `message-2`…, each followed by an
+/// answer of `answer_sentences` sentences.
+fn open_conversation_of(
+    model: &Entity<AppModel>,
+    visual: &mut VisualTestContext,
+    pairs: usize,
+    answer_sentences: usize,
+) {
+    use ikore_core::chat_service::{ChatConversation, ChatMessage, ChatTransportKind};
+    model.update(visual, |m, cx| {
+        m.chat.update(cx, |chat, _| {
+            chat.project_id = Some("layout-project".into());
+            chat.conversations = vec![ChatConversation {
+                id: "conversation-1".into(),
+                project_id: "layout-project".into(),
+                connection_id: None,
+                provider_id: "codex".into(),
+                model_id: "gpt-5".into(),
+                transport: ChatTransportKind::Cli,
+                cli_backend: Some(CliBackend::Codex),
+                model_profile: None,
+                model_source: CliModelSelectionSource::Default,
+                title: "Questions".into(),
+                connection_available: true,
+                created_at: "now".into(),
+                updated_at: "now".into(),
+            }];
+            chat.active_conversation = Some("conversation-1".into());
+            chat.history_expanded = None;
+            chat.messages_by_conversation.insert(
+                "conversation-1".into(),
+                (0..pairs * 2)
+                    .map(|ordinal| {
+                        let question = ordinal % 2 == 0;
+                        ChatMessage {
+                            id: format!("message-{ordinal}"),
+                            conversation_id: "conversation-1".into(),
+                            ordinal: ordinal as i64,
+                            role: if question { "user" } else { "assistant" }.into(),
+                            content: if question {
+                                format!("Question number {}?", ordinal / 2)
+                            } else {
+                                format!("Answer number {}. ", ordinal / 2)
+                                    + &"It goes on for a while. ".repeat(answer_sentences)
+                            },
+                            status: "completed".into(),
+                            execution_id: None,
+                            generation_id: None,
+                            last_sequence: 0,
+                            input_tokens: None,
+                            output_tokens: None,
+                            estimated_cost_usd: None,
+                            error_code: None,
+                            error_message: None,
+                            target_label: None,
+                            model_evidence: None,
+                            created_at: "now".into(),
+                            updated_at: "now".into(),
+                        }
+                    })
+                    .collect(),
+            );
+            chat.sync_panel_with_active_conversation();
+        });
+        m.chat_question_layout.borrow_mut().reset();
+        m.chat_scroll.set_offset(point(px(0.0), px(0.0)));
+        cx.notify();
+    });
+    visual.run_until_parked();
+}
+
+/// How far below the top of the conversation's viewport a message is drawn.
+fn message_offset(visual: &mut VisualTestContext, message: &'static str) -> gpui::Pixels {
+    let scroll = visual.debug_bounds("chat-messages-scroll").unwrap();
+    let message = visual
+        .debug_bounds(message)
+        .unwrap_or_else(|| panic!("missing {message}"));
+    message.top() - scroll.top()
+}
+
+#[gpui::test]
+fn companion_question_rail_goes_from_one_question_to_another(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.update(|_, cx| crate::shell::register_navigation_keybindings(cx));
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    select(&model, visual, AppView::Chat);
+    // One question has nowhere to go, and neither do two that fit the viewport.
+    open_conversation_of(&model, visual, 1, 200);
+    assert!(visual.debug_bounds("chat-question-rail").is_none());
+    open_conversation_of(&model, visual, 2, 1);
+    assert!(visual.debug_bounds("chat-question-rail").is_none());
+
+    open_conversation_of(&model, visual, 6, 120);
+    let rail = visual.debug_bounds("chat-question-rail").unwrap();
+    let scroll = visual.debug_bounds("chat-messages-scroll").unwrap();
+    let composer = visual.debug_bounds("chat-composer").unwrap();
+    assert_eq!(rail.size.width, px(26.0));
+    assert!(rail.right() <= scroll.left(), "{rail:?} covers {scroll:?}");
+    assert!(rail.top() >= scroll.top() && rail.bottom() <= scroll.bottom());
+    // A gutter of the same width on the other side keeps the conversation over the composer.
+    let offset = (composer.center().x - scroll.center().x).abs();
+    assert!(offset <= px(2.0), "conversation off centre by {offset:?}");
+    // One marker per question, top to bottom, inside the rail.
+    let mut previous = rail.top();
+    for marker in [
+        "chat-question:0",
+        "chat-question:1",
+        "chat-question:2",
+        "chat-question:3",
+        "chat-question:4",
+        "chat-question:5",
+    ] {
+        let bounds = visual
+            .debug_bounds(marker)
+            .unwrap_or_else(|| panic!("missing {marker}"));
+        assert!(
+            bounds.left() >= rail.left()
+                && bounds.right() <= rail.right()
+                && bounds.top() >= previous
+                && bounds.bottom() <= rail.bottom(),
+            "{marker} {bounds:?} leaves the rail {rail:?}"
+        );
+        previous = bounds.bottom();
+    }
+    assert!(visual.debug_bounds("chat-question:6").is_none());
+    let active = |model: &Entity<AppModel>, visual: &mut VisualTestContext| {
+        model.read_with(visual, |m, _| {
+            m.chat_question_layout
+                .borrow()
+                .active(-m.chat_scroll.offset().y)
+        })
+    };
+    assert_eq!(active(&model, visual), Some(0));
+
+    // A click brings the question under the top of the conversation and makes it the active one.
+    click(visual, "chat-question:2");
+    let landed = message_offset(visual, "chat-message:message-4");
+    assert!((landed - px(24.0)).abs() <= px(1.0), "landed at {landed:?}");
+    assert_eq!(active(&model, visual), Some(2));
+    // Reaching a marker with the keyboard previews its exchange under it, without a wait.
+    visual.simulate_keystrokes("shift-tab");
+    visual.simulate_keystrokes("tab");
+    visual.run_until_parked();
+    assert!(visual.update(|window, _| window.focus_visible()));
+    let focused = visual.debug_bounds("chat-question:2").unwrap();
+    let keyboard_preview = visual
+        .debug_bounds("chat-question-preview")
+        .expect("the preview must follow keyboard focus");
+    assert!(
+        keyboard_preview.top() >= focused.bottom() && keyboard_preview.size.width <= px(320.0),
+        "{keyboard_preview:?} is not under {focused:?}"
+    );
+    // Alt+Down and Alt+Up walk the questions from wherever the focus is.
+    visual.simulate_keystrokes("alt-down");
+    visual.run_until_parked();
+    let landed = message_offset(visual, "chat-message:message-6");
+    assert!((landed - px(24.0)).abs() <= px(1.0), "landed at {landed:?}");
+    assert_eq!(active(&model, visual), Some(3));
+    visual.simulate_keystrokes("alt-up alt-up");
+    visual.run_until_parked();
+    let landed = message_offset(visual, "chat-message:message-2");
+    assert!((landed - px(24.0)).abs() <= px(1.0), "landed at {landed:?}");
+    assert_eq!(active(&model, visual), Some(1));
+    // The same keys work while the developer is typing in the composer.
+    click(visual, "native-input:Message to Companion");
+    visual.simulate_keystrokes("alt-down");
+    visual.run_until_parked();
+    let landed = message_offset(visual, "chat-message:message-4");
+    assert!((landed - px(24.0)).abs() <= px(1.0), "landed at {landed:?}");
+    assert_eq!(active(&model, visual), Some(2));
+    model.read_with(visual, |m, cx| {
+        assert_eq!(m.chat_draft_input.read(cx).value(), "");
+    });
+    // The last question cannot reach the top: the conversation stops at its end, question in view.
+    click(visual, "chat-question:5");
+    let scroll = visual.debug_bounds("chat-messages-scroll").unwrap();
+    let last = visual.debug_bounds("chat-message:message-10").unwrap();
+    assert!(
+        last.top() >= scroll.top() && last.top() < scroll.bottom(),
+        "{last:?} is outside {scroll:?}"
+    );
+    assert_eq!(active(&model, visual), Some(5));
+    visual.simulate_keystrokes("alt-down");
+    visual.run_until_parked();
+    assert_eq!(active(&model, visual), Some(5));
+
+    // Resting on a marker previews the question and the start of its answer.
+    let marker = visual.debug_bounds("chat-question:1").unwrap();
+    visual.simulate_mouse_move(marker.center(), None, Modifiers::default());
+    visual
+        .executor()
+        .advance_clock(std::time::Duration::from_millis(600));
+    visual.run_until_parked();
+    let hover_preview = visual
+        .debug_bounds("chat-question-preview")
+        .expect("the preview must appear on hover");
+    assert_ne!(
+        hover_preview, keyboard_preview,
+        "the hover opened no preview"
+    );
+}
+
+#[gpui::test]
+fn companion_question_rail_reaches_the_history_that_is_not_rendered(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    select(&model, visual, AppView::Chat);
+    // Sixty messages: the first twenty, ten questions, are outside the rendered window.
+    open_conversation_of(&model, visual, 30, 4);
+    assert!(visual.debug_bounds("chat-message:message-0").is_none());
+    assert!(visual.debug_bounds("chat-message:message-20").is_some());
+    let rail = visual.debug_bounds("chat-question-rail").unwrap();
+    let first = visual.debug_bounds("chat-question:0").unwrap();
+    let last = visual.debug_bounds("chat-question:29").unwrap();
+    // Thirty markers still fit the rail, each one tall enough to point at.
+    assert!(first.top() >= rail.top() && last.bottom() <= rail.bottom());
+    assert!(first.size.height >= px(3.0), "{first:?}");
+    // Markers count the whole conversation: the rendered window opens on the eleventh question.
+    model.read_with(visual, |m, _| {
+        assert_eq!(
+            m.chat_question_layout
+                .borrow()
+                .active(-m.chat_scroll.offset().y),
+            Some(10)
+        );
+    });
+    click(visual, "chat-question:3");
+    model.read_with(visual, |m, cx| {
+        assert_eq!(
+            m.chat
+                .read(cx)
+                .history_expanded
+                .as_ref()
+                .map(ToString::to_string)
+                .as_deref(),
+            Some("conversation-1")
+        );
+    });
+    let landed = message_offset(visual, "chat-message:message-6");
+    assert!((landed - px(24.0)).abs() <= px(1.0), "landed at {landed:?}");
+}
+
+#[gpui::test]
+fn companion_composer_offers_the_effort_of_the_model_as_chips(cx: &mut TestAppContext) {
+    use ikore_core::chat_service::{ChatConversation, ChatTransportKind};
+    use ikore_core::terminals::{
+        CliModelCatalogEntry, CliModelCatalogSnapshot, CliModelCatalogSource, CliModelCatalogState,
+    };
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    select(&model, visual, AppView::Chat);
+    model.update(visual, |m, cx| {
+        m.agents.update(cx, |agents, _| {
+            agents.model_catalogs.insert(
+                CliBackend::Codex,
+                CliModelCatalogSnapshot {
+                    project_id: "layout-project".into(),
+                    backend: CliBackend::Codex,
+                    adapter_contract_version: 2,
+                    state: CliModelCatalogState::Ready,
+                    source: CliModelCatalogSource::Cli,
+                    cli_version: None,
+                    diagnostic: None,
+                    refreshed_at: "now".into(),
+                    models: vec![CliModelCatalogEntry {
+                        provider_id: Some("openai".into()),
+                        model_id: Some("gpt-5".into()),
+                        display_name: "GPT-5".into(),
+                        context_window: None,
+                        input_cost_usd_per_million: None,
+                        output_cost_usd_per_million: None,
+                        capabilities: vec![],
+                        profiles: vec!["low".into(), "medium".into(), "high".into()],
+                        raw_metadata: Default::default(),
+                    }],
+                },
+            );
+        });
+        m.chat.update(cx, |chat, _| {
+            chat.project_id = Some("layout-project".into());
+            chat.conversations = vec![ChatConversation {
+                id: "conversation-1".into(),
+                project_id: "layout-project".into(),
+                connection_id: None,
+                provider_id: "codex".into(),
+                model_id: "gpt-5".into(),
+                transport: ChatTransportKind::Cli,
+                cli_backend: Some(CliBackend::Codex),
+                model_profile: Some("medium".into()),
+                model_source: CliModelSelectionSource::Catalog,
+                title: "Effort".into(),
+                connection_available: true,
+                created_at: "now".into(),
+                updated_at: "now".into(),
+            }];
+            chat.active_conversation = Some("conversation-1".into());
+            chat.sync_panel_with_active_conversation();
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    // The levels sit side by side in the composer's target row, `Default` first.
+    let target = visual.debug_bounds("chat-composer-target").unwrap();
+    let track = visual.debug_bounds("chat-composer-profile").unwrap();
+    assert!(
+        track.left() >= target.left()
+            && track.right() <= target.right()
+            && track.top() >= target.top()
+            && track.bottom() <= target.bottom(),
+        "{track:?} leaves {target:?}"
+    );
+    let mut previous = track.left();
+    for chip in [
+        "chat-composer-profile:",
+        "chat-composer-profile:low",
+        "chat-composer-profile:medium",
+        "chat-composer-profile:high",
+    ] {
+        let bounds = visual
+            .debug_bounds(chip)
+            .unwrap_or_else(|| panic!("missing {chip}"));
+        assert!(
+            bounds.left() >= previous
+                && bounds.right() <= track.right()
+                && bounds.top() >= track.top()
+                && bounds.bottom() <= track.bottom(),
+            "{chip} {bounds:?} leaves {track:?}"
+        );
+        previous = bounds.right();
+    }
+    // The chips are no taller than the buttons beside them, and the row stays on one line.
+    let model_control = visual.debug_bounds("chat-composer-model").unwrap();
+    let route = visual.debug_bounds("chat-composer-route").unwrap();
+    assert!(track.size.height <= model_control.size.height, "{track:?}");
+    assert!(
+        model_control.right() <= track.left() && track.right() <= route.left(),
+        "{model_control:?} {track:?} {route:?}"
+    );
+    assert!(route.top() < model_control.bottom(), "the route wrapped");
+    // One click changes the effort of the next message.
+    click(visual, "chat-composer-profile:high");
+    model.read_with(visual, |m, cx| {
+        assert_eq!(
+            m.chat.read(cx).selected_cli_model_profile.as_deref(),
+            Some("high")
+        );
+    });
+    click(visual, "chat-composer-profile:");
+    model.read_with(visual, |m, cx| {
+        assert_eq!(m.chat.read(cx).selected_cli_model_profile, None);
+    });
+}
+
+#[gpui::test]
+fn projects_sidebar_lists_every_project_beside_the_rail(cx: &mut TestAppContext) {
+    use ikore_core::persistence_service::{
+        Project, ProjectSessions, SessionEntry, SessionKind, SessionState,
+    };
+    let project = |id: &str, name: &str| Project {
+        id: id.into(),
+        name: name.into(),
+        workspace_path: format!("C:/work/{id}"),
+        is_archived: false,
+        created_at: "now".into(),
+        updated_at: "now".into(),
+        last_opened_at: None,
+    };
+    let session = |kind, id: &str, detail: &str, state| SessionEntry {
+        kind,
+        id: id.into(),
+        title: format!("Session {id}"),
+        detail: detail.into(),
+        state,
+        pinned: id == "chat-a",
+        updated_at: "now".into(),
+    };
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.update(|_, cx| crate::shell::register_navigation_keybindings(cx));
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    select(&model, visual, AppView::Agents);
+    assert!(visual.debug_bounds("projects-sidebar").is_none());
+    let rail = visual.debug_bounds("rail").unwrap();
+    assert_eq!(
+        visual.debug_bounds("shell-center").unwrap().left(),
+        rail.right()
+    );
+    assert_eq!(
+        visual.debug_bounds("context-rail").unwrap().size.width,
+        px(256.0)
+    );
+
+    model.update(visual, |m, cx| {
+        m.projects_sidebar.projects = vec![
+            ProjectSessions {
+                project: project("layout-project", "Open project"),
+                sessions: vec![
+                    session(
+                        SessionKind::Pulsation,
+                        "pulse-a",
+                        "code",
+                        SessionState::Running,
+                    ),
+                    session(
+                        SessionKind::Feature,
+                        "feature-a",
+                        "incubating",
+                        SessionState::Idle,
+                    ),
+                    session(
+                        SessionKind::Conversation,
+                        "chat-a",
+                        "gpt-5",
+                        SessionState::Idle,
+                    ),
+                ],
+                state: SessionState::Running,
+            },
+            ProjectSessions {
+                project: project("other-project", "Other project"),
+                sessions: vec![session(
+                    SessionKind::Pulsation,
+                    "pulse-z",
+                    "test",
+                    SessionState::Waiting,
+                )],
+                state: SessionState::Waiting,
+            },
+        ];
+        cx.notify();
+    });
+    click(visual, "rail-projects");
+    // The sidebar opens between the rail and the centre, which keeps its minimum width.
+    let sidebar = visual.debug_bounds("projects-sidebar").unwrap();
+    let center = visual.debug_bounds("shell-center").unwrap();
+    assert_eq!(sidebar.size.width, px(240.0));
+    assert_eq!(sidebar.left(), rail.right());
+    assert_eq!(center.left(), sidebar.right());
+    assert!(center.size.width >= px(660.0), "{center:?}");
+    // This window has room for both side panels.
+    assert_eq!(
+        visual.debug_bounds("context-rail").unwrap().size.width,
+        px(256.0)
+    );
+    // The open project shows its work; the other one is folded, marked and can be opened.
+    assert!(visual.debug_bounds("sidebar-session:pulse-a").is_some());
+    assert!(visual.debug_bounds("sidebar-session:pulse-z").is_none());
+    assert!(
+        visual
+            .debug_bounds("sidebar-project-state:other-project")
+            .is_some()
+    );
+    assert!(visual.debug_bounds("sidebar-open:other-project").is_some());
+    assert!(visual.debug_bounds("sidebar-open:layout-project").is_none());
+    // A pinned conversation says so on its row.
+    let pin = visual.debug_bounds("sidebar-pinned:chat-a").unwrap();
+    let pinned_row = visual.debug_bounds("sidebar-session:chat-a").unwrap();
+    assert!(pin.left() >= pinned_row.left() && pin.right() <= pinned_row.right());
+    click(visual, "sidebar-project:other-project");
+    for row in [
+        "sidebar-project:layout-project",
+        "sidebar-session:pulse-a",
+        "sidebar-session:chat-a",
+        "sidebar-project:other-project",
+        "sidebar-open:other-project",
+        "sidebar-session:pulse-z",
+    ] {
+        let bounds = visual
+            .debug_bounds(row)
+            .unwrap_or_else(|| panic!("missing {row}"));
+        assert!(
+            bounds.left() >= sidebar.left() && bounds.right() <= sidebar.right(),
+            "{row} {bounds:?} leaves {sidebar:?}"
+        );
+    }
+    // A session of the open project goes to its view.
+    click(visual, "sidebar-session:chat-a");
+    assert_eq!(
+        model.read_with(visual, |m, _| m.active_view()),
+        AppView::Chat
+    );
+    click(visual, "sidebar-session:feature-a");
+    assert_eq!(
+        model.read_with(visual, |m, _| (
+            m.active_view(),
+            m.forge.selected_feature.clone()
+        )),
+        (AppView::Forge, Some("feature-a".to_string()))
+    );
+    click(visual, "sidebar-session:pulse-a");
+    assert_eq!(
+        model.read_with(visual, |m, _| m.active_view()),
+        AppView::Pulsations
+    );
+    // In a narrower window the context rail folds first, and the sidebar stays.
+    visual.simulate_resize(size(px(1280.0), px(800.0)));
+    visual.run_until_parked();
+    assert_eq!(
+        visual.debug_bounds("context-rail").unwrap().size.width,
+        px(48.0)
+    );
+    let sidebar = visual.debug_bounds("projects-sidebar").unwrap();
+    let center = visual.debug_bounds("shell-center").unwrap();
+    assert_eq!(center.left(), sidebar.right());
+    assert!(center.size.width >= px(660.0), "{center:?}");
+    // At the minimum window the sidebar gives its room back to the centre.
+    visual.simulate_resize(size(px(960.0), px(640.0)));
+    visual.run_until_parked();
+    let rail = visual.debug_bounds("rail").unwrap();
+    let center = visual.debug_bounds("shell-center").unwrap();
+    assert_eq!(center.left(), rail.right());
+    assert!(model.read_with(visual, |m, _| m.projects_sidebar.open));
+    // The row that had the focus is gone: the rail button took it, so the shortcut still
+    // reaches the shell and closes what the button opened.
+    assert!(visual.update(|window, cx| window.focused(cx).is_some()));
+    visual.simulate_keystrokes("ctrl-shift-e");
+    visual.run_until_parked();
+    assert!(!model.read_with(visual, |m, _| m.projects_sidebar.open));
+    // Closed from inside the sidebar, the same shortcut opens it again.
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    visual.simulate_keystrokes("ctrl-shift-e");
+    visual.run_until_parked();
+    click(visual, "sidebar-session:chat-a");
+    // GPUI keeps the bounds of a selector that is no longer drawn, so the centre tells where
+    // the sidebar is.
+    let center_left = |visual: &mut VisualTestContext| {
+        visual.debug_bounds("shell-center").unwrap().left()
+            - visual.debug_bounds("rail").unwrap().right()
+    };
+    assert_eq!(center_left(visual), px(240.0));
+    visual.simulate_keystrokes("ctrl-shift-e");
+    visual.run_until_parked();
+    assert_eq!(center_left(visual), px(0.0));
+    visual.simulate_keystrokes("ctrl-shift-e");
+    visual.run_until_parked();
+    assert_eq!(center_left(visual), px(240.0));
+}
+
+#[gpui::test]
+fn work_panel_tabs_reach_the_project_files_from_any_view(cx: &mut TestAppContext) {
+    use gpui::Focusable as _;
+    use ikore_core::workspace_service::{FileNode, FileNodeKind};
+    use std::sync::Arc;
+    let file = |path: &str| FileNode {
+        name: path.rsplit('/').next().unwrap().into(),
+        relative_path: path.into(),
+        kind: FileNodeKind::File,
+        children: Vec::new(),
+    };
+    let backend = Arc::new(crate::work_panel::tests::SearchOnly::default());
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.update(|_, cx| crate::shell::register_navigation_keybindings(cx));
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    select(&model, visual, AppView::Agents);
+    model.update(visual, |m, cx| {
+        m.vault_backend = Some(backend.clone());
+        m.workspace.update(cx, |workspace, _| {
+            workspace.root_path = Some("C:/work/layout".into());
+            workspace.tree = vec![
+                FileNode {
+                    name: "docs".into(),
+                    relative_path: "docs".into(),
+                    kind: FileNodeKind::Directory,
+                    children: vec![file("docs/a.md")],
+                },
+                file("README.md"),
+            ];
+            workspace.open_tab_evicting("src/beta.rs", "fn main() {}\n".into(), "r1".into());
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    // General is the panel as it was: the context cards, under the tabs.
+    let panel = visual.debug_bounds("context-rail").unwrap();
+    assert_eq!(panel.size.width, crate::sizing::CONTEXT_RAIL_WIDTH);
+    let toggle = visual.debug_bounds("context-rail-toggle").unwrap();
+    for tab in ["work-tab:general", "work-tab:files", "work-tab:search"] {
+        let bounds = visual.debug_bounds(tab).unwrap();
+        assert!(
+            bounds.left() >= panel.left() && bounds.right() <= toggle.left(),
+            "{tab} {bounds:?} overlaps the toggle {toggle:?}"
+        );
+    }
+    let pipeline = visual.debug_bounds("rail-card-pipeline").unwrap();
+    assert!(pipeline.top() >= toggle.bottom(), "{pipeline:?}");
+
+    // Files: the project's tree, in the panel, and the view stays.
+    click(visual, "work-tab:files");
+    for row in [
+        "work-file:docs",
+        "work-file:docs/a.md",
+        "work-file:README.md",
+    ] {
+        let bounds = visual
+            .debug_bounds(row)
+            .unwrap_or_else(|| panic!("missing {row}"));
+        assert!(
+            bounds.left() >= panel.left() && bounds.right() <= panel.right(),
+            "{row} {bounds:?} leaves {panel:?}"
+        );
+    }
+    assert_eq!(
+        model.read_with(visual, |m, _| m.active_view()),
+        AppView::Agents
+    );
+    // One tree: a folder folded here is folded in Workspace too.
+    click(visual, "work-file:docs");
+    assert!(model.read_with(visual, |m, cx| {
+        m.workspace.read(cx).folders.toggled.contains("docs")
+    }));
+
+    // Search: the field takes the focus, Enter searches, and the matches stay in the panel.
+    click(visual, "work-tab:search");
+    let input = model.read_with(visual, |m, _| m.work_panel.search_input().unwrap());
+    assert!(visual.update(|window, cx| input.read(cx).focus_handle(cx).is_focused(window)));
+    model.update(visual, |_, cx| {
+        input.update(cx, |input, cx| input.set_value("alpha beta", cx));
+    });
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    assert_eq!(
+        *backend.queries.lock().unwrap(),
+        vec![("alpha beta".to_string(), 100)]
+    );
+    assert_eq!(
+        input.read_with(visual, |input, _| input.value().to_owned()),
+        "alpha beta",
+        "Enter searches; it does not type into the field"
+    );
+    let field = visual.debug_bounds("work-search-field").unwrap();
+    assert!(field.left() >= panel.left() && field.right() <= panel.right());
+    for result in ["work-result:0", "work-result:1"] {
+        let bounds = visual
+            .debug_bounds(result)
+            .unwrap_or_else(|| panic!("missing {result}"));
+        assert!(
+            bounds.left() >= panel.left() && bounds.right() <= panel.right(),
+            "{result} {bounds:?} leaves {panel:?}"
+        );
+        assert!(bounds.top() > field.bottom());
+    }
+    // A match opens its file in Workspace.
+    click(visual, "work-result:1");
+    assert_eq!(
+        model.read_with(visual, |m, cx| (
+            m.active_view(),
+            m.workspace
+                .read(cx)
+                .active_relative_path
+                .as_ref()
+                .map(ToString::to_string)
+        )),
+        (AppView::Workspace, Some("src/beta.rs".to_string()))
+    );
+
+    // Folded, the strip opens the panel on a tab, and the focus stays in the shell: the
+    // shortcut that folded the panel unfolds it again.
+    visual.simulate_keystrokes("ctrl-b");
+    visual.run_until_parked();
+    assert!(model.read_with(visual, |m, cx| m.context_rail_collapsed(cx)));
+    click(visual, "rail-strip-files");
+    assert_eq!(
+        model.read_with(visual, |m, cx| (
+            m.context_rail_collapsed(cx),
+            m.work_panel.tab
+        )),
+        (false, crate::work_panel::WorkPanelTab::Files)
+    );
+    assert!(visual.update(|window, cx| window.focused(cx).is_some()));
+    visual.simulate_keystrokes("ctrl-b");
+    visual.run_until_parked();
+    visual.simulate_keystrokes("ctrl-b");
+    visual.run_until_parked();
+    assert!(!model.read_with(visual, |m, cx| m.context_rail_collapsed(cx)));
+    // The search shortcut opens the Search tab, from Home too, with the field focused.
+    click(visual, "rail-nav-home");
+    visual.simulate_keystrokes("ctrl-shift-f");
+    visual.run_until_parked();
+    assert_eq!(
+        model.read_with(visual, |m, _| (m.active_view(), m.work_panel.tab)),
+        (AppView::Workspace, crate::work_panel::WorkPanelTab::Search)
+    );
+    assert!(visual.update(|window, cx| input.read(cx).focus_handle(cx).is_focused(window)));
+    // A window too narrow for the panel says so instead of opening it.
+    visual.simulate_resize(size(px(960.0), px(640.0)));
+    visual.run_until_parked();
+    model.update(visual, |m, cx| {
+        m.work_panel.tab = crate::work_panel::WorkPanelTab::General;
+        cx.notify();
+    });
+    visual.simulate_keystrokes("ctrl-shift-f");
+    visual.run_until_parked();
+    assert_eq!(
+        model.read_with(visual, |m, _| m.work_panel.tab),
+        crate::work_panel::WorkPanelTab::General
+    );
+    assert!(
+        model
+            .read_with(visual, |m, _| m
+                .current_notice()
+                .map(|notice| notice.message.clone()))
+            .is_some_and(|message| message.contains("Widen the window"))
+    );
+}
+
+#[gpui::test]
+fn settings_models_page_lists_each_model_once_with_its_routes(cx: &mut TestAppContext) {
+    use ikore_core::llm::ProviderConnection;
+    use ikore_core::terminals::{
+        CliModelCatalogEntry, CliModelCatalogSnapshot, CliModelCatalogSource, CliModelCatalogState,
+    };
+    let connection = |id: &str, provider: &str, name: &str, model: &str| ProviderConnection {
+        id: id.into(),
+        provider_id: provider.into(),
+        display_name: name.into(),
+        endpoint_url: None,
+        default_model: model.into(),
+        enabled: true,
+        state: "active".into(),
+        blocked_reason: None,
+        cooldown_until: None,
+        max_concurrency: 1,
+        version: 1,
+        has_api_key: true,
+        chat_eligible: true,
+        created_at: "now".into(),
+        updated_at: "now".into(),
+    };
+    let listed = |id: &str, profiles: &[&str]| CliModelCatalogEntry {
+        provider_id: Some("openai".into()),
+        model_id: Some(id.into()),
+        display_name: id.into(),
+        context_window: Some(400_000),
+        input_cost_usd_per_million: None,
+        output_cost_usd_per_million: None,
+        capabilities: vec![],
+        profiles: profiles.iter().map(ToString::to_string).collect(),
+        raw_metadata: Default::default(),
+    };
+    let (model, visual) = cx.add_window_view(|_, cx| {
+        let model = fixture(cx);
+        model.settings.update(cx, |settings, _| {
+            settings.snapshot.as_mut().unwrap().connections = vec![
+                connection("key", "openai", "OpenAI key", "gpt-5"),
+                connection(
+                    "router",
+                    "openrouter",
+                    "OpenRouter",
+                    "anthropic/claude-sonnet-4-5",
+                ),
+            ];
+        });
+        model.agents.update(cx, |agents, _| {
+            agents.model_catalogs.insert(
+                CliBackend::Codex,
+                CliModelCatalogSnapshot {
+                    project_id: "layout-project".into(),
+                    backend: CliBackend::Codex,
+                    adapter_contract_version: 2,
+                    state: CliModelCatalogState::Ready,
+                    source: CliModelCatalogSource::Cli,
+                    cli_version: None,
+                    diagnostic: None,
+                    refreshed_at: "now".into(),
+                    models: vec![
+                        listed("gpt-5", &["low", "high"]),
+                        listed("gpt-5-codex", &[]),
+                    ],
+                },
+            );
+        });
+        model
+    });
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    open_settings(&model, visual, Some(SettingsPage::Models));
+    let sources = visual.debug_bounds("settings-section:Sources").unwrap();
+    assert!(visual.debug_bounds("settings-row:models-sources").is_some());
+    assert!(
+        visual
+            .debug_bounds("settings-refresh-cli-catalogs")
+            .is_some()
+    );
+    // One section per vendor, in a fixed order, under the sources.
+    let openai = visual.debug_bounds("settings-section:OpenAI").unwrap();
+    let anthropic = visual.debug_bounds("settings-section:Anthropic").unwrap();
+    assert!(sources.bottom() <= openai.top() && openai.bottom() <= anthropic.top());
+    // `gpt-5` is one row, though the Codex CLI and the OpenAI key both list it.
+    let shared = visual
+        .debug_bounds("settings-row:model:openai:gpt-5")
+        .unwrap();
+    let cli_only = visual
+        .debug_bounds("settings-row:model:openai:gpt-5-codex")
+        .unwrap();
+    for row in [shared, cli_only] {
+        // Half a pixel of rounding separates a last row from the end of its section.
+        assert!(
+            row.top() >= openai.top() && row.bottom() <= openai.bottom() + px(1.0),
+            "{row:?} leaves {openai:?}"
+        );
+        assert!(row.size.width <= px(720.0), "{row:?}");
+    }
+    // A gateway's namespace is not part of the model: this one sits under its vendor.
+    let through_gateway = visual
+        .debug_bounds("settings-row:model:anthropic:claude-sonnet-4-5")
+        .unwrap();
+    assert!(
+        through_gateway.top() >= anthropic.top()
+            && through_gateway.bottom() <= anthropic.bottom() + px(1.0)
+    );
+    assert!(
+        visual
+            .debug_bounds("settings-row:model:other:anthropic/claude-sonnet-4-5")
+            .is_none()
     );
 }
 

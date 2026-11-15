@@ -6,11 +6,13 @@ use std::sync::Arc;
 use gpui::SharedString;
 use ikore_core::AppCore;
 use ikore_core::chat_service::{
-    CancelChatTurnRequest, ChatCommandError, ChatConversation, ChatEventDetail, ChatEventEnvelope,
-    ChatEventKind, ChatExecutionTargetRequest, ChatMessage, ChatToolCall, ChatTransportKind,
-    CreateChatConversationRequest, DeleteChatConversationRequest, GetChatConversationRequest,
-    GetChatConversationResponse, GetChatTurnSnapshotRequest, GetChatTurnSnapshotResponse,
-    ListChatConversationsRequest, SendChatMessageRequest, SendChatMessageResponse,
+    CancelChatTurnRequest, ChatCommandError, ChatConversation, ChatConversationMatch,
+    ChatEventDetail, ChatEventEnvelope, ChatEventKind, ChatExecutionTargetRequest, ChatMessage,
+    ChatToolCall, ChatTransportKind, ConversationMark, ConversationMarks,
+    CreateChatConversationRequest, DeleteChatConversationRequest, ForkChatConversationRequest,
+    GetChatConversationRequest, GetChatConversationResponse, GetChatTurnSnapshotRequest,
+    GetChatTurnSnapshotResponse, ListChatConversationsRequest, MarkChatConversationRequest,
+    SearchChatConversationsRequest, SendChatMessageRequest, SendChatMessageResponse,
     UpdateChatConversationTargetRequest,
 };
 use ikore_core::llm::ProviderConnection;
@@ -73,6 +75,35 @@ pub(crate) trait ChatBackend: Send + Sync {
         project_id: String,
         target: ChatExecutionTargetRequest,
     ) -> ChatFuture<()>;
+    /// A new conversation with the history up to `through_message_id` (PD11).
+    fn fork_conversation(
+        &self,
+        _conversation_id: String,
+        _through_message_id: String,
+    ) -> ChatFuture<GetChatConversationResponse> {
+        Box::pin(async { Err(UiCommandError::worker("Branching is not available here.")) })
+    }
+    /// The project's conversations whose title or messages hold `query`.
+    fn search_conversations(
+        &self,
+        _project_id: String,
+        _query: String,
+    ) -> ChatFuture<Vec<ChatConversationMatch>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+    /// The project's pinned and archived conversations.
+    fn conversation_marks(&self, _project_id: String) -> ChatFuture<ConversationMarks> {
+        Box::pin(async { Ok(ConversationMarks::default()) })
+    }
+    /// Pins, unpins, archives or restores a conversation; answers with the project's marks.
+    fn mark_conversation(
+        &self,
+        _conversation_id: String,
+        _mark: ConversationMark,
+        _on: bool,
+    ) -> ChatFuture<ConversationMarks> {
+        Box::pin(async { Err(UiCommandError::worker("Marks are not available here.")) })
+    }
 }
 
 pub(crate) struct CoreChatBackend {
@@ -332,6 +363,78 @@ impl ChatBackend for CoreChatBackend {
                 })?
         })
     }
+
+    fn fork_conversation(
+        &self,
+        conversation_id: String,
+        through_message_id: String,
+    ) -> ChatFuture<GetChatConversationResponse> {
+        self.blocking("branch", move |core| {
+            core.chat()
+                .fork_conversation(ForkChatConversationRequest {
+                    conversation_id,
+                    through_message_id,
+                })
+                .map_err(UiCommandError::from)
+        })
+    }
+
+    fn search_conversations(
+        &self,
+        project_id: String,
+        query: String,
+    ) -> ChatFuture<Vec<ChatConversationMatch>> {
+        self.blocking("search", move |core| {
+            core.chat()
+                .search_conversations(SearchChatConversationsRequest { project_id, query })
+                .map_err(UiCommandError::from)
+        })
+    }
+
+    fn conversation_marks(&self, project_id: String) -> ChatFuture<ConversationMarks> {
+        self.blocking("marks", move |core| {
+            core.chat()
+                .conversation_marks(&project_id)
+                .map_err(UiCommandError::from)
+        })
+    }
+
+    fn mark_conversation(
+        &self,
+        conversation_id: String,
+        mark: ConversationMark,
+        on: bool,
+    ) -> ChatFuture<ConversationMarks> {
+        self.blocking("marks", move |core| {
+            core.chat()
+                .mark_conversation(MarkChatConversationRequest {
+                    conversation_id,
+                    mark,
+                    on,
+                })
+                .map_err(UiCommandError::from)
+        })
+    }
+}
+
+impl CoreChatBackend {
+    /// Runs a short read or write of the Companion's store off the UI thread.
+    fn blocking<T: Send + 'static>(
+        &self,
+        what: &'static str,
+        work: impl FnOnce(Arc<AppCore>) -> Result<T, UiCommandError> + Send + 'static,
+    ) -> ChatFuture<T> {
+        let core = Arc::clone(&self.core);
+        let runtime = core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn_blocking(move || work(core))
+                .await
+                .map_err(|error| {
+                    UiCommandError::worker(format!("Chat {what} worker interrupted: {error}"))
+                })?
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -354,6 +457,9 @@ pub(crate) enum ChatEventOutcome {
 /// Messages of the open conversation rendered by default.
 pub(crate) const CHAT_RENDER_WINDOW: usize = 40;
 
+/// Models offered as recent when the developer picks a CLI model.
+pub(crate) const RECENT_CLI_MODELS: usize = 3;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum ChatOperation {
     Create,
@@ -361,6 +467,84 @@ pub(crate) enum ChatOperation {
     Send,
     Delete,
     Cancel,
+    /// A target change made outside the panel, as the floating window does.
+    Retarget,
+}
+
+/// One change to a conversation's target, made from that conversation's own composer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ChatTargetEdit {
+    RouteApi(String),
+    RouteCli(CliBackend),
+    Profile(Option<String>),
+    Model(Option<String>, CliModelSelectionSource),
+}
+
+impl ChatTargetEdit {
+    /// Reads a menu value: `route:api:<connection>`, `route:cli:<backend>`, `effort:<profile>`,
+    /// `model:<id>` or `manual:<id>`. An empty profile or model id means the CLI default.
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        let (kind, rest) = value.split_once(':')?;
+        match kind {
+            "route" => match rest.split_once(':')? {
+                ("api", connection_id) if !connection_id.is_empty() => {
+                    Some(Self::RouteApi(connection_id.into()))
+                }
+                ("cli", backend) => CliBackend::parse(backend).map(Self::RouteCli),
+                _ => None,
+            },
+            "effort" => Some(Self::Profile((!rest.is_empty()).then(|| rest.into()))),
+            "model" if rest.is_empty() => Some(Self::Model(None, CliModelSelectionSource::Default)),
+            "model" => Some(Self::Model(
+                Some(rest.into()),
+                CliModelSelectionSource::Catalog,
+            )),
+            "manual" if !rest.is_empty() => Some(Self::Model(
+                Some(rest.into()),
+                CliModelSelectionSource::Manual,
+            )),
+            _ => None,
+        }
+    }
+
+    /// The target this change turns `current` into. `None` when it does not apply: effort and
+    /// model belong to a CLI target.
+    pub(crate) fn apply_to(
+        &self,
+        current: &ChatExecutionTargetRequest,
+    ) -> Option<ChatExecutionTargetRequest> {
+        match (self, current) {
+            (Self::RouteApi(connection_id), _) => Some(ChatExecutionTargetRequest::Api {
+                connection_id: connection_id.clone(),
+            }),
+            (Self::RouteCli(backend), ChatExecutionTargetRequest::Cli { backend: same, .. })
+                if backend == same =>
+            {
+                Some(current.clone())
+            }
+            // A different backend starts from its own default model.
+            (Self::RouteCli(backend), _) => Some(ChatExecutionTargetRequest::Cli {
+                backend: *backend,
+                model: None,
+                model_profile: None,
+            }),
+            (Self::Profile(profile), ChatExecutionTargetRequest::Cli { backend, model, .. }) => {
+                Some(ChatExecutionTargetRequest::Cli {
+                    backend: *backend,
+                    model: model.clone(),
+                    model_profile: profile.clone(),
+                })
+            }
+            (Self::Model(model, _), ChatExecutionTargetRequest::Cli { backend, .. }) => {
+                Some(ChatExecutionTargetRequest::Cli {
+                    backend: *backend,
+                    model: model.clone(),
+                    model_profile: None,
+                })
+            }
+            (Self::Profile(_) | Self::Model(..), ChatExecutionTargetRequest::Api { .. }) => None,
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -375,10 +559,6 @@ pub struct ChatModel {
     /// The conversation whose full history the developer asked to see; every other
     /// conversation renders only its last `CHAT_RENDER_WINDOW` messages.
     pub(crate) history_expanded: Option<SharedString>,
-    /// Collapses the transport/connection picker so the sidebar has room to
-    /// show conversations instead; the CLI form (backend + model + profile +
-    /// explanatory text) is tall enough to crowd out the list entirely.
-    pub(crate) config_collapsed: bool,
     pub(crate) project_id: Option<SharedString>,
     pub(crate) connections: Vec<ProviderConnection>,
     pub(crate) cli_availability: Vec<CliAvailability>,
@@ -394,6 +574,12 @@ pub struct ChatModel {
     pub(crate) selected_cli_model_source: CliModelSelectionSource,
     pub(crate) target_change_pending: bool,
     pub(crate) target_change_generation: u64,
+    /// A target was chosen while the open conversation was replying. It stays
+    /// in the panel and is applied when that reply ends.
+    pub(crate) target_change_deferred: bool,
+    /// The same wait for every other conversation, whose target the panel
+    /// does not hold: the floating window changes them in place.
+    pub(crate) deferred_targets: HashMap<String, ChatExecutionTargetRequest>,
     pub streaming: bool,
     pub(crate) loading: bool,
     pub(crate) busy: bool,
@@ -408,6 +594,25 @@ pub struct ChatModel {
     project_loading: bool,
     project_error: Option<UiCommandError>,
     creating: bool,
+    /// The project's pinned and archived conversations (PD11).
+    pub(crate) marks: ConversationMarks,
+    /// The archived conversations are listed under the others.
+    pub(crate) show_archived: bool,
+    /// The conversations the list's search found, while it shows them.
+    pub(crate) conversation_search: Option<ConversationSearch>,
+    /// Messages written while their conversation was replying. They leave in order, one per
+    /// turn, when it is free again. In memory only: a restart drops them.
+    queues: HashMap<String, Vec<String>>,
+}
+
+/// Messages a conversation keeps waiting while it replies.
+pub(crate) const MAX_QUEUED_MESSAGES: usize = 8;
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ConversationSearch {
+    pub(crate) query: String,
+    pub(crate) matches: Vec<ChatConversationMatch>,
+    pub(crate) searching: bool,
 }
 
 impl ChatModel {
@@ -448,9 +653,15 @@ impl ChatModel {
             self.selected_cli_model_profile = None;
             self.selected_cli_model_source = CliModelSelectionSource::Default;
             self.target_change_pending = false;
+            self.target_change_deferred = false;
+            self.deferred_targets.clear();
             self.target_change_generation = self.target_change_generation.saturating_add(1);
             self.pending_delete_conversation_id = None;
             self.creating = false;
+            self.marks = ConversationMarks::default();
+            self.show_archived = false;
+            self.conversation_search = None;
+            self.queues.clear();
         }
         self.project_loading = true;
         self.project_error = None;
@@ -469,6 +680,13 @@ impl ChatModel {
         {
             return false;
         }
+        // The refresh below rewrites the panel. A choice that waits for the
+        // open conversation's reply is put back afterwards.
+        let waiting = self
+            .target_change_deferred
+            .then(|| self.active_conversation.clone().zip(self.panel_target()))
+            .flatten();
+        self.target_change_deferred = false;
         self.connections = hydration.connections;
         self.cli_availability = hydration.cli_availability;
         let mut conversations = hydration.conversations;
@@ -505,6 +723,17 @@ impl ChatModel {
             self.store_conversation_snapshot(snapshot);
         }
         self.sync_panel_with_active_conversation();
+        if let Some((conversation_id, target)) = waiting
+            && self.active_conversation.as_ref() == Some(&conversation_id)
+        {
+            self.apply_target_to_panel(&target);
+            self.target_change_deferred = true;
+        }
+        self.deferred_targets.retain(|conversation_id, _| {
+            self.conversations
+                .iter()
+                .any(|conversation| &conversation.id == conversation_id)
+        });
         self.project_loading = false;
         self.project_error = None;
         self.recompute_streaming();
@@ -573,6 +802,65 @@ impl ChatModel {
                 model_profile: conversation.model_profile.clone(),
             }),
         }
+    }
+
+    fn is_active(&self, conversation_id: &str) -> bool {
+        self.active_conversation.as_ref().map(AsRef::as_ref) == Some(conversation_id)
+    }
+
+    /// A target chosen for this conversation waits for its reply to end.
+    pub(crate) fn target_deferred_for(&self, conversation_id: &str) -> bool {
+        if self.is_active(conversation_id) {
+            self.target_change_deferred
+        } else {
+            self.deferred_targets.contains_key(conversation_id)
+        }
+    }
+
+    /// The target the composer of this conversation shows: the choice that
+    /// waits for the running reply, or else the stored one.
+    pub(crate) fn shown_target(&self, conversation_id: &str) -> Option<ChatExecutionTargetRequest> {
+        if self.is_active(conversation_id) {
+            if self.target_change_deferred {
+                return self.panel_target();
+            }
+        } else if let Some(target) = self.deferred_targets.get(conversation_id) {
+            return Some(target.clone());
+        }
+        self.conversation_target(conversation_id)
+    }
+
+    /// A target change made outside the panel is in flight for this conversation.
+    pub(crate) fn is_retargeting(&self, conversation_id: &str) -> bool {
+        self.conversation_states
+            .get(conversation_id)
+            .is_some_and(|state| state.operations.contains_key(&ChatOperation::Retarget))
+    }
+
+    /// The CLI models this project's conversations last used on `backend`,
+    /// newest first. It reads what is already loaded; nothing is stored for it.
+    pub(crate) fn recent_cli_models(&self, backend: CliBackend) -> Vec<String> {
+        let mut used: Vec<&ChatConversation> = self
+            .conversations
+            .iter()
+            .filter(|conversation| {
+                conversation.transport == ChatTransportKind::Cli
+                    && conversation.cli_backend == Some(backend)
+                    && conversation.model_id != "default"
+            })
+            .collect();
+        // RFC 3339 timestamps in UTC sort as text. The sort is stable, so ties keep list order.
+        used.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+        let mut recent: Vec<String> = Vec::new();
+        for conversation in used {
+            if !recent.contains(&conversation.model_id) {
+                recent.push(conversation.model_id.clone());
+                if recent.len() == RECENT_CLI_MODELS {
+                    break;
+                }
+            }
+        }
+        recent
     }
 
     pub(crate) fn composer_available_for(&self, conversation_id: &str) -> bool {
@@ -666,12 +954,16 @@ impl ChatModel {
             .conversation_states
             .entry(conversation_id.into())
             .or_default();
+        // A send, a delete and a target change exclude each other: a message
+        // never leaves for a target that is changing under it.
+        let exclusive = |operation: &ChatOperation| {
+            matches!(
+                operation,
+                ChatOperation::Send | ChatOperation::Delete | ChatOperation::Retarget
+            )
+        };
         if state.operations.contains_key(&operation)
-            || (matches!(operation, ChatOperation::Send | ChatOperation::Delete)
-                && state
-                    .operations
-                    .keys()
-                    .any(|pending| matches!(pending, ChatOperation::Send | ChatOperation::Delete)))
+            || (exclusive(&operation) && state.operations.keys().any(exclusive))
         {
             return None;
         }
@@ -764,9 +1056,24 @@ impl ChatModel {
         {
             return false;
         }
+        // A choice that waits for a reply follows its conversation: it leaves
+        // the panel with the conversation that is closing and returns to it
+        // with the one that opens.
+        if self.target_change_deferred
+            && let Some(leaving) = self.active_conversation.as_ref().map(ToString::to_string)
+            && let Some(target) = self.panel_target()
+        {
+            self.deferred_targets.insert(leaving, target);
+        }
         self.active_conversation = Some(conversation_id.to_string().into());
         self.target_change_generation = self.target_change_generation.saturating_add(1);
         self.target_change_pending = false;
+        self.target_change_deferred = false;
+        if let Some(target) = self.deferred_targets.remove(conversation_id) {
+            self.sync_panel_with_active_conversation();
+            self.apply_target_to_panel(&target);
+            self.target_change_deferred = true;
+        }
         self.pending_delete_conversation_id = None;
         self.recompute_streaming();
         true
@@ -838,7 +1145,11 @@ impl ChatModel {
     /// The panel always shows the open conversation's real target: before,
     /// it reset to API/Codex on every visit while the conversation kept
     /// sending to its own stored backend (`ToDoListWebView`, 2026-09-22).
+    /// A choice that waits for the running reply stays in the panel.
     pub(crate) fn sync_panel_with_active_conversation(&mut self) {
+        if self.target_change_deferred {
+            return;
+        }
         let Some(conversation) = self.active_conversation_record().cloned() else {
             return;
         };
@@ -890,6 +1201,67 @@ impl ChatModel {
         self.recompute_streaming();
     }
 
+    /// The conversation is replying or has a request in flight: a message waits in its queue.
+    pub(crate) fn replying(&self, conversation_id: &str) -> bool {
+        self.is_streaming(conversation_id) || self.is_busy(conversation_id)
+    }
+
+    pub(crate) fn queued(&self, conversation_id: &str) -> &[String] {
+        self.queues
+            .get(conversation_id)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+
+    /// Adds a message to the end of the queue. `false` when the queue is full.
+    pub(crate) fn enqueue(&mut self, conversation_id: &str, content: String) -> bool {
+        let queue = self.queues.entry(conversation_id.into()).or_default();
+        if queue.len() >= MAX_QUEUED_MESSAGES {
+            return false;
+        }
+        queue.push(content);
+        true
+    }
+
+    /// Moves a queued message one place towards the front.
+    pub(crate) fn move_queued_up(&mut self, conversation_id: &str, index: usize) {
+        if let Some(queue) = self.queues.get_mut(conversation_id)
+            && index > 0
+            && index < queue.len()
+        {
+            queue.swap(index, index - 1);
+        }
+    }
+
+    pub(crate) fn remove_queued(&mut self, conversation_id: &str, index: usize) -> Option<String> {
+        let queue = self.queues.get_mut(conversation_id)?;
+        let removed = (index < queue.len()).then(|| queue.remove(index));
+        if queue.is_empty() {
+            self.queues.remove(conversation_id);
+        }
+        removed
+    }
+
+    /// The conversations whose next queued message can leave now. A conversation with an error
+    /// waits for the developer: the next message would most likely fail the same way.
+    pub(crate) fn queues_ready(&self) -> Vec<String> {
+        let mut ready: Vec<String> = self
+            .queues
+            .iter()
+            .filter(|(id, queue)| {
+                !queue.is_empty()
+                    && !self.replying(id)
+                    && self.composer_available_for(id)
+                    && self.disclosure_accepted_for(id)
+                    && !self.target_deferred_for(id)
+                    && self.error_for(id).is_none()
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        ready.sort();
+        ready
+    }
+
     pub(crate) fn apply_created(&mut self, snapshot: GetChatConversationResponse) {
         self.conversations
             .retain(|conversation| conversation.id != snapshot.conversation.id);
@@ -908,8 +1280,19 @@ impl ChatModel {
         self.tool_calls_by_conversation.remove(conversation_id);
         self.conversation_states.remove(conversation_id);
         self.acknowledged_disclosures.remove(conversation_id);
+        self.deferred_targets.remove(conversation_id);
+        self.queues.remove(conversation_id);
+        self.marks.pinned.retain(|id| id != conversation_id);
+        self.marks.archived.retain(|id| id != conversation_id);
+        if let Some(search) = self.conversation_search.as_mut() {
+            search
+                .matches
+                .retain(|found| found.conversation_id != conversation_id);
+        }
         self.pending_delete_conversation_id = None;
         if self.active_conversation.as_ref().map(AsRef::as_ref) == Some(conversation_id) {
+            // The choice that waited for this conversation's reply goes with it.
+            self.target_change_deferred = false;
             self.active_conversation = self
                 .conversations
                 .first()
@@ -1213,6 +1596,7 @@ mod tests {
             error_code: None,
             error_message: None,
             target_label: None,
+            model_evidence: None,
             created_at: "now".into(),
             updated_at: "now".into(),
         }
@@ -1691,6 +2075,9 @@ mod tests {
         retargeted: Mutex<Vec<(String, ChatExecutionTargetRequest)>>,
         send_barriers: Mutex<HashMap<String, tokio::sync::oneshot::Receiver<()>>>,
         failed_sends: Mutex<HashSet<String>>,
+        forked: Mutex<Vec<(String, String)>>,
+        searched: Mutex<Vec<(String, String)>>,
+        marks: Mutex<ConversationMarks>,
     }
 
     impl RecordingChatBackend {
@@ -1730,19 +2117,30 @@ mod tests {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push(expected_target);
-            self.sent
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push((conversation_id.clone(), content));
+            // Each turn of a conversation gets its own reply, as the store gives it: the
+            // first keeps the plain ids the older tests read.
+            let turn = {
+                let mut sent = self
+                    .sent
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                sent.push((conversation_id.clone(), content));
+                sent.iter().filter(|(id, _)| *id == conversation_id).count()
+            };
+            let turn = if turn > 1 {
+                format!("-turn-{turn}")
+            } else {
+                String::new()
+            };
             let mut assistant = message("", 0);
-            assistant.id = format!("assistant-started-{conversation_id}");
+            assistant.id = format!("assistant-started-{conversation_id}{turn}");
             assistant.conversation_id = conversation_id.clone();
             assistant.ordinal = 3;
             assistant.status = "pending".into();
             let suffix = if conversation_id == "conversation-1" {
-                String::new()
+                turn
             } else {
-                format!("-{conversation_id}")
+                format!("-{conversation_id}{turn}")
             };
             let execution_id = format!("execution-started{suffix}");
             let generation_id = format!("generation-started{suffix}");
@@ -1814,6 +2212,263 @@ mod tests {
         fn save_default_target(&self, _: String, _: ChatExecutionTargetRequest) -> ChatFuture<()> {
             Self::unavailable()
         }
+
+        fn fork_conversation(
+            &self,
+            conversation_id: String,
+            through_message_id: String,
+        ) -> ChatFuture<GetChatConversationResponse> {
+            self.forked
+                .lock()
+                .unwrap()
+                .push((conversation_id, through_message_id));
+            Box::pin(async {
+                Ok(GetChatConversationResponse {
+                    conversation: conversation("branch-1", "project-1"),
+                    messages: vec![message("kept history", 1)],
+                    tool_calls: Vec::new(),
+                })
+            })
+        }
+
+        fn search_conversations(
+            &self,
+            project_id: String,
+            query: String,
+        ) -> ChatFuture<Vec<ChatConversationMatch>> {
+            self.searched
+                .lock()
+                .unwrap()
+                .push((project_id, query.clone()));
+            Box::pin(async move {
+                Ok(vec![ChatConversationMatch {
+                    conversation_id: "conversation-1".into(),
+                    title: "History".into(),
+                    excerpt: Some(format!("…about {query}…")),
+                    updated_at: "now".into(),
+                }])
+            })
+        }
+
+        fn conversation_marks(&self, _: String) -> ChatFuture<ConversationMarks> {
+            let marks = self.marks.lock().unwrap().clone();
+            Box::pin(async move { Ok(marks) })
+        }
+
+        fn mark_conversation(
+            &self,
+            conversation_id: String,
+            mark: ConversationMark,
+            on: bool,
+        ) -> ChatFuture<ConversationMarks> {
+            let marks = {
+                let mut marks = self.marks.lock().unwrap();
+                marks.pinned.retain(|id| *id != conversation_id);
+                marks.archived.retain(|id| *id != conversation_id);
+                if on {
+                    match mark {
+                        ConversationMark::Pinned => marks.pinned.insert(0, conversation_id),
+                        ConversationMark::Archived => marks.archived.push(conversation_id),
+                    }
+                }
+                marks.clone()
+            };
+            Box::pin(async move { Ok(marks) })
+        }
+    }
+
+    /// A model with one finished conversation, `conversation-1`, open and acknowledged.
+    fn queue_fixture(
+        backend: Arc<RecordingChatBackend>,
+        cx: &mut TestAppContext,
+    ) -> gpui::Entity<AppModel> {
+        let model_backend: Arc<dyn ChatBackend> = backend;
+        let model = cx.new(|cx| AppModel::new_for_test_with_chat_backend(model_backend, cx));
+        model.update(cx, |model, cx| {
+            let generation = model
+                .chat
+                .update(cx, |chat, _| chat.begin_hydration("project-1".into(), None));
+            model.chat.update(cx, |chat, _| {
+                let mut hydration = snapshot("project-1", "history", 1);
+                hydration.selected.as_mut().unwrap().messages[0].status = "completed".into();
+                chat.apply_hydration(generation, hydration);
+            });
+            model.ensure_chat_composer("conversation-1", cx);
+        });
+        model
+    }
+
+    #[gpui::test]
+    fn queued_messages_wait_for_the_reply_and_leave_in_order(cx: &mut TestAppContext) {
+        let backend = Arc::new(RecordingChatBackend::default());
+        let model = queue_fixture(backend.clone(), cx);
+        model.update(cx, |model, cx| {
+            assert!(model.send_chat_message_to("conversation-1".into(), "first".into(), cx));
+        });
+        cx.run_until_parked();
+        // The reply is under way: Enter keeps the message and empties the composer.
+        model.update(cx, |model, cx| {
+            assert!(model.chat.read(cx).is_streaming("conversation-1"));
+            let input = model.chat_composer_for("conversation-1").unwrap();
+            for text in ["second", "third"] {
+                input.update(cx, |input, cx| input.set_value(text, cx));
+                model.queue_chat_message(
+                    "conversation-1".into(),
+                    text.into(),
+                    Some(input.clone()),
+                    cx,
+                );
+                assert!(input.read(cx).value().is_empty());
+            }
+            model.move_queued_chat_message("conversation-1".into(), 1, cx);
+            assert_eq!(
+                model.chat.read(cx).queued("conversation-1"),
+                ["third", "second"]
+            );
+            // Nothing leaves while the conversation replies.
+            model.flush_chat_queue(cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(backend.sent.lock().unwrap().len(), 1);
+
+        // The reply ends: the head of the queue leaves, and only it.
+        model.update(cx, |model, cx| {
+            model.chat.update(cx, |chat, _| {
+                for message in chat
+                    .messages_by_conversation
+                    .get_mut("conversation-1")
+                    .unwrap()
+                {
+                    message.status = "completed".into();
+                }
+                chat.recompute_streaming();
+            });
+            model.flush_chat_queue(cx);
+            model.flush_chat_queue(cx);
+        });
+        cx.run_until_parked();
+        let sent: Vec<String> = backend
+            .sent
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, content)| content.clone())
+            .collect();
+        assert_eq!(sent, ["first", "third"]);
+        model.read_with(cx, |model, cx| {
+            assert_eq!(model.chat.read(cx).queued("conversation-1"), ["second"]);
+        });
+
+        // A conversation with an error keeps its queue until the developer sends by hand.
+        model.update(cx, |model, cx| {
+            model.chat.update(cx, |chat, _| {
+                for message in chat
+                    .messages_by_conversation
+                    .get_mut("conversation-1")
+                    .unwrap()
+                {
+                    message.status = "completed".into();
+                }
+                chat.recompute_streaming();
+                chat.set_conversation_error("conversation-1", UiCommandError::worker("boom"));
+            });
+            assert!(model.chat.read(cx).queues_ready().is_empty());
+            model.send_queued_chat_message_now("conversation-1".into(), 0, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(backend.sent.lock().unwrap().len(), 3);
+        model.read_with(cx, |model, cx| {
+            assert!(model.chat.read(cx).queued("conversation-1").is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn a_full_queue_refuses_the_next_message_and_keeps_the_draft(cx: &mut TestAppContext) {
+        let backend = Arc::new(RecordingChatBackend::default());
+        let model = queue_fixture(backend, cx);
+        model.update(cx, |model, cx| {
+            for index in 0..MAX_QUEUED_MESSAGES {
+                model.queue_chat_message("conversation-1".into(), format!("m{index}"), None, cx);
+            }
+            let input = model.chat_composer_for("conversation-1").unwrap();
+            input.update(cx, |input, cx| input.set_value("one too many", cx));
+            model.queue_chat_message(
+                "conversation-1".into(),
+                "one too many".into(),
+                Some(input.clone()),
+                cx,
+            );
+            assert_eq!(
+                model.chat.read(cx).queued("conversation-1").len(),
+                MAX_QUEUED_MESSAGES
+            );
+            assert_eq!(input.read(cx).value(), "one too many");
+            assert!(
+                model
+                    .current_notice()
+                    .is_some_and(|notice| notice.message.contains("already has 8"))
+            );
+            model.remove_queued_chat_message("conversation-1".into(), 0, cx);
+            assert_eq!(model.chat.read(cx).queued("conversation-1")[0], "m1");
+        });
+    }
+
+    #[gpui::test]
+    fn branching_searching_and_marking_go_through_the_store(cx: &mut TestAppContext) {
+        let backend = Arc::new(RecordingChatBackend::default());
+        let model = queue_fixture(backend.clone(), cx);
+        model.update(cx, |model, cx| {
+            model.fork_chat_conversation("conversation-1".into(), "message-1".into(), cx);
+            model.mark_chat_conversation(
+                "conversation-1".into(),
+                ConversationMark::Pinned,
+                true,
+                cx,
+            );
+            model
+                .chat_search_input
+                .update(cx, |input, cx| input.set_value("  auth  ", cx));
+            model.search_chat_conversations(cx);
+            assert!(
+                model
+                    .chat
+                    .read(cx)
+                    .conversation_search
+                    .as_ref()
+                    .is_some_and(|search| search.searching)
+            );
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            *backend.forked.lock().unwrap(),
+            [("conversation-1".to_string(), "message-1".to_string())]
+        );
+        assert_eq!(
+            *backend.searched.lock().unwrap(),
+            [("project-1".to_string(), "auth".to_string())]
+        );
+        model.update(cx, |model, cx| {
+            let chat = model.chat.read(cx);
+            // The branch opens, first in the list.
+            assert_eq!(
+                chat.active_conversation.as_ref().map(AsRef::as_ref),
+                Some("branch-1")
+            );
+            assert_eq!(chat.conversations[0].id, "branch-1");
+            assert!(chat.marks.has(ConversationMark::Pinned, "conversation-1"));
+            let search = chat.conversation_search.as_ref().unwrap();
+            assert!(!search.searching);
+            assert_eq!(search.matches[0].excerpt.as_deref(), Some("…about auth…"));
+            // An empty field closes the search.
+            model.clear_chat_search(cx);
+            assert!(model.chat.read(cx).conversation_search.is_none());
+            assert!(model.chat_search_input.read(cx).value().is_empty());
+            // A conversation that goes away leaves the marks.
+            model.chat.update(cx, |chat, _| {
+                chat.apply_deleted("conversation-1");
+            });
+            assert!(model.chat.read(cx).marks.pinned.is_empty());
+        });
     }
 
     #[gpui::test]
@@ -2007,8 +2662,9 @@ mod tests {
         });
     }
 
-    /// Changing the panel with a conversation open retargets that
-    /// conversation, so its next message uses what the panel shows.
+    /// Changing the composer with a conversation open retargets that
+    /// conversation, so its next message uses what the composer shows. A
+    /// second change waits for the first to land.
     #[gpui::test]
     fn changing_the_panel_retargets_the_open_conversation(cx: &mut TestAppContext) {
         let backend = Arc::new(RecordingChatBackend::default());
@@ -2019,15 +2675,16 @@ mod tests {
                 .chat
                 .update(cx, |chat, _| chat.begin_hydration("project-1".into(), None));
             model.chat.update(cx, |chat, _| {
-                chat.apply_hydration(generation, snapshot("project-1", "history", 1));
+                chat.apply_hydration(generation, settled_snapshot());
             });
-            model.set_chat_transport(ChatTransportKind::Cli, cx);
-            model.set_chat_cli_backend(CliBackend::Claude, cx);
+            model.apply_choice("chat-composer-route", "cli:codex", cx);
+            assert!(model.chat.read(cx).target_change_pending);
+            model.apply_choice("chat-composer-route", "cli:claude", cx);
             assert_eq!(model.chat.read(cx).selected_cli_backend, CliBackend::Codex);
         });
         cx.run_until_parked();
         model.update(cx, |model, cx| {
-            model.set_chat_cli_backend(CliBackend::Claude, cx)
+            model.apply_choice("chat-composer-route", "cli:claude", cx)
         });
         cx.run_until_parked();
         let calls = backend
@@ -2053,6 +2710,565 @@ mod tests {
             assert_eq!(chat.selected_cli_backend, CliBackend::Claude);
             assert_eq!(chat.selected_transport, ChatTransportKind::Cli);
         });
+    }
+
+    /// A hydration whose only reply has ended.
+    fn settled_snapshot() -> ChatHydration {
+        let mut hydration = snapshot("project-1", "history", 1);
+        let reply = &mut hydration.selected.as_mut().unwrap().messages[0];
+        reply.status = "completed".into();
+        reply.execution_id = None;
+        hydration
+    }
+
+    fn retargets(backend: &RecordingChatBackend) -> Vec<(String, ChatExecutionTargetRequest)> {
+        backend
+            .retargeted
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    #[gpui::test]
+    fn the_composer_route_picks_transport_and_endpoint_in_one_step(cx: &mut TestAppContext) {
+        let backend = Arc::new(RecordingChatBackend::default());
+        let model_backend: Arc<dyn ChatBackend> = backend.clone();
+        let model = cx.new(|cx| AppModel::new_for_test_with_chat_backend(model_backend, cx));
+        model.update(cx, |model, cx| {
+            let generation = model
+                .chat
+                .update(cx, |chat, _| chat.begin_hydration("project-1".into(), None));
+            model.chat.update(cx, |chat, _| {
+                chat.apply_hydration(generation, settled_snapshot());
+            });
+            let options = model.choice_options("chat-composer-route", cx);
+            assert!(
+                options
+                    .iter()
+                    .any(|choice| choice.value == "api:eligible" && choice.selected)
+            );
+            assert!(options.iter().all(|choice| choice.value != "api:blocked"));
+            assert!(options.iter().all(|choice| choice.value != "cli:custom"));
+            assert!(
+                options
+                    .iter()
+                    .any(|choice| choice.value == "cli:claude" && choice.label == "Claude CLI")
+            );
+            model.apply_choice("chat-composer-route", "cli:claude", cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            retargets(&backend),
+            [(
+                "conversation-1".to_string(),
+                ChatExecutionTargetRequest::Cli {
+                    backend: CliBackend::Claude,
+                    model: None,
+                    model_profile: None,
+                }
+            )]
+        );
+        model.update(cx, |model, cx| {
+            let options = model.choice_options("chat-composer-route", cx);
+            assert!(
+                options
+                    .iter()
+                    .any(|choice| choice.value == "cli:claude" && choice.selected)
+            );
+            assert!(options.iter().filter(|choice| choice.selected).count() == 1);
+        });
+    }
+
+    #[gpui::test]
+    fn a_target_chosen_during_a_reply_is_applied_when_the_reply_ends(cx: &mut TestAppContext) {
+        let backend = Arc::new(RecordingChatBackend::default());
+        let model_backend: Arc<dyn ChatBackend> = backend.clone();
+        let model = cx.new(|cx| AppModel::new_for_test_with_chat_backend(model_backend, cx));
+        model.update(cx, |model, cx| {
+            let generation = model
+                .chat
+                .update(cx, |chat, _| chat.begin_hydration("project-1".into(), None));
+            model.chat.update(cx, |chat, _| {
+                chat.apply_hydration(generation, snapshot("project-1", "history", 1));
+            });
+            assert!(model.chat.read(cx).streaming);
+            model.apply_choice("chat-composer-route", "cli:claude", cx);
+            let chat = model.chat.read(cx);
+            assert!(chat.target_change_deferred);
+            assert!(!chat.target_change_pending);
+            // The composer already shows the choice; the conversation keeps its target.
+            assert_eq!(chat.selected_cli_backend, CliBackend::Claude);
+            assert_eq!(
+                chat.active_conversation_record().unwrap().transport,
+                ChatTransportKind::Api
+            );
+        });
+        cx.run_until_parked();
+        assert!(retargets(&backend).is_empty());
+
+        model.update(cx, |model, cx| {
+            model.chat.update(cx, |chat, _| {
+                let mut reply = message("history", 2);
+                reply.status = "completed".into();
+                assert!(chat.apply_turn_snapshot(
+                    "project-1",
+                    "generation-1",
+                    "conversation-1",
+                    GetChatTurnSnapshotResponse {
+                        message: reply,
+                        tool_calls: Vec::new(),
+                    },
+                ));
+            });
+            model.flush_deferred_chat_target(cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            retargets(&backend),
+            [(
+                "conversation-1".to_string(),
+                ChatExecutionTargetRequest::Cli {
+                    backend: CliBackend::Claude,
+                    model: None,
+                    model_profile: None,
+                }
+            )]
+        );
+        model.update(cx, |model, cx| {
+            let chat = model.chat.read(cx);
+            assert!(!chat.target_change_deferred);
+            assert_eq!(
+                chat.active_conversation_record().unwrap().cli_backend,
+                Some(CliBackend::Claude)
+            );
+        });
+    }
+
+    fn claude(model: Option<&str>, profile: Option<&str>) -> ChatExecutionTargetRequest {
+        ChatExecutionTargetRequest::Cli {
+            backend: CliBackend::Claude,
+            model: model.map(Into::into),
+            model_profile: profile.map(Into::into),
+        }
+    }
+
+    #[test]
+    fn a_target_edit_reads_a_menu_value_and_changes_one_dimension() {
+        let cli = claude(Some("sonnet"), Some("high"));
+        let api = ChatExecutionTargetRequest::Api {
+            connection_id: "eligible".into(),
+        };
+        let edit = |value: &str| ChatTargetEdit::parse(value).unwrap();
+        assert_eq!(
+            edit("effort:low").apply_to(&cli),
+            Some(claude(Some("sonnet"), Some("low")))
+        );
+        assert_eq!(
+            edit("effort:").apply_to(&cli),
+            Some(claude(Some("sonnet"), None))
+        );
+        // Another model starts from its own default effort.
+        assert_eq!(
+            edit("model:opus").apply_to(&cli),
+            Some(claude(Some("opus"), None))
+        );
+        assert_eq!(edit("model:").apply_to(&cli), Some(claude(None, None)));
+        assert_eq!(
+            edit("manual:vendor/model:tag"),
+            ChatTargetEdit::Model(
+                Some("vendor/model:tag".into()),
+                CliModelSelectionSource::Manual
+            )
+        );
+        // The same backend keeps model and effort; another one starts from its default.
+        assert_eq!(edit("route:cli:claude").apply_to(&cli), Some(cli.clone()));
+        assert_eq!(
+            edit("route:cli:codex").apply_to(&cli),
+            Some(ChatExecutionTargetRequest::Cli {
+                backend: CliBackend::Codex,
+                model: None,
+                model_profile: None,
+            })
+        );
+        assert_eq!(
+            edit("route:cli:claude").apply_to(&api),
+            Some(claude(None, None))
+        );
+        assert_eq!(edit("route:api:eligible").apply_to(&cli), Some(api.clone()));
+        // Effort and model belong to a CLI target.
+        assert_eq!(edit("effort:low").apply_to(&api), None);
+        assert_eq!(edit("model:opus").apply_to(&api), None);
+        for unknown in [
+            "",
+            "effort",
+            "route:cli:nope",
+            "route:api:",
+            "manual:",
+            "model-more",
+        ] {
+            assert_eq!(ChatTargetEdit::parse(unknown), None, "{unknown}");
+        }
+    }
+
+    #[test]
+    fn recent_cli_models_are_the_last_used_on_a_backend_newest_first() {
+        let used = |id: &str, backend: CliBackend, model: &str, day: u8| {
+            let mut conversation = conversation(id, "project-1");
+            conversation.transport = ChatTransportKind::Cli;
+            conversation.cli_backend = Some(backend);
+            conversation.model_id = model.into();
+            conversation.updated_at = format!("2026-11-{day:02}T10:00:00+00:00");
+            conversation
+        };
+        let model = ChatModel {
+            conversations: vec![
+                used("a", CliBackend::Claude, "sonnet", 10),
+                used("b", CliBackend::Claude, "opus", 12),
+                used("c", CliBackend::Claude, "sonnet", 13),
+                // The CLI default names no model, and another backend has its own list.
+                used("d", CliBackend::Claude, "default", 14),
+                used("e", CliBackend::Codex, "gpt-5", 15),
+                conversation("f", "project-1"),
+                used("g", CliBackend::Claude, "haiku", 9),
+                used("h", CliBackend::Claude, "older", 8),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            model.recent_cli_models(CliBackend::Claude),
+            ["sonnet", "opus", "haiku"]
+        );
+        assert_eq!(model.recent_cli_models(CliBackend::Codex), ["gpt-5"]);
+        assert!(model.recent_cli_models(CliBackend::Gemini).is_empty());
+    }
+
+    #[test]
+    fn a_waiting_target_follows_its_conversation_in_and_out_of_the_panel() {
+        let mut model = ChatModel::default();
+        let generation = model.begin_hydration("project-1".into(), None);
+        assert!(model.apply_hydration(generation, snapshot("project-1", "partial", 1)));
+        model
+            .conversations
+            .push(conversation("conversation-2", "project-1"));
+        // Chosen in the panel while `conversation-1` replies.
+        let waiting = claude(None, None);
+        model.apply_target_to_panel(&waiting);
+        model.target_change_deferred = true;
+
+        assert!(model.select_conversation_locally("conversation-2"));
+        assert!(!model.target_change_deferred);
+        assert!(model.target_deferred_for("conversation-1"));
+        assert_eq!(model.shown_target("conversation-1"), Some(waiting.clone()));
+        assert!(!model.target_deferred_for("conversation-2"));
+
+        assert!(model.select_conversation_locally("conversation-1"));
+        assert!(model.target_change_deferred);
+        assert!(model.deferred_targets.is_empty());
+        assert_eq!(model.panel_target(), Some(waiting.clone()));
+        // A load that ends afterwards does not put the stored target back over it.
+        model.sync_panel_with_active_conversation();
+        assert_eq!(model.shown_target("conversation-1"), Some(waiting.clone()));
+        // Neither does a refresh of the project.
+        let generation = model.begin_hydration("project-1".into(), None);
+        assert!(model.apply_hydration(generation, snapshot("project-1", "partial", 1)));
+        assert!(model.target_change_deferred);
+        assert_eq!(model.panel_target(), Some(waiting));
+
+        // The choice goes with a deleted conversation.
+        model.apply_deleted("conversation-1");
+        assert!(!model.target_change_deferred);
+        assert!(model.deferred_targets.is_empty());
+    }
+
+    /// `conversation-1` is open in the panel; `conversation-2` is only in a floating window.
+    fn floating_fixture(
+        backend: &Arc<RecordingChatBackend>,
+        second_reply: Option<&str>,
+        cx: &mut TestAppContext,
+    ) -> gpui::Entity<AppModel> {
+        let model_backend: Arc<dyn ChatBackend> = backend.clone();
+        let model = cx.new(|cx| AppModel::new_for_test_with_chat_backend(model_backend, cx));
+        model.update(cx, |model, cx| {
+            let generation = model
+                .chat
+                .update(cx, |chat, _| chat.begin_hydration("project-1".into(), None));
+            model.chat.update(cx, |chat, _| {
+                chat.apply_hydration(generation, settled_snapshot());
+                chat.conversations
+                    .push(conversation("conversation-2", "project-1"));
+                if let Some(status) = second_reply {
+                    chat.messages_by_conversation
+                        .insert("conversation-2".into(), vec![second_message(status, 1)]);
+                }
+            });
+        });
+        model
+    }
+
+    fn second_message(status: &str, sequence: u64) -> ChatMessage {
+        let mut reply = message("reply", sequence);
+        reply.id = "assistant-2".into();
+        reply.conversation_id = "conversation-2".into();
+        reply.execution_id = Some("execution-2".into());
+        reply.generation_id = Some("generation-2".into());
+        reply.status = status.into();
+        reply
+    }
+
+    #[gpui::test]
+    fn the_floating_window_changes_its_own_conversation_and_leaves_the_panel(
+        cx: &mut TestAppContext,
+    ) {
+        let backend = Arc::new(RecordingChatBackend::default());
+        let model = floating_fixture(&backend, None, cx);
+        model.update(cx, |model, cx| {
+            let options = model.choice_options("chat-dock-target:conversation-2", cx);
+            assert!(
+                options
+                    .iter()
+                    .any(|choice| choice.value == "route:api:eligible"
+                        && choice.label == "Route · API · eligible"
+                        && choice.selected)
+            );
+            assert!(
+                options
+                    .iter()
+                    .all(|choice| choice.value != "route:api:blocked"
+                        && choice.value != "route:cli:custom")
+            );
+            // Effort and model belong to a CLI target; this conversation is on an API.
+            assert!(options.iter().all(|choice| {
+                !choice.value.starts_with("effort:") && !choice.value.starts_with("model")
+            }));
+            model.apply_choice("chat-dock-target:conversation-2", "route:cli:claude", cx);
+            assert!(model.chat.read(cx).is_retargeting("conversation-2"));
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            retargets(&backend),
+            [("conversation-2".to_string(), claude(None, None))]
+        );
+        model.update(cx, |model, cx| {
+            {
+                let chat = model.chat.read(cx);
+                // The panel still mirrors the open conversation, which did not move.
+                assert_eq!(chat.selected_transport, ChatTransportKind::Api);
+                assert_eq!(
+                    chat.active_conversation_record().unwrap().transport,
+                    ChatTransportKind::Api
+                );
+                assert_eq!(
+                    chat.conversation_target("conversation-2"),
+                    Some(claude(None, None))
+                );
+                assert!(!chat.is_busy("conversation-2"));
+                assert!(!chat.target_deferred_for("conversation-2"));
+            }
+            let options = model.choice_options("chat-dock-target:conversation-2", cx);
+            assert!(
+                options
+                    .iter()
+                    .any(|choice| choice.value == "route:cli:claude" && choice.selected)
+            );
+            assert!(options.iter().any(|choice| choice.value == "model:"
+                && choice.label == "Model · CLI default"
+                && choice.selected));
+        });
+    }
+
+    #[gpui::test]
+    fn a_floating_target_chosen_during_a_reply_waits_for_that_reply(cx: &mut TestAppContext) {
+        let backend = Arc::new(RecordingChatBackend::default());
+        let model = floating_fixture(&backend, Some("streaming"), cx);
+        model.update(cx, |model, cx| {
+            assert!(model.chat.read(cx).is_streaming("conversation-2"));
+            model.apply_choice("chat-dock-target:conversation-2", "route:cli:claude", cx);
+            {
+                let chat = model.chat.read(cx);
+                assert!(chat.target_deferred_for("conversation-2"));
+                assert!(!chat.is_retargeting("conversation-2"));
+                // The window already shows the choice; the conversation keeps its target.
+                assert_eq!(
+                    chat.shown_target("conversation-2"),
+                    Some(claude(None, None))
+                );
+                assert_eq!(
+                    chat.conversation_target("conversation-2"),
+                    Some(ChatExecutionTargetRequest::Api {
+                        connection_id: "eligible".into()
+                    })
+                );
+                // The open conversation is not replying and has nothing waiting.
+                assert!(!chat.target_change_deferred);
+            }
+            // Going back to the stored route before the reply ends leaves nothing waiting.
+            model.apply_choice("chat-dock-target:conversation-2", "route:api:eligible", cx);
+            assert!(!model.chat.read(cx).target_deferred_for("conversation-2"));
+            model.apply_choice("chat-dock-target:conversation-2", "route:cli:claude", cx);
+            assert!(model.chat.read(cx).target_deferred_for("conversation-2"));
+            // A reply that is still running does not release it.
+            model.flush_deferred_chat_target(cx);
+        });
+        cx.run_until_parked();
+        assert!(retargets(&backend).is_empty());
+
+        model.update(cx, |model, cx| {
+            model.chat.update(cx, |chat, _| {
+                assert!(chat.apply_turn_snapshot(
+                    "project-1",
+                    "generation-2",
+                    "conversation-2",
+                    GetChatTurnSnapshotResponse {
+                        message: second_message("completed", 2),
+                        tool_calls: Vec::new(),
+                    },
+                ));
+            });
+            // Until the change lands, a message is not sent to the old target.
+            model.send_chat_message_to("conversation-2".into(), "next question".into(), cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            retargets(&backend),
+            [("conversation-2".to_string(), claude(None, None))]
+        );
+        assert!(backend.sent.lock().unwrap().is_empty());
+        model.update(cx, |model, cx| {
+            let chat = model.chat.read(cx);
+            assert!(!chat.target_deferred_for("conversation-2"));
+            assert_eq!(
+                chat.conversation_target("conversation-2"),
+                Some(claude(None, None))
+            );
+            assert_eq!(chat.selected_transport, ChatTransportKind::Api);
+        });
+    }
+
+    fn cli_catalog(
+        backend: CliBackend,
+        models: &[&str],
+    ) -> ikore_core::terminals::CliModelCatalogSnapshot {
+        use ikore_core::terminals::{
+            CliModelCatalogEntry, CliModelCatalogSnapshot, CliModelCatalogSource,
+            CliModelCatalogState,
+        };
+        CliModelCatalogSnapshot {
+            project_id: "project-1".into(),
+            backend,
+            adapter_contract_version: 2,
+            state: CliModelCatalogState::Ready,
+            source: CliModelCatalogSource::Cli,
+            cli_version: None,
+            diagnostic: None,
+            refreshed_at: "now".into(),
+            models: models
+                .iter()
+                .map(|id| CliModelCatalogEntry {
+                    provider_id: None,
+                    model_id: Some((*id).into()),
+                    display_name: (*id).into(),
+                    context_window: None,
+                    input_cost_usd_per_million: None,
+                    output_cost_usd_per_million: None,
+                    capabilities: Vec::new(),
+                    profiles: Vec::new(),
+                    raw_metadata: Default::default(),
+                })
+                .collect(),
+        }
+    }
+
+    #[gpui::test]
+    fn choosing_a_model_keeps_the_route_in_use_and_a_new_route_keeps_the_model(
+        cx: &mut TestAppContext,
+    ) {
+        use ikore_core::llm::{ModelIdentity, ModelVendor};
+        let backend = Arc::new(RecordingChatBackend::default());
+        let model_backend: Arc<dyn ChatBackend> = backend.clone();
+        let model = cx.new(|cx| AppModel::new_for_test_with_chat_backend(model_backend, cx));
+        let named = |vendor, name: &str| ModelIdentity {
+            vendor,
+            model: name.into(),
+        };
+        let cli = |backend, model: &str| ChatExecutionTargetRequest::Cli {
+            backend,
+            model: Some(model.into()),
+            model_profile: None,
+        };
+        // The open conversation is on the OpenAI key, whose default model is `gpt-4.1-mini`.
+        model.update(cx, |model, cx| {
+            let generation = model
+                .chat
+                .update(cx, |chat, _| chat.begin_hydration("project-1".into(), None));
+            model.chat.update(cx, |chat, _| {
+                chat.apply_hydration(generation, settled_snapshot());
+            });
+            model.agents.update(cx, |agents, _| {
+                for catalog in [
+                    cli_catalog(CliBackend::Codex, &["gpt-4.1-mini", "gpt-5"]),
+                    cli_catalog(CliBackend::Claude, &["claude-sonnet-4-5"]),
+                    cli_catalog(CliBackend::Opencode, &["anthropic/claude-sonnet-4-5"]),
+                ] {
+                    agents.model_catalogs.insert(catalog.backend, catalog);
+                }
+            });
+            // The key and the Codex CLI both serve this model: the route in use stays.
+            model.select_companion_model(&named(ModelVendor::OpenAi, "gpt-4.1-mini"), cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            retargets(&backend).last().map(|(_, target)| target.clone()),
+            Some(ChatExecutionTargetRequest::Api {
+                connection_id: "eligible".into()
+            })
+        );
+        // Only the Codex CLI serves this one: the host moves the route to it.
+        model.update(cx, |model, cx| {
+            model.select_companion_model(&named(ModelVendor::OpenAi, "gpt-5"), cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            retargets(&backend).last().map(|(_, target)| target.clone()),
+            Some(cli(CliBackend::Codex, "gpt-5"))
+        );
+        // A model no route lists changes nothing.
+        let before = retargets(&backend).len();
+        model.update(cx, |model, cx| {
+            model.select_companion_model(&named(ModelVendor::Google, "gemini-2.5-pro"), cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(retargets(&backend).len(), before);
+
+        model.update(cx, |model, cx| {
+            model.select_companion_model(&named(ModelVendor::Anthropic, "claude-sonnet-4-5"), cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            retargets(&backend).last().map(|(_, target)| target.clone()),
+            Some(cli(CliBackend::Claude, "claude-sonnet-4-5"))
+        );
+        // Another CLI that lists the same model under its own id keeps the model.
+        model.update(cx, |model, cx| {
+            model.apply_choice("chat-composer-route", "cli:opencode", cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            retargets(&backend).last().map(|(_, target)| target.clone()),
+            Some(cli(CliBackend::Opencode, "anthropic/claude-sonnet-4-5"))
+        );
+        // One that does not list it starts from its own default.
+        model.update(cx, |model, cx| {
+            model.apply_choice("chat-composer-route", "cli:codex", cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            retargets(&backend).last().map(|(_, target)| target.clone()),
+            Some(ChatExecutionTargetRequest::Cli {
+                backend: CliBackend::Codex,
+                model: None,
+                model_profile: None,
+            })
+        );
     }
 
     #[gpui::test]
@@ -2104,7 +3320,9 @@ mod tests {
     }
 
     #[gpui::test]
-    fn enter_sends_multiline_draft_once_and_keeps_draft_while_streaming(cx: &mut TestAppContext) {
+    fn enter_sends_multiline_draft_once_and_queues_the_next_while_streaming(
+        cx: &mut TestAppContext,
+    ) {
         use gpui::{Focusable, px, size};
         cx.update(crate::text_input::register_text_input_keybindings);
         let backend = Arc::new(RecordingChatBackend::default());
@@ -2143,12 +3361,18 @@ mod tests {
             *backend.sent.lock().unwrap(),
             vec![("conversation-1".into(), "First line 👋\nSecond line".into())]
         );
+        // The second Enter of the pair neither sent nor queued the message that was leaving.
+        model.read_with(visual, |m, cx| {
+            assert!(m.chat.read(cx).queued("conversation-1").is_empty());
+        });
+        // While the reply streams, Enter does not send: the draft waits in the queue (PD11).
         visual.simulate_input("Next draft");
         visual.simulate_keystrokes("enter");
         visual.run_until_parked();
         assert_eq!(backend.sent.lock().unwrap().len(), 1);
         model.read_with(visual, |m, cx| {
-            assert_eq!(m.chat_draft_input.read(cx).value(), "Next draft")
+            assert_eq!(m.chat_draft_input.read(cx).value(), "");
+            assert_eq!(m.chat.read(cx).queued("conversation-1"), ["Next draft"]);
         });
     }
 

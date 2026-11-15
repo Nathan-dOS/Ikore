@@ -747,6 +747,7 @@ pub(crate) enum SettingsPage {
     Projects,
     Shortcuts,
     Connections,
+    Models,
     Routes,
     Embeddings,
     Voice,
@@ -780,12 +781,13 @@ impl SettingsGroup {
 }
 
 impl SettingsPage {
-    pub(crate) const ALL: [Self; 15] = [
+    pub(crate) const ALL: [Self; 16] = [
         Self::General,
         Self::Usage,
         Self::Projects,
         Self::Shortcuts,
         Self::Connections,
+        Self::Models,
         Self::Routes,
         Self::Embeddings,
         Self::Voice,
@@ -805,6 +807,7 @@ impl SettingsPage {
             Self::Projects => "projects",
             Self::Shortcuts => "shortcuts",
             Self::Connections => "connections",
+            Self::Models => "models",
             Self::Routes => "routes",
             Self::Embeddings => "embeddings",
             Self::Voice => "voice",
@@ -825,6 +828,7 @@ impl SettingsPage {
             Self::Projects => "Projects & data",
             Self::Shortcuts => "Keyboard shortcuts",
             Self::Connections => "Connections",
+            Self::Models => "Models & routes",
             Self::Routes => "Routes",
             Self::Embeddings => "Embeddings & RAG",
             Self::Voice => "Voice dictation",
@@ -847,6 +851,9 @@ impl SettingsPage {
             }
             Self::Shortcuts => "Every keyboard shortcut, grouped by where it works.",
             Self::Connections => "API providers, CLI connections and subscription plan usage.",
+            Self::Models => {
+                "Each model once, by vendor, with every route that serves it: a CLI subscription, an API key or a gateway."
+            }
             Self::Routes => "Ordered fallbacks across connections and the agents bound to them.",
             Self::Embeddings => "Vector search over your notes, served by a local Ollama.",
             Self::Voice => "Speak a note with a held shortcut; a local model transcribes it.",
@@ -870,6 +877,7 @@ impl SettingsPage {
             Self::Projects => Icon::Folder,
             Self::Shortcuts => Icon::Keyboard,
             Self::Connections => Icon::Plug,
+            Self::Models => Icon::Cpu,
             Self::Routes => Icon::Route,
             Self::Embeddings => Icon::Database,
             Self::Voice => Icon::Mic,
@@ -889,6 +897,7 @@ impl SettingsPage {
                 SettingsGroup::General
             }
             Self::Connections
+            | Self::Models
             | Self::Routes
             | Self::Embeddings
             | Self::Voice
@@ -907,6 +916,9 @@ impl SettingsPage {
             Self::Shortcuts => "keyboard hotkeys keybindings keys",
             Self::Connections => {
                 "providers api keys openai anthropic ollama credentials cli codex claude gemini opencode antigravity plan quota usage 5h weekly"
+            }
+            Self::Models => {
+                "model vendor openai anthropic google gpt claude gemini catalog subscription gateway identity"
             }
             Self::Routes => "routing fallback failover binding resilience cooldown",
             Self::Embeddings => "rag vectors ollama semantic search index",

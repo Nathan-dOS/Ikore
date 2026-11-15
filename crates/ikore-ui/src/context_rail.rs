@@ -1,8 +1,9 @@
-//! The context rail: the right-hand column that keeps the state of the run visible while a
-//! workbench view owns the centre. Five short cards — pipeline, what is waiting on the developer,
-//! the flow engine's next actions, runtime health and the active pulsation's token usage — each
-//! collapsing to one icon on the 48px strip. Home does not render it: Home *is* the rail
-//! unfolded.
+//! The context rail, which ADR-042 turned into the work panel: the right-hand column that keeps
+//! the state of the run visible while a workbench view owns the centre. Its General tab holds
+//! five short cards — pipeline, what is waiting on the developer, the flow engine's next actions,
+//! runtime health and the active pulsation's token usage — each collapsing to one icon on the
+//! 48px strip. The Files and Search tabs live in `work_panel`. Home does not render it: Home *is*
+//! the rail unfolded.
 
 use gpui::{
     AnyElement, App, Context, FontWeight, IntoElement, SharedString, Window, div, prelude::*, px,
@@ -19,6 +20,7 @@ use crate::sizing::{
 };
 use crate::theme;
 use crate::widgets::{badge, icon, icon_button, pipeline_stepper, status_dot};
+use crate::work_panel::WorkPanelTab;
 
 /// How much room a card has: the rail's compact column or Home's wide cards.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,9 +31,15 @@ pub(crate) enum Density {
 }
 
 /// `(collapsed, forced)`: the rail is folded when the developer folded it or when the window is
-/// too narrow for the centre column to keep every split above its minimum width.
+/// too narrow for the centre column to keep every split above its minimum width. The projects
+/// sidebar takes its width from the same row, so this rail folds first when both are open.
 pub(crate) fn effective_collapsed(model: &AppModel, window: &Window, cx: &App) -> (bool, bool) {
-    let forced = window.viewport_size().width < CONTEXT_RAIL_AUTO_COLLAPSE_BELOW;
+    let sidebar = if crate::projects_sidebar::sidebar_shown(model, window) {
+        crate::projects_sidebar::PROJECTS_SIDEBAR_WIDTH
+    } else {
+        gpui::px(0.0)
+    };
+    let forced = window.viewport_size().width < CONTEXT_RAIL_AUTO_COLLAPSE_BELOW + sidebar;
     (forced || model.context_rail_collapsed(cx), forced)
 }
 
@@ -53,11 +61,11 @@ pub(crate) fn context_rail(
             Icon::PanelRightClose
         },
         if forced {
-            crate::widgets::Tooltip::new("Widen the window to expand the context rail")
+            crate::widgets::Tooltip::new("Widen the window to expand the work panel")
         } else if collapsed {
-            crate::widgets::Tooltip::new("Expand context rail").with_shortcut("ctrl-b")
+            crate::widgets::Tooltip::new("Expand the work panel").with_shortcut("ctrl-b")
         } else {
-            crate::widgets::Tooltip::new("Collapse context rail").with_shortcut("ctrl-b")
+            crate::widgets::Tooltip::new("Collapse the work panel").with_shortcut("ctrl-b")
         },
         false,
         None,
@@ -68,6 +76,9 @@ pub(crate) fn context_rail(
     let rail = div()
         .id("context-rail")
         .debug_selector(|| "context-rail".into())
+        .when_some(model.work_panel.focus_handle(), |rail, focus| {
+            rail.track_focus(focus)
+        })
         .w(if collapsed {
             CONTEXT_RAIL_COLLAPSED_WIDTH
         } else {
@@ -84,28 +95,11 @@ pub(crate) fn context_rail(
             .py_2()
             .child(toggle)
             .child(crate::widgets::rail_divider())
-            .child(strip(model, cx))
+            .child(strip(model, forced, cx))
             .into_any_element()
     } else {
-        rail.child(
-            div()
-                .flex_shrink_0()
-                .flex()
-                .items_center()
-                .justify_between()
-                .pl_3()
-                .pr_1()
-                .py_1()
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme::text_subtle())
-                        .child("CONTEXT"),
-                )
-                .child(toggle),
-        )
-        .child(
-            div()
+        let body = match model.work_panel.tab {
+            WorkPanelTab::General => div()
                 .id("context-rail-scroll")
                 .flex_1()
                 .min_h_0()
@@ -119,8 +113,24 @@ pub(crate) fn context_rail(
                 .child(waiting_card(model, cx))
                 .child(actions_card(model, cx))
                 .child(health_card(model, cx))
-                .when_some(usage_card(model, cx), |column, card| column.child(card)),
+                .when_some(usage_card(model, cx), |column, card| column.child(card))
+                .into_any_element(),
+            WorkPanelTab::Files => crate::work_panel::files_tab(model, cx),
+            WorkPanelTab::Search => crate::work_panel::search_tab(model, cx),
+        };
+        rail.child(
+            div()
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .justify_between()
+                .pl_2()
+                .pr_1()
+                .py_1()
+                .child(crate::work_panel::tab_strip(model, cx))
+                .child(toggle),
         )
+        .child(body)
         .into_any_element()
     })
 }
@@ -541,8 +551,9 @@ fn usage_card(model: &AppModel, cx: &mut Context<AppModel>) -> Option<AnyElement
     )
 }
 
-/// The folded rail: one icon per card, jumping to the view that owns it.
-fn strip(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
+/// The folded rail: one icon per card, jumping to the view that owns it, and, when the window has
+/// room for the panel, one per tab of the project's files.
+fn strip(model: &AppModel, forced: bool, cx: &mut Context<AppModel>) -> AnyElement {
     let badges: TabBadges = model.sidebar_badges(cx);
     let waiting = badges.engine_pending_decisions;
     let tone = active_status(model, cx).map(|(_, status)| status.tone.color());
@@ -633,5 +644,30 @@ fn strip(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
                     )
                 }),
         )
+        .when(!forced, |strip| {
+            strip
+                .child(crate::widgets::rail_divider())
+                .child(icon_button(
+                    "rail-strip-files",
+                    Icon::Folder,
+                    "Files of the project — open in the panel",
+                    false,
+                    None,
+                    true,
+                    cx,
+                    |model, window, cx| model.open_work_panel_tab(WorkPanelTab::Files, window, cx),
+                ))
+                .child(icon_button(
+                    "rail-strip-search",
+                    Icon::Search,
+                    crate::widgets::Tooltip::new("Search the project")
+                        .with_shortcut("ctrl-shift-f"),
+                    false,
+                    None,
+                    true,
+                    cx,
+                    |model, window, cx| model.open_work_panel_tab(WorkPanelTab::Search, window, cx),
+                ))
+        })
         .into_any_element()
 }

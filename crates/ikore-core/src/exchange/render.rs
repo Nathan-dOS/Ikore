@@ -23,19 +23,9 @@ pub(crate) fn sha256_hex(text: &str) -> String {
 }
 
 /// A backtick fence longer than any backtick run in `content`, and never
-/// shorter than three, so the content cannot close it.
-pub(crate) fn fence_for(content: &str) -> String {
-    let (mut longest, mut run) = (0usize, 0usize);
-    for c in content.chars() {
-        if c == '`' {
-            run += 1;
-            longest = longest.max(run);
-        } else {
-            run = 0;
-        }
-    }
-    "`".repeat(longest.max(2) + 1)
-}
+/// shorter than three, so the content cannot close it. It lives in the
+/// contracts, so the terminal's session handoff (PD10) fences the same way.
+pub(crate) use ikore_contracts::exchange::fence_for;
 
 /// One list entry on a single line: line breaks become spaces, so an entry
 /// can never start a forged `> provenance:` line.

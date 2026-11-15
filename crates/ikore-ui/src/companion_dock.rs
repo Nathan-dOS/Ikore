@@ -1529,6 +1529,26 @@ mod tests {
         visual.simulate_resize(size(px(1440.0), px(900.0)));
         visual.run_until_parked();
         assert!(visual.debug_bounds("dock-composer-dock-c").is_some());
+        // The floating composer shows the target of its conversation between Expand and Send.
+        let dock_composer = visual.debug_bounds("dock-composer-dock-c").unwrap();
+        let dock_target = visual.debug_bounds("dock-target-dock-c").unwrap();
+        assert!(
+            dock_target.left() >= dock_composer.left()
+                && dock_target.right() <= dock_composer.right()
+                && dock_target.bottom() <= dock_composer.bottom(),
+            "{dock_target:?} leaves {dock_composer:?}"
+        );
+        // A message queued from the floating window is counted in it (PD11).
+        model.update(visual, |model, cx| {
+            model
+                .chat
+                .update(cx, |chat, _| chat.enqueue("dock-c", "later".into()));
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let queued = visual.debug_bounds("dock-queued-dock-c").unwrap();
+        let dock_composer = visual.debug_bounds("dock-composer-dock-c").unwrap();
+        assert!(queued.top() >= dock_composer.top() && queued.bottom() <= dock_composer.bottom());
         model.update(visual, |model, cx| {
             model.select_chat_conversation("dock-c".into(), cx);
             model.select_view(AppView::Chat, cx);
@@ -1588,6 +1608,50 @@ mod tests {
         visual.run_until_parked();
         assert_dock_element_absent(&model, visual, "dock-topic-chat:dock-c");
         assert!(visual.debug_bounds("chat-composer").is_some());
+    }
+
+    #[gpui::test]
+    fn a_floating_window_changes_its_target_from_one_menu(cx: &mut TestAppContext) {
+        use ikore_core::chat_service::ChatTransportKind;
+        use ikore_core::terminals::CliBackend;
+        let (model, visual) = cx.add_window_view(|_, cx| {
+            let mut model = dock_fixture(cx);
+            model
+                .companion_dock
+                .windows
+                .retain(|window| window.conversation_id.as_deref() == Some("dock-c"));
+            model
+        });
+        visual.simulate_resize(size(px(1440.0), px(900.0)));
+        visual.run_until_parked();
+        let target = visual.debug_bounds("dock-target-dock-c").unwrap();
+        visual.simulate_click(target.center(), gpui::Modifiers::default());
+        visual.run_until_parked();
+        model.read_with(visual, |model, _| {
+            assert_eq!(
+                model.active_dropdown.as_deref(),
+                Some("select:chat-dock-target:dock-c")
+            );
+        });
+        // The menu opens over the window and stays inside the viewport.
+        let menu = visual.debug_bounds("selection-menu").unwrap();
+        assert!(
+            menu.left() >= px(0.0)
+                && menu.top() >= px(0.0)
+                && menu.right() <= px(1440.0)
+                && menu.bottom() <= px(900.0),
+            "{menu:?}"
+        );
+        let choice = visual.debug_bounds("choice:route:cli:claude").unwrap();
+        visual.simulate_click(choice.center(), gpui::Modifiers::default());
+        visual.run_until_parked();
+        model.read_with(visual, |model, cx| {
+            let chat = model.chat.read(cx);
+            // `dock-c` is the open conversation, so its change goes through the panel.
+            assert_eq!(chat.selected_transport, ChatTransportKind::Cli);
+            assert_eq!(chat.selected_cli_backend, CliBackend::Claude);
+            assert!(model.choice_menu.is_none());
+        });
     }
 
     #[gpui::test]
@@ -2097,6 +2161,7 @@ mod tests {
                                         error_code: None,
                                         error_message: None,
                                         target_label: None,
+                                        model_evidence: None,
                                         created_at: "now".into(),
                                         updated_at: "now".into(),
                                     }],

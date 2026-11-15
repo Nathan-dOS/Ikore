@@ -261,7 +261,7 @@ fn read_message(
     conversation: &str,
     message: &str,
 ) -> Result<Option<ChatMessage>, Error> {
-    Ok(db.query_row("SELECT m.id,m.conversation_id,m.ordinal,m.role,m.content,m.status,m.created_at,m.updated_at FROM chat_messages m JOIN chat_conversations c ON c.id=m.conversation_id WHERE c.project_id=?1 AND c.id=?2 AND m.id=?3",params![project,conversation,message],|r|Ok(ChatMessage{id:r.get(0)?,conversation_id:r.get(1)?,ordinal:r.get(2)?,role:r.get(3)?,content:r.get(4)?,status:r.get(5)?,execution_id:None,generation_id:None,last_sequence:0,input_tokens:None,output_tokens:None,estimated_cost_usd:None,error_code:None,error_message:None,target_label:None,created_at:r.get(6)?,updated_at:r.get(7)?})).optional()?)
+    Ok(db.query_row("SELECT m.id,m.conversation_id,m.ordinal,m.role,m.content,m.status,m.created_at,m.updated_at FROM chat_messages m JOIN chat_conversations c ON c.id=m.conversation_id WHERE c.project_id=?1 AND c.id=?2 AND m.id=?3",params![project,conversation,message],|r|Ok(ChatMessage{id:r.get(0)?,conversation_id:r.get(1)?,ordinal:r.get(2)?,role:r.get(3)?,content:r.get(4)?,status:r.get(5)?,execution_id:None,generation_id:None,last_sequence:0,input_tokens:None,output_tokens:None,estimated_cost_usd:None,error_code:None,error_message:None,target_label:None,model_evidence:None,created_at:r.get(6)?,updated_at:r.get(7)?})).optional()?)
 }
 fn source(
     db: &Connection,

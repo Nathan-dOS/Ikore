@@ -93,6 +93,12 @@ pub(crate) enum Icon {
     Trash,
     /// Copy to the clipboard.
     Copy,
+    /// Pin a Companion conversation above the others.
+    Pin,
+    /// Archive a Companion conversation out of the list.
+    Archive,
+    /// Branch a Companion conversation from a message.
+    GitBranch,
     /// Zoom out; review brief items removed since the previous revision.
     Minus,
     /// Fit the graph to its panel.
@@ -157,7 +163,7 @@ pub(crate) enum Icon {
 
 impl Icon {
     #[cfg(test)]
-    pub(crate) const ALL: [Self; 75] = [
+    pub(crate) const ALL: [Self; 78] = [
         Self::House,
         Self::Plus,
         Self::Hammer,
@@ -204,6 +210,9 @@ impl Icon {
         Self::Square,
         Self::Trash,
         Self::Copy,
+        Self::Pin,
+        Self::Archive,
+        Self::GitBranch,
         Self::Minus,
         Self::Maximize,
         Self::Search,
@@ -294,6 +303,9 @@ impl Icon {
             Self::Maximize => "icons/maximize.svg",
             Self::Minus => "icons/minus.svg",
             Self::Copy => "icons/copy.svg",
+            Self::Pin => "icons/pin.svg",
+            Self::Archive => "icons/archive.svg",
+            Self::GitBranch => "icons/git-branch.svg",
             Self::Trash => "icons/trash-2.svg",
             Self::Square => "icons/square.svg",
             Self::Send => "icons/send.svg",

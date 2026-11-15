@@ -128,6 +128,9 @@ mod resolution;
 #[path = "orchestration/scope_persistence.rs"]
 mod scope_persistence;
 pub use scope_persistence::ScopeRequestView;
+#[path = "orchestration/project_sessions.rs"]
+mod project_sessions;
+pub use project_sessions::{ProjectSessions, SessionEntry, SessionKind, SessionState};
 #[path = "orchestration/serial.rs"]
 mod serial;
 #[path = "orchestration/supervisor.rs"]
@@ -404,7 +407,7 @@ impl From<LlmError> for PersistenceServiceError {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Project {
     pub id: String,
@@ -515,6 +518,11 @@ pub struct UiSessionState {
     pub tabs: Vec<UiTabSnapshot>,
     #[serde(default)]
     pub auto_open_review: bool,
+    /// The work panel's open tab: `general`, `files` or `search`. It is kept in
+    /// `runtime_settings` beside the row, as the Forge's navigation is, so the table needs no
+    /// new column. `None` until a save names one.
+    #[serde(default)]
+    pub work_panel_tab: Option<String>,
     pub updated_at: String,
 }
 
@@ -562,6 +570,9 @@ pub struct SaveUiSessionRequest {
     pub tabs: Vec<UiTabSnapshot>,
     #[serde(default)]
     pub auto_open_review: bool,
+    /// `None` leaves the stored tab as it is.
+    #[serde(default)]
+    pub work_panel_tab: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -2887,6 +2898,7 @@ impl PersistenceService {
                     scroll_top: row.get("scroll_top")?,
                     tabs: Vec::new(),
                     auto_open_review: row.get::<_, i64>("auto_open_review")? != 0,
+                    work_panel_tab: None,
                     updated_at: row.get("updated_at")?,
                 })
             })
@@ -2898,6 +2910,10 @@ impl PersistenceService {
         session.workspace_view_mode =
             Self::normalize_workspace_view_mode(&session.workspace_view_mode)?;
         session.active_view = Self::normalize_active_view(&session.active_view)?;
+        // A tab this build does not know falls back to the default.
+        session.work_panel_tab =
+            Self::read_runtime_setting(&connection, &work_panel_tab_key(&project_id))?
+                .filter(|tab| WORK_PANEL_TABS.contains(&tab.as_str()));
 
         let mut tabs_statement = connection.prepare(
             "SELECT relative_path, draft_content, base_revision, cursor_line, cursor_column, scroll_top
@@ -2940,6 +2956,14 @@ impl PersistenceService {
         let workspace_view_mode =
             Self::normalize_workspace_view_mode(&request.workspace_view_mode)?;
         let active_view = Self::normalize_active_view(&request.active_view)?;
+        let work_panel_tab = match request.work_panel_tab.as_deref().map(str::trim) {
+            Some(tab) if !WORK_PANEL_TABS.contains(&tab) => {
+                return Err(PersistenceServiceError::Validation(
+                    "workPanelTab must be `general`, `files` or `search`.".to_string(),
+                ));
+            }
+            tab => tab.map(str::to_owned),
+        };
         let updated_at = Self::now_iso();
         let connection = self.connection()?;
         let active_tab_path = request.active_tab_path.clone();
@@ -3001,6 +3025,9 @@ impl PersistenceService {
                 updated_at
             ],
         )?;
+        if let Some(tab) = &work_panel_tab {
+            Self::upsert_runtime_setting(&transaction, &work_panel_tab_key(&project_id), tab)?;
+        }
 
         transaction.execute(
             "DELETE FROM ui_session_tabs WHERE project_id = ?1",
@@ -6665,6 +6692,13 @@ fn brownfield_consent_key(project_id: &str) -> String {
     format!("brownfield.onboarding_consent.{project_id}")
 }
 
+/// The ids of the UI's work panel tabs (PI-Desktop analysis, PD7).
+const WORK_PANEL_TABS: [&str; 3] = ["general", "files", "search"];
+
+fn work_panel_tab_key(project_id: &str) -> String {
+    format!("ui.work_panel_tab.{project_id}")
+}
+
 #[cfg(test)]
 #[path = "sqlite_runtime_tests.rs"]
 mod sqlite_runtime_tests;
@@ -7587,6 +7621,7 @@ mod tests {
 
         let invalid_mode_result = service.save_ui_session(SaveUiSessionRequest {
             auto_open_review: false,
+            work_panel_tab: None,
             project_id: project.id,
             workspace_root: "C:/workspace/view-mode".to_string(),
             active_tab_path: None,
@@ -7620,6 +7655,7 @@ mod tests {
 
         let result = service.save_ui_session(SaveUiSessionRequest {
             auto_open_review: false,
+            work_panel_tab: None,
             project_id: project.id,
             workspace_root: "C:/workspace/active-view".to_string(),
             active_tab_path: None,
@@ -7656,6 +7692,7 @@ mod tests {
             service
                 .save_ui_session(SaveUiSessionRequest {
                     auto_open_review: false,
+                    work_panel_tab: None,
                     project_id: project.id.clone(),
                     workspace_root: "C:/workspace/notes-view".to_string(),
                     active_tab_path: None,
@@ -7686,6 +7723,7 @@ mod tests {
         let (_root, service) = prepare_service();
         let response = service.save_ui_session(SaveUiSessionRequest {
             auto_open_review: false,
+            work_panel_tab: None,
             project_id: "missing-project".to_string(),
             workspace_root: "C:/workspace/missing".to_string(),
             active_tab_path: None,
@@ -7707,6 +7745,69 @@ mod tests {
     }
 
     #[test]
+    fn the_work_panel_tab_is_kept_with_the_session_and_unknown_tabs_are_refused() {
+        let (_root, service) = prepare_service();
+        let project = service
+            .ensure_project_for_workspace(EnsureProjectForWorkspaceRequest {
+                workspace_path: "C:/workspace/work-panel".to_string(),
+                preferred_name: Some("Work panel".to_string()),
+            })
+            .expect("project should be created")
+            .project;
+        let request = |tab: Option<&str>| SaveUiSessionRequest {
+            auto_open_review: false,
+            work_panel_tab: tab.map(str::to_owned),
+            project_id: project.id.clone(),
+            workspace_root: project.workspace_path.clone(),
+            active_tab_path: None,
+            workspace_view_mode: "editor".to_string(),
+            active_view: "workspace".to_string(),
+            sidebar_collapsed: false,
+            context_drawer_open: true,
+            active_pulsation_id: None,
+            selected_vault_path: None,
+            active_chat_conversation_id: None,
+            scroll_top: None,
+            tabs: vec![],
+        };
+        let stored_tab = || {
+            service
+                .load_ui_session(LoadUiSessionRequest {
+                    project_id: project.id.clone(),
+                })
+                .expect("session should load")
+                .session
+                .expect("session should exist")
+                .work_panel_tab
+        };
+
+        service
+            .save_ui_session(request(Some("search")))
+            .expect("the tab should save");
+        assert_eq!(stored_tab().as_deref(), Some("search"));
+        // A save that names no tab leaves the stored one.
+        service
+            .save_ui_session(request(None))
+            .expect("the session should save");
+        assert_eq!(stored_tab().as_deref(), Some("search"));
+        assert!(matches!(
+            service.save_ui_session(request(Some("terminal"))),
+            Err(PersistenceServiceError::Validation(_))
+        ));
+        assert_eq!(stored_tab().as_deref(), Some("search"));
+        // A tab this build does not know reads as the default.
+        service
+            .connection()
+            .expect("connection should open")
+            .execute(
+                "UPDATE runtime_settings SET value = 'timeline' WHERE key = ?1",
+                [work_panel_tab_key(&project.id)],
+            )
+            .expect("the setting should update");
+        assert_eq!(stored_tab(), None);
+    }
+
+    #[test]
     fn save_ui_session_overwrites_previous_tabs_and_skips_empty_relative_paths() {
         let (_root, service) = prepare_service();
         let project = service
@@ -7720,6 +7821,7 @@ mod tests {
         service
             .save_ui_session(SaveUiSessionRequest {
                 auto_open_review: false,
+                work_panel_tab: None,
                 project_id: project.id.clone(),
                 workspace_root: project.workspace_path.clone(),
                 active_tab_path: Some("first.md".to_string()),
@@ -7755,6 +7857,7 @@ mod tests {
         service
             .save_ui_session(SaveUiSessionRequest {
                 auto_open_review: false,
+                work_panel_tab: None,
                 project_id: project.id.clone(),
                 workspace_root: project.workspace_path.clone(),
                 active_tab_path: Some("third.md".to_string()),
@@ -7803,6 +7906,7 @@ mod tests {
         service
             .save_ui_session(SaveUiSessionRequest {
                 auto_open_review: false,
+                work_panel_tab: None,
                 project_id: project.id.clone(),
                 workspace_root: project.workspace_path.clone(),
                 active_tab_path: None,
@@ -7830,6 +7934,7 @@ mod tests {
         );
         let rejected = service.save_ui_session(SaveUiSessionRequest {
             auto_open_review: false,
+            work_panel_tab: None,
             project_id: project.id.clone(),
             workspace_root: project.workspace_path.clone(),
             active_tab_path: None,
@@ -7874,6 +7979,7 @@ mod tests {
         service
             .save_ui_session(SaveUiSessionRequest {
                 auto_open_review: false,
+                work_panel_tab: None,
                 project_id: project.id.clone(),
                 workspace_root: project.workspace_path.clone(),
                 active_tab_path: Some("notes/todo.md".to_string()),
@@ -7950,6 +8056,7 @@ mod tests {
         service
             .save_ui_session(SaveUiSessionRequest {
                 auto_open_review: false,
+                work_panel_tab: None,
                 project_id: project.id.clone(),
                 workspace_root: project.workspace_path.clone(),
                 active_tab_path: Some("stable.md".to_string()),
@@ -7974,6 +8081,7 @@ mod tests {
 
         let failed = service.save_ui_session(SaveUiSessionRequest {
             auto_open_review: false,
+            work_panel_tab: None,
             project_id: project.id.clone(),
             workspace_root: project.workspace_path,
             active_tab_path: Some("duplicate.md".to_string()),
@@ -8057,6 +8165,7 @@ mod tests {
             service
                 .save_ui_session(SaveUiSessionRequest {
                     auto_open_review: false,
+                    work_panel_tab: None,
                     project_id: project.id.clone(),
                     workspace_root: project.workspace_path.clone(),
                     active_tab_path: None,

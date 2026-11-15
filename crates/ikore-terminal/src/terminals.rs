@@ -29,11 +29,13 @@ use ikore_contracts::{AgentRole, ResponseFormat, UnitContextScope};
 mod actions;
 mod adapters;
 mod codex_model_provenance;
+mod handoff;
 mod model_catalog;
 pub mod model_identity;
 mod observation_report;
 mod plan_usage;
 mod resume_changes;
+pub use handoff::needs_handoff;
 pub use resume_changes::{MAX_RUN_BLOB_BYTES, ResumePreview};
 
 use actions::{ActionLedger, LedgerEntry};
@@ -5859,15 +5861,14 @@ impl TerminalService {
                     )
                 }
             };
-        if source.backend != Some(backend) || source.model != model {
-            return Err(TerminalError::Validation(
-                "the backend or model changed since the chosen session".into(),
-            ));
-        }
+        // PI-Desktop PD10: a CLI session keeps the backend and model it started
+        // with. After the developer picked others, the resume starts a new
+        // session that opens with a summary of this one.
+        let new_session = handoff::needs_handoff(&source, backend, model.as_deref());
         let (executable, detected_version, capabilities) = self
             .resolve_launch(backend, custom_executable.as_deref())
             .await?;
-        if !capabilities.native_resume {
+        if !new_session && !capabilities.native_resume {
             return Err(TerminalError::Validation(format!(
                 "{} does not offer compatible native resuming in this version",
                 backend.label()
@@ -5875,8 +5876,22 @@ impl TerminalService {
         }
         let workspace = self.repository.project_workspace(&request.project_id)?;
         // ADR-037 M3: the notice goes before the developer's message, so the
-        // sanitization below covers it like the rest of the prompt.
-        let (notice, changes_digest) = self.resume_notice(&source, &workspace).await?;
+        // sanitization below covers it like the rest of the prompt. A new
+        // session reads the workspace afresh, so it hears about the earlier
+        // session instead of what changed since.
+        let (notice, changes_digest) = if new_session {
+            let notice = self.handoff_notice(&source, backend, model.as_deref())?;
+            (Some(notice), None)
+        } else {
+            self.resume_notice(&source, &workspace).await?
+        };
+        let handoff_event = new_session.then(|| {
+            format!(
+                "New session on {}, opened with a summary of the earlier one on {}.",
+                handoff::target_label(Some(backend), model.as_deref()),
+                handoff::target_label(source.backend, source.model.as_deref()),
+            )
+        });
         let prepared_prompt = host.prepare_input(
             "",
             &match notice {
@@ -5898,10 +5913,18 @@ impl TerminalService {
                 schema_file: None,
                 schema: None,
                 custom_args,
-                resume_session_id: Some(native_session_id),
+                resume_session_id: (!new_session).then_some(native_session_id),
             },
         )?;
         let deadline = Instant::now() + DEFAULT_MANUAL_TIMEOUT;
+        // The database links a run only to the native session it resumes
+        // (`validate_resume_parent`); a new session says where it came from in
+        // its run log instead.
+        let (parent_run_id, continuation_reason) = if new_session {
+            (None, None)
+        } else {
+            (Some(source.id), Some("explicit_resume".into()))
+        };
         let run = self
             .repository
             .create_session_run(CreateSessionRunRequest {
@@ -5915,8 +5938,8 @@ impl TerminalService {
                 job_id: None,
                 agent_run_id: None,
                 llm_execution_id: None,
-                parent_run_id: Some(source.id),
-                continuation_reason: Some("explicit_resume".into()),
+                parent_run_id,
+                continuation_reason,
                 observation_trial_id: None,
             })?;
         if let Some(digest) = &changes_digest {
@@ -5935,6 +5958,15 @@ impl TerminalService {
             &run.id,
             &prepared_prompt,
         )?;
+        if let Some(event) = &handoff_event {
+            self.emit(
+                &run,
+                self.repository.next_event_sequence(&run.id)?,
+                TerminalEventKind::System,
+                None,
+                event,
+            )?;
+        }
         let cancellation = CancellationToken::new();
         self.active
             .lock()

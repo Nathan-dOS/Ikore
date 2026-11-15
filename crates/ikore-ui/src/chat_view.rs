@@ -1,8 +1,10 @@
 use gpui::{AnyElement, Context, IntoElement, SharedString, div, prelude::*, px};
 use ikore_core::chat_service::{
-    ChatConversation, ChatMessage, ChatToolArgumentValue, ChatToolCall, ChatTransportKind,
+    ChatConversation, ChatExecutionTargetRequest, ChatMessage, ChatMessageModelEvidence,
+    ChatModelVerification, ChatToolArgumentValue, ChatToolCall, ChatTransportKind,
+    ConversationMark,
 };
-use ikore_core::terminals::CliAvailabilityState;
+use ikore_core::terminals::{CliAvailabilityState, CliBackend};
 #[cfg(test)]
 use ikore_editor::{parse_chat_content, parse_markdown};
 
@@ -20,6 +22,7 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
         conversations,
         active_conversation,
         (messages, hidden_messages),
+        question_span,
         tool_calls,
         selected_connection_id,
         selected_transport,
@@ -27,7 +30,6 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
         selected_cli_model,
         selected_cli_model_profile,
         selected_cli_model_source,
-        selected_cli_availability,
         new_target_available,
         active_model_picker,
         streaming,
@@ -38,6 +40,7 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
         disclosure_required,
         disclosure_accepted,
         pending_delete,
+        (marks, show_archived, conversation_search, queued),
     ) = {
         let chat = model.chat.read(cx);
         (
@@ -49,6 +52,10 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                 let (messages, hidden) = chat.rendered_messages();
                 (messages.to_vec(), hidden)
             },
+            crate::chat_questions::QuestionSpan::of(
+                chat.active_messages(),
+                chat.rendered_messages().1,
+            ),
             chat.active_tool_calls().to_vec(),
             chat.selected_connection_id.clone(),
             chat.selected_transport,
@@ -56,7 +63,6 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
             chat.selected_cli_model.clone(),
             chat.selected_cli_model_profile.clone(),
             chat.selected_cli_model_source,
-            chat.selected_cli_availability().cloned(),
             chat.new_conversation_target_available(),
             model
                 .agents
@@ -72,6 +78,15 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
             chat.disclosure_required(),
             chat.disclosure_accepted(),
             chat.pending_delete_conversation_id.clone(),
+            (
+                chat.marks.clone(),
+                chat.show_archived,
+                chat.conversation_search.clone(),
+                chat.active_conversation
+                    .as_ref()
+                    .map(|id| chat.queued(id).to_vec())
+                    .unwrap_or_default(),
+            ),
         )
     };
 
@@ -117,16 +132,58 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
     let draft = model.chat_draft_input.clone();
     let draft_empty = draft.read(cx).value().trim().is_empty();
     let tool_activity_open = model.chat.read(cx).tool_activity_open;
-    let config_collapsed = model.chat.read(cx).config_collapsed;
+    let target_change_deferred = model.chat.read(cx).target_change_deferred;
     let show_tool_activity = should_show_tool_activity(active_conversation.as_ref())
         && (active_conversation.is_some() || selected_transport == ChatTransportKind::Api);
     let cli_model_label = crate::agents_view::cli_model_label(
         selected_cli_model_source,
         selected_cli_model.as_deref(),
     );
-    let cli_profile_label = selected_cli_model_profile
-        .clone()
-        .unwrap_or_else(|| "CLI default".into());
+    // The question navigator appears once there is a question to go to and somewhere to scroll.
+    let (show_question_rail, active_question) = {
+        let layout = model.chat_question_layout.borrow();
+        (
+            question_span.total() >= 2 && (layout.scrolls() || hidden_messages > 0),
+            layout.active(-model.chat_scroll.offset().y),
+        )
+    };
+    // Children of the messages column that come before its first message.
+    let leading_message_children =
+        usize::from(messages.is_empty()) + usize::from(hidden_messages > 0);
+    let cli_target = selected_transport == ChatTransportKind::Cli;
+    // Rendered once: in the composer of the open conversation, or in the start card without one.
+    let mut composer_target = Some(composer_target_controls(
+        ComposerTarget {
+            model: if cli_target {
+                cli_model_label
+            } else {
+                selected_connection
+                    .map(|connection| {
+                        visible_api_model(active_conversation.as_ref(), &connection.default_model)
+                            .to_owned()
+                    })
+                    .unwrap_or_else(|| "none".into())
+            },
+            effort: cli_target.then(|| ComposerEffort {
+                selected: selected_cli_model_profile.clone(),
+                levels: model.model_profiles(
+                    selected_cli_backend,
+                    selected_cli_model.as_deref(),
+                    cx,
+                ),
+            }),
+            route: if cli_target {
+                format!("{} CLI", selected_cli_backend.label())
+            } else {
+                selected_connection
+                    .map(|connection| format!("API · {}", connection.display_name))
+                    .unwrap_or_else(|| "API · no connection".into())
+            },
+            enabled: !busy && !target_change_pending,
+            deferred: target_change_deferred,
+        },
+        cx,
+    ));
 
     div()
         .relative().overflow_hidden()
@@ -147,155 +204,7 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                 .flex_col()
                 .gap_3()
                 .child(section_header("ACTIVE PROJECT", "Conversations", conversations.len()))
-                .child(action(
-                    "chat-toggle-config",
-                    if config_collapsed { "Show connection config" } else { "Hide connection config" },
-                    true,
-                    cx,
-                    |model, cx| {
-                        model.chat.update(cx, |chat, _| chat.config_collapsed = !chat.config_collapsed);
-                        cx.notify();
-                    },
-                ))
-                .when(config_collapsed, |panel| {
-                    let summary = match selected_transport {
-                        ChatTransportKind::Api => selected_connection
-                            .map(|connection| {
-                                format!("API · {} · {}", connection.display_name, visible_api_model(active_conversation.as_ref(), &connection.default_model))
-                            })
-                            .unwrap_or_else(|| "API · no connection selected".into()),
-                        ChatTransportKind::Cli => {
-                            format!("CLI · {} · {}", selected_cli_backend.label(), cli_model_label)
-                        }
-                    };
-                    panel.child(
-                        div()
-                            .p_2()
-                            .rounded_md()
-                            .bg(theme::surface_raised())
-                            .text_xs()
-                            .text_color(theme::text_muted())
-                            .child(summary),
-                    )
-                })
-                .when(!config_collapsed, |panel| panel.child({
-
-                    let transport_label = match selected_transport {
-                        ChatTransportKind::Api => "API",
-                        ChatTransportKind::Cli => "CLI",
-                    };
-                    div()
-                        .child(crate::select_menu::control("chat-transport","TRANSPORT",transport_label,!busy && !streaming && !target_change_pending,cx))
-
-                }))
-                .when(!config_collapsed, |panel| panel.child({
-                    let mut auth_card = div()
-                        .p_3()
-                        .rounded_md()
-                        .bg(theme::surface_raised())
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(theme::text_muted())
-                                .child(if selected_transport == ChatTransportKind::Api {
-                                    "API CONNECTION"
-                                } else {
-                                    "CLI AUTHENTICATION"
-                                }),
-                        )
-                        .child(
-                            div()
-                                .mt_1()
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .child(
-                                    if selected_transport == ChatTransportKind::Api {
-                                        selected_connection
-                                            .map(|connection| {
-                                                format!(
-                                                    "{} · {}",
-                                                    connection.display_name,
-                                                    visible_api_model(active_conversation.as_ref(), &connection.default_model)
-                                                )
-                                            })
-                                            .unwrap_or_else(|| "None available".into())
-                                    } else {
-                                        selected_cli_availability
-                                            .as_ref()
-                                            .map(|item| {
-                                                format!(
-                                                    "{} · {}",
-                                                    selected_cli_backend.label(),
-                                                    match item.state {
-                                                        CliAvailabilityState::Available => "ready",
-                                                        CliAvailabilityState::AuthRequired => "login required",
-                                                        CliAvailabilityState::UnsupportedVersion => "unsupported version",
-                                                        CliAvailabilityState::CapabilityMissing => "adapter update required",
-                                                        CliAvailabilityState::Missing => "not installed",
-                                                        CliAvailabilityState::ProbeFailed => "probe failed",
-                                                        CliAvailabilityState::Probing => "probing",
-                                                        CliAvailabilityState::Unsupported => "unsupported",
-                                                    }
-                                                )
-                                            })
-                                            .unwrap_or_else(|| "CLI not detected".into())
-                                    },
-                                )
-                                .when(selected_transport == ChatTransportKind::Cli, |row| {
-                                    row.child(crate::widgets::info_tip(
-                                        "chat-cli-login",
-                                        "Uses the CLI's existing login. Ikore does not request or store its API key. Changes apply to the open conversation from its next message and are remembered for this project.",
-                                    ))
-                                }),
-                        );
-
-                    if selected_transport == ChatTransportKind::Api && connections.len() > 1 {
-
-                        let conn_wrapper = div().mt_2().child(crate::select_menu::control(
-                            "chat-cycle-connection", "Connection", selected_connection.map(|c| c.display_name.clone()).unwrap_or_default(), !busy && !streaming && !target_change_pending, cx,
-                        ));
-
-                        auth_card = auth_card.child(conn_wrapper);
-                    } else if selected_transport == ChatTransportKind::Cli {
-
-
-
-                        let profiles = model.model_profiles(
-                            selected_cli_backend,
-                            selected_cli_model.as_deref(),
-                            cx,
-                        );
-
-
-                        let backend_div = div().child(crate::select_menu::control("chat-cli-backend","CLI BACKEND",selected_cli_backend.label(),!busy && !streaming && !target_change_pending,cx));
-
-
-                        let profile_div = div().child(crate::select_menu::control("chat-cli-profile","PROFILE",cli_profile_label,!busy && !streaming && !target_change_pending && selected_cli_model.is_some() && !profiles.is_empty(),cx));
-
-
-                        auth_card = auth_card
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap_2()
-                                    .child(backend_div)
-                                    .child(selection(
-                                        "chat-cli-model",
-                                        "MODEL",
-                                        cli_model_label,
-                                        !busy && !streaming && !target_change_pending,
-                                        cx,
-                                        |model, cx| model.open_companion_model_picker(cx),
-                                    ))
-                                    .child(profile_div),
-                            );
-                    }
-
-                    auth_card
-                }))
+                // A new conversation starts on the target the composer shows.
                 .child(action(
                     "chat-new-conversation",
                     if busy { "Please wait…" } else { "New conversation" },
@@ -316,91 +225,76 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                         ))
                     },
                 )
-                .child(
-                    div()
+                .child(conversation_search_field(model, cx))
+                .child({
+                    let list = div()
                         .id("chat-conversations-scroll")
                         .flex_1()
                         .min_h_0()
                         .overflow_y_scroll()
                         .flex()
                         .flex_col()
-                        .gap_2()
-                        .when(conversations.is_empty() && !loading, |list| {
-                            list.child(empty("No conversations in this project."))
-                        })
-                        .children(conversations.into_iter().map(|conversation| {
-                            let id = conversation.id.clone();
+                        .gap_2();
+                    if let Some(search) = conversation_search {
+                        list.child(conversation_matches(search, active_conversation.as_ref(), cx))
+                    } else {
+                        let row = |conversation: ChatConversation, cx: &mut Context<AppModel>| {
                             let selected = active_conversation
                                 .as_ref()
-                                .is_some_and(|active| active.id == id);
-                            let delete_id = id.clone();
-                            let conversation_selector = format!("chat-conversation:{id}");
-                            let title_selector = format!("chat-title:{id}");
+                                .is_some_and(|active| active.id == conversation.id);
                             let awaiting_confirmation = pending_delete
                                 .as_ref()
-                                .is_some_and(|pending| pending.as_ref() == id);
-                            div()
-                                .id(SharedString::from(conversation_selector.clone()))
-                                .debug_selector(move || conversation_selector.clone())
-                                .p_3()
-                                .rounded_md()
-                                .border_1()
-                                .border_color(if selected {
-                                    theme::accent()
-                                } else {
-                                    theme::border()
-                                })
-                                .bg(if selected {
-                                    theme::accent_soft()
-                                } else {
-                                    theme::surface_raised()
-                                })
-                                .child(div().flex().items_start().gap_1().child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .id(SharedString::from(format!("chat-select:{id}")))
-                                        .cursor_pointer()
-                                        .on_click(cx.listener(move |model, _, _, cx| {
-                                            model.select_chat_conversation(id.clone(), cx)
-                                        }))
-                                        .child(
-                                             div()
-                                                .debug_selector(move || title_selector.clone())
-                                                .font_weight(gpui::FontWeight::SEMIBOLD)
-                                                .min_w_0()
-                                                .child(crate::fading_title::FadingTitle::new(
-                                                    conversation.title,
-                                                    if selected { theme::accent_soft() } else { theme::surface_raised() },
-                                                )),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_xs()
-                                                .text_color(theme::text_muted())
-                                                .child(format!(
-                                                    "{} · {} · {}",
-                                                    match conversation.transport {
-                                                        ChatTransportKind::Api => "API",
-                                                        ChatTransportKind::Cli => "CLI",
-                                                    },
-                                                    conversation.provider_id,
-                                                    conversation.model_id
-                                                )),
-                                        ),
-                                ).child(compact_icon_action(
-                                    SharedString::from(format!("chat-delete:{delete_id}")),
-                                    if awaiting_confirmation { crate::icons::Icon::Check } else { crate::icons::Icon::Trash },
-                                    if awaiting_confirmation { "Confirm deletion" } else { "Delete conversation" },
-                                    if awaiting_confirmation { theme::danger() } else { theme::text_muted() },
-                                    !busy && !streaming,
-                                    cx,
-                                    move |model, cx| {
-                                        model.delete_chat_conversation(delete_id.clone(), cx)
-                                    },
-                                )))
-                        })),
-                ),
+                                .is_some_and(|pending| pending.as_ref() == conversation.id);
+                            let pinned = marks.has(ConversationMark::Pinned, &conversation.id);
+                            let archived = marks.has(ConversationMark::Archived, &conversation.id);
+                            conversation_row(
+                                conversation,
+                                ConversationRowState {
+                                    selected,
+                                    awaiting_confirmation,
+                                    pinned,
+                                    archived,
+                                    deletable: !busy && !streaming,
+                                },
+                                cx,
+                            )
+                        };
+                        // Pinned first, newest pin on top; the archive folds under the rest.
+                        let mut pinned = Vec::new();
+                        let mut archived = Vec::new();
+                        let mut others = Vec::new();
+                        for conversation in conversations {
+                            if marks.has(ConversationMark::Archived, &conversation.id) {
+                                archived.push(conversation);
+                            } else if marks.has(ConversationMark::Pinned, &conversation.id) {
+                                pinned.push(conversation);
+                            } else {
+                                others.push(conversation);
+                            }
+                        }
+                        let pin_order = |conversation: &ChatConversation| {
+                            marks.pinned.iter().position(|id| *id == conversation.id)
+                        };
+                        pinned.sort_by_key(pin_order);
+                        let archived_count = archived.len();
+                        let mut list = list.when(
+                            pinned.is_empty() && others.is_empty() && archived_count == 0 && !loading,
+                            |list| list.child(empty("No conversations in this project.")),
+                        );
+                        for conversation in pinned.into_iter().chain(others) {
+                            list = list.child(row(conversation, cx));
+                        }
+                        if archived_count > 0 {
+                            list = list.child(archived_toggle(archived_count, show_archived, cx));
+                            if show_archived {
+                                for conversation in archived {
+                                    list = list.child(row(conversation, cx));
+                                }
+                            }
+                        }
+                        list
+                    }
+                }),
         )
         .child(
             div()
@@ -419,17 +313,63 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                 ))))
 
                 .when(active_conversation.is_none(), |panel| {
+                    if loading {
+                        return panel.child(
+                            div()
+                                .flex_1()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child("Loading conversations…"),
+                        );
+                    }
+                    // With no conversation open, the same controls choose where the next one starts.
                     panel.child(
                         div()
                             .flex_1()
+                            .w_full()
                             .flex()
-                            .items_center()
+                            .flex_col()
                             .justify_center()
-                            .child(if loading {
-                                "Loading conversations…"
-                            } else {
-                                "Choose a compatible connection and start a conversation."
-                            }),
+                            .child(centred(
+                                chat_column()
+                                    .debug_selector(|| "chat-start".into())
+                                    .p_3()
+                                    .rounded_xl()
+                                    .border_1()
+                                    .border_color(theme::border_strong())
+                                    .bg(theme::surface_raised())
+                                    .shadow_md()
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap_2()
+                                            .text_sm()
+                                            .text_color(theme::text_muted())
+                                            .child("Choose the model, effort and route of the new conversation.")
+                                            .child(crate::widgets::info_tip(
+                                                "chat-start-target",
+                                                TARGET_REMEMBERED_TIP,
+                                            )),
+                                    )
+                                    .child(
+                                        div()
+                                            .mt_2()
+                                            .flex()
+                                            .items_center()
+                                            .justify_between()
+                                            .gap_2()
+                                            .children(composer_target.take())
+                                            .child(action(
+                                                "chat-start-conversation",
+                                                if busy { "Please wait…" } else { "Start conversation" },
+                                                new_target_available && !busy && !target_change_pending,
+                                                cx,
+                                                |model, cx| model.create_chat_conversation(cx),
+                                            )),
+                                    ),
+                            )),
                     )
                 })
                 .when_some(active_conversation.clone(), |panel, conversation| {
@@ -485,12 +425,27 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                         })
                         .child(
                             div()
-                                .id("chat-messages-scroll")
-                                .debug_selector(|| "chat-messages-scroll".into())
                                 .w_full()
                                 .flex_1()
                                 .min_h_0()
+                                .flex()
+                                .when(show_question_rail, |row| {
+                                    row.child(crate::chat_questions::question_rail(
+                                        question_span.total(),
+                                        active_question,
+                                        cx,
+                                    ))
+                                })
+                                .child(
+                            div()
+                                .id("chat-messages-scroll")
+                                .debug_selector(|| "chat-messages-scroll".into())
+                                .flex_1()
+                                .min_w_0()
+                                .h_full()
+                                .min_h_0()
                                 .overflow_y_scroll()
+                                .track_scroll(&model.chat_scroll)
                                 .flex()
                                 .flex_col()
                                 .items_center()
@@ -559,7 +514,23 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                         None
                                     };
                                     render_message_with_canvas(message, canvas_card, cx)
-                                })))),
+                                }))
+                                .on_children_prepainted(crate::chat_questions::measure_questions(
+                                    cx.entity_id(),
+                                    model.chat_question_layout.clone(),
+                                    model.chat_scroll.clone(),
+                                    question_span.clone(),
+                                    leading_message_children,
+                                )))),
+                                )
+                                // The same width on the other side keeps the conversation centred.
+                                .when(show_question_rail, |row| {
+                                    row.child(
+                                        div()
+                                            .w(px(crate::chat_questions::RAIL_WIDTH))
+                                            .flex_shrink_0(),
+                                    )
+                                }),
                         )
                         .when(disclosure_required && !disclosure_accepted, |panel| {
                             panel.child(centred(
@@ -592,6 +563,14 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                 .border_color(theme::border_strong())
                                 .bg(theme::surface_raised())
                                 .shadow_md()
+                                .when(!queued.is_empty(), |composer| {
+                                    composer.child(queued_messages(
+                                        conversation.id.clone(),
+                                        queued,
+                                        streaming || busy,
+                                        cx,
+                                    ))
+                                })
                                 .child(draft)
                                 .child(
                                     div()
@@ -600,12 +579,23 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                         .flex()
                                         .items_center()
                                         .justify_between()
-                                        .child(
-                                            div()
-                                                .text_xs()
-                                                .text_color(theme::text_muted())
-                                                .child("Enter sends · Shift+Enter adds a new line"),
-                                        )
+                                        .gap_2()
+                                        .children(composer_target.take())
+                                        .child(crate::widgets::info_tip(
+                                            "chat-composer-keys",
+                                            COMPOSER_TIP,
+                                        ))
+                                        // Written while the Companion replies, a message waits
+                                        // for its turn instead of being lost.
+                                        .when(streaming && !draft_empty, |actions| {
+                                            actions.child(action(
+                                                "chat-queue-message",
+                                                "Queue",
+                                                true,
+                                                cx,
+                                                |model, cx| model.send_chat_message(cx),
+                                            ))
+                                        })
                                         .child(if streaming {
                                             action(
                                                 "chat-cancel-turn",
@@ -694,16 +684,28 @@ fn render_message_with_canvas(
 ) -> AnyElement {
     let assistant = message.role == "assistant";
     let copy_text = copyable_chat_message_text(&message);
+    // A finished message can start a new conversation with the history up to it.
+    let branch = (!matches!(message.status.as_str(), "pending" | "streaming")).then(|| {
+        let (conversation_id, message_id) = (message.conversation_id.clone(), message.id.clone());
+        compact_icon_action(
+            SharedString::from(format!("chat-branch:{message_id}")),
+            crate::icons::Icon::GitBranch,
+            "Branch from here: a new conversation with the history up to this message",
+            theme::text_muted(),
+            true,
+            cx,
+            move |model, cx| {
+                model.fork_chat_conversation(conversation_id.clone(), message_id.clone(), cx)
+            },
+        )
+    });
     let meta = format!(
-        "{}{} · {}",
+        "{} · {}",
         message.status,
-        message
-            .target_label
-            .as_ref()
-            .map(|target| format!(" · requested: {target}"))
-            .unwrap_or_default(),
         crate::time::format_timestamp(&message.created_at)
     );
+    let model_line = message_model_line(&message)
+        .map(|line| (format!("chat-message-model:{}", message.id), line));
     let body = div()
         .min_w_0()
         .flex()
@@ -793,9 +795,19 @@ fn render_message_with_canvas(
                                         ))
                                     },
                                 ))
-                            }),
+                            })
+                            .children(branch),
                     )
                     .child(body)
+                    .when_some(model_line, |message, (selector, line)| {
+                        message.child(
+                            div()
+                                .debug_selector(move || selector)
+                                .text_xs()
+                                .text_color(theme::text_muted())
+                                .child(line),
+                        )
+                    })
                     .when_some(canvas_card, |message, card| message.child(card)),
             )
             .into_any_element()
@@ -836,9 +848,290 @@ fn render_message_with_canvas(
                                 cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.clone()))
                             },
                         ))
-                    }),
+                    })
+                    .children(branch),
             )
             .into_any_element()
+    }
+}
+
+pub(crate) fn cli_availability_label(state: CliAvailabilityState) -> &'static str {
+    match state {
+        CliAvailabilityState::Available => "ready",
+        CliAvailabilityState::AuthRequired => "login required",
+        CliAvailabilityState::UnsupportedVersion => "unsupported version",
+        CliAvailabilityState::CapabilityMissing => "adapter update required",
+        CliAvailabilityState::Missing => "not installed",
+        CliAvailabilityState::ProbeFailed => "probe failed",
+        CliAvailabilityState::Probing => "probing",
+        CliAvailabilityState::Unsupported => "unsupported",
+    }
+}
+
+/// What the developer should know about a target before choosing one.
+const TARGET_REMEMBERED_TIP: &str = "The choice is remembered for this project. A CLI route uses the CLI's existing login: Ikore does not request or store its API key.";
+
+const COMPOSER_TIP: &str = "Enter sends. Shift+Enter adds a new line. While the Companion replies, Enter queues the message: up to 8 wait and leave in order, one per reply. Model, effort and route apply to this conversation from its next message and are remembered for this project. A CLI route uses the CLI's existing login: Ikore does not request or store its API key.";
+
+/// What the composer shows and lets the developer change for the next message.
+struct ComposerTarget {
+    /// The model in use. Its picker lists every model the Companion can reach, on any route.
+    model: String,
+    /// Effort of a CLI target. An API connection has none.
+    effort: Option<ComposerEffort>,
+    route: String,
+    enabled: bool,
+    /// The choice waits for the running reply to end.
+    deferred: bool,
+}
+
+/// The effort profile in use and the levels the selected model offers.
+struct ComposerEffort {
+    /// `None` leaves the effort to the CLI.
+    selected: Option<String>,
+    levels: Vec<String>,
+}
+
+/// Effort levels shown side by side. A model that offers more opens a menu instead.
+const EFFORT_CHIPS: usize = 5;
+
+/// The effort of the next message as chips, one click each: `Default` and the levels of the
+/// selected model. Chip ids are `chat-composer-profile:{level}`.
+fn composer_effort_control(
+    effort: ComposerEffort,
+    enabled: bool,
+    cx: &mut Context<AppModel>,
+) -> AnyElement {
+    let ComposerEffort {
+        selected,
+        mut levels,
+    } = effort;
+    // A profile the catalog no longer lists is still the one in use: show it as chosen.
+    if let Some(current) = &selected
+        && !levels.is_empty()
+        && !levels.contains(current)
+    {
+        levels.push(current.clone());
+    }
+    if levels.is_empty() || levels.len() > EFFORT_CHIPS {
+        // Nothing to choose, or too many levels for one row: the menu the composer had.
+        return crate::select_menu::compact_control(
+            "chat-composer-profile",
+            "Effort",
+            selected.unwrap_or_else(|| "CLI default".into()),
+            enabled && !levels.is_empty(),
+            cx,
+        );
+    }
+    crate::widgets::segment_track(
+        div()
+            .id("chat-composer-profile")
+            .debug_selector(|| "chat-composer-profile".into())
+            .flex_shrink_0(),
+    )
+    .tooltip(|_, cx| {
+        cx.new(|_| crate::widgets::Tooltip::new("Effort of the next message"))
+            .into()
+    })
+    .children(
+        std::iter::once(None)
+            .chain(levels.into_iter().map(Some))
+            .map(|level| {
+                let chosen = level == selected;
+                let value = level.clone().unwrap_or_default();
+                let key_value = value.clone();
+                let chip_id = SharedString::from(format!("chat-composer-profile:{value}"));
+                let selector = chip_id.clone();
+                crate::widgets::segment(
+                    div()
+                        .id(chip_id)
+                        .debug_selector(move || selector.to_string())
+                        .tab_index(0),
+                    chosen,
+                )
+                .px_2()
+                .py(px(3.0))
+                .text_xs()
+                .when(!enabled, |chip| chip.cursor_default())
+                .when(enabled && !chosen, |chip| {
+                    chip.on_click(cx.listener(move |model, _, _, cx| {
+                        model.apply_choice("chat-composer-profile", &value, cx)
+                    }))
+                    .on_key_down(cx.listener(
+                        move |model, event: &gpui::KeyDownEvent, _, cx| {
+                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                model.apply_choice("chat-composer-profile", &key_value, cx);
+                                cx.stop_propagation();
+                            }
+                        },
+                    ))
+                })
+                .child(level.unwrap_or_else(|| "Default".into()))
+            }),
+    )
+    .into_any_element()
+}
+
+fn composer_target_controls(target: ComposerTarget, cx: &mut Context<AppModel>) -> AnyElement {
+    let enabled = target.enabled;
+    div()
+        .debug_selector(|| "chat-composer-target".into())
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap_2()
+        .child(composer_model_control(target.model, enabled, cx))
+        .when_some(target.effort, |row, effort| {
+            row.child(composer_effort_control(effort, enabled, cx))
+        })
+        .child(crate::select_menu::compact_control(
+            "chat-composer-route",
+            "Route",
+            target.route,
+            enabled,
+            cx,
+        ))
+        .when(target.deferred, |row| {
+            row.child(
+                div()
+                    .debug_selector(|| "chat-composer-target-deferred".into())
+                    .text_xs()
+                    .text_color(theme::text_muted())
+                    .child("Applies to the next message"),
+            )
+        })
+        .into_any_element()
+}
+
+/// Opens the Companion model picker. It matches `select_menu::compact_control`,
+/// whose menus cannot hold the picker's catalog, search and manual entry.
+fn composer_model_control(model: String, enabled: bool, cx: &mut Context<AppModel>) -> AnyElement {
+    crate::widgets::button_frame(
+        div()
+            .id("chat-composer-model")
+            .debug_selector(|| "chat-composer-model".into())
+            .tab_index(0),
+        crate::widgets::ButtonVariant::Secondary,
+        enabled,
+    )
+    .gap_2()
+    .child(div().text_color(theme::text_muted()).child("Model:"))
+    .child(model)
+    .when(enabled, |control| {
+        control
+            .child(crate::widgets::icon(
+                crate::icons::Icon::ChevronDown,
+                px(12.0),
+                theme::text_muted(),
+            ))
+            .on_click(cx.listener(|model, _, _, cx| model.open_companion_model_picker(cx)))
+            .on_key_down(cx.listener(|model, event: &gpui::KeyDownEvent, _, cx| {
+                if matches!(event.keystroke.key.as_str(), "enter" | "space" | "down") {
+                    model.open_companion_model_picker(cx);
+                    cx.stop_propagation();
+                }
+            }))
+    })
+    .into_any_element()
+}
+
+/// `model · effort · route` of a stored conversation, for a composer that
+/// shows the target without changing it.
+pub(crate) fn conversation_target_line(conversation: &ChatConversation) -> String {
+    let mut parts = vec![if conversation.model_id == "default" {
+        "CLI default".to_owned()
+    } else {
+        conversation.model_id.clone()
+    }];
+    if let Some(profile) = &conversation.model_profile {
+        parts.push(profile.clone());
+    }
+    parts.push(match (conversation.transport, conversation.cli_backend) {
+        (ChatTransportKind::Cli, Some(backend)) => format!("{} CLI", backend.label()),
+        (ChatTransportKind::Cli, None) => "CLI".into(),
+        (ChatTransportKind::Api, _) => format!("{} API", conversation.provider_id),
+    });
+    parts.join(" · ")
+}
+
+/// The same line for a target that is chosen but not stored yet.
+pub(crate) fn target_request_line(
+    chat: &crate::chat::ChatModel,
+    target: &ChatExecutionTargetRequest,
+) -> String {
+    match target {
+        ChatExecutionTargetRequest::Cli {
+            backend,
+            model,
+            model_profile,
+        } => {
+            let mut parts = vec![model.clone().unwrap_or_else(|| "CLI default".into())];
+            parts.extend(model_profile.clone());
+            parts.push(format!("{} CLI", backend.label()));
+            parts.join(" · ")
+        }
+        ChatExecutionTargetRequest::Api { connection_id } => chat
+            .connections
+            .iter()
+            .find(|connection| &connection.id == connection_id)
+            .map(|connection| {
+                format!(
+                    "{} · {} API",
+                    connection.default_model, connection.provider_id
+                )
+            })
+            .unwrap_or_else(|| "API".into()),
+    }
+}
+
+/// One line under an assistant answer: the model that served it, the effort
+/// profile, the route, and how far the CLI output confirmed the model.
+///
+/// A turn that never reached a model call keeps the label frozen at send time.
+pub(crate) fn message_model_line(message: &ChatMessage) -> Option<String> {
+    let Some(evidence) = &message.model_evidence else {
+        return message
+            .target_label
+            .as_ref()
+            .map(|target| format!("requested: {target}"));
+    };
+    let mut parts = vec![match &evidence.observed_model {
+        Some(observed) => observed.clone(),
+        None => format!("requested {}", evidence.requested_model),
+    }];
+    if let Some(profile) = &evidence.model_profile {
+        parts.push(profile.clone());
+    }
+    parts.push(match evidence.transport {
+        ChatTransportKind::Cli => format!(
+            "{} CLI",
+            CliBackend::parse(&evidence.provider_id)
+                .map_or(evidence.provider_id.as_str(), |backend| backend.label())
+        ),
+        ChatTransportKind::Api => format!("{} API", evidence.provider_id),
+    });
+    let settled = !matches!(message.status.as_str(), "pending" | "streaming");
+    if settled && evidence.transport == ChatTransportKind::Cli {
+        parts.push(cli_model_confirmation(evidence));
+    }
+    Some(parts.join(" · "))
+}
+
+fn cli_model_confirmation(evidence: &ChatMessageModelEvidence) -> String {
+    match (evidence.verification, &evidence.observed_model) {
+        (ChatModelVerification::Verified, _) => "verified".into(),
+        (ChatModelVerification::FamilyVerified, _) => {
+            format!("family match for {}", evidence.requested_model)
+        }
+        // No specific model was requested, so the CLI picked its own default.
+        (ChatModelVerification::Unverified, Some(_)) if evidence.requested_model == "default" => {
+            "chosen by the CLI".into()
+        }
+        // A model was reported, but not by every completed call of the turn.
+        (ChatModelVerification::Unverified, Some(_)) => "partly confirmed".into(),
+        (ChatModelVerification::Unverified, None) => "model not confirmed".into(),
     }
 }
 
@@ -958,6 +1251,397 @@ fn tool_label(name: &str) -> String {
     }
 }
 
+/// What a conversation row shows besides the conversation itself.
+struct ConversationRowState {
+    selected: bool,
+    awaiting_confirmation: bool,
+    pinned: bool,
+    archived: bool,
+    deletable: bool,
+}
+
+fn conversation_row(
+    conversation: ChatConversation,
+    state: ConversationRowState,
+    cx: &mut Context<AppModel>,
+) -> AnyElement {
+    let ConversationRowState {
+        selected,
+        awaiting_confirmation,
+        pinned,
+        archived,
+        deletable,
+    } = state;
+    let id = conversation.id.clone();
+    let (pin_id, archive_id, delete_id) = (id.clone(), id.clone(), id.clone());
+    let conversation_selector = format!("chat-conversation:{id}");
+    let title_selector = format!("chat-title:{id}");
+    let surface = if selected {
+        theme::accent_soft()
+    } else {
+        theme::surface_raised()
+    };
+    div()
+        .id(SharedString::from(conversation_selector.clone()))
+        .debug_selector(move || conversation_selector.clone())
+        .p_3()
+        .rounded_md()
+        .border_1()
+        .border_color(if selected {
+            theme::accent()
+        } else {
+            theme::border()
+        })
+        .bg(surface)
+        .when(archived, |row| row.opacity(0.75))
+        .child(
+            div()
+                .flex()
+                .items_start()
+                .gap_1()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .id(SharedString::from(format!("chat-select:{id}")))
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |model, _, _, cx| {
+                            model.select_chat_conversation(id.clone(), cx)
+                        }))
+                        .child(
+                            div()
+                                .debug_selector(move || title_selector.clone())
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .min_w_0()
+                                .child(crate::fading_title::FadingTitle::new(
+                                    conversation.title,
+                                    surface,
+                                )),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme::text_muted())
+                                .child(format!(
+                                    "{} · {} · {}",
+                                    match conversation.transport {
+                                        ChatTransportKind::Api => "API",
+                                        ChatTransportKind::Cli => "CLI",
+                                    },
+                                    conversation.provider_id,
+                                    conversation.model_id
+                                )),
+                        ),
+                )
+                .child(compact_icon_action(
+                    SharedString::from(format!("chat-pin:{pin_id}")),
+                    crate::icons::Icon::Pin,
+                    if pinned {
+                        "Unpin conversation"
+                    } else {
+                        "Pin conversation to the top"
+                    },
+                    if pinned {
+                        theme::accent()
+                    } else {
+                        theme::text_muted()
+                    },
+                    true,
+                    cx,
+                    move |model, cx| {
+                        model.mark_chat_conversation(
+                            pin_id.clone(),
+                            ConversationMark::Pinned,
+                            !pinned,
+                            cx,
+                        )
+                    },
+                ))
+                .child(compact_icon_action(
+                    SharedString::from(format!("chat-archive:{archive_id}")),
+                    crate::icons::Icon::Archive,
+                    if archived {
+                        "Restore conversation from the archive"
+                    } else {
+                        "Archive conversation"
+                    },
+                    theme::text_muted(),
+                    true,
+                    cx,
+                    move |model, cx| {
+                        model.mark_chat_conversation(
+                            archive_id.clone(),
+                            ConversationMark::Archived,
+                            !archived,
+                            cx,
+                        )
+                    },
+                ))
+                .child(compact_icon_action(
+                    SharedString::from(format!("chat-delete:{delete_id}")),
+                    if awaiting_confirmation {
+                        crate::icons::Icon::Check
+                    } else {
+                        crate::icons::Icon::Trash
+                    },
+                    if awaiting_confirmation {
+                        "Confirm deletion"
+                    } else {
+                        "Delete conversation"
+                    },
+                    if awaiting_confirmation {
+                        theme::danger()
+                    } else {
+                        theme::text_muted()
+                    },
+                    deletable,
+                    cx,
+                    move |model, cx| model.delete_chat_conversation(delete_id.clone(), cx),
+                )),
+        )
+        .into_any_element()
+}
+
+/// The fold of the archived conversations, under the others.
+fn archived_toggle(count: usize, open: bool, cx: &mut Context<AppModel>) -> AnyElement {
+    div()
+        .id("chat-archived-toggle")
+        .debug_selector(|| "chat-archived-toggle".into())
+        .tab_index(0)
+        .px_2()
+        .py_1()
+        .rounded_md()
+        .flex()
+        .items_center()
+        .gap_2()
+        .cursor_pointer()
+        .text_xs()
+        .text_color(theme::text_muted())
+        .hover(|style| style.bg(theme::surface_hover()))
+        .focus_visible(|style| style.bg(theme::accent_soft()))
+        .on_click(cx.listener(|model, _, _, cx| model.toggle_archived_chats(cx)))
+        .child(crate::widgets::icon(
+            if open {
+                crate::icons::Icon::ChevronDown
+            } else {
+                crate::icons::Icon::ChevronRight
+            },
+            px(12.0),
+            theme::text_muted(),
+        ))
+        .child(format!("Archived ({count})"))
+        .into_any_element()
+}
+
+/// The search over the project's conversations. Enter searches; Escape clears.
+fn conversation_search_field(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
+    div()
+        .id("chat-search-field")
+        .debug_selector(|| "chat-search-field".into())
+        .w_full()
+        .min_w_0()
+        .on_key_down(cx.listener(|model, event: &gpui::KeyDownEvent, _, cx| {
+            if event.keystroke.modifiers.modified() {
+                return;
+            }
+            match event.keystroke.key.as_str() {
+                "enter" => model.search_chat_conversations(cx),
+                "escape" => model.clear_chat_search(cx),
+                _ => return,
+            }
+            cx.stop_propagation();
+        }))
+        .child(model.chat_search_input.clone())
+        .into_any_element()
+}
+
+/// The conversations a search found, each with the message that matched.
+fn conversation_matches(
+    search: crate::chat::ConversationSearch,
+    active: Option<&ChatConversation>,
+    cx: &mut Context<AppModel>,
+) -> AnyElement {
+    let summary = if search.searching {
+        "Searching…".to_string()
+    } else if search.matches.is_empty() {
+        format!("No conversation holds “{}”.", search.query)
+    } else {
+        format!(
+            "{} conversation(s) hold “{}”.",
+            search.matches.len(),
+            search.query
+        )
+    };
+    div()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .child(
+                    div()
+                        .min_w_0()
+                        .text_xs()
+                        .text_color(theme::text_muted())
+                        .child(summary),
+                )
+                .child(compact_icon_action(
+                    SharedString::from("chat-search-clear"),
+                    crate::icons::Icon::X,
+                    "Clear the search",
+                    theme::text_muted(),
+                    true,
+                    cx,
+                    |model, cx| model.clear_chat_search(cx),
+                )),
+        )
+        .children(search.matches.into_iter().map(|found| {
+            let id = found.conversation_id.clone();
+            let selector = format!("chat-search-result:{id}");
+            let selected = active.is_some_and(|active| active.id == id);
+            div()
+                .id(SharedString::from(selector.clone()))
+                .debug_selector(move || selector.clone())
+                .tab_index(0)
+                .p_2()
+                .rounded_md()
+                .border_1()
+                .border_color(if selected {
+                    theme::accent()
+                } else {
+                    theme::border()
+                })
+                .bg(if selected {
+                    theme::accent_soft()
+                } else {
+                    theme::surface_raised()
+                })
+                .cursor_pointer()
+                .hover(|style| style.bg(theme::surface_hover()))
+                .focus_visible(|style| style.bg(theme::accent_soft()))
+                .on_click(cx.listener(move |model, _, _, cx| {
+                    model.select_chat_conversation(id.clone(), cx)
+                }))
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .child(found.title),
+                )
+                .when_some(found.excerpt, |row, excerpt| {
+                    row.child(
+                        div()
+                            .mt_1()
+                            .text_xs()
+                            .text_color(theme::text_muted())
+                            .child(excerpt),
+                    )
+                })
+        }))
+        .into_any_element()
+}
+
+/// The messages that wait for the conversation's next turn, in the order they will leave.
+fn queued_messages(
+    conversation_id: String,
+    queued: Vec<String>,
+    replying: bool,
+    cx: &mut Context<AppModel>,
+) -> AnyElement {
+    let count = queued.len();
+    div()
+        .debug_selector(|| "chat-queue".into())
+        .mb_2()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme::text_muted())
+                .child(if replying {
+                    format!("{count} queued · they leave in order, one per reply")
+                } else {
+                    format!("{count} queued · waiting until you send the first one")
+                }),
+        )
+        .children(queued.into_iter().enumerate().map(|(index, text)| {
+            let (up_id, send_id, remove_id) = (
+                conversation_id.clone(),
+                conversation_id.clone(),
+                conversation_id.clone(),
+            );
+            div()
+                .debug_selector(move || format!("chat-queued:{index}"))
+                .px_2()
+                .rounded_md()
+                .bg(theme::canvas())
+                .flex()
+                .items_center()
+                .gap_1()
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .text_xs()
+                        .text_color(theme::text_subtle())
+                        .child(format!("{}.", index + 1)),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .text_sm()
+                        .child(text.replace('\n', " ")),
+                )
+                .when(index > 0, |row| {
+                    row.child(compact_icon_action(
+                        SharedString::from(format!("chat-queued-up:{index}")),
+                        crate::icons::Icon::ChevronUp,
+                        "Send earlier",
+                        theme::text_muted(),
+                        true,
+                        cx,
+                        move |model, cx| model.move_queued_chat_message(up_id.clone(), index, cx),
+                    ))
+                })
+                // A free conversation sends at once; one that replies sends in order.
+                .when(!replying, |row| {
+                    row.child(compact_icon_action(
+                        SharedString::from(format!("chat-queued-send:{index}")),
+                        crate::icons::Icon::Send,
+                        "Send now",
+                        theme::accent(),
+                        true,
+                        cx,
+                        move |model, cx| {
+                            model.send_queued_chat_message_now(send_id.clone(), index, cx)
+                        },
+                    ))
+                })
+                .child(compact_icon_action(
+                    SharedString::from(format!("chat-queued-remove:{index}")),
+                    crate::icons::Icon::X,
+                    "Remove from the queue",
+                    theme::text_muted(),
+                    true,
+                    cx,
+                    move |model, cx| model.remove_queued_chat_message(remove_id.clone(), index, cx),
+                ))
+        }))
+        .into_any_element()
+}
+
 fn section_header(kicker: &'static str, title: &'static str, count: usize) -> impl IntoElement {
     crate::widgets::section_header(kicker, title, count)
 }
@@ -965,7 +1649,7 @@ fn section_header(kicker: &'static str, title: &'static str, count: usize) -> im
 fn compact_icon_action(
     id: SharedString,
     glyph: crate::icons::Icon,
-    tooltip: &'static str,
+    tooltip: impl Into<SharedString>,
     ink: gpui::Rgba,
     enabled: bool,
     cx: &mut Context<AppModel>,
@@ -1004,9 +1688,9 @@ fn action(
 ) -> AnyElement {
     use crate::widgets::ButtonVariant;
     let id: SharedString = id.into();
-    // Sending leads; cancelling is danger; starting a conversation is tinted;
-    // panel toggles and copy stay secondary.
-    let variant = if id.as_ref() == "chat-send-message" {
+    // Sending leads, and so does starting the first conversation; cancelling is danger; a new
+    // conversation beside an open one is tinted; panel toggles and copy stay secondary.
+    let variant = if matches!(id.as_ref(), "chat-send-message" | "chat-start-conversation") {
         ButtonVariant::Primary
     } else if id.as_ref() == "chat-cancel-turn" {
         ButtonVariant::Danger
@@ -1016,46 +1700,28 @@ fn action(
         ButtonVariant::Secondary
     };
     let glyph = crate::widgets::action_icon(&id);
-    crate::widgets::button_frame(div().id(id).mt_2(), variant, enabled)
-        .when(enabled, |button| {
-            button.on_click(cx.listener(move |model, _, _, cx| handler(model, cx)))
-        })
-        .gap_2()
-        .when_some(glyph, |button, glyph| {
-            button.child(crate::widgets::icon(
-                glyph,
-                px(14.0),
-                crate::widgets::button_ink(variant, enabled),
-            ))
-        })
-        .child(label)
-        .into_any_element()
-}
-
-fn selection(
-    id: impl Into<gpui::ElementId>,
-    label: &'static str,
-    value: impl Into<SharedString>,
-    enabled: bool,
-    cx: &mut Context<AppModel>,
-    handler: impl Fn(&mut AppModel, &mut Context<AppModel>) + 'static,
-) -> impl IntoElement {
-    div()
-        .id(id)
-        .mt_2()
-        .p_2()
-        .rounded_md()
-        .border_1()
-        .border_color(theme::border())
-        .bg(theme::surface_raised())
-        .when(enabled, |button| {
-            button
-                .cursor_pointer()
-                .hover(|style| style.border_color(theme::accent()))
-                .on_click(cx.listener(move |model, _, _, cx| handler(model, cx)))
-        })
-        .child(div().text_xs().text_color(theme::text_muted()).child(label))
-        .child(div().text_sm().child(value.into()))
+    let selector = id.clone();
+    crate::widgets::button_frame(
+        div()
+            .id(id)
+            .debug_selector(move || selector.to_string())
+            .mt_2(),
+        variant,
+        enabled,
+    )
+    .when(enabled, |button| {
+        button.on_click(cx.listener(move |model, _, _, cx| handler(model, cx)))
+    })
+    .gap_2()
+    .when_some(glyph, |button, glyph| {
+        button.child(crate::widgets::icon(
+            glyph,
+            px(14.0),
+            crate::widgets::button_ink(variant, enabled),
+        ))
+    })
+    .child(label)
+    .into_any_element()
 }
 
 fn warning(message: &'static str) -> impl IntoElement {
@@ -1098,9 +1764,149 @@ mod tests {
             error_code: None,
             error_message: error.map(str::to_owned),
             target_label: None,
+            model_evidence: None,
             created_at: "now".into(),
             updated_at: "now".into(),
         }
+    }
+
+    fn cli_evidence(
+        backend: &str,
+        requested: &str,
+        profile: Option<&str>,
+        observed: Option<&str>,
+        verification: ChatModelVerification,
+    ) -> ChatMessageModelEvidence {
+        ChatMessageModelEvidence {
+            transport: ChatTransportKind::Cli,
+            provider_id: backend.into(),
+            requested_model: requested.into(),
+            model_profile: profile.map(str::to_owned),
+            observed_model: observed.map(str::to_owned),
+            verification,
+        }
+    }
+
+    fn model_line(status: &str, evidence: ChatMessageModelEvidence) -> String {
+        let mut message = message("assistant", "Answer", None);
+        message.status = status.into();
+        message.model_evidence = Some(evidence);
+        message_model_line(&message).unwrap()
+    }
+
+    #[test]
+    fn model_line_names_the_observed_model_the_route_and_the_evidence() {
+        assert_eq!(
+            model_line(
+                "completed",
+                cli_evidence(
+                    "codex",
+                    "gpt-5.6-luna",
+                    Some("low"),
+                    Some("gpt-5.6-luna"),
+                    ChatModelVerification::Verified,
+                ),
+            ),
+            "gpt-5.6-luna · low · Codex CLI · verified"
+        );
+        assert_eq!(
+            model_line(
+                "completed",
+                cli_evidence(
+                    "claude",
+                    "sonnet",
+                    Some("high"),
+                    Some("claude-sonnet-5-5"),
+                    ChatModelVerification::FamilyVerified,
+                ),
+            ),
+            "claude-sonnet-5-5 · high · Claude CLI · family match for sonnet"
+        );
+        assert_eq!(
+            model_line(
+                "completed",
+                cli_evidence(
+                    "gemini",
+                    "default",
+                    None,
+                    Some("gemini-3-pro"),
+                    ChatModelVerification::Unverified,
+                ),
+            ),
+            "gemini-3-pro · Gemini CLI · chosen by the CLI"
+        );
+        assert_eq!(
+            model_line(
+                "failed",
+                cli_evidence(
+                    "opencode",
+                    "glm-5",
+                    None,
+                    None,
+                    ChatModelVerification::Unverified
+                ),
+            ),
+            "requested glm-5 · OpenCode CLI · model not confirmed"
+        );
+    }
+
+    #[test]
+    fn model_line_claims_no_evidence_for_running_or_api_turns() {
+        assert_eq!(
+            model_line(
+                "streaming",
+                cli_evidence(
+                    "claude",
+                    "sonnet",
+                    Some("high"),
+                    None,
+                    ChatModelVerification::Unverified,
+                ),
+            ),
+            "requested sonnet · high · Claude CLI"
+        );
+        assert_eq!(
+            model_line(
+                "completed",
+                ChatMessageModelEvidence {
+                    transport: ChatTransportKind::Api,
+                    provider_id: "openai".into(),
+                    requested_model: "gpt-4.1-mini".into(),
+                    model_profile: None,
+                    observed_model: None,
+                    verification: ChatModelVerification::Unverified,
+                },
+            ),
+            "requested gpt-4.1-mini · openai API"
+        );
+    }
+
+    #[test]
+    fn model_line_does_not_overstate_a_partly_confirmed_turn() {
+        assert_eq!(
+            model_line(
+                "completed",
+                cli_evidence(
+                    "claude",
+                    "claude-sonnet-5-5",
+                    None,
+                    Some("claude-sonnet-5-5"),
+                    ChatModelVerification::Unverified,
+                ),
+            ),
+            "claude-sonnet-5-5 · Claude CLI · partly confirmed"
+        );
+    }
+
+    #[test]
+    fn model_line_falls_back_to_the_frozen_target_without_model_calls() {
+        let mut pending = message("assistant", "", None);
+        assert_eq!(message_model_line(&pending), None);
+        pending.target_label = Some("claude / sonnet / high".into());
+        assert_eq!(
+            message_model_line(&pending).as_deref(),
+            Some("requested: claude / sonnet / high")
+        );
     }
 
     #[test]
@@ -1155,6 +1961,10 @@ mod tests {
         };
         assert!(!should_show_tool_activity(Some(&conversation)));
         assert!(should_show_tool_activity(None));
+        assert_eq!(
+            conversation_target_line(&conversation),
+            "sonnet · high · Claude CLI"
+        );
         assert_eq!(
             visible_api_model(Some(&conversation), "configured"),
             "configured"

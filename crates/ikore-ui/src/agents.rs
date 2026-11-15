@@ -719,6 +719,8 @@ pub(crate) struct AgentsModel {
     pub(crate) active_model_picker: Option<CliModelPickerState>,
     pub(crate) catalog_loading_backend: Option<CliBackend>,
     pub(crate) catalog_error: Option<String>,
+    /// Every CLI catalog is being read again, one after another, for the model-first lists.
+    pub(crate) catalogs_refreshing: bool,
     pub(crate) viewer_enabled: bool,
     pub(crate) selected_api_target: Option<AgentIdentifier>,
     pub(crate) terminal_expanded: bool,
@@ -759,6 +761,7 @@ impl Default for AgentsModel {
             active_model_picker: None,
             catalog_loading_backend: None,
             catalog_error: None,
+            catalogs_refreshing: false,
             viewer_enabled: true,
             selected_api_target: None,
             terminal_expanded: false,
@@ -1382,6 +1385,51 @@ mod tests {
             session_fingerprint: None,
             observation_trial_id: None,
         }
+    }
+
+    #[test]
+    fn a_model_change_continues_the_session_in_a_new_one() {
+        use crate::agents_view::session_continuation;
+
+        let mut finished = run(TerminalRunStatus::Completed);
+        finished.model = Some("gpt-5".into());
+        finished.native_session_id = Some("session-1".into());
+        finished.session_fingerprint = Some("fingerprint-1".into());
+        // Same backend and model: a native resume, which the CLI must offer.
+        assert_eq!(
+            session_continuation(&finished, CliBackend::Codex, Some("gpt-5"), true, true),
+            (true, false)
+        );
+        assert_eq!(
+            session_continuation(&finished, CliBackend::Codex, Some("gpt-5"), false, true),
+            (false, false)
+        );
+        // Another model or backend: a new session, which needs the CLI ready.
+        assert_eq!(
+            session_continuation(
+                &finished,
+                CliBackend::Codex,
+                Some("gpt-5-mini"),
+                false,
+                true
+            ),
+            (true, true)
+        );
+        assert_eq!(
+            session_continuation(&finished, CliBackend::Claude, Some("gpt-5"), true, false),
+            (false, true)
+        );
+        // A run still going, or one that never opened a session, cannot go on.
+        let running = TerminalRun {
+            status: TerminalRunStatus::Running,
+            ..finished.clone()
+        };
+        assert!(!session_continuation(&running, CliBackend::Claude, None, true, true).0);
+        let sessionless = TerminalRun {
+            native_session_id: None,
+            ..finished
+        };
+        assert!(!session_continuation(&sessionless, CliBackend::Claude, None, true, true).0);
     }
 
     fn event_envelope(status: TerminalRunStatus, sequence: u64) -> TerminalEventEnvelope {

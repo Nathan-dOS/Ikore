@@ -3,22 +3,22 @@ use crate::{
     AppModel,
     agents::TerminalEventFilter,
     app_model::{RuntimeConfigUpdateExt, runtime_config_update},
+    chat::{ChatModel, ChatTargetEdit},
     select_menu::Choice,
 };
 use gpui::{App, Context};
 use ikore_core::{
+    chat_service::ChatExecutionTargetRequest,
     llm::{AgentRole, RoutingMode},
     terminals::{
-        AgentExecutionMode, CliBackend, CliModelSelectionSource, SessionPolicy, ThinkingLevel,
+        AgentExecutionMode, CliAvailabilityState, CliBackend, CliModelSelectionSource,
+        SessionPolicy, ThinkingLevel,
     },
 };
 
 pub(crate) fn segments(id: &str) -> Option<Vec<(&'static str, &'static str)>> {
     if id.starts_with("agent-mode:") || id.starts_with("free-form-mode:") {
         return Some(vec![("api", "API Key Mode"), ("cli", "CLI Mode")]);
-    }
-    if id == "chat-transport" {
-        return Some(vec![("api", "API"), ("cli", "CLI")]);
     }
     match id {
         "settings-context-strategy" => Some(vec![("graph", "Graph"), ("rag", "Graph + RAG")]),
@@ -48,6 +48,62 @@ fn modes(current: AgentExecutionMode) -> Vec<Choice> {
         Choice::new("api", "API", current == AgentExecutionMode::ApiDirect),
         Choice::new("cli", "CLI", current == AgentExecutionMode::CliProcess),
     ]
+}
+
+/// Models the floating window lists besides the CLI default. The whole
+/// catalog stays in the picker of the full chat.
+const DOCK_MODEL_CHOICES: usize = 12;
+
+/// Transport and endpoint in one list: the eligible API connections, then
+/// the CLI backends. The Companion refuses Custom.
+fn route_choices(
+    chat: &ChatModel,
+    current: Option<&ChatExecutionTargetRequest>,
+    value_prefix: &str,
+    label_prefix: &str,
+) -> Vec<Choice> {
+    chat.eligible_connections()
+        .map(|connection| {
+            Choice::new(
+                format!("{value_prefix}api:{}", connection.id),
+                format!("{label_prefix}API · {}", connection.display_name),
+                matches!(
+                    current,
+                    Some(ChatExecutionTargetRequest::Api { connection_id })
+                        if *connection_id == connection.id
+                ),
+            )
+        })
+        .chain(
+            BACKENDS
+                .iter()
+                .filter(|backend| **backend != CliBackend::Custom)
+                .map(|backend| {
+                    let state = chat
+                        .cli_availability
+                        .iter()
+                        .find(|item| item.backend == *backend)
+                        .map(|item| item.state)
+                        .filter(|state| *state != CliAvailabilityState::Available);
+                    Choice::new(
+                        format!("{value_prefix}cli:{}", backend.as_str()),
+                        match state {
+                            Some(state) => format!(
+                                "{label_prefix}{} CLI ({})",
+                                backend.label(),
+                                crate::chat_view::cli_availability_label(state)
+                            ),
+                            None => format!("{label_prefix}{} CLI", backend.label()),
+                        },
+                        matches!(
+                            current,
+                            Some(ChatExecutionTargetRequest::Cli { backend: selected, .. })
+                                if selected == backend
+                        ),
+                    )
+                }),
+        )
+        .collect()
 }
 
 pub(crate) fn custom_mode_reason(
@@ -146,6 +202,120 @@ impl AppModel {
             .clone();
         Some((model, profiles))
     }
+    /// Opens the menu that changes the effort, route and model of one
+    /// conversation. A catalog nothing has loaded yet starts loading, so the
+    /// next opening lists its models and effort levels.
+    pub(crate) fn open_conversation_target_menu(
+        &mut self,
+        conversation_id: &str,
+        bounds: gpui::Bounds<gpui::Pixels>,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        let shown = self.chat.read(cx).shown_target(conversation_id);
+        if let Some(ChatExecutionTargetRequest::Cli { backend, .. }) = shown {
+            self.ensure_cli_model_catalog(backend, cx);
+        }
+        self.open_select(
+            &format!("chat-dock-target:{conversation_id}"),
+            bounds,
+            window,
+            cx,
+        );
+    }
+
+    /// Effort, route and model of one conversation in a single list, for the
+    /// one control the floating window has room for. Every label starts with
+    /// its group, so typing "effort", "route" or "model" narrows the list.
+    fn conversation_target_choices(&self, conversation_id: &str, cx: &App) -> Vec<Choice> {
+        let chat = self.chat.read(cx);
+        let Some(shown) = chat.shown_target(conversation_id) else {
+            return vec![];
+        };
+        let cli = match &shown {
+            ChatExecutionTargetRequest::Cli {
+                backend,
+                model,
+                model_profile,
+            } => Some((*backend, model.clone(), model_profile.clone())),
+            ChatExecutionTargetRequest::Api { .. } => None,
+        };
+        let mut choices = Vec::new();
+        if let Some((backend, model, profile)) = &cli {
+            let profiles = self.model_profiles(*backend, model.as_deref(), cx);
+            if !profiles.is_empty() {
+                choices.push(Choice::new(
+                    "effort:",
+                    "Effort · Default",
+                    profile.is_none(),
+                ));
+                choices.extend(profiles.into_iter().map(|level| {
+                    Choice::new(
+                        format!("effort:{level}"),
+                        format!("Effort · {level}"),
+                        profile.as_ref() == Some(&level),
+                    )
+                }));
+            }
+        }
+        choices.extend(route_choices(chat, Some(&shown), "route:", "Route · "));
+        if let Some((backend, model, _)) = &cli {
+            choices.push(Choice::new(
+                "model:",
+                "Model · CLI default",
+                model.is_none(),
+            ));
+            let catalog: Vec<String> = self
+                .agents
+                .read(cx)
+                .model_catalogs
+                .get(backend)
+                .map(|catalog| {
+                    catalog
+                        .models
+                        .iter()
+                        .filter_map(|entry| entry.model_id.clone())
+                        .collect()
+                })
+                .unwrap_or_default();
+            // The model in use and the recent ones first, then the catalog.
+            let mut listed: Vec<String> = Vec::new();
+            for id in model
+                .iter()
+                .cloned()
+                .chain(chat.recent_cli_models(*backend))
+                .chain(catalog.iter().cloned())
+            {
+                if listed.len() == DOCK_MODEL_CHOICES {
+                    break;
+                }
+                if !listed.contains(&id) {
+                    listed.push(id);
+                }
+            }
+            let more = catalog.iter().filter(|id| !listed.contains(id)).count();
+            for id in listed {
+                // An id the loaded catalog does not know was typed by hand.
+                let kind = if catalog.is_empty() || catalog.contains(&id) {
+                    "model"
+                } else {
+                    "manual"
+                };
+                choices.push(Choice::new(
+                    format!("{kind}:{id}"),
+                    format!("Model · {id}"),
+                    model.as_ref() == Some(&id),
+                ));
+            }
+            if more > 0 {
+                let mut rest = Choice::new("model-more", format!("Model · {more} more"), false);
+                rest.reason = Some("Expand the chat to search the whole catalog.".into());
+                choices.push(rest);
+            }
+        }
+        choices
+    }
+
     pub(crate) fn choice_options(&self, id: &str, cx: &App) -> Vec<Choice> {
         if id.starts_with("canvas-semantic-") {
             return self.canvas_choices(id);
@@ -263,24 +433,11 @@ impl AppModel {
         }
         let chat = self.chat.read(cx);
         match field {
-            "chat-transport" => {
-                return modes(
-                    if chat.selected_transport == ikore_core::chat_service::ChatTransportKind::Api {
-                        AgentExecutionMode::ApiDirect
-                    } else {
-                        AgentExecutionMode::CliProcess
-                    },
-                );
+            "chat-composer-route" => {
+                return route_choices(chat, chat.panel_target().as_ref(), "", "");
             }
-            "chat-cli-backend" => {
-                // The Companion refuses Custom: it has no tool or config knob to turn off.
-                return BACKENDS
-                    .iter()
-                    .filter(|b| **b != CliBackend::Custom)
-                    .map(|b| Choice::new(b.label(), b.label(), *b == chat.selected_cli_backend))
-                    .collect();
-            }
-            "chat-cli-profile" => {
+            "chat-dock-target" => return self.conversation_target_choices(key, cx),
+            "chat-composer-profile" => {
                 return std::iter::once(Choice::new(
                     "",
                     "Default",
@@ -301,20 +458,6 @@ impl AppModel {
             }
             _ => {}
         }
-        if matches!(field, "chat-cycle-connection" | "chat-connections") {
-            return chat
-                .eligible_connections()
-                .map(|c| {
-                    Choice::new(
-                        &c.id,
-                        &c.display_name,
-                        chat.selected_connection_id
-                            .as_ref()
-                            .is_some_and(|id| id.as_ref() == c.id),
-                    )
-                })
-                .collect();
-        }
         let settings = self.settings.read(cx);
         let Some(snapshot) = settings.snapshot.as_ref() else {
             return vec![];
@@ -323,26 +466,17 @@ impl AppModel {
         let policy = &config.dynamic_context_policy;
         let prep = &snapshot.preparation;
         match field {
-            "chat-cycle-connection"
-            | "chat-connections"
-            | "api-cycle-connection"
-            | "settings-route-target" => snapshot
+            "api-cycle-connection" | "settings-route-target" => snapshot
                 .connections
                 .iter()
                 .map(|c| {
                     Choice::new(
                         &c.id,
                         &c.display_name,
-                        if field.starts_with("chat") {
-                            chat.selected_connection_id
-                                .as_ref()
-                                .is_some_and(|id| id.as_ref() == c.id)
-                        } else {
-                            settings
-                                .selected_connection_id
-                                .as_ref()
-                                .is_some_and(|id| id.as_ref() == c.id)
-                        },
+                        settings
+                            .selected_connection_id
+                            .as_ref()
+                            .is_some_and(|id| id.as_ref() == c.id),
                     )
                 })
                 .collect(),
@@ -673,29 +807,34 @@ impl AppModel {
             }
             return;
         }
+        if field == "chat-dock-target" {
+            // The floating window changes its own conversation, whatever the panel is busy with.
+            if !self.chat.read(cx).is_busy(key)
+                && let Some(edit) = ChatTargetEdit::parse(value)
+            {
+                self.edit_conversation_target(key, edit, cx);
+            }
+            return;
+        }
         if field.starts_with("chat-") {
-            if self.chat.read(cx).streaming || self.chat.read(cx).busy {
+            // A choice made during a reply is kept and applied when the reply ends.
+            if self.chat.read(cx).busy {
                 return;
             }
             match field {
-                "chat-transport" => self.set_chat_transport(
-                    if value == "api" {
-                        ikore_core::chat_service::ChatTransportKind::Api
-                    } else {
-                        ikore_core::chat_service::ChatTransportKind::Cli
-                    },
-                    cx,
-                ),
-                "chat-cli-backend" => {
-                    if let Some(b) = backend(value) {
-                        self.set_chat_cli_backend(b, cx)
+                "chat-composer-route" => match value.split_once(':') {
+                    Some(("api", connection_id)) => {
+                        self.set_chat_route_api(connection_id.into(), cx)
                     }
-                }
-                "chat-cli-profile" => {
+                    Some(("cli", id)) => {
+                        if let Some(backend) = CliBackend::parse(id) {
+                            self.set_chat_route_cli(backend, cx)
+                        }
+                    }
+                    _ => {}
+                },
+                "chat-composer-profile" => {
                     self.set_chat_cli_profile((!value.is_empty()).then(|| value.into()), cx)
-                }
-                "chat-cycle-connection" | "chat-connections" => {
-                    self.set_chat_connection(value.into(), cx)
                 }
                 _ => {}
             }
@@ -1099,7 +1238,12 @@ mod tests {
                 chat.selected_cli_backend = CliBackend::Codex;
                 chat.selected_cli_model = Some("existing".into());
             });
-            m.apply_choice("chat-cli-backend", CliBackend::Codex.label(), cx);
+            // Choosing the route of the backend already in use keeps its model.
+            m.apply_choice("chat-composer-route", "cli:codex", cx);
+            assert_eq!(
+                m.chat.read(cx).selected_transport,
+                ikore_core::chat_service::ChatTransportKind::Cli
+            );
             assert_eq!(
                 m.chat.read(cx).selected_cli_model.as_deref(),
                 Some("existing")

@@ -21,6 +21,7 @@ fn message() -> ChatMessage {
         error_code: None,
         error_message: None,
         target_label: None,
+        model_evidence: None,
         created_at: "2026-10-28T00:00:00Z".into(),
         updated_at: "2026-10-28T00:00:00Z".into(),
     }

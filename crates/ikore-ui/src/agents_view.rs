@@ -190,31 +190,42 @@ pub(crate) fn cli_model_picker_panel(
         .trim()
         .to_string();
     let query = raw_query.to_lowercase();
-    let entries = catalog
-        .as_ref()
-        .map(|catalog| {
-            catalog
-                .models
-                .iter()
-                .filter(|entry| model_entry_matches(entry, &query))
-                .cloned()
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+    // The Companion chooses a model, whatever serves it: its picker spans every route. An
+    // agent's picker lists the catalog of the agent's own CLI.
+    let companion = picker.target == CliModelPickerTarget::Companion;
+    let loading = if companion {
+        loading || agents.catalogs_refreshing
+    } else {
+        loading
+    };
+    let entries = if companion {
+        companion_picker_rows(model.chat.read(cx), &agents.model_catalogs, &query)
+    } else {
+        catalog
+            .as_ref()
+            .map(|catalog| picker_rows(&catalog.models, &query))
+            .unwrap_or_default()
+    };
     let entries = Arc::new(entries);
     let list_entries = Arc::clone(&entries);
-    let target_label = match &picker.target {
-        CliModelPickerTarget::Canonical(role) => {
-            format!(
-                "{} agent",
-                ikore_core::terminals::canonical_agent(*role).name
-            )
+    let title = match &picker.target {
+        CliModelPickerTarget::Canonical(role) => format!(
+            "Choose {} model for {} agent",
+            picker.backend.label(),
+            ikore_core::terminals::canonical_agent(*role).name
+        ),
+        CliModelPickerTarget::FreeForm(_) => {
+            format!("Choose {} model for FreeForm agent", picker.backend.label())
         }
-        CliModelPickerTarget::FreeForm(_) => "FreeForm agent".into(),
-        CliModelPickerTarget::Companion => "Companion".into(),
+        CliModelPickerTarget::Companion => "Choose the Companion's model".into(),
     };
     let status = if loading {
         "loading".to_string()
+    } else if companion {
+        format!(
+            "{} models across every route · the route in use is kept when it serves the model",
+            entries.iter().filter(|row| row.routed.is_some()).count()
+        )
     } else if let Some(catalog) = &catalog {
         let state = match catalog.state {
             CliModelCatalogState::Ready => "ready",
@@ -249,7 +260,12 @@ pub(crate) fn cli_model_picker_panel(
         "not loaded".into()
     };
     let diagnostic = error.or_else(|| catalog.as_ref().and_then(|item| item.diagnostic.clone()));
-    let manual_enabled = !query.is_empty() && !loading;
+    // An id typed by hand goes to a CLI; an API connection answers with its own model.
+    let manual_enabled = !query.is_empty()
+        && !loading
+        && (!companion
+            || model.chat.read(cx).selected_transport
+                == ikore_core::chat_service::ChatTransportKind::Cli);
 
     let content = div()
         .id("cli-model-picker-content")
@@ -280,10 +296,7 @@ pub(crate) fn cli_model_picker_panel(
                     div()
                         .w_full()
                         .min_w_0()
-                        .child(div().font_weight(FontWeight::SEMIBOLD).child(format!(
-                            "Choose {} model for {target_label}",
-                            picker.backend.label()
-                        )))
+                        .child(div().font_weight(FontWeight::SEMIBOLD).child(title))
                         .child(
                             div()
                                 .text_xs()
@@ -346,15 +359,15 @@ pub(crate) fn cli_model_picker_panel(
                                 move |_model, range: std::ops::Range<usize>, _window, cx| {
                                     range
                                         .filter_map(|index| {
-                                            let entry = list_entries.get(index)?.clone();
+                                            let PickerRow {
+                                                entry,
+                                                recent,
+                                                source,
+                                                routed,
+                                            } = list_entries.get(index)?.clone();
                                             let model_id = entry.model_id.clone();
                                             let is_default_entry = model_id.is_none();
                                             let has_profiles = !entry.profiles.is_empty();
-                                            let source = if model_id.is_some() {
-                                                CliModelSelectionSource::Catalog
-                                            } else {
-                                                CliModelSelectionSource::Default
-                                            };
                                             let provider = entry
                                                 .provider_id
                                                 .clone()
@@ -372,6 +385,12 @@ pub(crate) fn cli_model_picker_panel(
                                             }
                                             if has_profiles {
                                                 details.push(entry.profiles.join(", "));
+                                            }
+                                            if source == CliModelSelectionSource::Manual {
+                                                details.push("manual ID".into());
+                                            }
+                                            if let Some((_, via)) = &routed {
+                                                details.push(format!("via {via}"));
                                             }
                                             if let (Some(input_cost), Some(output_cost)) = (
                                                 entry.input_cost_usd_per_million,
@@ -401,12 +420,16 @@ pub(crate) fn cli_model_picker_panel(
                                                         style.bg(theme::surface_raised())
                                                     })
                                                     .on_click(cx.listener(
-                                                        move |model, _, _, cx| {
-                                                            model.select_cli_model(
+                                                        move |model, _, _, cx| match &routed {
+                                                            Some((identity, _)) => model
+                                                                .select_companion_model(
+                                                                    identity, cx,
+                                                                ),
+                                                            None => model.select_cli_model(
                                                                 model_id.clone(),
                                                                 source,
                                                                 cx,
-                                                            )
+                                                            ),
                                                         },
                                                     ))
                                                     .child(
@@ -433,6 +456,12 @@ pub(crate) fn cli_model_picker_panel(
                                                             .when(is_default_entry, |row| {
                                                                 row.child(chip(
                                                                     "DEFAULT",
+                                                                    theme::accent(),
+                                                                ))
+                                                            })
+                                                            .when(recent, |row| {
+                                                                row.child(chip(
+                                                                    "RECENT",
                                                                     theme::accent(),
                                                                 ))
                                                             })
@@ -519,13 +548,166 @@ pub(crate) fn cli_model_picker_panel(
 }
 
 /// Renders a token context window compactly, e.g. `200_000` -> `"200k"`, `1_000_000` -> `"1M"`.
-fn format_context_window(window: u64) -> String {
+pub(crate) fn format_context_window(window: u64) -> String {
     if window >= 1_000_000 && window.is_multiple_of(1_000_000) {
         format!("{}M", window / 1_000_000)
     } else if window >= 1_000 && window.is_multiple_of(1_000) {
         format!("{}k", window / 1_000)
     } else {
         window.to_string()
+    }
+}
+
+/// A row of the model picker: a catalog entry, or a recent model the catalog does not list.
+#[derive(Debug, Clone, PartialEq)]
+struct PickerRow {
+    entry: CliModelCatalogEntry,
+    /// One of the models the Companion used last in this project.
+    recent: bool,
+    source: CliModelSelectionSource,
+    /// In the Companion's picker a row is a model on all its routes: its identity, and the
+    /// routes that serve it as one line.
+    routed: Option<(ikore_core::llm::ModelIdentity, String)>,
+}
+
+/// The rows of the Companion's picker: every model it can be pointed at, by vendor, each one
+/// once with the routes that serve it. Without a search, the CLI's own default comes first, then
+/// the models this project's chats used last.
+fn companion_picker_rows(
+    chat: &crate::chat::ChatModel,
+    catalogs: &std::collections::HashMap<
+        CliBackend,
+        ikore_core::terminals::CliModelCatalogSnapshot,
+    >,
+    query: &str,
+) -> Vec<PickerRow> {
+    use ikore_core::llm::{ModelIdentity, ModelRoute};
+    let recent: Vec<ModelIdentity> = CliBackend::ALL
+        .into_iter()
+        .flat_map(|backend| {
+            chat.recent_cli_models(backend)
+                .into_iter()
+                .filter_map(move |id| ModelIdentity::of(&id, backend.as_str()))
+        })
+        .collect();
+    let mut rows: Vec<PickerRow> = Vec::new();
+    for group in crate::companion_models::companion_models(chat, catalogs) {
+        for model in group.models {
+            let via = model
+                .routes
+                .iter()
+                .map(|offer| crate::companion_models::route_text(chat, &offer.route))
+                .collect::<Vec<_>>()
+                .join(", ");
+            // What a catalog says about the model, from the first CLI that lists it.
+            let listed = model.routes.iter().find_map(|offer| match &offer.route {
+                ModelRoute::Cli(backend) => catalogs
+                    .get(backend)?
+                    .models
+                    .iter()
+                    .find(|entry| entry.model_id.as_deref() == Some(offer.model_id.as_str())),
+                ModelRoute::Api { .. } | ModelRoute::Gateway { .. } => None,
+            });
+            let entry = CliModelCatalogEntry {
+                provider_id: Some(group.vendor.label().into()),
+                model_id: Some(model.identity.model.clone()),
+                display_name: listed.map_or_else(
+                    || model.identity.model.clone(),
+                    |entry| entry.display_name.clone(),
+                ),
+                context_window: listed.and_then(|entry| entry.context_window),
+                input_cost_usd_per_million: listed
+                    .and_then(|entry| entry.input_cost_usd_per_million),
+                output_cost_usd_per_million: listed
+                    .and_then(|entry| entry.output_cost_usd_per_million),
+                capabilities: listed
+                    .map(|entry| entry.capabilities.clone())
+                    .unwrap_or_default(),
+                profiles: listed
+                    .map(|entry| entry.profiles.clone())
+                    .unwrap_or_default(),
+                raw_metadata: serde_json::Value::Null,
+            };
+            if !model_entry_matches(&entry, query) && !via.to_lowercase().contains(query) {
+                continue;
+            }
+            rows.push(PickerRow {
+                entry,
+                recent: recent.contains(&model.identity),
+                source: CliModelSelectionSource::Catalog,
+                routed: Some((model.identity, via)),
+            });
+        }
+    }
+    if !query.is_empty() {
+        return rows;
+    }
+    // A stable sort: the recent models keep their order by vendor and name, and so do the rest.
+    rows.sort_by_key(|row| !row.recent);
+    if chat.selected_transport != ikore_core::chat_service::ChatTransportKind::Cli {
+        return rows;
+    }
+    // On a CLI, two more choices come first: its own default, and the ids typed by hand for it
+    // before, which no catalog lists.
+    let backend = chat.selected_cli_backend;
+    let cli = format!("{} CLI", backend.label());
+    let mut first = vec![PickerRow {
+        entry: bare_entry(cli.clone(), None, "CLI default".into()),
+        recent: false,
+        source: CliModelSelectionSource::Default,
+        routed: None,
+    }];
+    for id in chat.recent_cli_models(backend) {
+        let listed = ModelIdentity::of(&id, backend.as_str()).is_some_and(|identity| {
+            rows.iter().any(|row| {
+                row.routed
+                    .as_ref()
+                    .is_some_and(|(listed, _)| *listed == identity)
+            })
+        });
+        if !listed {
+            first.push(PickerRow {
+                entry: bare_entry(cli.clone(), Some(id.clone()), id),
+                recent: true,
+                source: CliModelSelectionSource::Manual,
+                routed: None,
+            });
+        }
+    }
+    first.extend(rows);
+    first
+}
+
+/// The rows an agent's picker lists: the catalog of its CLI, filtered by the search.
+fn picker_rows(catalog: &[CliModelCatalogEntry], query: &str) -> Vec<PickerRow> {
+    catalog
+        .iter()
+        .filter(|entry| model_entry_matches(entry, query))
+        .map(|entry| PickerRow {
+            entry: entry.clone(),
+            recent: false,
+            source: if entry.model_id.is_some() {
+                CliModelSelectionSource::Catalog
+            } else {
+                CliModelSelectionSource::Default
+            },
+            routed: None,
+        })
+        .collect()
+}
+
+/// A model that only its id describes: the CLI's own default, or an id typed by hand.
+fn bare_entry(provider: String, model_id: Option<String>, name: String) -> CliModelCatalogEntry {
+    CliModelCatalogEntry {
+        provider_id: Some(provider),
+        model_id,
+        display_name: name,
+        context_window: None,
+        input_cost_usd_per_million: None,
+        output_cost_usd_per_million: None,
+        capabilities: Vec::new(),
+        profiles: Vec::new(),
+        raw_metadata: serde_json::Value::Null,
     }
 }
 
@@ -1706,13 +1888,19 @@ fn free_form_card(
         .model_profile
         .clone()
         .unwrap_or_else(|| "CLI default".into());
-    let can_resume = selected_run.is_some_and(|run| {
-        !run.status.is_active()
-            && run.native_session_id.is_some()
-            && run.session_fingerprint.is_some()
-            && availability.is_some_and(|item| item.capabilities.native_resume)
-    }) && slot.session_policy
-        == ikore_core::terminals::SessionPolicy::ResumeExplicit;
+    let (can_resume, new_session) = selected_run
+        .map(|run| {
+            session_continuation(
+                run,
+                slot.backend,
+                slot.model.as_deref(),
+                availability.is_some_and(|item| item.capabilities.native_resume),
+                executable_ready,
+            )
+        })
+        .unwrap_or_default();
+    let can_resume =
+        can_resume && slot.session_policy == ikore_core::terminals::SessionPolicy::ResumeExplicit;
     let status = active_run
         .map(|run| run_status(run.status))
         .unwrap_or_else(|| {
@@ -1997,7 +2185,7 @@ fn free_form_card(
                     .when_some(selected_run_id, |row, source_run_id| {
                         row.child(action_button(
                             SharedString::from(format!("free-form-resume:{}", slot.id)),
-                            "Resume session".into(),
+                            resume_label(new_session),
                             !busy && !running && prompt_ready && can_resume,
                             false,
                             cx,
@@ -2008,6 +2196,7 @@ fn free_form_card(
                                         source_run_id.clone(),
                                         slot_id.clone(),
                                         None,
+                                        new_session,
                                         cx,
                                     )
                                 }
@@ -2066,12 +2255,17 @@ fn agent_card(
         && prompt_ready
         && executable_ready
         && agent.config.execution_mode == AgentExecutionMode::CliProcess;
-    let can_resume = selected_run.is_some_and(|run| {
-        !run.status.is_active()
-            && run.native_session_id.is_some()
-            && run.session_fingerprint.is_some()
-            && availability.is_some_and(|item| item.capabilities.native_resume)
-    });
+    let (can_resume, new_session) = selected_run
+        .map(|run| {
+            session_continuation(
+                run,
+                agent.config.backend,
+                agent.config.model.as_deref(),
+                availability.is_some_and(|item| item.capabilities.native_resume),
+                executable_ready,
+            )
+        })
+        .unwrap_or_default();
     let cli_identity = availability.map(|item| {
         format!(
             "Version {} · {}",
@@ -2462,7 +2656,7 @@ fn agent_card(
                     .when_some(resume_run_id, |row, source_run_id| {
                         row.child(action_button(
                             SharedString::from(format!("agent-resume:{}", role.as_str())),
-                            "Resume session".into(),
+                            resume_label(new_session),
                             !busy && !running && prompt_ready && can_resume,
                             false,
                             cx,
@@ -2471,6 +2665,7 @@ fn agent_card(
                                     source_run_id.clone(),
                                     format!("canonical:{}", role.as_str()),
                                     Some(role),
+                                    new_session,
                                     cx,
                                 )
                             },
@@ -3721,6 +3916,37 @@ fn follow_button(
     .into_any_element()
 }
 
+/// Whether the selected run's session can go on, and whether it goes on in a
+/// new session. A CLI session keeps its backend and model, so after either
+/// changed the resume opens a new session with a summary of this one (PD10):
+/// that needs the CLI ready, not native resuming.
+pub(crate) fn session_continuation(
+    run: &ikore_core::terminals::TerminalRun,
+    backend: ikore_core::terminals::CliBackend,
+    model: Option<&str>,
+    native_resume: bool,
+    executable_ready: bool,
+) -> (bool, bool) {
+    let new_session = ikore_core::terminals::needs_handoff(run, backend, model);
+    let possible = !run.status.is_active()
+        && run.native_session_id.is_some()
+        && run.session_fingerprint.is_some()
+        && if new_session {
+            executable_ready
+        } else {
+            native_resume
+        };
+    (possible, new_session)
+}
+
+fn resume_label(new_session: bool) -> SharedString {
+    if new_session {
+        "Continue with summary".into()
+    } else {
+        "Resume session".into()
+    }
+}
+
 fn action_button(
     id: SharedString,
     label: SharedString,
@@ -3876,5 +4102,165 @@ mod tests {
                 .count(),
             100
         );
+    }
+
+    #[test]
+    fn the_companion_picker_lists_each_model_once_across_its_routes() {
+        use ikore_core::chat_service::{ChatConversation, ChatTransportKind};
+        use ikore_core::llm::ProviderConnection;
+        use ikore_core::terminals::{CliModelCatalogSnapshot, CliModelCatalogSource};
+        let catalog = |backend: CliBackend, models: &[&str]| CliModelCatalogSnapshot {
+            project_id: "project".into(),
+            backend,
+            adapter_contract_version: 2,
+            state: CliModelCatalogState::Ready,
+            source: CliModelCatalogSource::Cli,
+            cli_version: None,
+            diagnostic: None,
+            refreshed_at: "now".into(),
+            models: models
+                .iter()
+                .map(|id| CliModelCatalogEntry {
+                    provider_id: None,
+                    model_id: Some((*id).into()),
+                    display_name: id.to_uppercase(),
+                    context_window: Some(200_000),
+                    input_cost_usd_per_million: None,
+                    output_cost_usd_per_million: None,
+                    capabilities: Vec::new(),
+                    profiles: vec!["high".into()],
+                    raw_metadata: serde_json::json!({}),
+                })
+                .collect(),
+        };
+        let catalogs = std::collections::HashMap::from([
+            (
+                CliBackend::Codex,
+                catalog(CliBackend::Codex, &["gpt-5", "gpt-5-codex"]),
+            ),
+            (
+                CliBackend::Claude,
+                catalog(CliBackend::Claude, &["claude-sonnet-4-5"]),
+            ),
+        ]);
+        let connection = |id: &str, provider: &str, name: &str, model: &str| ProviderConnection {
+            id: id.into(),
+            provider_id: provider.into(),
+            display_name: name.into(),
+            endpoint_url: None,
+            default_model: model.into(),
+            enabled: true,
+            state: "active".into(),
+            blocked_reason: None,
+            cooldown_until: None,
+            max_concurrency: 1,
+            version: 1,
+            has_api_key: true,
+            chat_eligible: true,
+            created_at: "now".into(),
+            updated_at: "now".into(),
+        };
+        let used = |id: &str, model: &str| ChatConversation {
+            id: id.into(),
+            project_id: "project".into(),
+            connection_id: None,
+            provider_id: "codex".into(),
+            model_id: model.into(),
+            transport: ChatTransportKind::Cli,
+            cli_backend: Some(CliBackend::Codex),
+            model_profile: None,
+            model_source: CliModelSelectionSource::Catalog,
+            title: id.into(),
+            connection_available: true,
+            created_at: "now".into(),
+            updated_at: "now".into(),
+        };
+        let mut chat = crate::chat::ChatModel::default();
+        chat.connections = vec![
+            connection("key", "openai", "OpenAI key", "gpt-5"),
+            connection(
+                "router",
+                "openrouter",
+                "OpenRouter",
+                "anthropic/claude-sonnet-4-5",
+            ),
+        ];
+        chat.conversations = vec![used("a", "gpt-5-codex"), used("b", "typed/by-hand")];
+        chat.selected_transport = ChatTransportKind::Cli;
+        chat.selected_cli_backend = CliBackend::Codex;
+        // A recent model carries a star; a model on several routes names them all.
+        let listed = |rows: &[PickerRow]| {
+            rows.iter()
+                .map(|row| {
+                    format!(
+                        "{}{}{}",
+                        row.entry.display_name,
+                        if row.recent { "*" } else { "" },
+                        row.routed
+                            .as_ref()
+                            .map(|(_, via)| format!(" via {via}"))
+                            .unwrap_or_default()
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let rows = companion_picker_rows(&chat, &catalogs, "");
+        assert_eq!(
+            listed(&rows),
+            [
+                "CLI default",
+                "typed/by-hand*",
+                "GPT-5-CODEX* via Codex CLI",
+                "GPT-5 via Codex CLI, API · OpenAI key",
+                "CLAUDE-SONNET-4-5 via Claude CLI, Gateway · OpenRouter",
+            ]
+        );
+        // The default and an id typed by hand belong to the CLI in use, not to a routed model.
+        assert_eq!(rows[0].source, CliModelSelectionSource::Default);
+        assert_eq!(rows[1].source, CliModelSelectionSource::Manual);
+        assert!(rows[..2].iter().all(|row| row.routed.is_none()));
+        // The vendor is a column of the row, and the catalog fills in what it knows.
+        assert_eq!(rows[3].entry.provider_id.as_deref(), Some("OpenAI"));
+        assert_eq!(rows[3].entry.context_window, Some(200_000));
+        assert_eq!(rows[4].entry.provider_id.as_deref(), Some("Anthropic"));
+
+        // A search matches the model, its vendor or one of its routes, in list order.
+        assert_eq!(
+            listed(&companion_picker_rows(&chat, &catalogs, "openrouter")),
+            ["CLAUDE-SONNET-4-5 via Claude CLI, Gateway · OpenRouter"]
+        );
+        assert_eq!(
+            listed(&companion_picker_rows(&chat, &catalogs, "openai")),
+            [
+                "GPT-5 via Codex CLI, API · OpenAI key",
+                "GPT-5-CODEX* via Codex CLI"
+            ]
+        );
+        // On an API connection there is no CLI default to go back to.
+        chat.selected_transport = ChatTransportKind::Api;
+        assert_eq!(
+            listed(&companion_picker_rows(&chat, &catalogs, ""))[0],
+            "GPT-5-CODEX* via Codex CLI"
+        );
+    }
+
+    #[test]
+    fn an_agent_picker_lists_the_catalog_of_its_cli() {
+        let entry = |id: Option<&str>| {
+            bare_entry(
+                "anthropic".into(),
+                id.map(Into::into),
+                id.unwrap_or("CLI default").into(),
+            )
+        };
+        let catalog = [entry(None), entry(Some("opus")), entry(Some("sonnet"))];
+        let rows = picker_rows(&catalog, "");
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].source, CliModelSelectionSource::Default);
+        assert_eq!(rows[1].source, CliModelSelectionSource::Catalog);
+        assert!(rows.iter().all(|row| row.routed.is_none() && !row.recent));
+        let found = picker_rows(&catalog, "son");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].entry.model_id.as_deref(), Some("sonnet"));
     }
 }

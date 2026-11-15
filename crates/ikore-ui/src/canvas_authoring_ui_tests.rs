@@ -285,11 +285,11 @@ fn install(
                 error_code: None,
                 error_message: None,
                 target_label: None,
+                model_evidence: None,
                 created_at: "now".into(),
                 updated_at: "now".into(),
             }],
         );
-        chat.config_collapsed = true;
     });
     model.canvas_authoring.backend = Some(backend);
     model.refresh_canvas_authoring(cx);

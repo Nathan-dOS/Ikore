@@ -398,8 +398,10 @@ fn purge_project(
         }
         for key in [
             format!("companion.target.{id}"),
+            format!("companion.marks.{id}"),
             format!("forge.navigation.{id}"),
             format!("brownfield.onboarding_consent.{id}"),
+            format!("ui.work_panel_tab.{id}"),
         ] {
             tx.execute("DELETE FROM runtime_settings WHERE key=?1", [key])?;
         }
@@ -654,6 +656,11 @@ mod tests {
         db.execute("INSERT INTO chat_messages(id,conversation_id,ordinal,role,content,status,created_at,updated_at) VALUES('deleted-message','deleted-chat',1,'user','secret text','completed','2026-09-26','2026-09-26')",[]).unwrap();
         db.execute("INSERT INTO companion_agent_output_documents(project_id,stable_reference,source_kind,source_id,status,title,content,created_at,updated_at) VALUES(?1,'old-output','artifact','source','completed','Private title','private FTS text','2026-09-26','2026-09-26')",[&deleted.id]).unwrap();
         db.execute("INSERT INTO runtime_settings(key,value,updated_at) VALUES(?1,'private setting','2026-09-26')",[format!("companion.target.{}",deleted.id)]).unwrap();
+        db.execute(
+            "INSERT INTO runtime_settings(key,value,updated_at) VALUES(?1,'search','2026-09-26')",
+            [format!("ui.work_panel_tab.{}", deleted.id)],
+        )
+        .unwrap();
         db.execute("INSERT INTO runtime_settings(key,value,updated_at) VALUES('runtime.provider','openai','2026-09-26') ON CONFLICT(key) DO UPDATE SET value=excluded.value",[]).unwrap();
         // Mandates and receipts are append-only, yet still go with the project.
         let digest = "0".repeat(64);
@@ -787,15 +794,21 @@ mod tests {
             1,
             "attestation keys are global"
         );
-        assert_eq!(
-            db.query_row(
-                "SELECT count(*) FROM runtime_settings WHERE key=?1",
-                [format!("companion.target.{}", deleted.id)],
-                |r| r.get::<_, i64>(0)
-            )
-            .unwrap(),
-            0
-        );
+        for key in [
+            format!("companion.target.{}", deleted.id),
+            format!("ui.work_panel_tab.{}", deleted.id),
+        ] {
+            assert_eq!(
+                db.query_row(
+                    "SELECT count(*) FROM runtime_settings WHERE key=?1",
+                    [&key],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+                0,
+                "{key}"
+            );
+        }
         assert_eq!(
             db.query_row(
                 "SELECT value FROM runtime_settings WHERE key='runtime.provider'",

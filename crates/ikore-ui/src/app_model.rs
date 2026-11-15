@@ -15,7 +15,7 @@ use gpui::{
     Task, Window,
 };
 use ikore_core::agent_runtime::{AdaptiveContextMode, ContextStrategy, DynamicContextPolicy};
-use ikore_core::chat_service::{ChatEventEnvelope, ChatTransportKind};
+use ikore_core::chat_service::{ChatEventEnvelope, ChatExecutionTargetRequest, ChatTransportKind};
 use ikore_core::llm::{
     DeleteProviderConnectionRequest, DeleteProviderRouteRequest, ResetLlmResilienceStateRequest,
     RouteTarget, RoutingMode, TestProviderConnectionRequest,
@@ -31,9 +31,10 @@ use ikore_core::persistence_service::{
     StartFreeFormApiRunRequest, UiSessionState, UiTabSnapshot, UpdateAgentRuntimeConfigRequest,
 };
 use ikore_core::terminals::{
-    CliAgentConfig, CliBackend, CliModelSelectionSource, CreateFreeFormSlotRequest,
-    ResumeManualRunRequest, StartFreeFormRunRequest, StartManualRunRequest, TerminalRunStatus,
-    TerminalSlot, ThinkingLevel, UpdateCliAgentConfigRequest, UpdateFreeFormSlotRequest,
+    CliAgentConfig, CliAvailabilityState, CliBackend, CliModelSelectionSource,
+    CreateFreeFormSlotRequest, ResumeManualRunRequest, StartFreeFormRunRequest,
+    StartManualRunRequest, TerminalRunStatus, TerminalSlot, ThinkingLevel,
+    UpdateCliAgentConfigRequest, UpdateFreeFormSlotRequest,
 };
 use ikore_core::workspace_service::{
     FileNode, OpenWorkspaceRequest, ReadWorkspaceFileRequest, SearchMode, WorkspaceChangedEvent,
@@ -48,7 +49,9 @@ use crate::agents::{
     AgentIdentifier, AgentsBackend, AgentsDashboardSnapshot, AgentsModel, ApiActivityFilter,
     CliModelPickerState, CliModelPickerTarget, CoreAgentsBackend,
 };
-use crate::chat::{ChatBackend, ChatEventOutcome, ChatModel, ChatOperation, CoreChatBackend};
+use crate::chat::{
+    ChatBackend, ChatEventOutcome, ChatModel, ChatOperation, ChatTargetEdit, CoreChatBackend,
+};
 use crate::errors::UiCommandError;
 use crate::flow::FlowTarget;
 use crate::icons::Icon;
@@ -322,11 +325,11 @@ pub struct AppModel {
     session_persistence: Option<Arc<dyn SessionPersistence>>,
     workspace_backend: Option<Arc<dyn WorkspaceBackend>>,
     pub(crate) pulsations_backend: Option<Arc<dyn PulsationsBackend>>,
-    vault_backend: Option<Arc<dyn VaultBackend>>,
+    pub(crate) vault_backend: Option<Arc<dyn VaultBackend>>,
     pub(crate) settings_backend: Option<Arc<dyn SettingsBackend>>,
     pub(crate) agents_backend: Option<Arc<dyn AgentsBackend>>,
     logs_backend: Option<Arc<dyn LogsBackend>>,
-    chat_backend: Option<Arc<dyn ChatBackend>>,
+    pub(crate) chat_backend: Option<Arc<dyn ChatBackend>>,
     pub navigation: Entity<NavigationModel>,
     pub workspace: Entity<WorkspaceEditorModel>,
     pub pulsations: Entity<PulsationsModel>,
@@ -383,6 +386,9 @@ pub struct AppModel {
     question_subscriptions: Vec<Subscription>,
     pub(crate) artifact_preview_page: usize,
     pub(crate) vault_search_input: Entity<NativeTextInput>,
+    /// The search over the project's Companion conversations (PD11).
+    pub(crate) chat_search_input: Entity<NativeTextInput>,
+    pub(crate) chat_search_task: Option<Task<()>>,
     pub(crate) vault_rename_input: Entity<NativeTextInput>,
     pub(crate) settings_connection_name_input: Entity<NativeTextInput>,
     pub(crate) settings_connection_model_input: Entity<NativeTextInput>,
@@ -395,6 +401,14 @@ pub struct AppModel {
     chat_initial_input: Entity<NativeTextInput>,
     pub(crate) chat_composer_inputs: HashMap<String, Entity<NativeTextInput>>,
     chat_composer_subscriptions: HashMap<String, Vec<Subscription>>,
+    /// Every project and its recent work, beside the nav rail (ADR-042).
+    pub(crate) projects_sidebar: crate::projects_sidebar::ProjectsSidebar,
+    pub(crate) work_panel: crate::work_panel::WorkPanel,
+    /// Scroll of the open conversation, which the question navigator reads and moves.
+    pub(crate) chat_scroll: gpui::ScrollHandle,
+    /// Where the questions of the open conversation were laid out last; shared with its prepaint.
+    pub(crate) chat_question_layout:
+        std::rc::Rc<std::cell::RefCell<crate::chat_questions::QuestionLayout>>,
     pub(crate) cli_model_search_input: Entity<NativeTextInput>,
     pub(crate) agent_prompt_inputs: HashMap<ikore_core::llm::AgentRole, Entity<NativeTextInput>>,
     pub(crate) agent_model_inputs: HashMap<ikore_core::llm::AgentRole, Entity<NativeTextInput>>,
@@ -523,6 +537,8 @@ pub struct AppModel {
     agents_refresh_pending: Option<(bool, bool)>,
     agents_notice_timer: Option<Task<()>>,
     model_catalog_task: Option<Task<()>>,
+    /// Reads every CLI catalog in turn; separate from the picker's single load.
+    cli_catalogs_task: Option<Task<()>>,
     logs_task: Option<Task<()>>,
     logs_resync_tasks: HashMap<String, Task<()>>,
     chat_hydration_task: Option<Task<()>>,
@@ -703,6 +719,7 @@ impl AppModel {
         let context_limit_input =
             cx.new(|cx| NativeTextInput::new("Context budget: 2,000 to 80,000 characters", cx));
         let vault_search_input = cx.new(|cx| NativeTextInput::new("Text or regex", cx));
+        let chat_search_input = cx.new(|cx| NativeTextInput::new("Search conversations", cx));
         let vault_rename_input = cx.new(|cx| NativeTextInput::new("New note name", cx));
         let settings_connection_name_input =
             cx.new(|cx| NativeTextInput::new("Connection name", cx));
@@ -926,6 +943,8 @@ impl AppModel {
             question_subscriptions: Vec::new(),
             artifact_preview_page: 0,
             vault_search_input,
+            chat_search_input,
+            chat_search_task: None,
             vault_rename_input,
             settings_connection_name_input,
             settings_connection_model_input,
@@ -938,6 +957,10 @@ impl AppModel {
             chat_draft_input,
             chat_composer_inputs: HashMap::new(),
             chat_composer_subscriptions: HashMap::new(),
+            projects_sidebar: Default::default(),
+            work_panel: Default::default(),
+            chat_scroll: gpui::ScrollHandle::new(),
+            chat_question_layout: Default::default(),
             cli_model_search_input,
             agent_prompt_inputs,
             agent_model_inputs,
@@ -1038,6 +1061,7 @@ impl AppModel {
             agents_refresh_pending: None,
             agents_notice_timer: None,
             model_catalog_task: None,
+            cli_catalogs_task: None,
             logs_task: None,
             logs_resync_tasks: HashMap::new(),
             chat_hydration_task: None,
@@ -1440,7 +1464,7 @@ impl AppModel {
         }));
     }
 
-    fn open_selected_workspace(&mut self, path: String, cx: &mut Context<Self>) {
+    pub(crate) fn open_selected_workspace(&mut self, path: String, cx: &mut Context<Self>) {
         if !self.canvas_can_leave(cx) {
             self.pending_canvas_workspace = Some(path);
             self.status = "Saving the drawing before changing projects…".into();
@@ -4223,7 +4247,13 @@ impl AppModel {
     fn send_chat_composer_input(&mut self, input: Entity<NativeTextInput>, cx: &mut Context<Self>) {
         if let Some(conversation_id) = self.conversation_for_chat_composer(&input, cx) {
             let content = input.read(cx).value().to_owned();
-            self.send_chat_message_to(conversation_id, content, cx);
+            // While the reply streams, Enter queues the message for the next turn. While the
+            // send itself is leaving, Enter does nothing: the field still holds that message.
+            if self.chat.read(cx).is_streaming(&conversation_id) {
+                self.queue_chat_message(conversation_id, content, Some(input), cx);
+            } else {
+                self.send_chat_message_to(conversation_id, content, cx);
+            }
         }
     }
 
@@ -4244,6 +4274,7 @@ impl AppModel {
             self.chat_resync_tasks.clear();
             self.chat_composer_subscriptions.clear();
             self.chat_composer_inputs.clear();
+            self.chat_question_layout.borrow_mut().reset();
             self.chat_draft_input = self.chat_initial_input.clone();
             self.chat_draft_input
                 .update(cx, |input, cx| input.clear(cx));
@@ -4281,6 +4312,7 @@ impl AppModel {
                     }
                     model.schedule_session_persistence(cx);
                     model.refresh_canvas_authoring(cx);
+                    model.refresh_chat_marks(cx);
                 }
                 cx.notify();
             });
@@ -4292,10 +4324,15 @@ impl AppModel {
         conversation_id: String,
         cx: &mut Context<Self>,
     ) {
+        let previous = self.chat.read(cx).active_conversation.clone();
         if !self.chat.update(cx, |chat, _| {
             chat.select_conversation_locally(&conversation_id)
         }) {
             return;
+        }
+        if previous.as_ref().map(AsRef::as_ref) != Some(conversation_id.as_str()) {
+            // The questions measured so far belong to the conversation that closed.
+            self.chat_question_layout.borrow_mut().reset();
         }
         self.ensure_chat_composer(&conversation_id, cx);
         self.refresh_canvas_authoring(cx);
@@ -4361,44 +4398,6 @@ impl AppModel {
         self.chat_tasks.insert(task_key, task);
     }
 
-    pub(crate) fn set_chat_transport(
-        &mut self,
-        transport: ChatTransportKind,
-        cx: &mut Context<Self>,
-    ) {
-        if self.chat.read(cx).target_change_pending {
-            return;
-        }
-        self.chat.update(cx, |chat, _| {
-            chat.selected_transport = transport;
-        });
-        self.close_cli_model_picker(cx);
-        self.close_dropdown(cx);
-        self.apply_chat_target_change(cx);
-    }
-
-    pub(crate) fn set_chat_cli_backend(&mut self, backend: CliBackend, cx: &mut Context<Self>) {
-        if self.chat.read(cx).target_change_pending {
-            return;
-        }
-        if self.chat.read(cx).selected_cli_backend == backend {
-            self.close_dropdown(cx);
-            return;
-        }
-        self.chat.update(cx, |chat, _| {
-            chat.selected_cli_backend = backend;
-            chat.selected_cli_model = None;
-            chat.selected_cli_model_profile = None;
-            chat.selected_cli_model_source = CliModelSelectionSource::Default;
-        });
-        self.close_cli_model_picker(cx);
-        self.close_dropdown(cx);
-        if !self.agents.read(cx).model_catalogs.contains_key(&backend) {
-            self.load_cli_model_catalog(backend, false, cx);
-        }
-        self.apply_chat_target_change(cx);
-    }
-
     pub(crate) fn set_chat_cli_profile(&mut self, profile: Option<String>, cx: &mut Context<Self>) {
         if self.chat.read(cx).target_change_pending {
             return;
@@ -4410,23 +4409,73 @@ impl AppModel {
         self.apply_chat_target_change(cx);
     }
 
-    pub(crate) fn set_chat_connection(&mut self, connection_id: String, cx: &mut Context<Self>) {
+    /// Selects the API transport and its connection in one step, as the
+    /// composer's route menu does.
+    pub(crate) fn set_chat_route_api(&mut self, connection_id: String, cx: &mut Context<Self>) {
         if self.chat.read(cx).target_change_pending {
             return;
         }
         self.chat.update(cx, |chat, _| {
+            chat.selected_transport = ChatTransportKind::Api;
             chat.selected_connection_id = Some(connection_id.into());
         });
+        self.close_cli_model_picker(cx);
         self.close_dropdown(cx);
+        self.apply_chat_target_change(cx);
+    }
+
+    /// Selects the CLI transport and its backend in one step. A different
+    /// backend starts from its own default model.
+    pub(crate) fn set_chat_route_cli(&mut self, backend: CliBackend, cx: &mut Context<Self>) {
+        let (pending, unchanged, same_backend) = {
+            let chat = self.chat.read(cx);
+            let same_backend = chat.selected_cli_backend == backend;
+            (
+                chat.target_change_pending,
+                same_backend && chat.selected_transport == ChatTransportKind::Cli,
+                same_backend,
+            )
+        };
+        if pending {
+            return;
+        }
+        if unchanged {
+            self.close_dropdown(cx);
+            return;
+        }
+        // Changing the route keeps the model when the new CLI lists it; otherwise the CLI
+        // starts from its own default.
+        let kept = (!same_backend)
+            .then(|| self.panel_model_on(backend, cx))
+            .flatten();
+        self.chat.update(cx, |chat, _| {
+            chat.selected_transport = ChatTransportKind::Cli;
+            if !same_backend {
+                chat.selected_cli_backend = backend;
+                chat.selected_cli_model_source = if kept.is_some() {
+                    CliModelSelectionSource::Catalog
+                } else {
+                    CliModelSelectionSource::Default
+                };
+                chat.selected_cli_model = kept;
+                chat.selected_cli_model_profile = None;
+            }
+        });
+        self.close_cli_model_picker(cx);
+        self.close_dropdown(cx);
+        if !self.agents.read(cx).model_catalogs.contains_key(&backend) {
+            self.load_cli_model_catalog(backend, false, cx);
+        }
         self.apply_chat_target_change(cx);
     }
 
     /// The Companion panel applies to the open conversation from its next
     /// message and is remembered per project (ADR-014 amendment,
     /// 2026-09-22). Without an open conversation it is only remembered. A
-    /// refused change (a reply still running, an invalid model) puts the
-    /// panel back on the conversation's real target.
-    fn apply_chat_target_change(&mut self, cx: &mut Context<Self>) {
+    /// change made during a reply waits for that reply to end. A refused
+    /// change (an invalid model) puts the panel back on the conversation's
+    /// real target.
+    pub(crate) fn apply_chat_target_change(&mut self, cx: &mut Context<Self>) {
         let Some(backend) = self.chat_backend.clone() else {
             return;
         };
@@ -4444,7 +4493,15 @@ impl AppModel {
                 target,
             )
         };
+        if conversation_id.is_some() && self.chat.read(cx).streaming {
+            // The running reply keeps the target it started with.
+            self.chat
+                .update(cx, |chat, _| chat.target_change_deferred = true);
+            cx.notify();
+            return;
+        }
         let generation = self.chat.update(cx, |chat, _| {
+            chat.target_change_deferred = false;
             chat.target_change_generation = chat.target_change_generation.saturating_add(1);
             chat.target_change_pending = true;
             chat.target_change_generation
@@ -4496,9 +4553,193 @@ impl AppModel {
         }));
     }
 
+    /// Applies the targets chosen during a reply once that reply has ended:
+    /// the panel's for the open conversation, and the ones the floating
+    /// window chose for the others.
+    pub(crate) fn flush_deferred_chat_target(&mut self, cx: &mut Context<Self>) {
+        let (ready, settled) = {
+            let chat = self.chat.read(cx);
+            (
+                chat.target_change_deferred && !chat.streaming,
+                chat.deferred_targets
+                    .iter()
+                    .filter(|(id, _)| !chat.is_streaming(id) && !chat.is_busy(id))
+                    .map(|(id, target)| (id.clone(), target.clone()))
+                    .collect::<Vec<_>>(),
+            )
+        };
+        if ready {
+            self.apply_chat_target_change(cx);
+        }
+        for (conversation_id, target) in settled {
+            self.retarget_conversation(conversation_id, target, cx);
+        }
+    }
+
+    fn set_chat_cli_model(
+        &mut self,
+        model_id: Option<String>,
+        source: CliModelSelectionSource,
+        cx: &mut Context<Self>,
+    ) {
+        if self.chat.read(cx).target_change_pending {
+            return;
+        }
+        self.chat.update(cx, |chat, _| {
+            chat.selected_cli_model = model_id;
+            chat.selected_cli_model_profile = None;
+            chat.selected_cli_model_source = source;
+        });
+        self.apply_chat_target_change(cx);
+    }
+
+    /// Changes the target of a conversation from its own composer, as the
+    /// floating window does. The open conversation goes through the panel,
+    /// which mirrors it; any other is changed in place.
+    pub(crate) fn edit_conversation_target(
+        &mut self,
+        conversation_id: &str,
+        edit: ChatTargetEdit,
+        cx: &mut Context<Self>,
+    ) {
+        let (active, base) = {
+            let chat = self.chat.read(cx);
+            (
+                chat.active_conversation.as_ref().map(AsRef::as_ref) == Some(conversation_id),
+                chat.shown_target(conversation_id),
+            )
+        };
+        let Some(mut target) = base.as_ref().and_then(|base| edit.apply_to(base)) else {
+            return;
+        };
+        // A conversation that moves to another CLI keeps its model when that CLI lists it.
+        if let (
+            ChatTargetEdit::RouteCli(backend),
+            Some(base),
+            ChatExecutionTargetRequest::Cli {
+                model: model @ None,
+                ..
+            },
+        ) = (&edit, &base, &mut target)
+        {
+            *model = crate::companion_models::target_identity(self.chat.read(cx), base).and_then(
+                |identity| {
+                    crate::companion_models::model_on_backend(
+                        &self.agents.read(cx).model_catalogs,
+                        &identity,
+                        *backend,
+                    )
+                },
+            );
+        }
+        if base.as_ref() == Some(&target) {
+            self.close_dropdown(cx);
+            return;
+        }
+        if active {
+            match edit {
+                ChatTargetEdit::RouteApi(connection_id) => {
+                    self.set_chat_route_api(connection_id, cx)
+                }
+                ChatTargetEdit::RouteCli(backend) => self.set_chat_route_cli(backend, cx),
+                ChatTargetEdit::Profile(profile) => self.set_chat_cli_profile(profile, cx),
+                ChatTargetEdit::Model(model_id, source) => {
+                    self.close_dropdown(cx);
+                    self.set_chat_cli_model(model_id, source, cx);
+                }
+            }
+            return;
+        }
+        self.close_dropdown(cx);
+        if let ChatExecutionTargetRequest::Cli { backend, .. } = &target {
+            self.ensure_cli_model_catalog(*backend, cx);
+        }
+        self.retarget_conversation(conversation_id.to_owned(), target, cx);
+    }
+
+    /// Applies `target` to a conversation the panel does not hold. While that
+    /// conversation replies, the choice waits for the reply to end.
+    fn retarget_conversation(
+        &mut self,
+        conversation_id: String,
+        target: ChatExecutionTargetRequest,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(backend) = self.chat_backend.clone() else {
+            return;
+        };
+        let (project_id, stored, streaming) = {
+            let chat = self.chat.read(cx);
+            let Some(project_id) = chat.project_id.as_ref().map(ToString::to_string) else {
+                return;
+            };
+            (
+                project_id,
+                chat.conversation_target(&conversation_id),
+                chat.is_streaming(&conversation_id),
+            )
+        };
+        if stored.as_ref() == Some(&target) {
+            // Back on the stored target: nothing waits any more.
+            self.chat.update(cx, |chat, _| {
+                chat.deferred_targets.remove(&conversation_id);
+            });
+            cx.notify();
+            return;
+        }
+        let generation = self.chat.update(cx, |chat, _| {
+            let generation = (!streaming)
+                .then(|| chat.begin_operation(&conversation_id, ChatOperation::Retarget))
+                .flatten();
+            match generation {
+                Some(_) => chat.deferred_targets.remove(&conversation_id),
+                // The running reply, or the send still leaving, keeps its target.
+                None => chat
+                    .deferred_targets
+                    .insert(conversation_id.clone(), target.clone()),
+            };
+            generation
+        });
+        cx.notify();
+        let Some(generation) = generation else {
+            return;
+        };
+        let task_key = (conversation_id.clone(), ChatOperation::Retarget);
+        let task = cx.spawn(async move |this, cx| {
+            let result = backend
+                .update_conversation_target(conversation_id.clone(), target)
+                .await;
+            let _ = this.update(cx, |model, cx| {
+                model.chat.update(cx, |chat, _| {
+                    if !chat.finish_operation(
+                        &project_id,
+                        &conversation_id,
+                        ChatOperation::Retarget,
+                        generation,
+                    ) {
+                        return;
+                    }
+                    match result {
+                        Ok(snapshot)
+                            if chat.active_conversation.as_ref().map(AsRef::as_ref)
+                                == Some(conversation_id.as_str()) =>
+                        {
+                            chat.apply_retargeted(snapshot)
+                        }
+                        Ok(snapshot) => chat.store_conversation_snapshot(snapshot),
+                        Err(error) => chat.set_conversation_error(&conversation_id, error),
+                    }
+                });
+                cx.notify();
+            });
+        });
+        self.chat_tasks.insert(task_key, task);
+    }
+
     pub(crate) fn open_companion_model_picker(&mut self, cx: &mut Context<Self>) {
         let backend = self.chat.read(cx).selected_cli_backend;
         self.open_cli_model_picker(CliModelPickerTarget::Companion, backend, cx);
+        self.read_missing_cli_model_catalogs(cx);
     }
 
     pub(crate) fn create_chat_conversation(&mut self, cx: &mut Context<Self>) {
@@ -4662,18 +4903,31 @@ impl AppModel {
             return;
         };
         let content = self.chat_draft_input.read(cx).value().to_owned();
-        self.send_chat_message_to(conversation_id, content, cx);
+        if self.chat.read(cx).is_streaming(&conversation_id) {
+            let input = self.chat_draft_input.clone();
+            self.queue_chat_message(conversation_id, content, Some(input), cx);
+        } else {
+            self.send_chat_message_to(conversation_id, content, cx);
+        }
     }
 
+    /// Sends `content` as the next turn of the conversation. `false` when it did not leave: an
+    /// empty text, a conversation that replies, or a target that waits for the reply.
     pub(crate) fn send_chat_message_to(
         &mut self,
         conversation_id: String,
         content: String,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         let Some(backend) = self.chat_backend.clone() else {
-            return;
+            return false;
         };
+        let deferred_here = self.chat.read(cx).target_deferred_for(&conversation_id);
+        if deferred_here {
+            // Never send to a target other than the one the composer shows.
+            self.flush_deferred_chat_target(cx);
+            return false;
+        }
         let (project_id, expected_target) = {
             let chat = self.chat.read(cx);
             if content.trim().is_empty()
@@ -4682,7 +4936,7 @@ impl AppModel {
                 || chat.is_streaming(&conversation_id)
                 || chat.is_busy(&conversation_id)
             {
-                return;
+                return false;
             }
             (
                 chat.project_id.as_ref().map(ToString::to_string),
@@ -4690,12 +4944,12 @@ impl AppModel {
             )
         };
         let Some(project_id) = project_id else {
-            return;
+            return false;
         };
         let Some(generation) = self.chat.update(cx, |chat, _| {
             chat.begin_operation(&conversation_id, ChatOperation::Send)
         }) else {
-            return;
+            return false;
         };
         let input = self.ensure_chat_composer(&conversation_id, cx);
         cx.notify();
@@ -4734,11 +4988,16 @@ impl AppModel {
                     input.update(cx, |input, cx| input.clear(cx));
                     model.companion_draft_changed(conversation_id.clone(), String::new(), cx);
                 }
+                // A target chosen while this send was leaving waits for the reply; if the
+                // send failed there is no reply to wait for.
+                model.flush_deferred_chat_target(cx);
+                model.flush_chat_queue(cx);
                 model.schedule_session_persistence(cx);
                 cx.notify();
             });
         });
         self.chat_tasks.insert(task_key, task);
+        true
     }
 
     pub(crate) fn cancel_chat_turn(&mut self, cx: &mut Context<Self>) {
@@ -4826,6 +5085,9 @@ impl AppModel {
         {
             self.refresh_canvas_authoring(cx);
         }
+        self.flush_deferred_chat_target(cx);
+        // The reply ended: the conversation's next queued message leaves.
+        self.flush_chat_queue(cx);
     }
 
     fn resync_chat_turn(
@@ -4873,6 +5135,7 @@ impl AppModel {
                         }
                     }),
                 }
+                model.flush_deferred_chat_target(cx);
                 cx.notify();
             });
         });
@@ -5606,14 +5869,14 @@ impl AppModel {
     }
 
     pub(crate) fn refresh_cli_model_catalog(&mut self, cx: &mut Context<Self>) {
-        let backend = self
-            .agents
-            .read(cx)
-            .active_model_picker
-            .as_ref()
-            .map(|picker| picker.backend);
-        if let Some(backend) = backend {
-            self.load_cli_model_catalog(backend, true, cx);
+        let picker = self.agents.read(cx).active_model_picker.clone();
+        match picker {
+            // The Companion's picker spans every route: it reads every catalog again.
+            Some(picker) if picker.target == CliModelPickerTarget::Companion => {
+                self.refresh_cli_model_catalogs(cx)
+            }
+            Some(picker) => self.load_cli_model_catalog(picker.backend, true, cx),
+            None => {}
         }
     }
 
@@ -5658,20 +5921,109 @@ impl AppModel {
                 }
                 self.save_free_form_slot(slot, cx);
             }
-            CliModelPickerTarget::Companion => {
-                if self.chat.read(cx).target_change_pending {
-                    self.close_cli_model_picker(cx);
-                    return;
-                }
-                self.chat.update(cx, |chat, _| {
-                    chat.selected_cli_model = model_id;
-                    chat.selected_cli_model_profile = None;
-                    chat.selected_cli_model_source = source;
-                });
-                self.apply_chat_target_change(cx);
-            }
+            CliModelPickerTarget::Companion => self.set_chat_cli_model(model_id, source, cx),
         }
         self.close_cli_model_picker(cx);
+    }
+
+    /// Reads the model catalog of every CLI again, one after another, for the
+    /// lists that show a model with all the routes that serve it. The catalogs
+    /// belong to the open project; a project that changes meanwhile keeps none
+    /// of them.
+    pub(crate) fn refresh_cli_model_catalogs(&mut self, cx: &mut Context<Self>) {
+        self.read_cli_model_catalogs(true, cx);
+    }
+
+    /// Reads the catalogs nothing has read yet, of the CLIs that are ready, so
+    /// the Companion's picker can list a model on every route.
+    pub(crate) fn read_missing_cli_model_catalogs(&mut self, cx: &mut Context<Self>) {
+        self.read_cli_model_catalogs(false, cx);
+    }
+
+    fn read_cli_model_catalogs(&mut self, refresh: bool, cx: &mut Context<Self>) {
+        let Some(backend) = self.agents_backend.clone() else {
+            return;
+        };
+        let Some(project_id) = self
+            .workspace
+            .read(cx)
+            .project_id
+            .as_ref()
+            .map(ToString::to_string)
+        else {
+            return;
+        };
+        let kinds: Vec<CliBackend> = {
+            let agents = self.agents.read(cx);
+            if agents.catalogs_refreshing {
+                return;
+            }
+            let chat = self.chat.read(cx);
+            CliBackend::ALL
+                .into_iter()
+                .filter(|kind| *kind != CliBackend::Custom)
+                .filter(|kind| {
+                    refresh
+                        || (!agents.model_catalogs.contains_key(kind)
+                            && agents.catalog_loading_backend != Some(*kind)
+                            && chat.cli_availability.iter().any(|item| {
+                                item.backend == *kind
+                                    && item.state == CliAvailabilityState::Available
+                            }))
+                })
+                .collect()
+        };
+        if kinds.is_empty() {
+            return;
+        }
+        self.agents
+            .update(cx, |agents, _| agents.catalogs_refreshing = true);
+        cx.notify();
+        self.cli_catalogs_task = Some(cx.spawn(async move |this, cx| {
+            for kind in kinds {
+                let result = backend
+                    .model_catalog(project_id.clone(), kind, refresh)
+                    .await;
+                let alive = this.update(cx, |model, cx| {
+                    let same_project = model
+                        .workspace
+                        .read(cx)
+                        .project_id
+                        .as_ref()
+                        .map(AsRef::as_ref)
+                        == Some(project_id.as_str());
+                    if let (true, Ok(catalog)) = (same_project, result) {
+                        model.agents.update(cx, |agents, _| {
+                            agents.model_catalogs.insert(catalog.backend, catalog);
+                        });
+                        cx.notify();
+                    }
+                });
+                if alive.is_err() {
+                    return;
+                }
+            }
+            let _ = this.update(cx, |model, cx| {
+                model
+                    .agents
+                    .update(cx, |agents, _| agents.catalogs_refreshing = false);
+                cx.notify();
+            });
+        }));
+    }
+
+    /// Loads the catalog of `backend` when nothing has loaded it yet, so
+    /// effort and models can be offered without opening the picker. It never
+    /// replaces a load that is already running.
+    pub(crate) fn ensure_cli_model_catalog(&mut self, backend: CliBackend, cx: &mut Context<Self>) {
+        let wanted = {
+            let agents = self.agents.read(cx);
+            !agents.model_catalogs.contains_key(&backend)
+                && agents.catalog_loading_backend.is_none()
+        };
+        if wanted {
+            self.load_cli_model_catalog(backend, false, cx);
+        }
     }
 
     pub(crate) fn select_manual_cli_model(&mut self, cx: &mut Context<Self>) {
@@ -6154,11 +6506,15 @@ impl AppModel {
         }));
     }
 
+    /// Resumes the session of `source_run_id`, or, when `new_session` says its
+    /// backend or model changed since, continues it in a new session that opens
+    /// with a summary of it (PI-Desktop PD10).
     pub(crate) fn resume_agent_run(
         &mut self,
         source_run_id: String,
         slot_id: String,
         role: Option<ikore_core::llm::AgentRole>,
+        new_session: bool,
         cx: &mut Context<Self>,
     ) {
         let Some(backend) = self.agents_backend.clone() else {
@@ -6187,21 +6543,30 @@ impl AppModel {
         cx.notify();
         self.agents_task = Some(cx.spawn(async move |this, cx| {
             // ADR-037 M3: say what the agent will be told. A refusal comes
-            // from the resume itself, with the count.
-            let told = match backend
-                .preview_resume(project_id.clone(), source_run_id.clone())
-                .await
-            {
-                Ok(Some(ikore_core::terminals::ResumePreview::Changes(changes)))
-                    if changes.decision
-                        == ikore_core::exchange::external_changes::ExternalChangesDecision::Notice =>
+            // from the resume itself, with the count. A new session reads the
+            // workspace afresh, so only the handoff needs saying.
+            let told = if new_session {
+                Some(
+                    "The model changed since this session, so a new session started with a \
+                     summary of it."
+                        .to_owned(),
+                )
+            } else {
+                match backend
+                    .preview_resume(project_id.clone(), source_run_id.clone())
+                    .await
                 {
-                    Some(format!(
-                        "{} files changed since this session; the agent will be told",
-                        changes.changed_files()
-                    ))
+                    Ok(Some(ikore_core::terminals::ResumePreview::Changes(changes)))
+                        if changes.decision
+                            == ikore_core::exchange::external_changes::ExternalChangesDecision::Notice =>
+                    {
+                        Some(format!(
+                            "{} files changed since this session; the agent will be told",
+                            changes.changed_files()
+                        ))
+                    }
+                    _ => None,
                 }
-                _ => None,
             };
             let result = backend
                 .resume_manual(ResumeManualRunRequest {
@@ -8249,6 +8614,10 @@ impl AppModel {
                         model.refresh_resolution_chips(cx);
                         model.poll_resolution_turn_if_pending(cx);
                     }
+                    model.refresh_projects_sidebar(cx);
+                    // A queued message whose conversation came free without an event (an error
+                    // the developer cleared, a target that was applied) leaves on the poll.
+                    model.flush_chat_queue(cx);
                     model.tick_footer_clock(cx);
                     true
                 });
@@ -8361,6 +8730,10 @@ impl AppModel {
             navigation.context_rail_collapsed =
                 session.is_some_and(|value| value.sidebar_collapsed);
         });
+        self.work_panel.tab = session
+            .and_then(|value| value.work_panel_tab.as_deref())
+            .and_then(crate::work_panel::WorkPanelTab::from_id)
+            .unwrap_or_default();
         self.activity.clear();
         self.indexing_status = None;
         self.workspace.update(cx, |workspace, cx| {
@@ -8454,7 +8827,7 @@ impl AppModel {
         cx.notify();
     }
 
-    fn schedule_session_persistence(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn schedule_session_persistence(&mut self, cx: &mut Context<Self>) {
         if self.hydrating || self.lifecycle.is_disposed() {
             return;
         }
@@ -8569,6 +8942,7 @@ impl AppModel {
             scroll_top: Some(f64::from(editor_snapshot.scroll_top)),
             tabs,
             auto_open_review: self.auto_open_review,
+            work_panel_tab: Some(self.work_panel.tab.id().to_string()),
         })
     }
 
@@ -8616,6 +8990,7 @@ impl AppModel {
         self.agents_task.take();
         self.agents_notice_timer.take();
         self.model_catalog_task.take();
+        self.cli_catalogs_task.take();
         self.logs_task.take();
         self.logs_resync_tasks.clear();
         self.chat_hydration_task.take();
@@ -10239,6 +10614,42 @@ mod tests {
     }
 
     #[gpui::test]
+    fn choosing_a_work_panel_tab_saves_it_with_the_session(cx: &mut TestAppContext) {
+        use crate::work_panel::WorkPanelTab;
+
+        let persistence = Arc::new(RecordingSessionPersistence::default());
+        let requests = Arc::clone(&persistence.requests);
+        let (model, visual) =
+            cx.add_window_view(|_, cx| AppModel::new_for_test_with_persistence(persistence, cx));
+        model.update(visual, configure_restorable_state);
+        visual.executor().advance_clock(SESSION_DEBOUNCE);
+        visual.run_until_parked();
+        let take = || {
+            std::mem::take(
+                &mut *requests
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            )
+        };
+        take();
+
+        let choose = |visual: &mut gpui::VisualTestContext, tab| {
+            visual.update(|window, cx| {
+                model.update(cx, |model, cx| model.select_work_panel_tab(tab, window, cx));
+            });
+            visual.executor().advance_clock(SESSION_DEBOUNCE);
+            visual.run_until_parked();
+        };
+        choose(visual, WorkPanelTab::Files);
+        let saved = take();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].work_panel_tab.as_deref(), Some("files"));
+        // Choosing the open tab again saves nothing.
+        choose(visual, WorkPanelTab::Files);
+        assert!(take().is_empty());
+    }
+
+    #[gpui::test]
     fn rehydrates_all_domain_selections(cx: &mut TestAppContext) {
         let model = cx.new(AppModel::new_for_test);
         let session = UiSessionState {
@@ -10255,6 +10666,7 @@ mod tests {
             scroll_top: Some(44.0),
             tabs: Vec::new(),
             auto_open_review: true,
+            work_panel_tab: Some("search".into()),
             updated_at: "now".into(),
         };
         model.update(cx, |model, cx| {
@@ -10288,6 +10700,10 @@ mod tests {
             assert_eq!(model.canvas.project_id.as_deref(), Some("project-1"));
             assert!(model.navigation.read(cx).context_rail_collapsed);
             assert!(model.auto_open_review);
+            assert_eq!(
+                model.work_panel.tab,
+                crate::work_panel::WorkPanelTab::Search
+            );
             let workspace = model.workspace.read(cx);
             assert!(!workspace.context_drawer_open);
             // Legacy sessions persisted with `workspace_view_mode: "hitl"` still restore cleanly;
@@ -10333,6 +10749,7 @@ mod tests {
             assert!(round_trip.sidebar_collapsed);
             assert_eq!(round_trip.workspace_view_mode, "editor");
             assert!(round_trip.auto_open_review);
+            assert_eq!(round_trip.work_panel_tab.as_deref(), Some("search"));
             assert_eq!(round_trip.tabs[0].cursor_line, Some(7));
             assert_eq!(round_trip.tabs[0].cursor_column, Some(3));
         });
@@ -10345,6 +10762,7 @@ mod tests {
             model.pulsations.update(cx, |pulsations, _| {
                 pulsations.diff_expanded = true;
             });
+            model.work_panel.tab = crate::work_panel::WorkPanelTab::Files;
             model.apply_restored_session(
                 RestoredSession {
                     project_id: "project-1".into(),
@@ -10364,6 +10782,8 @@ mod tests {
                         scroll_top: None,
                         tabs: Vec::new(),
                         auto_open_review: false,
+                        // A tab a newer build saved opens the default one.
+                        work_panel_tab: Some("timeline".into()),
                         updated_at: "now".into(),
                     }),
                     tabs: Vec::new(),
@@ -10381,6 +10801,10 @@ mod tests {
             assert!(model.navigation.read(cx).context_rail_collapsed);
             assert!(!model.workspace.read(cx).context_drawer_open);
             assert!(!model.pulsations.read(cx).diff_expanded);
+            assert_eq!(
+                model.work_panel.tab,
+                crate::work_panel::WorkPanelTab::General
+            );
         });
     }
 
@@ -11047,6 +11471,7 @@ mod tests {
                 error_code: None,
                 error_message: None,
                 target_label: None,
+                model_evidence: None,
                 created_at: "now".into(),
                 updated_at: "now".into(),
             }
