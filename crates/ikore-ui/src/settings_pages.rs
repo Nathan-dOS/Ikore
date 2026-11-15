@@ -198,6 +198,12 @@ pub(crate) fn shortcut_catalog() -> Vec<Shortcut> {
         shortcut(NAV, "ctrl-b", "Show or hide the context rail", true),
         shortcut(
             NAV,
+            "ctrl-shift-e",
+            "Show or hide the projects sidebar",
+            true,
+        ),
+        shortcut(
+            NAV,
             "alt-up",
             "Previous question of the open Companion conversation",
             true,

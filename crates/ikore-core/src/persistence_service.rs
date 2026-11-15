@@ -128,6 +128,9 @@ mod resolution;
 #[path = "orchestration/scope_persistence.rs"]
 mod scope_persistence;
 pub use scope_persistence::ScopeRequestView;
+#[path = "orchestration/project_sessions.rs"]
+mod project_sessions;
+pub use project_sessions::{ProjectSessions, SessionEntry, SessionKind, SessionState};
 #[path = "orchestration/serial.rs"]
 mod serial;
 #[path = "orchestration/supervisor.rs"]
@@ -404,7 +407,7 @@ impl From<LlmError> for PersistenceServiceError {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Project {
     pub id: String,

@@ -51,6 +51,7 @@ mod notes_view;
 mod notifications;
 mod performance;
 mod pipeline_status;
+mod projects_sidebar;
 mod pulsations;
 mod pulsations_view;
 mod quota_bar;

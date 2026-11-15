@@ -692,6 +692,31 @@ pub(crate) fn icon_button(
     cx: &mut Context<AppModel>,
     handler: impl Fn(&mut AppModel, &mut gpui::Window, &mut Context<AppModel>) + 'static,
 ) -> AnyElement {
+    icon_button_div(
+        id,
+        glyph,
+        tooltip,
+        selected,
+        badge_count,
+        enabled,
+        cx,
+        handler,
+    )
+    .into_any_element()
+}
+
+/// [`icon_button`] before it is erased, for the caller that tracks the button's focus itself.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn icon_button_div(
+    id: impl Into<SharedString>,
+    glyph: Icon,
+    tooltip: impl Into<Tooltip>,
+    selected: bool,
+    badge_count: Option<usize>,
+    enabled: bool,
+    cx: &mut Context<AppModel>,
+    handler: impl Fn(&mut AppModel, &mut gpui::Window, &mut Context<AppModel>) + 'static,
+) -> gpui::Stateful<gpui::Div> {
     let id = id.into();
     let debug_id = id.clone();
     let tooltip = tooltip.into();
@@ -734,7 +759,6 @@ pub(crate) fn icon_button(
                 theme::canvas(),
             )))
         })
-        .into_any_element()
 }
 
 /// Small numeric count pill (bell, rail items, section counters).

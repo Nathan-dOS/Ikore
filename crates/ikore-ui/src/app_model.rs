@@ -398,6 +398,8 @@ pub struct AppModel {
     chat_initial_input: Entity<NativeTextInput>,
     pub(crate) chat_composer_inputs: HashMap<String, Entity<NativeTextInput>>,
     chat_composer_subscriptions: HashMap<String, Vec<Subscription>>,
+    /// Every project and its recent work, beside the nav rail (ADR-042).
+    pub(crate) projects_sidebar: crate::projects_sidebar::ProjectsSidebar,
     /// Scroll of the open conversation, which the question navigator reads and moves.
     pub(crate) chat_scroll: gpui::ScrollHandle,
     /// Where the questions of the open conversation were laid out last; shared with its prepaint.
@@ -948,6 +950,7 @@ impl AppModel {
             chat_draft_input,
             chat_composer_inputs: HashMap::new(),
             chat_composer_subscriptions: HashMap::new(),
+            projects_sidebar: Default::default(),
             chat_scroll: gpui::ScrollHandle::new(),
             chat_question_layout: Default::default(),
             cli_model_search_input,
@@ -1453,7 +1456,7 @@ impl AppModel {
         }));
     }
 
-    fn open_selected_workspace(&mut self, path: String, cx: &mut Context<Self>) {
+    pub(crate) fn open_selected_workspace(&mut self, path: String, cx: &mut Context<Self>) {
         if !self.canvas_can_leave(cx) {
             self.pending_canvas_workspace = Some(path);
             self.status = "Saving the drawing before changing projects…".into();
@@ -8572,6 +8575,7 @@ impl AppModel {
                         model.refresh_resolution_chips(cx);
                         model.poll_resolution_turn_if_pending(cx);
                     }
+                    model.refresh_projects_sidebar(cx);
                     model.tick_footer_clock(cx);
                     true
                 });

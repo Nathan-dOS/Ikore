@@ -29,9 +29,15 @@ pub(crate) enum Density {
 }
 
 /// `(collapsed, forced)`: the rail is folded when the developer folded it or when the window is
-/// too narrow for the centre column to keep every split above its minimum width.
+/// too narrow for the centre column to keep every split above its minimum width. The projects
+/// sidebar takes its width from the same row, so this rail folds first when both are open.
 pub(crate) fn effective_collapsed(model: &AppModel, window: &Window, cx: &App) -> (bool, bool) {
-    let forced = window.viewport_size().width < CONTEXT_RAIL_AUTO_COLLAPSE_BELOW;
+    let sidebar = if crate::projects_sidebar::sidebar_shown(model, window) {
+        crate::projects_sidebar::PROJECTS_SIDEBAR_WIDTH
+    } else {
+        gpui::px(0.0)
+    };
+    let forced = window.viewport_size().width < CONTEXT_RAIL_AUTO_COLLAPSE_BELOW + sidebar;
     (forced || model.context_rail_collapsed(cx), forced)
 }
 

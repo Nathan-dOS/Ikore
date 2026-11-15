@@ -46,6 +46,7 @@ actions!(
         RunPrimaryFlowStep,
         ToggleContextRail,
         ToggleCompanionDock,
+        ToggleProjectsSidebar,
         PreviousChatQuestion,
         NextChatQuestion,
         FocusNextControl,
@@ -112,6 +113,7 @@ pub(crate) fn register_navigation_keybindings(cx: &mut App) {
         KeyBinding::new("alt-up", PreviousChatQuestion, None),
         KeyBinding::new("alt-down", NextChatQuestion, None),
         KeyBinding::new("ctrl-b", ToggleContextRail, None),
+        KeyBinding::new("ctrl-shift-e", ToggleProjectsSidebar, None),
         // Tab walks the controls; the code editor keeps Tab for itself.
         // A bare `!NativeEditor` never matches: GPUI needs a context on the path to test.
         KeyBinding::new("tab", FocusNextControl, Some("Shell && !NativeEditor")),
@@ -212,6 +214,7 @@ impl Render for AppModel {
         self.collect_notifications(cx);
         self.observe_companion_dock(cx);
         self.observe_companion_dock_focus(window, cx);
+        let projects_trigger = self.observe_projects_sidebar_focus(window, cx);
         let unread = self.notifications.queue.unread();
         if self.agents.read(cx).active_model_picker.is_some()
             && matches!(active, AppView::Agents | AppView::Chat)
@@ -298,6 +301,9 @@ impl Render for AppModel {
                     model.step_chat_question(true, cx);
                 }
             }))
+            .on_action(cx.listener(|model, _: &ToggleProjectsSidebar, _, cx| {
+                model.toggle_projects_sidebar(cx);
+            }))
             .on_action(cx.listener(|model, _: &ToggleContextRail, _, cx| {
                 model.toggle_context_rail(cx);
             }))
@@ -317,7 +323,17 @@ impl Render for AppModel {
                     .flex()
                     .flex_1()
                     .min_h_0()
-                    .child(nav_rail(active, badges, self.settings_modal.open, cx))
+                    .child(nav_rail(
+                        active,
+                        badges,
+                        self.settings_modal.open,
+                        (self.projects_sidebar.open, projects_trigger),
+                        cx,
+                    ))
+                    .when_some(
+                        crate::projects_sidebar::projects_sidebar(self, window, cx),
+                        |body, sidebar| body.child(sidebar),
+                    )
                     .child(
                         // The one framed surface: the centre view sits in a raised container
                         // on the canvas; the rails, header and footer around it are frameless.
@@ -632,6 +648,7 @@ fn nav_rail(
     active: AppView,
     badges: TabBadges,
     settings_open: bool,
+    (projects_open, projects_focus): (bool, gpui::FocusHandle),
     cx: &mut Context<AppModel>,
 ) -> impl IntoElement {
     let mut rail = div()
@@ -655,7 +672,26 @@ fn nav_rail(
             true,
             cx,
             |model, _, cx| model.forge_action(crate::forge::ForgeAction::New(false), cx),
-        ));
+        ))
+        // Every project and its recent work, in a sidebar beside this rail (ADR-042). The button
+        // takes the focus of a sidebar that closes.
+        .child(
+            crate::widgets::icon_button_div(
+                "rail-projects",
+                if projects_open {
+                    Icon::FolderOpen
+                } else {
+                    Icon::Folder
+                },
+                crate::widgets::Tooltip::new("Projects and sessions").with_shortcut("ctrl-shift-e"),
+                projects_open,
+                None,
+                true,
+                cx,
+                |model, _, cx| model.toggle_projects_sidebar(cx),
+            )
+            .track_focus(&projects_focus),
+        );
     for tab in AppTab::RAIL_ORDER {
         rail = rail.child(crate::widgets::rail_divider());
         for view in tab.sub_views().iter().copied() {

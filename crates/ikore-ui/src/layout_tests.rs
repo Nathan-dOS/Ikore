@@ -6043,6 +6043,185 @@ fn companion_composer_offers_the_effort_of_the_model_as_chips(cx: &mut TestAppCo
 }
 
 #[gpui::test]
+fn projects_sidebar_lists_every_project_beside_the_rail(cx: &mut TestAppContext) {
+    use ikore_core::persistence_service::{
+        Project, ProjectSessions, SessionEntry, SessionKind, SessionState,
+    };
+    let project = |id: &str, name: &str| Project {
+        id: id.into(),
+        name: name.into(),
+        workspace_path: format!("C:/work/{id}"),
+        is_archived: false,
+        created_at: "now".into(),
+        updated_at: "now".into(),
+        last_opened_at: None,
+    };
+    let session = |kind, id: &str, detail: &str, state| SessionEntry {
+        kind,
+        id: id.into(),
+        title: format!("Session {id}"),
+        detail: detail.into(),
+        state,
+        updated_at: "now".into(),
+    };
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.update(|_, cx| crate::shell::register_navigation_keybindings(cx));
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    select(&model, visual, AppView::Agents);
+    assert!(visual.debug_bounds("projects-sidebar").is_none());
+    let rail = visual.debug_bounds("rail").unwrap();
+    assert_eq!(
+        visual.debug_bounds("shell-center").unwrap().left(),
+        rail.right()
+    );
+    assert_eq!(
+        visual.debug_bounds("context-rail").unwrap().size.width,
+        px(256.0)
+    );
+
+    model.update(visual, |m, cx| {
+        m.projects_sidebar.projects = vec![
+            ProjectSessions {
+                project: project("layout-project", "Open project"),
+                sessions: vec![
+                    session(
+                        SessionKind::Pulsation,
+                        "pulse-a",
+                        "code",
+                        SessionState::Running,
+                    ),
+                    session(
+                        SessionKind::Feature,
+                        "feature-a",
+                        "incubating",
+                        SessionState::Idle,
+                    ),
+                    session(
+                        SessionKind::Conversation,
+                        "chat-a",
+                        "gpt-5",
+                        SessionState::Idle,
+                    ),
+                ],
+                state: SessionState::Running,
+            },
+            ProjectSessions {
+                project: project("other-project", "Other project"),
+                sessions: vec![session(
+                    SessionKind::Pulsation,
+                    "pulse-z",
+                    "test",
+                    SessionState::Waiting,
+                )],
+                state: SessionState::Waiting,
+            },
+        ];
+        cx.notify();
+    });
+    click(visual, "rail-projects");
+    // The sidebar opens between the rail and the centre, which keeps its minimum width.
+    let sidebar = visual.debug_bounds("projects-sidebar").unwrap();
+    let center = visual.debug_bounds("shell-center").unwrap();
+    assert_eq!(sidebar.size.width, px(240.0));
+    assert_eq!(sidebar.left(), rail.right());
+    assert_eq!(center.left(), sidebar.right());
+    assert!(center.size.width >= px(660.0), "{center:?}");
+    // This window has room for both side panels.
+    assert_eq!(
+        visual.debug_bounds("context-rail").unwrap().size.width,
+        px(256.0)
+    );
+    // The open project shows its work; the other one is folded, marked and can be opened.
+    assert!(visual.debug_bounds("sidebar-session:pulse-a").is_some());
+    assert!(visual.debug_bounds("sidebar-session:pulse-z").is_none());
+    assert!(
+        visual
+            .debug_bounds("sidebar-project-state:other-project")
+            .is_some()
+    );
+    assert!(visual.debug_bounds("sidebar-open:other-project").is_some());
+    assert!(visual.debug_bounds("sidebar-open:layout-project").is_none());
+    click(visual, "sidebar-project:other-project");
+    for row in [
+        "sidebar-project:layout-project",
+        "sidebar-session:pulse-a",
+        "sidebar-session:chat-a",
+        "sidebar-project:other-project",
+        "sidebar-open:other-project",
+        "sidebar-session:pulse-z",
+    ] {
+        let bounds = visual
+            .debug_bounds(row)
+            .unwrap_or_else(|| panic!("missing {row}"));
+        assert!(
+            bounds.left() >= sidebar.left() && bounds.right() <= sidebar.right(),
+            "{row} {bounds:?} leaves {sidebar:?}"
+        );
+    }
+    // A session of the open project goes to its view.
+    click(visual, "sidebar-session:chat-a");
+    assert_eq!(
+        model.read_with(visual, |m, _| m.active_view()),
+        AppView::Chat
+    );
+    click(visual, "sidebar-session:feature-a");
+    assert_eq!(
+        model.read_with(visual, |m, _| (
+            m.active_view(),
+            m.forge.selected_feature.clone()
+        )),
+        (AppView::Forge, Some("feature-a".to_string()))
+    );
+    click(visual, "sidebar-session:pulse-a");
+    assert_eq!(
+        model.read_with(visual, |m, _| m.active_view()),
+        AppView::Pulsations
+    );
+    // In a narrower window the context rail folds first, and the sidebar stays.
+    visual.simulate_resize(size(px(1280.0), px(800.0)));
+    visual.run_until_parked();
+    assert_eq!(
+        visual.debug_bounds("context-rail").unwrap().size.width,
+        px(48.0)
+    );
+    let sidebar = visual.debug_bounds("projects-sidebar").unwrap();
+    let center = visual.debug_bounds("shell-center").unwrap();
+    assert_eq!(center.left(), sidebar.right());
+    assert!(center.size.width >= px(660.0), "{center:?}");
+    // At the minimum window the sidebar gives its room back to the centre.
+    visual.simulate_resize(size(px(960.0), px(640.0)));
+    visual.run_until_parked();
+    let rail = visual.debug_bounds("rail").unwrap();
+    let center = visual.debug_bounds("shell-center").unwrap();
+    assert_eq!(center.left(), rail.right());
+    assert!(model.read_with(visual, |m, _| m.projects_sidebar.open));
+    // The row that had the focus is gone: the rail button took it, so the shortcut still
+    // reaches the shell and closes what the button opened.
+    assert!(visual.update(|window, cx| window.focused(cx).is_some()));
+    visual.simulate_keystrokes("ctrl-shift-e");
+    visual.run_until_parked();
+    assert!(!model.read_with(visual, |m, _| m.projects_sidebar.open));
+    // Closed from inside the sidebar, the same shortcut opens it again.
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    visual.simulate_keystrokes("ctrl-shift-e");
+    visual.run_until_parked();
+    click(visual, "sidebar-session:chat-a");
+    // GPUI keeps the bounds of a selector that is no longer drawn, so the centre tells where
+    // the sidebar is.
+    let center_left = |visual: &mut VisualTestContext| {
+        visual.debug_bounds("shell-center").unwrap().left()
+            - visual.debug_bounds("rail").unwrap().right()
+    };
+    assert_eq!(center_left(visual), px(240.0));
+    visual.simulate_keystrokes("ctrl-shift-e");
+    visual.run_until_parked();
+    assert_eq!(center_left(visual), px(0.0));
+    visual.simulate_keystrokes("ctrl-shift-e");
+    visual.run_until_parked();
+    assert_eq!(center_left(visual), px(240.0));
+}
+
+#[gpui::test]
 fn settings_models_page_lists_each_model_once_with_its_routes(cx: &mut TestAppContext) {
     use ikore_core::llm::ProviderConnection;
     use ikore_core::terminals::{
