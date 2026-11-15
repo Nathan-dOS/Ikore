@@ -5394,6 +5394,140 @@ fn backlog_task_actions_sit_at_the_card_top_right(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn companion_list_pins_folds_the_archive_searches_and_queues(cx: &mut TestAppContext) {
+    use ikore_core::chat_service::{
+        ChatConversation, ChatConversationMatch, ChatMessage, ChatTransportKind, ConversationMarks,
+    };
+    let conversation = |id: &str, title: &str| ChatConversation {
+        id: id.into(),
+        project_id: "layout-project".into(),
+        connection_id: None,
+        provider_id: "openai".into(),
+        model_id: "gpt-5".into(),
+        transport: ChatTransportKind::Cli,
+        cli_backend: Some(CliBackend::Codex),
+        model_profile: None,
+        model_source: CliModelSelectionSource::Default,
+        title: title.into(),
+        connection_available: true,
+        created_at: "now".into(),
+        updated_at: "now".into(),
+    };
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    select(&model, visual, AppView::Chat);
+    model.update(visual, |m, cx| {
+        m.chat.update(cx, |chat, _| {
+            chat.project_id = Some("layout-project".into());
+            chat.conversations = vec![
+                conversation("recent", "Recent work"),
+                conversation("older", "Older work"),
+                conversation("old", "Old notes"),
+            ];
+            chat.marks = ConversationMarks {
+                pinned: vec!["older".into()],
+                archived: vec!["old".into()],
+            };
+            chat.active_conversation = Some("recent".into());
+            chat.messages_by_conversation.insert(
+                "recent".into(),
+                vec![ChatMessage {
+                    id: "message-0".into(),
+                    conversation_id: "recent".into(),
+                    ordinal: 0,
+                    role: "user".into(),
+                    content: "A question.".into(),
+                    status: "completed".into(),
+                    execution_id: None,
+                    generation_id: None,
+                    last_sequence: 0,
+                    input_tokens: None,
+                    output_tokens: None,
+                    estimated_cost_usd: None,
+                    error_code: None,
+                    error_message: None,
+                    target_label: None,
+                    model_evidence: None,
+                    created_at: "now".into(),
+                    updated_at: "now".into(),
+                }],
+            );
+            chat.sync_panel_with_active_conversation();
+            chat.enqueue("recent", "A follow-up written while it replied".into());
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    // The pinned conversation comes first; the archived one waits under its fold.
+    let pinned = visual.debug_bounds("chat-conversation:older").unwrap();
+    let recent = visual.debug_bounds("chat-conversation:recent").unwrap();
+    let fold = visual.debug_bounds("chat-archived-toggle").unwrap();
+    assert!(pinned.bottom() <= recent.top(), "{pinned:?} {recent:?}");
+    assert!(recent.bottom() <= fold.top());
+    // Pin, archive and delete fit in the row, after the title.
+    for action in [
+        "chat-pin:recent",
+        "chat-archive:recent",
+        "chat-delete:recent",
+    ] {
+        let bounds = visual.debug_bounds(action).unwrap();
+        assert!(
+            bounds.left() >= recent.left() && bounds.right() <= recent.right(),
+            "{action} {bounds:?} leaves {recent:?}"
+        );
+    }
+    click(visual, "chat-archived-toggle");
+    assert!(model.read_with(visual, |m, cx| m.chat.read(cx).show_archived));
+    let archived = visual.debug_bounds("chat-conversation:old").unwrap();
+    assert!(archived.top() >= fold.bottom());
+    // A finished message can be branched; the queue sits above the composer's field.
+    let message = visual.debug_bounds("chat-message:message-0").unwrap();
+    let branch = visual.debug_bounds("chat-branch:message-0").unwrap();
+    assert!(branch.top() >= message.top() && branch.bottom() <= message.bottom());
+    let composer = visual.debug_bounds("chat-composer").unwrap();
+    let queue = visual.debug_bounds("chat-queue").unwrap();
+    let queued = visual.debug_bounds("chat-queued:0").unwrap();
+    assert!(queue.top() >= composer.top() && queued.bottom() <= composer.bottom());
+    // Free again with a message waiting, the conversation offers to send it now.
+    assert!(visual.debug_bounds("chat-queued-send:0").is_some());
+    // Search results replace the list while they are shown.
+    model.update(visual, |m, cx| {
+        m.chat.update(cx, |chat, _| {
+            chat.conversation_search = Some(crate::chat::ConversationSearch {
+                query: "work".into(),
+                matches: vec![ChatConversationMatch {
+                    conversation_id: "older".into(),
+                    title: "Older work".into(),
+                    excerpt: Some("…the work on the login…".into()),
+                    updated_at: "now".into(),
+                }],
+                searching: false,
+            });
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let field = visual.debug_bounds("chat-search-field").unwrap();
+    let found = visual.debug_bounds("chat-search-result:older").unwrap();
+    assert!(found.top() > field.bottom());
+    assert!(found.left() >= field.left() - px(1.0) && found.right() <= field.right() + px(1.0));
+    click(visual, "chat-search-result:older");
+    assert_eq!(
+        model.read_with(visual, |m, cx| m
+            .chat
+            .read(cx)
+            .active_conversation
+            .as_ref()
+            .map(ToString::to_string)),
+        Some("older".to_string())
+    );
+    click(visual, "chat-search-clear");
+    assert!(model.read_with(visual, |m, cx| {
+        m.chat.read(cx).conversation_search.is_none()
+    }));
+}
+
+#[gpui::test]
 fn companion_conversation_is_a_centred_reading_column(cx: &mut TestAppContext) {
     use ikore_core::chat_service::{
         ChatConversation, ChatMessage, ChatMessageModelEvidence, ChatModelVerification,
@@ -6062,6 +6196,7 @@ fn projects_sidebar_lists_every_project_beside_the_rail(cx: &mut TestAppContext)
         title: format!("Session {id}"),
         detail: detail.into(),
         state,
+        pinned: id == "chat-a",
         updated_at: "now".into(),
     };
     let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
@@ -6141,6 +6276,10 @@ fn projects_sidebar_lists_every_project_beside_the_rail(cx: &mut TestAppContext)
     );
     assert!(visual.debug_bounds("sidebar-open:other-project").is_some());
     assert!(visual.debug_bounds("sidebar-open:layout-project").is_none());
+    // A pinned conversation says so on its row.
+    let pin = visual.debug_bounds("sidebar-pinned:chat-a").unwrap();
+    let pinned_row = visual.debug_bounds("sidebar-session:chat-a").unwrap();
+    assert!(pin.left() >= pinned_row.left() && pin.right() <= pinned_row.right());
     click(visual, "sidebar-project:other-project");
     for row in [
         "sidebar-project:layout-project",

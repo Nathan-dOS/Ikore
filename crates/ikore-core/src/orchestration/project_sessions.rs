@@ -41,6 +41,8 @@ pub struct SessionEntry {
     /// The stage of a pulsation, the state of a feature, the model of a conversation.
     pub detail: String,
     pub state: SessionState,
+    /// A conversation the developer pinned; it comes before the others of its project.
+    pub pinned: bool,
     pub updated_at: String,
 }
 
@@ -142,6 +144,7 @@ fn recent_sessions(
                 title: row.get("feature_name")?,
                 detail: row.get("stage")?,
                 state: pulsation_state(&row.get::<_, String>("status")?),
+                pinned: false,
                 updated_at: row.get("updated_at")?,
             })
         },
@@ -162,19 +165,34 @@ fn recent_sessions(
                 title: row.get("title")?,
                 state: feature_state(&state),
                 detail: state.replace('_', " "),
+                pinned: false,
                 updated_at: row.get("updated_at")?,
             })
         },
     )?;
+    // Pins and archives are the Companion's marks (`chat_service::sessions`): pinned
+    // conversations come first, archived ones are left out.
     read(
-        "SELECT id, project_id, title, model_id_snapshot, updated_at,
+        "SELECT id, project_id, title, model_id_snapshot, updated_at, pinned,
                 EXISTS(SELECT 1 FROM chat_messages m
-                       WHERE m.conversation_id = c.id
+                       WHERE m.conversation_id = ranked.id
                          AND m.status IN ('pending', 'streaming')) AS replying
          FROM (
-           SELECT c.*, ROW_NUMBER() OVER (
-             PARTITION BY project_id ORDER BY updated_at DESC, id) AS position
-           FROM chat_conversations c) c
+           SELECT marked.*, ROW_NUMBER() OVER (
+             PARTITION BY project_id ORDER BY pinned DESC, updated_at DESC, id) AS position
+           FROM (
+             SELECT c.id, c.project_id, c.title, c.model_id_snapshot, c.updated_at,
+                    EXISTS(SELECT 1 FROM runtime_settings s,
+                             json_each(CASE WHEN json_valid(s.value) THEN s.value ELSE '{}' END,
+                                       '$.pinned') p
+                           WHERE s.key = 'companion.marks.' || c.project_id
+                             AND p.value = c.id) AS pinned
+             FROM chat_conversations c
+             WHERE NOT EXISTS(SELECT 1 FROM runtime_settings s,
+                                json_each(CASE WHEN json_valid(s.value) THEN s.value ELSE '{}' END,
+                                          '$.archived') a
+                              WHERE s.key = 'companion.marks.' || c.project_id
+                                AND a.value = c.id)) marked) ranked
          WHERE position <= ?1
          ORDER BY project_id, position",
         &|row| {
@@ -188,6 +206,7 @@ fn recent_sessions(
                 } else {
                     SessionState::Idle
                 },
+                pinned: row.get("pinned")?,
                 updated_at: row.get("updated_at")?,
             })
         },
@@ -383,6 +402,51 @@ mod tests {
         assert_eq!(by_id(&quiet).state, SessionState::Idle);
         assert!(by_id(&empty).sessions.is_empty());
         assert_eq!(by_id(&empty).state, SessionState::Idle);
+    }
+
+    #[test]
+    fn pinned_conversations_come_first_and_archived_ones_are_left_out() {
+        let mut fixture = Fixture::new();
+        let project = fixture.project("marked");
+        for id in ["chat-old", "chat-mid", "chat-new"] {
+            fixture.conversation(&project, id, None);
+        }
+        for (id, updated_at) in [
+            ("chat-old", "2026-11-01T10:00:00+00:00"),
+            ("chat-mid", "2026-11-02T10:00:00+00:00"),
+            ("chat-new", "2026-11-03T10:00:00+00:00"),
+        ] {
+            fixture.sql(
+                "UPDATE chat_conversations SET updated_at = ?2 WHERE id = ?1",
+                params![id, updated_at],
+            );
+        }
+        fixture.sql(
+            "INSERT INTO runtime_settings(key, value, updated_at) VALUES (?1, ?2, 'now')",
+            params![
+                format!("companion.marks.{project}"),
+                r#"{"pinned":["chat-old"],"archived":["chat-new"]}"#
+            ],
+        );
+        let projects = fixture.service.project_sessions(5).unwrap();
+        let sessions: Vec<_> = projects[0]
+            .sessions
+            .iter()
+            .map(|session| (session.id.as_str(), session.pinned))
+            .collect();
+        assert_eq!(sessions, [("chat-old", true), ("chat-mid", false)]);
+
+        // Marks that are not JSON never break the sidebar.
+        fixture.sql(
+            "UPDATE runtime_settings SET value = 'not json' WHERE key = ?1",
+            params![format!("companion.marks.{project}")],
+        );
+        assert_eq!(
+            fixture.service.project_sessions(5).unwrap()[0]
+                .sessions
+                .len(),
+            3
+        );
     }
 
     #[test]

@@ -1538,6 +1538,17 @@ mod tests {
                 && dock_target.bottom() <= dock_composer.bottom(),
             "{dock_target:?} leaves {dock_composer:?}"
         );
+        // A message queued from the floating window is counted in it (PD11).
+        model.update(visual, |model, cx| {
+            model
+                .chat
+                .update(cx, |chat, _| chat.enqueue("dock-c", "later".into()));
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let queued = visual.debug_bounds("dock-queued-dock-c").unwrap();
+        let dock_composer = visual.debug_bounds("dock-composer-dock-c").unwrap();
+        assert!(queued.top() >= dock_composer.top() && queued.bottom() <= dock_composer.bottom());
         model.update(visual, |model, cx| {
             model.select_chat_conversation("dock-c".into(), cx);
             model.select_view(AppView::Chat, cx);

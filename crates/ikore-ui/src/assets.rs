@@ -30,6 +30,7 @@ macro_rules! icon_asset {
 /// Every embedded asset, keyed by the path the UI requests it with.
 pub(crate) static ASSETS: &[(&str, &[u8])] = &[
     icon_asset!("activity"),
+    icon_asset!("archive"),
     icon_asset!("arrow-right"),
     icon_asset!("ban"),
     icon_asset!("bell"),
@@ -62,6 +63,7 @@ pub(crate) static ASSETS: &[(&str, &[u8])] = &[
     icon_asset!("folder"),
     icon_asset!("flag"),
     icon_asset!("folder-open"),
+    icon_asset!("git-branch"),
     icon_asset!("git-compare"),
     icon_asset!("hammer"),
     icon_asset!("heart-pulse"),
@@ -80,6 +82,7 @@ pub(crate) static ASSETS: &[(&str, &[u8])] = &[
     icon_asset!("panel-right-open"),
     icon_asset!("pause"),
     icon_asset!("pencil"),
+    icon_asset!("pin"),
     icon_asset!("play"),
     icon_asset!("plug"),
     icon_asset!("plus"),

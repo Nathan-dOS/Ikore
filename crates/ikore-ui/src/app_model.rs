@@ -329,7 +329,7 @@ pub struct AppModel {
     pub(crate) settings_backend: Option<Arc<dyn SettingsBackend>>,
     pub(crate) agents_backend: Option<Arc<dyn AgentsBackend>>,
     logs_backend: Option<Arc<dyn LogsBackend>>,
-    chat_backend: Option<Arc<dyn ChatBackend>>,
+    pub(crate) chat_backend: Option<Arc<dyn ChatBackend>>,
     pub navigation: Entity<NavigationModel>,
     pub workspace: Entity<WorkspaceEditorModel>,
     pub pulsations: Entity<PulsationsModel>,
@@ -386,6 +386,9 @@ pub struct AppModel {
     question_subscriptions: Vec<Subscription>,
     pub(crate) artifact_preview_page: usize,
     pub(crate) vault_search_input: Entity<NativeTextInput>,
+    /// The search over the project's Companion conversations (PD11).
+    pub(crate) chat_search_input: Entity<NativeTextInput>,
+    pub(crate) chat_search_task: Option<Task<()>>,
     pub(crate) vault_rename_input: Entity<NativeTextInput>,
     pub(crate) settings_connection_name_input: Entity<NativeTextInput>,
     pub(crate) settings_connection_model_input: Entity<NativeTextInput>,
@@ -716,6 +719,7 @@ impl AppModel {
         let context_limit_input =
             cx.new(|cx| NativeTextInput::new("Context budget: 2,000 to 80,000 characters", cx));
         let vault_search_input = cx.new(|cx| NativeTextInput::new("Text or regex", cx));
+        let chat_search_input = cx.new(|cx| NativeTextInput::new("Search conversations", cx));
         let vault_rename_input = cx.new(|cx| NativeTextInput::new("New note name", cx));
         let settings_connection_name_input =
             cx.new(|cx| NativeTextInput::new("Connection name", cx));
@@ -939,6 +943,8 @@ impl AppModel {
             question_subscriptions: Vec::new(),
             artifact_preview_page: 0,
             vault_search_input,
+            chat_search_input,
+            chat_search_task: None,
             vault_rename_input,
             settings_connection_name_input,
             settings_connection_model_input,
@@ -4241,7 +4247,13 @@ impl AppModel {
     fn send_chat_composer_input(&mut self, input: Entity<NativeTextInput>, cx: &mut Context<Self>) {
         if let Some(conversation_id) = self.conversation_for_chat_composer(&input, cx) {
             let content = input.read(cx).value().to_owned();
-            self.send_chat_message_to(conversation_id, content, cx);
+            // While the reply streams, Enter queues the message for the next turn. While the
+            // send itself is leaving, Enter does nothing: the field still holds that message.
+            if self.chat.read(cx).is_streaming(&conversation_id) {
+                self.queue_chat_message(conversation_id, content, Some(input), cx);
+            } else {
+                self.send_chat_message_to(conversation_id, content, cx);
+            }
         }
     }
 
@@ -4300,6 +4312,7 @@ impl AppModel {
                     }
                     model.schedule_session_persistence(cx);
                     model.refresh_canvas_authoring(cx);
+                    model.refresh_chat_marks(cx);
                 }
                 cx.notify();
             });
@@ -4890,23 +4903,30 @@ impl AppModel {
             return;
         };
         let content = self.chat_draft_input.read(cx).value().to_owned();
-        self.send_chat_message_to(conversation_id, content, cx);
+        if self.chat.read(cx).is_streaming(&conversation_id) {
+            let input = self.chat_draft_input.clone();
+            self.queue_chat_message(conversation_id, content, Some(input), cx);
+        } else {
+            self.send_chat_message_to(conversation_id, content, cx);
+        }
     }
 
+    /// Sends `content` as the next turn of the conversation. `false` when it did not leave: an
+    /// empty text, a conversation that replies, or a target that waits for the reply.
     pub(crate) fn send_chat_message_to(
         &mut self,
         conversation_id: String,
         content: String,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         let Some(backend) = self.chat_backend.clone() else {
-            return;
+            return false;
         };
         let deferred_here = self.chat.read(cx).target_deferred_for(&conversation_id);
         if deferred_here {
             // Never send to a target other than the one the composer shows.
             self.flush_deferred_chat_target(cx);
-            return;
+            return false;
         }
         let (project_id, expected_target) = {
             let chat = self.chat.read(cx);
@@ -4916,7 +4936,7 @@ impl AppModel {
                 || chat.is_streaming(&conversation_id)
                 || chat.is_busy(&conversation_id)
             {
-                return;
+                return false;
             }
             (
                 chat.project_id.as_ref().map(ToString::to_string),
@@ -4924,12 +4944,12 @@ impl AppModel {
             )
         };
         let Some(project_id) = project_id else {
-            return;
+            return false;
         };
         let Some(generation) = self.chat.update(cx, |chat, _| {
             chat.begin_operation(&conversation_id, ChatOperation::Send)
         }) else {
-            return;
+            return false;
         };
         let input = self.ensure_chat_composer(&conversation_id, cx);
         cx.notify();
@@ -4971,11 +4991,13 @@ impl AppModel {
                 // A target chosen while this send was leaving waits for the reply; if the
                 // send failed there is no reply to wait for.
                 model.flush_deferred_chat_target(cx);
+                model.flush_chat_queue(cx);
                 model.schedule_session_persistence(cx);
                 cx.notify();
             });
         });
         self.chat_tasks.insert(task_key, task);
+        true
     }
 
     pub(crate) fn cancel_chat_turn(&mut self, cx: &mut Context<Self>) {
@@ -5064,6 +5086,8 @@ impl AppModel {
             self.refresh_canvas_authoring(cx);
         }
         self.flush_deferred_chat_target(cx);
+        // The reply ended: the conversation's next queued message leaves.
+        self.flush_chat_queue(cx);
     }
 
     fn resync_chat_turn(
@@ -8578,6 +8602,9 @@ impl AppModel {
                         model.poll_resolution_turn_if_pending(cx);
                     }
                     model.refresh_projects_sidebar(cx);
+                    // A queued message whose conversation came free without an event (an error
+                    // the developer cleared, a target that was applied) leaves on the poll.
+                    model.flush_chat_queue(cx);
                     model.tick_footer_clock(cx);
                     true
                 });
@@ -8783,7 +8810,7 @@ impl AppModel {
         cx.notify();
     }
 
-    fn schedule_session_persistence(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn schedule_session_persistence(&mut self, cx: &mut Context<Self>) {
         if self.hydrating || self.lifecycle.is_disposed() {
             return;
         }

@@ -398,6 +398,7 @@ fn purge_project(
         }
         for key in [
             format!("companion.target.{id}"),
+            format!("companion.marks.{id}"),
             format!("forge.navigation.{id}"),
             format!("brownfield.onboarding_consent.{id}"),
         ] {

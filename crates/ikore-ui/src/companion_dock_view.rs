@@ -464,6 +464,8 @@ fn topic_window(
         let messages = chat.rendered_messages_for(id).0.to_vec();
         let streaming = chat.is_streaming(id);
         let busy = chat.is_busy(id);
+        // Messages written here while it replied (PD11); the full Chat orders and removes them.
+        let queued = chat.queued(id).len();
         let error = chat.error_for(id).map(|error| error.presentable());
         let accepted = chat.disclosure_accepted_for(id);
         let conversation = chat
@@ -521,6 +523,19 @@ fn topic_window(
                     .p_2()
                     .border_t_1()
                     .border_color(theme::border())
+                    .when(queued > 0, |composer| {
+                        let selector = format!("dock-queued-{id}");
+                        composer.child(
+                            div()
+                                .debug_selector(move || selector.clone())
+                                .mb_1()
+                                .text_xs()
+                                .text_color(theme::text_muted())
+                                .child(format!(
+                                    "{queued} queued · they leave one per reply. Expand to reorder or remove them."
+                                )),
+                        )
+                    })
                     .child(input.clone())
                     .child(
                         div()

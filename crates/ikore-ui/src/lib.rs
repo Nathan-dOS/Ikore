@@ -14,6 +14,7 @@ mod canvas_integration_tests;
 mod canvas_view;
 mod chat;
 mod chat_questions;
+mod chat_sessions;
 mod chat_view;
 mod choices;
 mod cli_connections;

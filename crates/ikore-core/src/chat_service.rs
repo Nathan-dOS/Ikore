@@ -34,6 +34,12 @@ use crate::terminals::{
 use crate::usage::{UsageContext, UsageTransport, api::UsageRecorder};
 
 pub mod canvas_authoring;
+pub mod sessions;
+
+pub use sessions::{
+    ChatConversationMatch, ConversationMark, ConversationMarks, ForkChatConversationRequest,
+    MarkChatConversationRequest, SearchChatConversationsRequest,
+};
 
 const MAX_MODEL_ROUNDS: usize = 8;
 const MAX_TOOL_CALLS: usize = 24;
@@ -6849,6 +6855,160 @@ mod tests {
             )
             .unwrap();
         assert_eq!(model_status, "interrupted");
+    }
+
+    #[test]
+    fn branches_searches_and_marks_follow_the_conversations() {
+        let (_temp, _workspace, service) = prepare_chat();
+        let conversation = service
+            .create_conversation(CreateChatConversationRequest {
+                project_id: "project-a".into(),
+                target: ChatExecutionTargetRequest::Api {
+                    connection_id: "connection-a".into(),
+                },
+            })
+            .unwrap()
+            .conversation;
+        let database = service.connection().unwrap();
+        let now = now_iso();
+        for (ordinal, role, content, status) in [
+            (0, "user", "How is the Login flow wired?", "completed"),
+            (1, "assistant", "Through the auth middleware.", "completed"),
+            (2, "user", "And the logout?", "completed"),
+            (3, "assistant", "It clears the session.", "completed"),
+        ] {
+            database
+                .execute(
+                    "INSERT INTO chat_messages (
+                       id, conversation_id, ordinal, role, content, status, created_at,
+                       updated_at, input_tokens, target_label
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, 120, 'API · gpt-4.1-mini')",
+                    params![
+                        format!("message-{ordinal}"),
+                        conversation.id.as_str(),
+                        ordinal,
+                        role,
+                        content,
+                        status,
+                        now.as_str()
+                    ],
+                )
+                .unwrap();
+        }
+        drop(database);
+
+        // A branch keeps the target and the history up to the chosen message, nothing after.
+        let branch = service
+            .fork_conversation(ForkChatConversationRequest {
+                conversation_id: conversation.id.clone(),
+                through_message_id: "message-1".into(),
+            })
+            .unwrap();
+        assert_ne!(branch.conversation.id, conversation.id);
+        assert_eq!(branch.conversation.title, "Nova conversa · branch");
+        assert_eq!(
+            branch.conversation.connection_id.as_deref(),
+            Some("connection-a")
+        );
+        let copied: Vec<_> = branch
+            .messages
+            .iter()
+            .map(|message| (message.role.as_str(), message.content.as_str()))
+            .collect();
+        assert_eq!(
+            copied,
+            [
+                ("user", "How is the Login flow wired?"),
+                ("assistant", "Through the auth middleware.")
+            ]
+        );
+        // The original's usage and runs stay with it; the label of who answered comes along.
+        assert!(
+            branch.messages.iter().all(|message| {
+                message.input_tokens.is_none() && message.generation_id.is_none()
+            })
+        );
+        assert_eq!(
+            branch.messages[1].target_label.as_deref(),
+            Some("API · gpt-4.1-mini")
+        );
+        assert_eq!(
+            service
+                .get_conversation(GetChatConversationRequest {
+                    conversation_id: conversation.id.clone(),
+                })
+                .unwrap()
+                .messages
+                .len(),
+            4
+        );
+        assert_eq!(
+            service
+                .fork_conversation(ForkChatConversationRequest {
+                    conversation_id: conversation.id.clone(),
+                    through_message_id: "missing".into(),
+                })
+                .unwrap_err()
+                .code,
+            "message_not_found"
+        );
+
+        // Search finds titles and messages, ignoring case, and quotes the message.
+        let found = service
+            .search_conversations(SearchChatConversationsRequest {
+                project_id: "project-a".into(),
+                query: "LOGOUT".into(),
+            })
+            .unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].conversation_id, conversation.id);
+        assert_eq!(found[0].excerpt.as_deref(), Some("And the logout?"));
+        let both = service
+            .search_conversations(SearchChatConversationsRequest {
+                project_id: "project-a".into(),
+                query: "login".into(),
+            })
+            .unwrap();
+        assert_eq!(both.len(), 2, "{both:?}");
+        assert!(
+            service
+                .search_conversations(SearchChatConversationsRequest {
+                    project_id: "project-a".into(),
+                    query: "%".into(),
+                })
+                .unwrap()
+                .is_empty(),
+            "a LIKE wildcard in the query is a literal"
+        );
+
+        // Marks are per project and drop conversations that no longer exist.
+        let marks = service
+            .mark_conversation(MarkChatConversationRequest {
+                conversation_id: conversation.id.clone(),
+                mark: ConversationMark::Pinned,
+                on: true,
+            })
+            .unwrap();
+        assert_eq!(marks.pinned, std::slice::from_ref(&conversation.id));
+        let marks = service
+            .mark_conversation(MarkChatConversationRequest {
+                conversation_id: branch.conversation.id.clone(),
+                mark: ConversationMark::Archived,
+                on: true,
+            })
+            .unwrap();
+        assert_eq!(
+            marks.archived,
+            std::slice::from_ref(&branch.conversation.id)
+        );
+        service
+            .delete_conversation(DeleteChatConversationRequest {
+                conversation_id: branch.conversation.id.clone(),
+            })
+            .unwrap();
+        let marks = service.conversation_marks("project-a").unwrap();
+        assert_eq!(marks.pinned, std::slice::from_ref(&conversation.id));
+        assert!(marks.archived.is_empty());
     }
 
     #[test]

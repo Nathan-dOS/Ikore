@@ -6,11 +6,13 @@ use std::sync::Arc;
 use gpui::SharedString;
 use ikore_core::AppCore;
 use ikore_core::chat_service::{
-    CancelChatTurnRequest, ChatCommandError, ChatConversation, ChatEventDetail, ChatEventEnvelope,
-    ChatEventKind, ChatExecutionTargetRequest, ChatMessage, ChatToolCall, ChatTransportKind,
-    CreateChatConversationRequest, DeleteChatConversationRequest, GetChatConversationRequest,
-    GetChatConversationResponse, GetChatTurnSnapshotRequest, GetChatTurnSnapshotResponse,
-    ListChatConversationsRequest, SendChatMessageRequest, SendChatMessageResponse,
+    CancelChatTurnRequest, ChatCommandError, ChatConversation, ChatConversationMatch,
+    ChatEventDetail, ChatEventEnvelope, ChatEventKind, ChatExecutionTargetRequest, ChatMessage,
+    ChatToolCall, ChatTransportKind, ConversationMark, ConversationMarks,
+    CreateChatConversationRequest, DeleteChatConversationRequest, ForkChatConversationRequest,
+    GetChatConversationRequest, GetChatConversationResponse, GetChatTurnSnapshotRequest,
+    GetChatTurnSnapshotResponse, ListChatConversationsRequest, MarkChatConversationRequest,
+    SearchChatConversationsRequest, SendChatMessageRequest, SendChatMessageResponse,
     UpdateChatConversationTargetRequest,
 };
 use ikore_core::llm::ProviderConnection;
@@ -73,6 +75,35 @@ pub(crate) trait ChatBackend: Send + Sync {
         project_id: String,
         target: ChatExecutionTargetRequest,
     ) -> ChatFuture<()>;
+    /// A new conversation with the history up to `through_message_id` (PD11).
+    fn fork_conversation(
+        &self,
+        _conversation_id: String,
+        _through_message_id: String,
+    ) -> ChatFuture<GetChatConversationResponse> {
+        Box::pin(async { Err(UiCommandError::worker("Branching is not available here.")) })
+    }
+    /// The project's conversations whose title or messages hold `query`.
+    fn search_conversations(
+        &self,
+        _project_id: String,
+        _query: String,
+    ) -> ChatFuture<Vec<ChatConversationMatch>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+    /// The project's pinned and archived conversations.
+    fn conversation_marks(&self, _project_id: String) -> ChatFuture<ConversationMarks> {
+        Box::pin(async { Ok(ConversationMarks::default()) })
+    }
+    /// Pins, unpins, archives or restores a conversation; answers with the project's marks.
+    fn mark_conversation(
+        &self,
+        _conversation_id: String,
+        _mark: ConversationMark,
+        _on: bool,
+    ) -> ChatFuture<ConversationMarks> {
+        Box::pin(async { Err(UiCommandError::worker("Marks are not available here.")) })
+    }
 }
 
 pub(crate) struct CoreChatBackend {
@@ -332,6 +363,78 @@ impl ChatBackend for CoreChatBackend {
                 })?
         })
     }
+
+    fn fork_conversation(
+        &self,
+        conversation_id: String,
+        through_message_id: String,
+    ) -> ChatFuture<GetChatConversationResponse> {
+        self.blocking("branch", move |core| {
+            core.chat()
+                .fork_conversation(ForkChatConversationRequest {
+                    conversation_id,
+                    through_message_id,
+                })
+                .map_err(UiCommandError::from)
+        })
+    }
+
+    fn search_conversations(
+        &self,
+        project_id: String,
+        query: String,
+    ) -> ChatFuture<Vec<ChatConversationMatch>> {
+        self.blocking("search", move |core| {
+            core.chat()
+                .search_conversations(SearchChatConversationsRequest { project_id, query })
+                .map_err(UiCommandError::from)
+        })
+    }
+
+    fn conversation_marks(&self, project_id: String) -> ChatFuture<ConversationMarks> {
+        self.blocking("marks", move |core| {
+            core.chat()
+                .conversation_marks(&project_id)
+                .map_err(UiCommandError::from)
+        })
+    }
+
+    fn mark_conversation(
+        &self,
+        conversation_id: String,
+        mark: ConversationMark,
+        on: bool,
+    ) -> ChatFuture<ConversationMarks> {
+        self.blocking("marks", move |core| {
+            core.chat()
+                .mark_conversation(MarkChatConversationRequest {
+                    conversation_id,
+                    mark,
+                    on,
+                })
+                .map_err(UiCommandError::from)
+        })
+    }
+}
+
+impl CoreChatBackend {
+    /// Runs a short read or write of the Companion's store off the UI thread.
+    fn blocking<T: Send + 'static>(
+        &self,
+        what: &'static str,
+        work: impl FnOnce(Arc<AppCore>) -> Result<T, UiCommandError> + Send + 'static,
+    ) -> ChatFuture<T> {
+        let core = Arc::clone(&self.core);
+        let runtime = core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn_blocking(move || work(core))
+                .await
+                .map_err(|error| {
+                    UiCommandError::worker(format!("Chat {what} worker interrupted: {error}"))
+                })?
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -491,6 +594,25 @@ pub struct ChatModel {
     project_loading: bool,
     project_error: Option<UiCommandError>,
     creating: bool,
+    /// The project's pinned and archived conversations (PD11).
+    pub(crate) marks: ConversationMarks,
+    /// The archived conversations are listed under the others.
+    pub(crate) show_archived: bool,
+    /// The conversations the list's search found, while it shows them.
+    pub(crate) conversation_search: Option<ConversationSearch>,
+    /// Messages written while their conversation was replying. They leave in order, one per
+    /// turn, when it is free again. In memory only: a restart drops them.
+    queues: HashMap<String, Vec<String>>,
+}
+
+/// Messages a conversation keeps waiting while it replies.
+pub(crate) const MAX_QUEUED_MESSAGES: usize = 8;
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ConversationSearch {
+    pub(crate) query: String,
+    pub(crate) matches: Vec<ChatConversationMatch>,
+    pub(crate) searching: bool,
 }
 
 impl ChatModel {
@@ -536,6 +658,10 @@ impl ChatModel {
             self.target_change_generation = self.target_change_generation.saturating_add(1);
             self.pending_delete_conversation_id = None;
             self.creating = false;
+            self.marks = ConversationMarks::default();
+            self.show_archived = false;
+            self.conversation_search = None;
+            self.queues.clear();
         }
         self.project_loading = true;
         self.project_error = None;
@@ -1075,6 +1201,67 @@ impl ChatModel {
         self.recompute_streaming();
     }
 
+    /// The conversation is replying or has a request in flight: a message waits in its queue.
+    pub(crate) fn replying(&self, conversation_id: &str) -> bool {
+        self.is_streaming(conversation_id) || self.is_busy(conversation_id)
+    }
+
+    pub(crate) fn queued(&self, conversation_id: &str) -> &[String] {
+        self.queues
+            .get(conversation_id)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+
+    /// Adds a message to the end of the queue. `false` when the queue is full.
+    pub(crate) fn enqueue(&mut self, conversation_id: &str, content: String) -> bool {
+        let queue = self.queues.entry(conversation_id.into()).or_default();
+        if queue.len() >= MAX_QUEUED_MESSAGES {
+            return false;
+        }
+        queue.push(content);
+        true
+    }
+
+    /// Moves a queued message one place towards the front.
+    pub(crate) fn move_queued_up(&mut self, conversation_id: &str, index: usize) {
+        if let Some(queue) = self.queues.get_mut(conversation_id)
+            && index > 0
+            && index < queue.len()
+        {
+            queue.swap(index, index - 1);
+        }
+    }
+
+    pub(crate) fn remove_queued(&mut self, conversation_id: &str, index: usize) -> Option<String> {
+        let queue = self.queues.get_mut(conversation_id)?;
+        let removed = (index < queue.len()).then(|| queue.remove(index));
+        if queue.is_empty() {
+            self.queues.remove(conversation_id);
+        }
+        removed
+    }
+
+    /// The conversations whose next queued message can leave now. A conversation with an error
+    /// waits for the developer: the next message would most likely fail the same way.
+    pub(crate) fn queues_ready(&self) -> Vec<String> {
+        let mut ready: Vec<String> = self
+            .queues
+            .iter()
+            .filter(|(id, queue)| {
+                !queue.is_empty()
+                    && !self.replying(id)
+                    && self.composer_available_for(id)
+                    && self.disclosure_accepted_for(id)
+                    && !self.target_deferred_for(id)
+                    && self.error_for(id).is_none()
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        ready.sort();
+        ready
+    }
+
     pub(crate) fn apply_created(&mut self, snapshot: GetChatConversationResponse) {
         self.conversations
             .retain(|conversation| conversation.id != snapshot.conversation.id);
@@ -1094,6 +1281,14 @@ impl ChatModel {
         self.conversation_states.remove(conversation_id);
         self.acknowledged_disclosures.remove(conversation_id);
         self.deferred_targets.remove(conversation_id);
+        self.queues.remove(conversation_id);
+        self.marks.pinned.retain(|id| id != conversation_id);
+        self.marks.archived.retain(|id| id != conversation_id);
+        if let Some(search) = self.conversation_search.as_mut() {
+            search
+                .matches
+                .retain(|found| found.conversation_id != conversation_id);
+        }
         self.pending_delete_conversation_id = None;
         if self.active_conversation.as_ref().map(AsRef::as_ref) == Some(conversation_id) {
             // The choice that waited for this conversation's reply goes with it.
@@ -1878,6 +2073,9 @@ mod tests {
         retargeted: Mutex<Vec<(String, ChatExecutionTargetRequest)>>,
         send_barriers: Mutex<HashMap<String, tokio::sync::oneshot::Receiver<()>>>,
         failed_sends: Mutex<HashSet<String>>,
+        forked: Mutex<Vec<(String, String)>>,
+        searched: Mutex<Vec<(String, String)>>,
+        marks: Mutex<ConversationMarks>,
     }
 
     impl RecordingChatBackend {
@@ -1917,19 +2115,30 @@ mod tests {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push(expected_target);
-            self.sent
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push((conversation_id.clone(), content));
+            // Each turn of a conversation gets its own reply, as the store gives it: the
+            // first keeps the plain ids the older tests read.
+            let turn = {
+                let mut sent = self
+                    .sent
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                sent.push((conversation_id.clone(), content));
+                sent.iter().filter(|(id, _)| *id == conversation_id).count()
+            };
+            let turn = if turn > 1 {
+                format!("-turn-{turn}")
+            } else {
+                String::new()
+            };
             let mut assistant = message("", 0);
-            assistant.id = format!("assistant-started-{conversation_id}");
+            assistant.id = format!("assistant-started-{conversation_id}{turn}");
             assistant.conversation_id = conversation_id.clone();
             assistant.ordinal = 3;
             assistant.status = "pending".into();
             let suffix = if conversation_id == "conversation-1" {
-                String::new()
+                turn
             } else {
-                format!("-{conversation_id}")
+                format!("-{conversation_id}{turn}")
             };
             let execution_id = format!("execution-started{suffix}");
             let generation_id = format!("generation-started{suffix}");
@@ -2001,6 +2210,263 @@ mod tests {
         fn save_default_target(&self, _: String, _: ChatExecutionTargetRequest) -> ChatFuture<()> {
             Self::unavailable()
         }
+
+        fn fork_conversation(
+            &self,
+            conversation_id: String,
+            through_message_id: String,
+        ) -> ChatFuture<GetChatConversationResponse> {
+            self.forked
+                .lock()
+                .unwrap()
+                .push((conversation_id, through_message_id));
+            Box::pin(async {
+                Ok(GetChatConversationResponse {
+                    conversation: conversation("branch-1", "project-1"),
+                    messages: vec![message("kept history", 1)],
+                    tool_calls: Vec::new(),
+                })
+            })
+        }
+
+        fn search_conversations(
+            &self,
+            project_id: String,
+            query: String,
+        ) -> ChatFuture<Vec<ChatConversationMatch>> {
+            self.searched
+                .lock()
+                .unwrap()
+                .push((project_id, query.clone()));
+            Box::pin(async move {
+                Ok(vec![ChatConversationMatch {
+                    conversation_id: "conversation-1".into(),
+                    title: "History".into(),
+                    excerpt: Some(format!("…about {query}…")),
+                    updated_at: "now".into(),
+                }])
+            })
+        }
+
+        fn conversation_marks(&self, _: String) -> ChatFuture<ConversationMarks> {
+            let marks = self.marks.lock().unwrap().clone();
+            Box::pin(async move { Ok(marks) })
+        }
+
+        fn mark_conversation(
+            &self,
+            conversation_id: String,
+            mark: ConversationMark,
+            on: bool,
+        ) -> ChatFuture<ConversationMarks> {
+            let marks = {
+                let mut marks = self.marks.lock().unwrap();
+                marks.pinned.retain(|id| *id != conversation_id);
+                marks.archived.retain(|id| *id != conversation_id);
+                if on {
+                    match mark {
+                        ConversationMark::Pinned => marks.pinned.insert(0, conversation_id),
+                        ConversationMark::Archived => marks.archived.push(conversation_id),
+                    }
+                }
+                marks.clone()
+            };
+            Box::pin(async move { Ok(marks) })
+        }
+    }
+
+    /// A model with one finished conversation, `conversation-1`, open and acknowledged.
+    fn queue_fixture(
+        backend: Arc<RecordingChatBackend>,
+        cx: &mut TestAppContext,
+    ) -> gpui::Entity<AppModel> {
+        let model_backend: Arc<dyn ChatBackend> = backend;
+        let model = cx.new(|cx| AppModel::new_for_test_with_chat_backend(model_backend, cx));
+        model.update(cx, |model, cx| {
+            let generation = model
+                .chat
+                .update(cx, |chat, _| chat.begin_hydration("project-1".into(), None));
+            model.chat.update(cx, |chat, _| {
+                let mut hydration = snapshot("project-1", "history", 1);
+                hydration.selected.as_mut().unwrap().messages[0].status = "completed".into();
+                chat.apply_hydration(generation, hydration);
+            });
+            model.ensure_chat_composer("conversation-1", cx);
+        });
+        model
+    }
+
+    #[gpui::test]
+    fn queued_messages_wait_for_the_reply_and_leave_in_order(cx: &mut TestAppContext) {
+        let backend = Arc::new(RecordingChatBackend::default());
+        let model = queue_fixture(backend.clone(), cx);
+        model.update(cx, |model, cx| {
+            assert!(model.send_chat_message_to("conversation-1".into(), "first".into(), cx));
+        });
+        cx.run_until_parked();
+        // The reply is under way: Enter keeps the message and empties the composer.
+        model.update(cx, |model, cx| {
+            assert!(model.chat.read(cx).is_streaming("conversation-1"));
+            let input = model.chat_composer_for("conversation-1").unwrap();
+            for text in ["second", "third"] {
+                input.update(cx, |input, cx| input.set_value(text, cx));
+                model.queue_chat_message(
+                    "conversation-1".into(),
+                    text.into(),
+                    Some(input.clone()),
+                    cx,
+                );
+                assert!(input.read(cx).value().is_empty());
+            }
+            model.move_queued_chat_message("conversation-1".into(), 1, cx);
+            assert_eq!(
+                model.chat.read(cx).queued("conversation-1"),
+                ["third", "second"]
+            );
+            // Nothing leaves while the conversation replies.
+            model.flush_chat_queue(cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(backend.sent.lock().unwrap().len(), 1);
+
+        // The reply ends: the head of the queue leaves, and only it.
+        model.update(cx, |model, cx| {
+            model.chat.update(cx, |chat, _| {
+                for message in chat
+                    .messages_by_conversation
+                    .get_mut("conversation-1")
+                    .unwrap()
+                {
+                    message.status = "completed".into();
+                }
+                chat.recompute_streaming();
+            });
+            model.flush_chat_queue(cx);
+            model.flush_chat_queue(cx);
+        });
+        cx.run_until_parked();
+        let sent: Vec<String> = backend
+            .sent
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, content)| content.clone())
+            .collect();
+        assert_eq!(sent, ["first", "third"]);
+        model.read_with(cx, |model, cx| {
+            assert_eq!(model.chat.read(cx).queued("conversation-1"), ["second"]);
+        });
+
+        // A conversation with an error keeps its queue until the developer sends by hand.
+        model.update(cx, |model, cx| {
+            model.chat.update(cx, |chat, _| {
+                for message in chat
+                    .messages_by_conversation
+                    .get_mut("conversation-1")
+                    .unwrap()
+                {
+                    message.status = "completed".into();
+                }
+                chat.recompute_streaming();
+                chat.set_conversation_error("conversation-1", UiCommandError::worker("boom"));
+            });
+            assert!(model.chat.read(cx).queues_ready().is_empty());
+            model.send_queued_chat_message_now("conversation-1".into(), 0, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(backend.sent.lock().unwrap().len(), 3);
+        model.read_with(cx, |model, cx| {
+            assert!(model.chat.read(cx).queued("conversation-1").is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn a_full_queue_refuses_the_next_message_and_keeps_the_draft(cx: &mut TestAppContext) {
+        let backend = Arc::new(RecordingChatBackend::default());
+        let model = queue_fixture(backend, cx);
+        model.update(cx, |model, cx| {
+            for index in 0..MAX_QUEUED_MESSAGES {
+                model.queue_chat_message("conversation-1".into(), format!("m{index}"), None, cx);
+            }
+            let input = model.chat_composer_for("conversation-1").unwrap();
+            input.update(cx, |input, cx| input.set_value("one too many", cx));
+            model.queue_chat_message(
+                "conversation-1".into(),
+                "one too many".into(),
+                Some(input.clone()),
+                cx,
+            );
+            assert_eq!(
+                model.chat.read(cx).queued("conversation-1").len(),
+                MAX_QUEUED_MESSAGES
+            );
+            assert_eq!(input.read(cx).value(), "one too many");
+            assert!(
+                model
+                    .current_notice()
+                    .is_some_and(|notice| notice.message.contains("already has 8"))
+            );
+            model.remove_queued_chat_message("conversation-1".into(), 0, cx);
+            assert_eq!(model.chat.read(cx).queued("conversation-1")[0], "m1");
+        });
+    }
+
+    #[gpui::test]
+    fn branching_searching_and_marking_go_through_the_store(cx: &mut TestAppContext) {
+        let backend = Arc::new(RecordingChatBackend::default());
+        let model = queue_fixture(backend.clone(), cx);
+        model.update(cx, |model, cx| {
+            model.fork_chat_conversation("conversation-1".into(), "message-1".into(), cx);
+            model.mark_chat_conversation(
+                "conversation-1".into(),
+                ConversationMark::Pinned,
+                true,
+                cx,
+            );
+            model
+                .chat_search_input
+                .update(cx, |input, cx| input.set_value("  auth  ", cx));
+            model.search_chat_conversations(cx);
+            assert!(
+                model
+                    .chat
+                    .read(cx)
+                    .conversation_search
+                    .as_ref()
+                    .is_some_and(|search| search.searching)
+            );
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            *backend.forked.lock().unwrap(),
+            [("conversation-1".to_string(), "message-1".to_string())]
+        );
+        assert_eq!(
+            *backend.searched.lock().unwrap(),
+            [("project-1".to_string(), "auth".to_string())]
+        );
+        model.update(cx, |model, cx| {
+            let chat = model.chat.read(cx);
+            // The branch opens, first in the list.
+            assert_eq!(
+                chat.active_conversation.as_ref().map(AsRef::as_ref),
+                Some("branch-1")
+            );
+            assert_eq!(chat.conversations[0].id, "branch-1");
+            assert!(chat.marks.has(ConversationMark::Pinned, "conversation-1"));
+            let search = chat.conversation_search.as_ref().unwrap();
+            assert!(!search.searching);
+            assert_eq!(search.matches[0].excerpt.as_deref(), Some("…about auth…"));
+            // An empty field closes the search.
+            model.clear_chat_search(cx);
+            assert!(model.chat.read(cx).conversation_search.is_none());
+            assert!(model.chat_search_input.read(cx).value().is_empty());
+            // A conversation that goes away leaves the marks.
+            model.chat.update(cx, |chat, _| {
+                chat.apply_deleted("conversation-1");
+            });
+            assert!(model.chat.read(cx).marks.pinned.is_empty());
+        });
     }
 
     #[gpui::test]
@@ -2852,7 +3318,9 @@ mod tests {
     }
 
     #[gpui::test]
-    fn enter_sends_multiline_draft_once_and_keeps_draft_while_streaming(cx: &mut TestAppContext) {
+    fn enter_sends_multiline_draft_once_and_queues_the_next_while_streaming(
+        cx: &mut TestAppContext,
+    ) {
         use gpui::{Focusable, px, size};
         cx.update(crate::text_input::register_text_input_keybindings);
         let backend = Arc::new(RecordingChatBackend::default());
@@ -2891,12 +3359,18 @@ mod tests {
             *backend.sent.lock().unwrap(),
             vec![("conversation-1".into(), "First line 👋\nSecond line".into())]
         );
+        // The second Enter of the pair neither sent nor queued the message that was leaving.
+        model.read_with(visual, |m, cx| {
+            assert!(m.chat.read(cx).queued("conversation-1").is_empty());
+        });
+        // While the reply streams, Enter does not send: the draft waits in the queue (PD11).
         visual.simulate_input("Next draft");
         visual.simulate_keystrokes("enter");
         visual.run_until_parked();
         assert_eq!(backend.sent.lock().unwrap().len(), 1);
         model.read_with(visual, |m, cx| {
-            assert_eq!(m.chat_draft_input.read(cx).value(), "Next draft")
+            assert_eq!(m.chat_draft_input.read(cx).value(), "");
+            assert_eq!(m.chat.read(cx).queued("conversation-1"), ["Next draft"]);
         });
     }
 

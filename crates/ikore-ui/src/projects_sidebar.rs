@@ -353,6 +353,19 @@ fn session_row(
                 })
                 .child(session.title.clone()),
         )
+        .when(session.pinned, |row| {
+            let selector = format!("sidebar-pinned:{}", session.id);
+            row.child(
+                div()
+                    .debug_selector(move || selector.clone())
+                    .flex_shrink_0()
+                    .child(crate::widgets::icon(
+                        Icon::Pin,
+                        px(11.0),
+                        theme::text_subtle(),
+                    )),
+            )
+        })
         .when(session.state != SessionState::Idle, |row| {
             row.child(crate::widgets::status_dot(state_color(session.state)))
         })
@@ -525,6 +538,7 @@ mod tests {
             title: "Add the report".into(),
             detail: "test".into(),
             state: SessionState::Waiting,
+            pinned: false,
             updated_at: "now".into(),
         };
         assert_eq!(
