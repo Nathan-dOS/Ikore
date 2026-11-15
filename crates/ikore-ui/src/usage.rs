@@ -440,6 +440,7 @@ pub(crate) fn usage_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
                     "Cache is included in input; reasoning is included in output when reported. Historical records may be incomplete. CLI collection begins with this feature.",
                 )))
             .child(usage_chart(&summary,period))
+            .when(!summary.models.is_empty(),|panel|panel.child(vendor_table(&summary)))
             .child(model_table(&summary))
             .when(!summary.agent_targets.is_empty(),|panel|panel
                 .child(agent_target_rows(&summary.agent_targets)))
@@ -564,6 +565,143 @@ fn cell(text: impl Into<SharedString>, width: f32) -> AnyElement {
 
 fn model_table(summary: &UsageSummary) -> AnyElement {
     model_rows(&summary.models, "usage-model-table".into())
+}
+
+/// Token usage of one vendor's models, across every route that served them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VendorUsage {
+    vendor: ikore_core::llm::ModelVendor,
+    /// Model and route pairs summed here: rows of the table by model.
+    rows: usize,
+    cli: bool,
+    api: bool,
+    totals: UsageTotals,
+}
+
+/// The rows by model summed by who makes the model, whatever served it, in the order vendors are
+/// listed everywhere. A CLI record without a model name counts for the vendor of that CLI.
+fn usage_by_vendor(models: &[ikore_core::usage::ModelUsage]) -> Vec<VendorUsage> {
+    use ikore_core::llm::{ModelIdentity, ModelVendor};
+    // A figure one row lacks does not erase the figure the others report.
+    let add = |sum: &mut Option<i64>, value: Option<i64>| {
+        *sum = match (*sum, value) {
+            (Some(sum), Some(value)) => Some(sum + value),
+            (sum, value) => sum.or(value),
+        };
+    };
+    let mut vendors: Vec<VendorUsage> = Vec::new();
+    for entry in models {
+        let vendor = ModelIdentity::of(&entry.model_id, &entry.provider_id)
+            .map(|identity| identity.vendor)
+            .filter(|vendor| *vendor != ModelVendor::Other)
+            .or_else(|| ModelVendor::of_server(&entry.provider_id))
+            .unwrap_or(ModelVendor::Other);
+        let position = match vendors.iter().position(|usage| usage.vendor == vendor) {
+            Some(position) => position,
+            None => {
+                vendors.push(VendorUsage {
+                    vendor,
+                    rows: 0,
+                    cli: false,
+                    api: false,
+                    totals: UsageTotals::default(),
+                });
+                vendors.len() - 1
+            }
+        };
+        let usage = &mut vendors[position];
+        usage.rows += 1;
+        match entry.transport {
+            UsageTransport::Cli => usage.cli = true,
+            UsageTransport::Api => usage.api = true,
+        }
+        let totals = &mut usage.totals;
+        add(&mut totals.input_tokens, entry.totals.input_tokens);
+        add(&mut totals.output_tokens, entry.totals.output_tokens);
+        add(&mut totals.total_tokens, entry.totals.total_tokens);
+        add(
+            &mut totals.cache_read_tokens,
+            entry.totals.cache_read_tokens,
+        );
+        add(
+            &mut totals.cache_write_tokens,
+            entry.totals.cache_write_tokens,
+        );
+        add(&mut totals.reasoning_tokens, entry.totals.reasoning_tokens);
+        totals.records += entry.totals.records;
+        totals.partial_records += entry.totals.partial_records;
+        totals.unavailable_records += entry.totals.unavailable_records;
+    }
+    vendors.sort_by_key(|usage| usage.vendor);
+    vendors
+}
+
+fn vendor_table(summary: &UsageSummary) -> AnyElement {
+    let vendors = usage_by_vendor(&summary.models);
+    div()
+        .id("usage-vendor-table")
+        .debug_selector(|| "usage-vendor-table".into())
+        .min_w_0()
+        .overflow_x_scroll()
+        .flex_shrink_0()
+        .child(
+            div()
+                .min_w(px(580.0))
+                .p_4()
+                .rounded_lg()
+                .bg(theme::surface())
+                .border_1()
+                .border_color(theme::border())
+                .flex_shrink_0()
+                .child(title_info(
+                    "Usage by vendor",
+                    "usage-vendor",
+                    "Each vendor's models summed across every route that served them: CLI subscriptions, API keys and gateways.",
+                ))
+                .child(
+                    div()
+                        .mt_3()
+                        .flex()
+                        .gap_3()
+                        .text_color(theme::text_muted())
+                        .child(div().flex_1().child("Vendor / routes"))
+                        .child(cell("Input", 105.0))
+                        .child(cell("Output", 105.0))
+                        .child(cell("Total", 105.0)),
+                )
+                .children(vendors.into_iter().map(|usage| {
+                    let routes = match (usage.cli, usage.api) {
+                        (true, true) => "CLI + API",
+                        (true, false) => "CLI",
+                        _ => "API",
+                    };
+                    div()
+                        .mt_3()
+                        .pt_3()
+                        .border_t_1()
+                        .border_color(theme::border())
+                        .flex()
+                        .gap_3()
+                        .items_center()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(div().text_sm().child(usage.vendor.label()))
+                                .child(div().text_xs().text_color(theme::text_muted()).child(
+                                    format!(
+                                        "{routes} · {} of the rows by model · {}",
+                                        usage.rows,
+                                        coverage(&usage.totals)
+                                    ),
+                                )),
+                        )
+                        .child(cell(count(usage.totals.input_tokens), 105.0))
+                        .child(cell(count(usage.totals.output_tokens), 105.0))
+                        .child(cell(count(usage.totals.total_tokens), 105.0))
+                })),
+        )
+        .into_any_element()
 }
 
 fn model_rows(models: &[ikore_core::usage::ModelUsage], id: SharedString) -> AnyElement {
@@ -1040,6 +1178,69 @@ mod tests {
         state.apply(current, Err("Fixture read failure".into()));
         assert!(!state.loading);
         assert_eq!(state.error.as_deref(), Some("Fixture read failure"));
+    }
+
+    #[test]
+    fn usage_by_vendor_sums_a_vendor_across_its_routes() {
+        use ikore_core::llm::ModelVendor;
+        let row = |provider: &str, model: &str, transport, total: Option<i64>| {
+            ikore_core::usage::ModelUsage {
+                provider_id: provider.into(),
+                model_id: model.into(),
+                model_source: "observed".into(),
+                transport,
+                totals: UsageTotals {
+                    input_tokens: total.map(|total| total - 10),
+                    output_tokens: total.map(|_| 10),
+                    total_tokens: total,
+                    records: 1,
+                    unavailable_records: u64::from(total.is_none()),
+                    ..Default::default()
+                },
+            }
+        };
+        let vendors = usage_by_vendor(&[
+            row(
+                "anthropic",
+                "claude-sonnet-4-5",
+                UsageTransport::Api,
+                Some(200),
+            ),
+            row("codex", "gpt-5", UsageTransport::Cli, Some(100)),
+            row("openai", "gpt-5", UsageTransport::Api, Some(50)),
+            // A gateway is not the vendor of what it serves.
+            row("openrouter", "openai/gpt-5", UsageTransport::Api, Some(30)),
+            // A CLI record without a model name counts for the vendor of that CLI.
+            row("codex", "default", UsageTransport::Cli, None),
+            row("ollama", "my-finetune", UsageTransport::Api, Some(7)),
+        ]);
+        let listed: Vec<_> = vendors
+            .iter()
+            .map(|usage| {
+                (
+                    usage.vendor,
+                    usage.rows,
+                    usage.cli,
+                    usage.api,
+                    usage.totals.total_tokens,
+                )
+            })
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                (ModelVendor::OpenAi, 4, true, true, Some(180)),
+                (ModelVendor::Anthropic, 1, false, true, Some(200)),
+                (ModelVendor::Other, 1, false, true, Some(7)),
+            ]
+        );
+        // The row without figures does not erase the others, and the coverage says it is there.
+        let openai = &vendors[0].totals;
+        assert_eq!(openai.input_tokens, Some(150));
+        assert_eq!(openai.output_tokens, Some(30));
+        assert_eq!((openai.records, openai.unavailable_records), (4, 1));
+        assert_eq!(coverage(openai), "Partial coverage");
+        assert!(usage_by_vendor(&[]).is_empty());
     }
 
     fn pulse_fixture_summary() -> UsageSummary {
