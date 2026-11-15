@@ -40,6 +40,9 @@ pub(crate) const CONTEXT_RAIL_COLLAPSED_WIDTH: Pixels = px(48.0);
 #[allow(dead_code)]
 pub(crate) const CONTEXT_RAIL_AUTO_COLLAPSE_BELOW: Pixels = px(1180.0);
 
+/// The agent console inside an agent's card, header included (ADR-040, M2).
+pub(crate) const AGENT_CONSOLE_HEIGHT: Pixels = px(320.0);
+
 pub(crate) trait StyledExt: Styled + Sized {
     /// Sizes the element to its content inside a flex column instead of
     /// stretching it across the container (`align-self: flex-start`).

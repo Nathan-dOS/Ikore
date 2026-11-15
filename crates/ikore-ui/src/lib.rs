@@ -2,6 +2,7 @@
 #![allow(clippy::result_large_err)]
 
 mod activity;
+mod agent_console;
 mod agents;
 mod agents_view;
 mod app_model;

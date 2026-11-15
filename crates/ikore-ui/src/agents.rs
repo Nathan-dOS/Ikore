@@ -564,17 +564,6 @@ pub(crate) struct CliModelPickerState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TerminalEventFilter {
-    All,
-    Activity,
-    Tool,
-    Stdout,
-    Stderr,
-    Warning,
-    Error,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ApiActivityFilter {
     All,
     Output,
@@ -612,53 +601,6 @@ impl ApiActivityFilter {
                     || line.starts_with("resilience ")
             }
             Self::Errors => line.contains("failed") || line.contains("error"),
-        }
-    }
-}
-
-impl TerminalEventFilter {
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::All => "all",
-            Self::Activity => "activity",
-            Self::Tool => "tool",
-            Self::Stdout => "stdout",
-            Self::Stderr => "stderr",
-            Self::Warning => "warning",
-            Self::Error => "error",
-        }
-    }
-
-    pub(crate) fn next(self) -> Self {
-        match self {
-            Self::All => Self::Activity,
-            Self::Activity => Self::Tool,
-            Self::Tool => Self::Stdout,
-            Self::Stdout => Self::Stderr,
-            Self::Stderr => Self::Warning,
-            Self::Warning => Self::Error,
-            Self::Error => Self::All,
-        }
-    }
-
-    pub(crate) fn accepts(self, kind: ikore_core::terminals::TerminalEventKind) -> bool {
-        use ikore_core::terminals::TerminalEventKind;
-        match self {
-            Self::All => true,
-            Self::Activity => matches!(
-                kind,
-                TerminalEventKind::System
-                    | TerminalEventKind::Message
-                    | TerminalEventKind::Completed
-            ),
-            Self::Tool => matches!(
-                kind,
-                TerminalEventKind::ToolUse | TerminalEventKind::ToolResult
-            ),
-            Self::Stdout => kind == TerminalEventKind::Stdout,
-            Self::Stderr => kind == TerminalEventKind::Stderr,
-            Self::Warning => kind == TerminalEventKind::Warning,
-            Self::Error => kind == TerminalEventKind::Error,
         }
     }
 }
@@ -708,8 +650,10 @@ pub(crate) struct AgentsModel {
     pub(crate) events_by_run: HashMap<String, Vec<TerminalEvent>>,
     pub(crate) selected_run_by_role: HashMap<AgentRole, String>,
     pub(crate) selected_run_by_slot: HashMap<String, String>,
-    pub(crate) event_filters: HashMap<String, TerminalEventFilter>,
-    pub(crate) follow_tail: HashMap<String, bool>,
+    /// What each console shows, by surface key (ADR-040, M2).
+    pub(crate) event_filters: HashMap<String, crate::agent_console::projection::ConsoleFilter>,
+    /// The consoles' lists, following and selection, and the runs' blocks.
+    pub(crate) consoles: crate::agent_console::model::Consoles,
     pub(crate) api_activity: HashMap<AgentIdentifier, Vec<String>>,
     pub(crate) api_filters: HashMap<String, ApiActivityFilter>,
     pub(crate) api_executions: HashMap<String, Vec<LlmExecutionListItem>>,
@@ -751,7 +695,7 @@ impl Default for AgentsModel {
             selected_run_by_role: HashMap::new(),
             selected_run_by_slot: HashMap::new(),
             event_filters: HashMap::new(),
-            follow_tail: HashMap::new(),
+            consoles: crate::agent_console::model::Consoles::default(),
             api_activity: HashMap::new(),
             api_filters: HashMap::new(),
             api_executions: HashMap::new(),
@@ -851,6 +795,7 @@ impl AgentsModel {
             self.active_model_picker = None;
             self.selected_agent = None;
             self.events_by_run.clear();
+            self.consoles = crate::agent_console::model::Consoles::default();
         }
         // The snapshot is merged into what live events already brought, so a
         // quiet refresh never drops an event that arrived while it was read
@@ -911,6 +856,9 @@ impl AgentsModel {
             .collect::<std::collections::HashSet<_>>();
         self.events_by_run
             .retain(|run_id, _| referenced.contains(run_id));
+        let buffered = &self.events_by_run;
+        self.consoles
+            .retain_runs(|run_id| buffered.contains_key(run_id));
         self.fallbacks = snapshot.fallbacks;
         self.free_form_bindings = snapshot.free_form_bindings;
         self.api_executions = snapshot.api_executions;
@@ -998,6 +946,7 @@ impl AgentsModel {
             return false;
         }
         self.busy = false;
+        self.consoles.invalidate(&run_id);
         self.events_by_run.insert(run_id.clone(), events);
         self.selected_run_by_role.insert(role, run_id);
         true
@@ -1014,6 +963,7 @@ impl AgentsModel {
             return false;
         }
         self.busy = false;
+        self.consoles.invalidate(&run_id);
         self.events_by_run.insert(run_id.clone(), events);
         self.selected_run_by_slot.insert(slot_id, run_id);
         true
@@ -1071,6 +1021,7 @@ impl AgentsModel {
             .last()
             .is_none_or(|event| event.sequence < envelope.sequence)
         {
+            self.consoles.append(&envelope.run_id, &envelope.event);
             events.push(envelope.event);
             if events.len() > 500 {
                 events.drain(..events.len() - 500);
@@ -1080,14 +1031,26 @@ impl AgentsModel {
     }
 
     /// Merges events a ranged re-read returned into the run's buffer, in
-    /// sequence order and once each, keeping the newest 500.
+    /// sequence order and once each, keeping the newest 500. Only an event
+    /// that lands before the buffer's last one makes the console project the
+    /// run again; newer ones it reads as appended.
     pub(crate) fn merge_events(&mut self, run_id: &str, missing: Vec<TerminalEvent>) {
         let events = self.events_by_run.entry(run_id.to_owned()).or_default();
+        let last = events.last().map(|event| event.sequence);
+        let inserted_before_last = missing.iter().any(|event| {
+            last.is_some_and(|last| event.sequence < last)
+                && events
+                    .binary_search_by_key(&event.sequence, |held| held.sequence)
+                    .is_err()
+        });
         events.extend(missing);
         events.sort_by_key(|event| event.sequence);
         events.dedup_by_key(|event| event.sequence);
         if events.len() > 500 {
             events.drain(..events.len() - 500);
+        }
+        if inserted_before_last {
+            self.consoles.invalidate(run_id);
         }
     }
 
@@ -1307,6 +1270,7 @@ impl AgentsModel {
             self.selected_run_by_slot
                 .insert(run.slot_id.clone(), run.id.clone());
         }
+        self.consoles.invalidate(&run.id);
         self.events_by_run.insert(run.id, Vec::new());
         self.notice = Some("Manual execution started.".into());
         true

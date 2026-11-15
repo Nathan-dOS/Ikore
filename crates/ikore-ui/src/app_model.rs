@@ -410,6 +410,9 @@ pub struct AppModel {
     pub(crate) chat_question_layout:
         std::rc::Rc<std::cell::RefCell<crate::chat_questions::QuestionLayout>>,
     pub(crate) cli_model_search_input: Entity<NativeTextInput>,
+    /// The agent console whose search is open, and its current match (ADR-040, M2).
+    pub(crate) agent_console_search: Option<(String, usize)>,
+    pub(crate) agent_console_search_input: Entity<NativeTextInput>,
     pub(crate) agent_prompt_inputs: HashMap<ikore_core::llm::AgentRole, Entity<NativeTextInput>>,
     pub(crate) agent_model_inputs: HashMap<ikore_core::llm::AgentRole, Entity<NativeTextInput>>,
     pub(crate) agent_custom_executable_inputs:
@@ -743,6 +746,8 @@ impl AppModel {
         });
         let cli_model_search_input =
             cx.new(|cx| NativeTextInput::new("Search model ID, name, provider or capability", cx));
+        let agent_console_search_input =
+            cx.new(|cx| NativeTextInput::new("Search the console", cx));
         let settings_modal = crate::settings_modal::SettingsModalState::new(cx);
         let agent_prompt_inputs = ikore_core::llm::AgentRole::ALL
             .into_iter()
@@ -865,6 +870,13 @@ impl AppModel {
                 cx.notify()
             }),
             cx.observe(&cli_model_search_input, |_, _, cx| cx.notify()),
+            // A new query starts from its first match.
+            cx.observe(&agent_console_search_input, |model, _, cx| {
+                if let Some((_, position)) = model.agent_console_search.as_mut() {
+                    *position = 0;
+                }
+                cx.notify()
+            }),
             cx.observe(&settings_modal.search, |model, _, cx| {
                 model.settings_search_changed(cx)
             }),
@@ -962,6 +974,8 @@ impl AppModel {
             chat_scroll: gpui::ScrollHandle::new(),
             chat_question_layout: Default::default(),
             cli_model_search_input,
+            agent_console_search: None,
+            agent_console_search_input,
             agent_prompt_inputs,
             agent_model_inputs,
             agent_custom_executable_inputs,
@@ -5431,25 +5445,6 @@ impl AppModel {
     /// loading/busy state; skipped while a loud read or an operation is in flight.
     pub(crate) fn refresh_agents_quiet(&mut self, cx: &mut Context<Self>) {
         self.refresh_agents_inner(false, true, cx);
-    }
-
-    pub(crate) fn toggle_agent_follow_tail(&mut self, key: String, cx: &mut Context<Self>) {
-        self.agents.update(cx, |agents, _| {
-            let enabled = agents.follow_tail.get(&key).copied().unwrap_or(true);
-            agents.follow_tail.insert(key, !enabled);
-        });
-        cx.notify();
-    }
-
-    pub(crate) fn cycle_agent_event_filter(&mut self, key: String, cx: &mut Context<Self>) {
-        self.agents.update(cx, |agents, _| {
-            let filter = agents
-                .event_filters
-                .entry(key)
-                .or_insert(crate::agents::TerminalEventFilter::All);
-            *filter = filter.next();
-        });
-        cx.notify();
     }
 
     pub(crate) fn copy_agent_history(&mut self, run_id: String, cx: &mut Context<Self>) {

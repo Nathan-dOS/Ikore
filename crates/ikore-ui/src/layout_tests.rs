@@ -3689,6 +3689,139 @@ fn agents_detail_accepts_vertical_wheel_scrolling(cx: &mut TestAppContext) {
     );
 }
 
+/// ADR-040 M2: the console shows the selected run as blocks, newest at the
+/// bottom; scrolling up pauses it and counts what arrives, and the pill
+/// brings the newest block back.
+#[gpui::test]
+fn agent_console_follows_pauses_and_resumes(cx: &mut TestAppContext) {
+    use ikore_core::terminals::{
+        EventDetailV1, ExecutionOrigin, SessionSlot, TerminalEvent, TerminalEventEnvelope,
+        TerminalEventKind, TerminalRun, TerminalRunStatus, ToolKind,
+    };
+
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(1280.0), px(820.0)));
+    let run = TerminalRun {
+        id: "console-run".into(),
+        project_id: "layout-project".into(),
+        slot: SessionSlot::Canonical {
+            agent_role: AgentRole::TaskSpecifier,
+        },
+        slot_id: "canonical:layout-project:task_specifier".into(),
+        agent_role: Some(AgentRole::TaskSpecifier),
+        origin: ExecutionOrigin::Manual,
+        execution_mode: AgentExecutionMode::CliProcess,
+        backend: Some(CliBackend::Claude),
+        model: Some("claude-haiku-5-5".into()),
+        requested_model_profile: None,
+        model_source: CliModelSelectionSource::Default,
+        observed_model: None,
+        native_session_id: None,
+        pulsation_id: None,
+        job_id: None,
+        agent_run_id: None,
+        llm_execution_id: None,
+        status: TerminalRunStatus::Running,
+        exit_code: None,
+        error_code: None,
+        error_message: None,
+        created_at: "2026-11-15T10:00:00Z".into(),
+        started_at: Some("2026-11-15T10:00:00Z".into()),
+        finished_at: None,
+        updated_at: "2026-11-15T10:00:00Z".into(),
+        deadline_at: None,
+        termination_reason: None,
+        output_bytes: 0,
+        event_count: 0,
+        workspace_snapshot_hash: None,
+        launch_identity_sha256: None,
+        detected_cli_version: None,
+        adapter_contract_version: 1,
+        parent_run_id: None,
+        continuation_reason: None,
+        session_fingerprint: None,
+        observation_trial_id: None,
+    };
+    let envelope = |sequence: u64| TerminalEventEnvelope {
+        protocol_version: 2,
+        project_id: "layout-project".into(),
+        agent_role: Some(AgentRole::TaskSpecifier),
+        run_id: "console-run".into(),
+        sequence,
+        run: run.clone(),
+        event: TerminalEvent {
+            id: format!("console-event-{sequence}"),
+            run_id: "console-run".into(),
+            sequence,
+            kind: TerminalEventKind::ToolUse,
+            stream: None,
+            content: format!("Read · src/file_{sequence}.rs"),
+            redaction_count: 0,
+            redaction_categories: vec![],
+            created_at: "2026-11-15T10:00:00Z".into(),
+            detail: Some(EventDetailV1::ActionCall {
+                v: 1,
+                ordinal: u32::try_from(sequence).unwrap(),
+                kind: ToolKind::Read,
+                name: "Read".into(),
+            }),
+            observed_at: None,
+        },
+    };
+    let deliver = |visual: &mut VisualTestContext, sequences: std::ops::RangeInclusive<u64>| {
+        model.update(visual, |model, cx| {
+            model.agents.update(cx, |agents, _| {
+                for sequence in sequences {
+                    agents.record_event(envelope(sequence));
+                }
+            });
+            cx.notify();
+        });
+        visual.run_until_parked();
+    };
+    // The page first: its own refresh settles before the run starts.
+    select(&model, visual, AppView::Agents);
+    click(visual, "agent-select:task_specifier");
+    model.update(visual, |model, cx| {
+        model.toggle_agents_terminal_expanded(cx)
+    });
+    visual.run_until_parked();
+    deliver(visual, 1..=60);
+    let console = visual
+        .debug_bounds("agent-console:task_specifier")
+        .expect("the console replaces the activity panel");
+    // The newest block is in view; the first is far above.
+    assert!(visual.debug_bounds("agent-console-block:59").is_some());
+    assert!(visual.debug_bounds("agent-console-block:0").is_none());
+    assert!(visual.debug_bounds("agent-console-new-pill").is_none());
+
+    // Reading earlier blocks pauses the console, and what arrives is counted.
+    visual.simulate_event(ScrollWheelEvent {
+        position: console.center(),
+        delta: ScrollDelta::Pixels(point(px(0.0), px(2000.0))),
+        ..Default::default()
+    });
+    visual.run_until_parked();
+    deliver(visual, 61..=63);
+    assert!(visual.debug_bounds("agent-console-new-pill").is_some());
+    assert!(visual.debug_bounds("agent-console-block:62").is_none());
+
+    // The pill brings the newest block back and resumes following. GPUI keeps
+    // the bounds of an element that was drawn once, so the state says the
+    // pill is gone.
+    click(visual, "agent-console-new-pill");
+    visual.run_until_parked();
+    let (following, unseen) = model.update(visual, |model, cx| {
+        model.agents.update(cx, |agents, _| {
+            let surface = agents.consoles.surface_mut("task_specifier");
+            (surface.following(), surface.unseen)
+        })
+    });
+    assert!(following);
+    assert_eq!(unseen, 0);
+    assert!(visual.debug_bounds("agent-console-block:62").is_some());
+}
+
 #[gpui::test]
 fn agents_api_detail_accepts_vertical_wheel_scrolling(cx: &mut TestAppContext) {
     let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
@@ -4634,10 +4767,12 @@ fn controls_size_to_content_instead_of_the_panel(cx: &mut TestAppContext) {
     for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
         visual.simulate_resize(size(px(width), px(height)));
 
-        // Agents: the stdin/event filter of a CLI agent card no longer spans the row.
+        // Agents: the console's event filter (ADR-040 M2) no longer spans the row.
         select(&model, visual, AppView::Agents);
         let column = visual.debug_bounds("agents-cli-scroll").unwrap();
-        let filter = visual.debug_bounds("agent-filter:task_specifier").unwrap();
+        let filter = visual
+            .debug_bounds("agent-console-filter:task_specifier")
+            .unwrap();
         assert!(
             filter.size.width <= px(360.0) && filter.size.width < column.size.width / 2.0,
             "filter spans {:?} of a {:?} column at {width}x{height}",

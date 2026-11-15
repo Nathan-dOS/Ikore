@@ -1,7 +1,7 @@
 //! Direct selection adapters. Options are read again at confirmation time.
 use crate::{
     AppModel,
-    agents::TerminalEventFilter,
+    agent_console::{model::RunDisplay, projection::ConsoleFilter},
     app_model::{RuntimeConfigUpdateExt, runtime_config_update},
     chat::{ChatModel, ChatTargetEdit},
     select_menu::Choice,
@@ -28,15 +28,6 @@ pub(crate) fn segments(id: &str) -> Option<Vec<(&'static str, &'static str)>> {
 }
 
 const BACKENDS: [CliBackend; 6] = CliBackend::ALL;
-const FILTERS: [TerminalEventFilter; 7] = [
-    TerminalEventFilter::All,
-    TerminalEventFilter::Activity,
-    TerminalEventFilter::Tool,
-    TerminalEventFilter::Stdout,
-    TerminalEventFilter::Stderr,
-    TerminalEventFilter::Warning,
-    TerminalEventFilter::Error,
-];
 fn backend(value: &str) -> Option<CliBackend> {
     BACKENDS.into_iter().find(|b| b.label() == value)
 }
@@ -327,22 +318,25 @@ impl AppModel {
             return choices;
         }
         let (field, key) = id.split_once(':').unwrap_or((id, ""));
-        if field == "agent-filter" || field == "free-form-filter" {
-            let filter_key = if field == "free-form-filter" {
-                format!("free-form:{key}")
-            } else {
-                key.to_string()
-            };
+        // The console's own controls (ADR-040, M2): the key is the surface's.
+        if field == "agent-console-filter" {
             let current = self
                 .agents
                 .read(cx)
                 .event_filters
-                .get(&filter_key)
+                .get(key)
                 .copied()
-                .unwrap_or(TerminalEventFilter::All);
-            return FILTERS
+                .unwrap_or_default();
+            return ConsoleFilter::ALL
                 .into_iter()
-                .map(|f| Choice::new(f.label(), f.label(), f == current))
+                .map(|filter| Choice::new(filter.value(), filter.label(), filter == current))
+                .collect();
+        }
+        if field == "agent-console-display" {
+            let current = self.agents.read(cx).consoles.display(key);
+            return RunDisplay::ALL
+                .into_iter()
+                .map(|display| Choice::new(display.value(), display.label(), display == current))
                 .collect();
         }
         if matches!(
@@ -710,19 +704,18 @@ impl AppModel {
             return;
         }
         let (field, key) = id.split_once(':').unwrap_or((id, ""));
-        if field == "agent-filter" || field == "free-form-filter" {
-            if let Some(filter) = FILTERS.into_iter().find(|f| f.label() == value) {
-                self.agents.update(cx, |a, _| {
-                    a.event_filters.insert(
-                        if field == "free-form-filter" {
-                            format!("free-form:{key}")
-                        } else {
-                            key.into()
-                        },
-                        filter,
-                    );
-                });
-                cx.notify();
+        if field == "agent-console-filter" {
+            if let Some(filter) = ConsoleFilter::from_value(value) {
+                self.console_set_filter(key, filter, cx);
+            }
+            return;
+        }
+        if field == "agent-console-display" {
+            if let Some(display) = RunDisplay::ALL
+                .into_iter()
+                .find(|display| display.value() == value)
+            {
+                self.console_set_display(key, display, cx);
             }
             return;
         }
@@ -1229,10 +1222,10 @@ mod tests {
             });
             let options = m.choice_options("settings-adaptive-timeout", cx);
             assert!(options.iter().any(|c| c.value == "2345" && c.selected));
-            m.apply_choice("free-form-filter:slot-a", "error", cx);
+            m.apply_choice("agent-console-filter:free-form:slot-a", "errors", cx);
             assert_eq!(
                 m.agents.read(cx).event_filters.get("free-form:slot-a"),
-                Some(&TerminalEventFilter::Error)
+                Some(&ConsoleFilter::Errors)
             );
             m.chat.update(cx, |chat, _| {
                 chat.selected_cli_backend = CliBackend::Codex;

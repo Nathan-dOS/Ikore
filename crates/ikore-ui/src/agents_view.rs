@@ -10,13 +10,12 @@ use ikore_core::persistence_service::{
 };
 use ikore_core::terminals::{
     AgentExecutionMode, CanonicalAgentDescriptor, CliAvailabilityState, CliBackend,
-    CliModelCatalogEntry, CliModelCatalogState, CliModelSelectionSource, TerminalEventKind,
-    TerminalRunStatus,
+    CliModelCatalogEntry, CliModelCatalogState, CliModelSelectionSource, TerminalRunStatus,
 };
 
+use crate::agent_console::view::{ConsoleSurface, console};
 use crate::agents::{
     AgentIdentifier, ApiActivityFilter, CliModelPickerState, CliModelPickerTarget,
-    TerminalEventFilter,
 };
 use crate::app_model::AppModel;
 use crate::icons::Icon;
@@ -1177,9 +1176,6 @@ fn agent_detail_panel(
                                 })
                                 .is_some_and(|entry| !entry.profiles.is_empty())
                         });
-                    let run_events = selected_run
-                        .and_then(|run| agents_model.events_by_run.get(&run.id))
-                        .cloned();
                     let run_quota = selected_run.and_then(|run| {
                         crate::quota_bar::run_delta_line(agents_model.quota_deltas.get(&run.id)?)
                     });
@@ -1193,12 +1189,20 @@ fn agent_detail_panel(
                         .event_filters
                         .get(role.as_str())
                         .copied()
-                        .unwrap_or(TerminalEventFilter::All);
-                    let follow_tail = agents_model
-                        .follow_tail
-                        .get(role.as_str())
-                        .copied()
-                        .unwrap_or(true);
+                        .unwrap_or_default();
+                    let history_copied = selected_run
+                        .is_some_and(|r| model.notifications.copied.contains_key(&r.id));
+                    let run_console = console(
+                        model,
+                        ConsoleSurface {
+                            key: role.as_str().to_owned(),
+                            agent_label: descriptor.name,
+                            run: selected_run,
+                            filter: event_filter,
+                            expanded: false,
+                        },
+                        cx,
+                    );
 
                     panel
                         .child(
@@ -1245,18 +1249,15 @@ fn agent_detail_panel(
                             custom_executable_input,
                             custom_args_input,
                             selected_run,
-                            run_events,
+                            run_console,
                             history_clear_armed,
                             pipeline_cancel_armed,
-                            event_filter,
-                            follow_tail,
                             thinking_available,
                             prompt_ready,
                             executable_ready,
                             running,
                             busy,
-                            selected_run
-                                .is_some_and(|r| model.notifications.copied.contains_key(&r.id)),
+                            history_copied,
                             model.quota.backend(agent.config.backend).cloned(),
                             run_quota,
                             cx,
@@ -1482,20 +1483,11 @@ fn expanded_cli_detail_panel(
             .and_then(|run_id| agent.recent_runs.iter().find(|run| &run.id == run_id))
             .or_else(|| agent.recent_runs.first())
             .cloned();
-        let events = selected_run
-            .as_ref()
-            .and_then(|run| agents.events_by_run.get(&run.id))
-            .cloned();
         let filter = agents
             .event_filters
             .get(role.as_str())
             .copied()
-            .unwrap_or(TerminalEventFilter::All);
-        let follow = agents
-            .follow_tail
-            .get(role.as_str())
-            .copied()
-            .unwrap_or(true);
+            .unwrap_or_default();
         let running = agent
             .recent_runs
             .first()
@@ -1505,6 +1497,17 @@ fn expanded_cli_detail_panel(
             .as_ref()
             .is_some_and(|input| !input.read(cx).value().trim().is_empty());
         let run_id = agent.recent_runs.first().map(|run| run.id.clone());
+        let run_console = console(
+            model,
+            ConsoleSurface {
+                key: role.as_str().to_owned(),
+                agent_label: descriptor.name,
+                run: selected_run.as_ref(),
+                filter,
+                expanded: true,
+            },
+            cx,
+        );
         return panel
             .child(
                 div()
@@ -1542,15 +1545,7 @@ fn expanded_cli_detail_panel(
                         .child(run_metadata(run)),
                 )
             })
-            .child(activity_panel(
-                events.as_ref(),
-                role,
-                filter,
-                follow,
-                true,
-                selected_run.as_ref(),
-                cx,
-            ))
+            .child(run_console)
             .when_some(input, |panel, input| {
                 panel.child(crate::sizing::text_area(input)).child(
                     div()
@@ -1585,25 +1580,7 @@ fn expanded_cli_detail_panel(
                                 cx,
                                 move |model, cx| model.start_manual_agent(role, cx),
                             ))
-                        })
-                        .child(action_button(
-                            SharedString::from(format!("agent-expanded-filter:{}", role.as_str())),
-                            format!("Filter: {}", filter.label()).into(),
-                            true,
-                            false,
-                            cx,
-                            move |model, cx| {
-                                model.cycle_agent_event_filter(role.as_str().to_string(), cx)
-                            },
-                        ))
-                        .child(follow_button(
-                            SharedString::from(format!("agent-expanded-follow:{}", role.as_str())),
-                            follow,
-                            cx,
-                            move |model, cx| {
-                                model.toggle_agent_follow_tail(role.as_str().to_string(), cx)
-                            },
-                        )),
+                        }),
                 )
             })
             .into_any_element();
@@ -1616,17 +1593,12 @@ fn expanded_cli_detail_panel(
             .and_then(|run_id| free_form.recent_runs.iter().find(|run| &run.id == run_id))
             .or_else(|| free_form.recent_runs.first())
             .cloned();
-        let events = selected_run
-            .as_ref()
-            .and_then(|run| agents.events_by_run.get(&run.id))
-            .cloned();
         let filter_key = format!("free-form:{slot_id}");
         let filter = agents
             .event_filters
             .get(&filter_key)
             .copied()
-            .unwrap_or(TerminalEventFilter::All);
-        let follow = agents.follow_tail.get(&filter_key).copied().unwrap_or(true);
+            .unwrap_or_default();
         let running = free_form
             .recent_runs
             .first()
@@ -1637,8 +1609,17 @@ fn expanded_cli_detail_panel(
             .is_some_and(|input| !input.read(cx).value().trim().is_empty());
         let run_id = free_form.recent_runs.first().map(|run| run.id.clone());
         let slot_for_start = slot_id.clone();
-        let filter_for_action = filter_key.clone();
-        let follow_for_action = filter_key.clone();
+        let run_console = console(
+            model,
+            ConsoleSurface {
+                key: filter_key,
+                agent_label: &free_form.slot.label,
+                run: selected_run.as_ref(),
+                filter,
+                expanded: true,
+            },
+            cx,
+        );
         return panel
             .child(
                 div()
@@ -1675,15 +1656,7 @@ fn expanded_cli_detail_panel(
                         .child(run_metadata(run)),
                 )
             })
-            .child(activity_panel_for_key(
-                events.as_ref(),
-                filter_key,
-                filter,
-                follow,
-                true,
-                selected_run.as_ref(),
-                cx,
-            ))
+            .child(run_console)
             .when_some(input, |panel, input| {
                 panel.child(crate::sizing::text_area(input)).child(
                     div()
@@ -1716,25 +1689,7 @@ fn expanded_cli_detail_panel(
                                     model.start_free_form_agent(slot_for_start.clone(), cx)
                                 },
                             ))
-                        })
-                        .child(action_button(
-                            SharedString::from(format!("free-form-expanded-filter:{slot_id}")),
-                            format!("Filter: {}", filter.label()).into(),
-                            true,
-                            false,
-                            cx,
-                            move |model, cx| {
-                                model.cycle_agent_event_filter(filter_for_action.clone(), cx)
-                            },
-                        ))
-                        .child(follow_button(
-                            SharedString::from(format!("free-form-expanded-follow:{slot_id}")),
-                            follow,
-                            cx,
-                            move |model, cx| {
-                                model.toggle_agent_follow_tail(follow_for_action.clone(), cx)
-                            },
-                        )),
+                        }),
                 )
             })
             .into_any_element();
@@ -1849,19 +1804,11 @@ fn free_form_card(
         .get(&slot.id)
         .and_then(|run_id| free_form.recent_runs.iter().find(|run| &run.id == run_id))
         .or(active_run);
-    let events = selected_run
-        .and_then(|run| agents.events_by_run.get(&run.id))
-        .cloned();
     let event_filter = agents
         .event_filters
         .get(&format!("free-form:{}", slot.id))
         .copied()
-        .unwrap_or(TerminalEventFilter::All);
-    let follow_tail = agents
-        .follow_tail
-        .get(&format!("free-form:{}", slot.id))
-        .copied()
-        .unwrap_or(true);
+        .unwrap_or_default();
     let history_clear_armed =
         agents.pending_free_form_history_clear.as_deref() == Some(slot.id.as_str());
     let executable_ready = if slot.backend == ikore_core::terminals::CliBackend::Custom {
@@ -1914,6 +1861,17 @@ fn free_form_card(
                 availability_status(availability)
             }
         });
+    let run_console = console(
+        model,
+        ConsoleSurface {
+            key: format!("free-form:{}", slot.id),
+            agent_label: &slot.label,
+            run: selected_run,
+            filter: event_filter,
+            expanded: false,
+        },
+        cx,
+    );
     div()
         .id(SharedString::from(format!("free-form-card:{}", slot.id)))
         .min_w_0()
@@ -2074,22 +2032,6 @@ fn free_form_card(
                             move |model, cx| model.select_free_form_history(slot_id.clone(), -1, cx)
                         },
                     ))
-                    .child(follow_button(
-                        SharedString::from(format!("free-form-follow:{}", slot.id)),
-                        follow_tail,
-                        cx,
-                        {
-                            let key = format!("free-form:{}", slot.id);
-                            move |model, cx| model.toggle_agent_follow_tail(key.clone(), cx)
-                        },
-                    ))
-                    .child(crate::select_menu::compact_control(
-                        (SharedString::from(format!("free-form-filter:{}", slot.id))).to_string(),
-                        "Filter",
-                        event_filter.label(),
-                        true,
-                        cx,
-                    ))
                     .child(action_button(
                         SharedString::from(format!("free-form-copy:{}", slot.id)),
                         if model.notifications.copied.contains_key(&run.id) {
@@ -2137,15 +2079,7 @@ fn free_form_card(
                     )),
             )
         })
-        .child(activity_panel_for_key(
-            events.as_ref(),
-            format!("free-form:{}", slot.id),
-            event_filter,
-            follow_tail,
-            false,
-            selected_run,
-            cx,
-        ))
+        .child(run_console)
         .when_some(input, |card, input| {
             let selected_run_id = selected_run.map(|run| run.id.clone());
             card.child(crate::sizing::text_area(input)).child(
@@ -2218,11 +2152,9 @@ fn agent_card(
     custom_executable_input: Option<gpui::Entity<crate::text_input::NativeTextInput>>,
     custom_args_input: Option<gpui::Entity<crate::text_input::NativeTextInput>>,
     selected_run: Option<&ikore_core::terminals::TerminalRun>,
-    events: Option<Vec<ikore_core::terminals::TerminalEvent>>,
+    run_console: AnyElement,
     history_clear_armed: bool,
     pipeline_cancel_armed: bool,
-    event_filter: TerminalEventFilter,
-    follow_tail: bool,
     thinking_available: bool,
     prompt_ready: bool,
     executable_ready: bool,
@@ -2559,21 +2491,6 @@ fn agent_card(
                         cx,
                         move |model, cx| model.request_clear_agent_history(role, cx),
                     ))
-                    .child(crate::select_menu::compact_control(
-                        (SharedString::from(format!("agent-filter:{}", role.as_str()))).to_string(),
-                        "Filter",
-                        event_filter.label(),
-                        true,
-                        cx,
-                    ))
-                    .child(follow_button(
-                        SharedString::from(format!("agent-follow:{}", role.as_str())),
-                        follow_tail,
-                        cx,
-                        move |model, cx| {
-                            model.toggle_agent_follow_tail(role.as_str().to_string(), cx)
-                        },
-                    ))
                     .child(action_button(
                         SharedString::from(format!("agent-copy:{}", role.as_str())),
                         if history_copied { "Copied" } else { "Copy" }.into(),
@@ -2598,15 +2515,7 @@ fn agent_card(
                     )),
             )
         })
-        .child(activity_panel(
-            events.as_ref(),
-            role,
-            event_filter,
-            follow_tail,
-            false,
-            selected_run,
-            cx,
-        ))
+        .child(run_console)
         .when_some(input, |card, input| {
             let resume_run_id = selected_run.map(|run| run.id.clone());
             card.child(crate::sizing::text_area(input)).child(
@@ -3359,27 +3268,60 @@ fn api_activity_viewer(
         .get(&filter_key)
         .copied()
         .unwrap_or(ApiActivityFilter::All);
-    let follow_tail = agents.follow_tail.get(&filter_key).copied().unwrap_or(true);
     let target = if let Some(role) = key.strip_prefix("canonical:").and_then(AgentRole::parse) {
         AgentIdentifier::Canonical(role)
     } else {
         AgentIdentifier::FreeForm(key.trim_start_matches("free_form:").to_string())
     };
-    let mut visible = activity
+    // Oldest first and the newest at the bottom, like a run's console
+    // (ADR-040, M2): the persisted executions, then what arrived live.
+    let visible = activity
         .into_iter()
         .filter(|line| filter.accepts(line))
         .collect::<Vec<_>>();
-    if follow_tail {
-        visible.reverse();
-    }
-    let copy_text = visible.iter().rev().cloned().collect::<Vec<_>>().join("\n");
+    let copy_text = visible.join("\n");
     let key_for_filter = filter_key.clone();
     let key_for_follow = filter_key.clone();
+    let key_for_pill = filter_key.clone();
     let target_for_clear = target.clone();
     let target_for_export = target.clone();
     let latest_execution_id = history
         .first()
         .map(|execution| execution.execution_id.clone());
+    let summary = history.first().map_or_else(
+        || "No persisted execution".to_owned(),
+        |execution| format!("{} · {}", execution.status, execution.route_id),
+    );
+    let history_rows = history
+        .iter()
+        .take(20)
+        .rev()
+        .map(|execution| {
+            let preview = execution
+                .visible_output
+                .as_deref()
+                .unwrap_or("No visible output")
+                .chars()
+                .take(240)
+                .collect::<String>();
+            (
+                format!(
+                    "{} · {} · {}",
+                    execution.status, execution.route_id, execution.started_at
+                ),
+                preview,
+            )
+        })
+        .collect::<Vec<_>>();
+    let empty = visible.is_empty() && history_rows.is_empty();
+    let lines = agents.consoles.lines_view(
+        &filter_key,
+        history_rows.len() + visible.len(),
+        visible.last().map_or_else(
+            || history_rows.last().map_or(0, |row| row.1.len()),
+            String::len,
+        ),
+    );
     let viewer_id = key.clone();
     div()
         .flex_1()
@@ -3425,12 +3367,6 @@ fn api_activity_viewer(
                     false,
                     cx,
                     move |model, cx| model.cycle_agent_api_filter(key_for_filter.clone(), cx),
-                ))
-                .child(follow_button(
-                    SharedString::from(format!("api-follow:{key}")),
-                    follow_tail,
-                    cx,
-                    move |model, cx| model.toggle_agent_follow_tail(key_for_follow.clone(), cx),
                 ))
                 .child(action_button(
                     SharedString::from(format!("api-copy:{key}")),
@@ -3483,275 +3419,107 @@ fn api_activity_viewer(
                     |model, cx| model.toggle_agents_terminal_expanded(cx),
                 )),
         )
-        .child(
-            div()
-                .id(SharedString::from(format!("api-activity:{key}")))
-                .debug_selector(move || format!("api-activity:{viewer_id}"))
-                .min_h_0()
-                .when(expanded, |viewer| viewer.flex_1())
-                .when(!expanded, |viewer| viewer.h(px(250.0)))
-                // Own the wheel: the page around this viewer scrolls too, and wheel events reach every
-                // scrollable ancestor under the pointer. Scrolling up here used to lift the whole page.
-                .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-                .overflow_y_scroll()
-                .p_2()
-                .rounded_md()
-                .bg(theme::canvas())
-                .border_1()
-                .border_color(theme::border())
-                .cursor_pointer()
-                .on_click(cx.listener(move |model, _, window, cx| {
-                    cx.focus_handle().focus(window);
-                    if !expanded {
-                        model.toggle_agents_terminal_expanded(cx);
-                    }
-                }))
-                .when(!viewer_enabled, |viewer| {
-                    viewer.child(
-                        div().text_xs().text_color(theme::text_muted()).child(
-                            "Live viewer is paused. Execution and persisted history continue.",
-                        ),
+        .child({
+            // The console's frame and header, with the lines in place of
+            // blocks (ADR-040, M2).
+            let mut frame = crate::agent_console::view::frame(
+                format!("api-activity:{key}"),
+                format!("api-activity:{viewer_id}"),
+                expanded,
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_2()
+                    .py_1()
+                    .border_b_1()
+                    .border_color(theme::border())
+                    .text_xs()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_color(theme::text())
+                            .child(summary),
                     )
-                })
-                .when(
-                    viewer_enabled && visible.is_empty() && history.is_empty(),
-                    |viewer| {
+                    .child(crate::agent_console::view::follow_control(
+                        format!("api-follow:{key}"),
+                        lines.following,
+                        cx,
+                        move |model, cx| model.console_follow_lines(&key_for_follow, cx),
+                    )),
+            )
+            .child(
+                div()
+                    .id(SharedString::from(format!("api-activity-lines:{key}")))
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .track_scroll(&lines.scroll)
+                    .p_2()
+                    .when(!viewer_enabled, |viewer| {
+                        viewer.child(
+                            div().text_xs().text_color(theme::text_muted()).child(
+                                "Live viewer is paused. Execution and persisted history continue.",
+                            ),
+                        )
+                    })
+                    .when(viewer_enabled && empty, |viewer| {
                         viewer.child(
                             div()
                                 .text_xs()
                                 .text_color(theme::text_muted())
                                 .child("No API activity or persisted execution for this agent."),
                         )
-                    },
-                )
-                .when(viewer_enabled, |viewer| {
-                    viewer
-                        .children(visible.into_iter().take(200).map(|line| {
+                    })
+                    .when(viewer_enabled && !history_rows.is_empty(), |viewer| {
+                        viewer
+                            .child(
+                                div()
+                                    .pb_1()
+                                    .text_xs()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(theme::text_muted())
+                                    .child("Persisted history"),
+                            )
+                            .children(history_rows.into_iter().map(|(title, preview)| {
+                                div()
+                                    .py_1()
+                                    .border_b_1()
+                                    .border_color(theme::border())
+                                    .child(div().text_xs().child(title))
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(theme::text_muted())
+                                            .child(preview),
+                                    )
+                            }))
+                    })
+                    .when(viewer_enabled, |viewer| {
+                        viewer.children(visible.into_iter().map(|line| {
                             div()
                                 .py_1()
                                 .text_xs()
                                 .text_color(theme::text_muted())
                                 .child(line)
                         }))
-                        .when(!history.is_empty(), |viewer| {
-                            viewer
-                                .child(
-                                    div()
-                                        .mt_2()
-                                        .pt_2()
-                                        .border_t_1()
-                                        .border_color(theme::border())
-                                        .text_xs()
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .child("PERSISTED HISTORY"),
-                                )
-                                .children(history.into_iter().take(20).map(|execution| {
-                                    let preview = execution
-                                        .visible_output
-                                        .as_deref()
-                                        .unwrap_or("No visible output")
-                                        .chars()
-                                        .take(240)
-                                        .collect::<String>();
-                                    div()
-                                        .py_2()
-                                        .border_b_1()
-                                        .border_color(theme::border())
-                                        .child(div().text_xs().child(format!(
-                                            "{} · {} · {}",
-                                            execution.status,
-                                            execution.route_id,
-                                            execution.started_at
-                                        )))
-                                        .child(
-                                            div()
-                                                .text_xs()
-                                                .text_color(theme::text_muted())
-                                                .child(preview),
-                                        )
-                                }))
-                        })
-                }),
-        )
-        .into_any_element()
-}
-
-fn activity_panel(
-    events: Option<&Vec<ikore_core::terminals::TerminalEvent>>,
-    role: AgentRole,
-    filter: TerminalEventFilter,
-    follow_tail: bool,
-    expanded: bool,
-    selected_run: Option<&ikore_core::terminals::TerminalRun>,
-    cx: &mut Context<AppModel>,
-) -> impl IntoElement {
-    activity_panel_for_key(
-        events,
-        role.as_str().to_string(),
-        filter,
-        follow_tail,
-        expanded,
-        selected_run,
-        cx,
-    )
-}
-
-fn activity_panel_for_key(
-    events: Option<&Vec<ikore_core::terminals::TerminalEvent>>,
-    key: String,
-    filter: TerminalEventFilter,
-    follow_tail: bool,
-    expanded: bool,
-    selected_run: Option<&ikore_core::terminals::TerminalRun>,
-    cx: &mut Context<AppModel>,
-) -> impl IntoElement {
-    let expand_id = format!("agent-expand:{key}");
-    let mut events = events
-        .cloned()
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|event| filter.accepts(event.kind))
-        .collect::<Vec<_>>();
-    if follow_tail {
-        events.reverse();
-    }
-    let visible_count = events.len().min(100);
-    div()
-        .id(SharedString::from(format!("agent-activity:{}", key)))
-        .min_h_0()
-        .when(expanded, |panel| panel.flex_1())
-        .when(!expanded, |panel| panel.h(px(250.0)))
-        // Own the wheel: the page around this viewer scrolls too, and wheel events reach every
-        // scrollable ancestor under the pointer. Scrolling up here used to lift the whole page.
-        .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-        .p_2()
-        .rounded_md()
-        .bg(theme::canvas())
-        .border_1()
-        .border_color(theme::border())
-        .overflow_y_scroll()
-        .cursor_pointer()
-        .on_click(cx.listener(move |model, _, window, cx| {
-            cx.focus_handle().focus(window);
-            if !expanded {
-                model.toggle_agents_terminal_expanded(cx);
+                    }),
+            );
+            if !lines.following && lines.unseen > 0 {
+                frame = frame.child(crate::agent_console::view::new_pill(
+                    format!("api-new-pill:{key}"),
+                    lines.unseen,
+                    cx,
+                    move |model, cx| model.console_follow_lines(&key_for_pill, cx),
+                ));
             }
-        }))
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap_2()
-                .pb_1()
-                .text_xs()
-                .text_color(theme::text_muted())
-                .child(div().flex_1().child(format!(
-                    "{} · {visible_count} visible event(s){}",
-                    filter.label(),
-                    if follow_tail {
-                        " · new events on top"
-                    } else {
-                        " · position preserved"
-                    }
-                )))
-                .when(!expanded, |header| {
-                    header.child(icon_action(
-                        SharedString::from(expand_id),
-                        Icon::ChevronUp,
-                        "Expand terminal",
-                        true,
-                        cx,
-                        |model, cx| model.toggle_agents_terminal_expanded(cx),
-                    ))
-                }),
-        )
-        .when(events.is_empty(), |panel| {
-            let failed_run = selected_run.filter(|run| run.status == TerminalRunStatus::Failed);
-            match failed_run {
-                Some(run) => panel.child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .text_xs()
-                        .child(
-                            div()
-                                .text_color(theme::danger())
-                                .child("Run failed before producing output."),
-                        )
-                        .when_some(run.error_message.as_deref(), |block, message| {
-                            block.child(
-                                div()
-                                    .text_color(theme::text_muted())
-                                    .child(format!("Error: {message}")),
-                            )
-                        })
-                        .when_some(
-                            run.termination_reason
-                                .as_deref()
-                                .filter(|reason| Some(*reason) != run.error_message.as_deref()),
-                            |block, reason| {
-                                block.child(
-                                    div()
-                                        .text_color(theme::text_muted())
-                                        .child(format!("Reason: {reason}")),
-                                )
-                            },
-                        )
-                        .child(div().text_color(theme::text_muted()).child(format!(
-                                "Exit code: {}",
-                                run.exit_code
-                                    .map_or_else(|| "—".to_string(), |code| code.to_string())
-                            ))),
-                ),
-                None => panel.child(
-                    div()
-                        .text_xs()
-                        .text_color(theme::text_muted())
-                        .child("No activity recorded for the selected run."),
-                ),
-            }
+            frame
         })
-        .children(events.into_iter().take(100).map(|event| {
-            let prefix = match event.kind {
-                TerminalEventKind::System => "system",
-                TerminalEventKind::Message => "message",
-                TerminalEventKind::ToolUse => "tool",
-                TerminalEventKind::ToolResult => "result",
-                TerminalEventKind::Stdout => "stdout",
-                TerminalEventKind::Stderr => "stderr",
-                TerminalEventKind::Warning => "warning",
-                TerminalEventKind::Error => "error",
-                TerminalEventKind::Completed => "done",
-            };
-            let content = event.content.clone();
-            let event_id = event.id.clone();
-            let time_label = crate::time::format_timestamp_time_only(&event.created_at);
-            let display_text = if time_label.is_empty() {
-                format!("{prefix} · {}", event.content)
-            } else {
-                format!("{time_label} · {prefix} · {}", event.content)
-            };
-            div()
-                .id(SharedString::from(format!("terminal-event:{event_id}")))
-                .py_1()
-                .text_xs()
-                .cursor_pointer()
-                .on_click(cx.listener(move |_, _, _, cx| {
-                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(content.clone()));
-                }))
-                .text_color(
-                    if matches!(
-                        event.kind,
-                        TerminalEventKind::Error | TerminalEventKind::Stderr
-                    ) {
-                        theme::danger()
-                    } else {
-                        theme::text_muted()
-                    },
-                )
-                .child(display_text)
-        }))
+        .into_any_element()
 }
 
 fn run_metadata(run: &ikore_core::terminals::TerminalRun) -> String {
@@ -3871,49 +3639,6 @@ fn icon_action(
         cx,
         move |model, _, cx| handler(model, cx),
     )
-}
-
-/// Follow keeps its words — they report a state — and explains what it does once the pointer
-/// has rested on it for a moment (or Tab reaches it).
-fn follow_button(
-    id: SharedString,
-    follow: bool,
-    cx: &mut Context<AppModel>,
-    handler: impl Fn(&mut AppModel, &mut Context<AppModel>) + 'static,
-) -> AnyElement {
-    let explanation = if follow {
-        "Following: the viewer keeps scrolling to the newest output as it arrives. Click to pause and read earlier lines."
-    } else {
-        "Paused: the viewer stays where you scrolled while new output keeps arriving. Click to follow the newest output again."
-    };
-    let selector = id.clone();
-    crate::widgets::button_frame(
-        div()
-            .id(id)
-            .debug_selector(move || selector.to_string())
-            .tab_index(0),
-        crate::widgets::ButtonVariant::Secondary,
-        true,
-    )
-    .tooltip(move |_, cx| {
-        cx.new(|_| {
-            crate::widgets::Tooltip::new(explanation).after_rest(crate::widgets::EXPLAIN_REST)
-        })
-        .into()
-    })
-    .on_click(cx.listener(move |model, _, _, cx| handler(model, cx)))
-    .gap_2()
-    .child(crate::widgets::status_dot(if follow {
-        theme::success()
-    } else {
-        theme::text_subtle()
-    }))
-    .child(if follow {
-        "Follow active"
-    } else {
-        "Follow paused"
-    })
-    .into_any_element()
 }
 
 /// Whether the selected run's session can go on, and whether it goes on in a

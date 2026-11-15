@@ -661,7 +661,7 @@ mod tests {
         let (menu, visual) = cx.add_window_view(|window, cx| {
             SelectMenu::new(
                 owner.downgrade(),
-                "agent-filter:task_specifier".into(),
+                "agent-console-filter:task_specifier".into(),
                 Some("layout-project".into()),
                 selected,
                 choices,
@@ -679,7 +679,7 @@ mod tests {
         assert!(owner.read_with(visual, |m, cx| m.agents.read(cx).event_filters.is_empty()));
         // Replace the synthetic search list with a valid live value, then change its owner.
         menu.update(visual, |m, cx| {
-            m.choices = vec![Choice::new("error", "Option 11", false)];
+            m.choices = vec![Choice::new("errors", "Option 11", false)];
             cx.notify();
         });
         owner.update(visual, |m, cx| {
