@@ -44,9 +44,11 @@ Not started beyond the preparation stage.
 
 **Etapa 0 (2026-11-15).** A corpus of real CLI frames is in
 `crates/ikore-terminal/fixtures/cli/<backend>/<version>/`, recorded on Windows
-through the pipeline launch path with six fixed, cheap scenarios: Codex 0.155.1,
-OpenCode 1.18.32 and Antigravity 1.4.0, plus Gemini 0.60.0's refusal of an
-account tier. Claude is still to be recorded. The capture and scrub tools are
+through the pipeline launch path with six fixed, cheap scenarios: Claude
+2.1.325, Codex 0.155.1, OpenCode 1.18.32 and Antigravity 1.4.0, plus Gemini
+0.60.0's refusal of an account tier. No CLI in it prints reasoning text: Claude
+sends empty thinking blocks with token estimates, the others token counts only.
+The capture and scrub tools are
 ignored tests in `src/terminals/corpus_capture.rs`; a test on every build checks
 that the corpus names no person or machine. See the
 [corpus notes](../../crates/ikore-terminal/fixtures/cli/CORPUS.md).
@@ -61,5 +63,5 @@ The corpus also shows issues in the CLI runtime itself, outside this decision:
 - Gemini 0.60.0 skips the hardening settings file kept in `%TEMP%`, needs a
   trusted folder in headless mode and replaces the `plan` approval mode.
 
-One question remains open before the reasoning milestone: whether reasoning
-blocks already shown during a run that later fails are kept or deleted.
+Reasoning blocks already shown during a run that later fails are kept: each
+was redacted whole, and the developer asked to see them (decided 2026-11-15).
