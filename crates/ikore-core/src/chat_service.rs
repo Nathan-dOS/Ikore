@@ -6978,8 +6978,32 @@ mod tests {
                 })
                 .unwrap()
                 .is_empty(),
-            "a LIKE wildcard in the query is a literal"
+            "a % in the query is a literal"
         );
+        // Case and accents are ignored in any letter, not only in ASCII.
+        service
+            .connection()
+            .unwrap()
+            .execute(
+                "UPDATE chat_messages SET content = 'Revisar a AÇÃO do botão'
+                 WHERE id = 'message-2'",
+                [],
+            )
+            .unwrap();
+        for query in ["ação", "acao", "AÇÃO", "BOTAO"] {
+            let found = service
+                .search_conversations(SearchChatConversationsRequest {
+                    project_id: "project-a".into(),
+                    query: query.into(),
+                })
+                .unwrap();
+            assert_eq!(found.len(), 1, "{query}: {found:?}");
+            assert_eq!(
+                found[0].excerpt.as_deref(),
+                Some("Revisar a AÇÃO do botão"),
+                "{query}"
+            );
+        }
 
         // Marks are per project and drop conversations that no longer exist.
         let marks = service

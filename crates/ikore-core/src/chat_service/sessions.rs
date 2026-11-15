@@ -4,6 +4,7 @@
 
 use std::collections::HashSet;
 
+use icu_normalizer::DecomposingNormalizer;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
@@ -124,36 +125,55 @@ pub(crate) fn read_marks(
     Ok(marks)
 }
 
-/// `%` and `_` are wildcards of LIKE; the query matches them literally.
-fn like_pattern(query: &str) -> String {
-    let mut pattern = String::with_capacity(query.len() + 2);
-    pattern.push('%');
-    for character in query.chars() {
-        if matches!(character, '%' | '_' | '\\') {
-            pattern.push('\\');
-        }
-        pattern.push(character);
-    }
-    pattern.push('%');
-    pattern
+/// The combining marks canonical decomposition splits off a letter: its accents.
+fn is_combining_mark(character: char) -> bool {
+    matches!(
+        character,
+        '\u{0300}'..='\u{036F}'
+            | '\u{1AB0}'..='\u{1AFF}'
+            | '\u{1DC0}'..='\u{1DFF}'
+            | '\u{20D0}'..='\u{20FF}'
+            | '\u{FE20}'..='\u{FE2F}'
+    )
 }
 
-/// A one-line window of `text` around the first case-insensitive match of `query`.
-fn excerpt(text: &str, query: &str) -> String {
-    let fold = |character: char| character.to_lowercase().next().unwrap_or(character);
+/// Writes `text` into `folded` the way the search compares it: in lower case and without
+/// accents, in any letter, so "AÇÃO", "ação" and "acao" read the same. The FTS5 indexes of
+/// the pulsation digests and agent outputs (`unicode61 remove_diacritics 2`) ignore the same.
+fn fold_into(text: &str, folded: &mut String) {
+    folded.clear();
+    if text.is_ascii() {
+        folded.extend(text.chars().map(|character| character.to_ascii_lowercase()));
+        return;
+    }
+    for character in DecomposingNormalizer::new_nfd().normalize_iter(text.chars()) {
+        if !is_combining_mark(character) {
+            folded.extend(character.to_lowercase());
+        }
+    }
+}
+
+/// The index in `characters` where the folded `needle` first begins.
+fn match_start(characters: &[char], needle: &str) -> Option<usize> {
+    let normalizer = DecomposingNormalizer::new_nfd();
+    let mut folded = String::new();
+    // The character each byte of `folded` came from.
+    let mut origins = Vec::new();
+    for (index, &character) in characters.iter().enumerate() {
+        for part in normalizer.normalize_iter(std::iter::once(character)) {
+            if !is_combining_mark(part) {
+                folded.extend(part.to_lowercase());
+            }
+        }
+        origins.resize(folded.len(), index);
+    }
+    folded.find(needle).map(|byte| origins[byte])
+}
+
+/// A one-line window of `text` around the first match of the folded `needle`.
+fn excerpt(text: &str, needle: &str) -> String {
     let characters: Vec<char> = text.chars().collect();
-    let needle: Vec<char> = query.chars().map(fold).collect();
-    let found = (!needle.is_empty() && needle.len() <= characters.len())
-        .then(|| {
-            (0..=characters.len() - needle.len()).find(|&start| {
-                characters[start..start + needle.len()]
-                    .iter()
-                    .zip(&needle)
-                    .all(|(character, wanted)| fold(*character) == *wanted)
-            })
-        })
-        .flatten()
-        .unwrap_or(0);
+    let found = match_start(&characters, needle).unwrap_or(0);
     let start = found.saturating_sub(EXCERPT_LEAD);
     let end = (start + EXCERPT_CHARS).min(characters.len());
     let mut window: String = characters[start..end]
@@ -279,44 +299,69 @@ impl ChatService {
         })
     }
 
-    /// The project's conversations whose title or messages hold `query`, ignoring ASCII case,
-    /// the most recent first.
+    /// The project's conversations whose title or messages hold `query`, ignoring case and
+    /// accents in any letter, the most recent first. SQLite's LIKE folds only ASCII, so the
+    /// comparison runs here, one conversation at a time, until the list is full.
     pub fn search_conversations(
         &self,
         request: SearchChatConversationsRequest,
     ) -> Result<Vec<ChatConversationMatch>, ChatCommandError> {
         let project_id = normalize_id(&request.project_id, "projectId")?;
-        let query = request.query.trim();
-        if query.is_empty() {
+        let mut needle = String::new();
+        fold_into(request.query.trim(), &mut needle);
+        if needle.is_empty() {
             return Ok(Vec::new());
         }
         let database = self.connection()?;
-        let mut statement = database.prepare(
-            "SELECT c.id, c.title, c.updated_at,
-                    (SELECT m.content FROM chat_messages m
-                     WHERE m.conversation_id = c.id AND m.content LIKE ?2 ESCAPE '\\'
-                     ORDER BY m.ordinal LIMIT 1)
-             FROM chat_conversations c
-             WHERE c.project_id = ?1
-               AND (c.title LIKE ?2 ESCAPE '\\'
-                    OR EXISTS(SELECT 1 FROM chat_messages m
-                              WHERE m.conversation_id = c.id AND m.content LIKE ?2 ESCAPE '\\'))
-             ORDER BY c.updated_at DESC, c.id
-             LIMIT ?3",
+        let conversations = {
+            let mut statement = database.prepare(
+                "SELECT id, title, updated_at FROM chat_conversations
+                 WHERE project_id = ?1
+                 ORDER BY updated_at DESC, id",
+            )?;
+            statement
+                .query_map([&project_id], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        let mut messages = database.prepare(
+            "SELECT content FROM chat_messages WHERE conversation_id = ?1 ORDER BY ordinal",
         )?;
-        let limit = i64::try_from(MAX_CONVERSATION_MATCHES).unwrap_or(i64::MAX);
-        let matches = statement
-            .query_map(params![project_id, like_pattern(query), limit], |row| {
-                Ok(ChatConversationMatch {
-                    conversation_id: row.get(0)?,
-                    title: row.get(1)?,
-                    updated_at: row.get(2)?,
-                    excerpt: row
-                        .get::<_, Option<String>>(3)?
-                        .map(|content| excerpt(&content, query)),
-                })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut folded = String::new();
+        let mut matches = Vec::new();
+        for (conversation_id, title, updated_at) in conversations {
+            if matches.len() == MAX_CONVERSATION_MATCHES {
+                break;
+            }
+            // The first message that matches is quoted, even when the title matches too.
+            let mut quoted = None;
+            let mut rows = messages.query([&conversation_id])?;
+            while let Some(row) = rows.next()? {
+                let content: String = row.get(0)?;
+                fold_into(&content, &mut folded);
+                if folded.contains(needle.as_str()) {
+                    quoted = Some(excerpt(&content, &needle));
+                    break;
+                }
+            }
+            if quoted.is_none() {
+                fold_into(&title, &mut folded);
+                if !folded.contains(needle.as_str()) {
+                    continue;
+                }
+            }
+            matches.push(ChatConversationMatch {
+                conversation_id,
+                title,
+                excerpt: quoted,
+                updated_at,
+            });
+        }
         Ok(matches)
     }
 
@@ -400,6 +445,29 @@ mod tests {
         assert!(cut.contains("The NEEDLE is here"), "{cut}");
         assert!(!cut.contains('\n'));
         assert_eq!(excerpt("short text", "missing"), "short text");
-        assert_eq!(like_pattern("50%_a\\"), "%50\\%\\_a\\\\%");
+    }
+
+    #[test]
+    fn search_text_ignores_case_and_accents_in_any_letter() {
+        let mut folded = String::new();
+        fold_into("AÇÃO, Ação e acao em İstanbul na ÉCOLE", &mut folded);
+        assert_eq!(folded, "acao, acao e acao em istanbul na ecole");
+        // Decomposed input reads the same as the composed one.
+        fold_into("Ac\u{0327}a\u{0303}o", &mut folded);
+        assert_eq!(folded, "acao");
+        fold_into("Plain ASCII", &mut folded);
+        assert_eq!(folded, "plain ascii");
+        // Accents go in other scripts too; letters without them stay as they are.
+        fold_into("Ωμέγα 漢字", &mut folded);
+        assert_eq!(folded, "ωμεγα 漢字");
+
+        // The window is counted in characters of the original text, whatever the fold did to
+        // the bytes before the match.
+        let text = format!("{} AÇÃO no fim", "ã".repeat(60));
+        assert_eq!(
+            excerpt(&text, "acao"),
+            format!("…{} AÇÃO no fim", "ã".repeat(39))
+        );
+        assert_eq!(match_start(&['a', 'b'], "c"), None);
     }
 }
