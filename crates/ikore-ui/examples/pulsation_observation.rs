@@ -52,6 +52,7 @@ fn main() {
             scroll_top: None,
             tabs: Vec::new(),
             auto_open_review: false,
+            work_panel_tab: None,
         })
         .unwrap();
     let report = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

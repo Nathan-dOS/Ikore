@@ -36,6 +36,11 @@ impl WorkPanelTab {
         }
     }
 
+    /// The tab a saved session names; `None` for one this build does not know.
+    pub(crate) fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|tab| tab.id() == id)
+    }
+
     fn label(self) -> &'static str {
         match self {
             Self::General => "General",
@@ -420,10 +425,15 @@ impl AppModel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let changed = self.work_panel.tab != tab;
         self.work_panel.tab = tab;
         if tab == WorkPanelTab::Search {
             let input = self.ensure_work_search(cx);
             input.read(cx).focus_handle(cx).focus(window);
+        }
+        if changed {
+            // The project's session remembers the tab for the next launch.
+            self.schedule_session_persistence(cx);
         }
         cx.notify();
     }

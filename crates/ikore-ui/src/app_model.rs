@@ -8717,6 +8717,10 @@ impl AppModel {
             navigation.context_rail_collapsed =
                 session.is_some_and(|value| value.sidebar_collapsed);
         });
+        self.work_panel.tab = session
+            .and_then(|value| value.work_panel_tab.as_deref())
+            .and_then(crate::work_panel::WorkPanelTab::from_id)
+            .unwrap_or_default();
         self.activity.clear();
         self.indexing_status = None;
         self.workspace.update(cx, |workspace, cx| {
@@ -8925,6 +8929,7 @@ impl AppModel {
             scroll_top: Some(f64::from(editor_snapshot.scroll_top)),
             tabs,
             auto_open_review: self.auto_open_review,
+            work_panel_tab: Some(self.work_panel.tab.id().to_string()),
         })
     }
 
@@ -10484,6 +10489,42 @@ mod tests {
     }
 
     #[gpui::test]
+    fn choosing_a_work_panel_tab_saves_it_with_the_session(cx: &mut TestAppContext) {
+        use crate::work_panel::WorkPanelTab;
+
+        let persistence = Arc::new(RecordingSessionPersistence::default());
+        let requests = Arc::clone(&persistence.requests);
+        let (model, visual) =
+            cx.add_window_view(|_, cx| AppModel::new_for_test_with_persistence(persistence, cx));
+        model.update(visual, configure_restorable_state);
+        visual.executor().advance_clock(SESSION_DEBOUNCE);
+        visual.run_until_parked();
+        let take = || {
+            std::mem::take(
+                &mut *requests
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            )
+        };
+        take();
+
+        let choose = |visual: &mut gpui::VisualTestContext, tab| {
+            visual.update(|window, cx| {
+                model.update(cx, |model, cx| model.select_work_panel_tab(tab, window, cx));
+            });
+            visual.executor().advance_clock(SESSION_DEBOUNCE);
+            visual.run_until_parked();
+        };
+        choose(visual, WorkPanelTab::Files);
+        let saved = take();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].work_panel_tab.as_deref(), Some("files"));
+        // Choosing the open tab again saves nothing.
+        choose(visual, WorkPanelTab::Files);
+        assert!(take().is_empty());
+    }
+
+    #[gpui::test]
     fn rehydrates_all_domain_selections(cx: &mut TestAppContext) {
         let model = cx.new(AppModel::new_for_test);
         let session = UiSessionState {
@@ -10500,6 +10541,7 @@ mod tests {
             scroll_top: Some(44.0),
             tabs: Vec::new(),
             auto_open_review: true,
+            work_panel_tab: Some("search".into()),
             updated_at: "now".into(),
         };
         model.update(cx, |model, cx| {
@@ -10533,6 +10575,10 @@ mod tests {
             assert_eq!(model.canvas.project_id.as_deref(), Some("project-1"));
             assert!(model.navigation.read(cx).context_rail_collapsed);
             assert!(model.auto_open_review);
+            assert_eq!(
+                model.work_panel.tab,
+                crate::work_panel::WorkPanelTab::Search
+            );
             let workspace = model.workspace.read(cx);
             assert!(!workspace.context_drawer_open);
             // Legacy sessions persisted with `workspace_view_mode: "hitl"` still restore cleanly;
@@ -10578,6 +10624,7 @@ mod tests {
             assert!(round_trip.sidebar_collapsed);
             assert_eq!(round_trip.workspace_view_mode, "editor");
             assert!(round_trip.auto_open_review);
+            assert_eq!(round_trip.work_panel_tab.as_deref(), Some("search"));
             assert_eq!(round_trip.tabs[0].cursor_line, Some(7));
             assert_eq!(round_trip.tabs[0].cursor_column, Some(3));
         });
@@ -10590,6 +10637,7 @@ mod tests {
             model.pulsations.update(cx, |pulsations, _| {
                 pulsations.diff_expanded = true;
             });
+            model.work_panel.tab = crate::work_panel::WorkPanelTab::Files;
             model.apply_restored_session(
                 RestoredSession {
                     project_id: "project-1".into(),
@@ -10609,6 +10657,8 @@ mod tests {
                         scroll_top: None,
                         tabs: Vec::new(),
                         auto_open_review: false,
+                        // A tab a newer build saved opens the default one.
+                        work_panel_tab: Some("timeline".into()),
                         updated_at: "now".into(),
                     }),
                     tabs: Vec::new(),
@@ -10626,6 +10676,10 @@ mod tests {
             assert!(model.navigation.read(cx).context_rail_collapsed);
             assert!(!model.workspace.read(cx).context_drawer_open);
             assert!(!model.pulsations.read(cx).diff_expanded);
+            assert_eq!(
+                model.work_panel.tab,
+                crate::work_panel::WorkPanelTab::General
+            );
         });
     }
 
