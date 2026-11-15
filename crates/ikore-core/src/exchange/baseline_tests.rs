@@ -131,6 +131,8 @@ fn bulk_events(
                 redaction_count: 0,
                 redaction_categories: Vec::new(),
                 created_at: Utc::now().to_rfc3339(),
+                detail: None,
+                observed_at: None,
             };
             statement
                 .execute(params![

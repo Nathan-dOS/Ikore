@@ -1,27 +1,31 @@
 use super::{
-    CliAdapter, CliBackend, CliCapabilities, CliFailureKind, CliInvocationRequest, CliOutputFormat,
-    CliProcessSpec, NormalizedCliFrame, TerminalError, TerminalEventKind, ThinkingLevel, Value,
-    append_model, base_capabilities, classify_failure_text, event_type, normalize_json_frame,
-    version_supports_contract,
+    ActionFrame, ActionStatus, CliAdapter, CliBackend, CliCapabilities, CliFailureKind,
+    CliInvocationRequest, CliOutputFormat, CliProcessSpec, NormalizedCliFrame, TerminalError,
+    TerminalEventKind, ThinkingLevel, Value, append_model, base_capabilities,
+    classify_failure_text, event_type, extract_visible_text, normalize_json_frame_with,
+    sanitize_cli_frame_text, version_supports_contract,
 };
 
 pub(super) struct ClaudeAdapter;
 
 impl CliAdapter for ClaudeAdapter {
     fn capabilities(&self, version: Option<&str>) -> CliCapabilities {
-        base_capabilities(
-            CliOutputFormat::JsonLines,
-            true,
-            version_supports_contract(CliBackend::Claude, version),
-            &[
-                ThinkingLevel::Low,
-                ThinkingLevel::Medium,
-                ThinkingLevel::High,
-            ],
-            true,
-            true,
-            false,
-        )
+        CliCapabilities {
+            action_frames: true,
+            ..base_capabilities(
+                CliOutputFormat::JsonLines,
+                true,
+                version_supports_contract(CliBackend::Claude, version),
+                &[
+                    ThinkingLevel::Low,
+                    ThinkingLevel::Medium,
+                    ThinkingLevel::High,
+                ],
+                true,
+                true,
+                false,
+            )
+        }
     }
 
     fn build_process_spec(
@@ -80,7 +84,7 @@ impl CliAdapter for ClaudeAdapter {
     }
 
     fn normalize_frame(&self, stream: &str, bytes: &[u8]) -> NormalizedCliFrame {
-        normalize_json_frame(
+        normalize_json_frame_with(
             CliBackend::Claude,
             stream,
             bytes,
@@ -119,6 +123,7 @@ impl CliAdapter for ClaudeAdapter {
                 }
                 _ => TerminalEventKind::Message,
             },
+            refine_frame,
         )
     }
 
@@ -135,6 +140,134 @@ impl CliAdapter for ClaudeAdapter {
         }
         classify_failure_text(stderr)
     }
+}
+
+/// Reads the tool calls and results a frame carries and marks its thinking
+/// (ADR-040, M1). A failure frame stays as the classification left it.
+fn refine_frame(value: &Value, frame: &mut NormalizedCliFrame) {
+    if frame.kind == TerminalEventKind::Error {
+        return;
+    }
+    match event_type(value) {
+        "assistant" => refine_assistant(value, frame),
+        "user" => refine_tool_results(value, frame),
+        "stream_event" => {
+            let block = value
+                .pointer("/event/content_block/type")
+                .and_then(Value::as_str);
+            let delta = value.pointer("/event/delta/type").and_then(Value::as_str);
+            if matches!(block, Some("thinking" | "redacted_thinking"))
+                || matches!(delta, Some("thinking_delta" | "signature_delta"))
+            {
+                frame.is_reasoning = true;
+            }
+        }
+        // 2.1.325 estimates the thinking it streams.
+        "system" if value.get("subtype").and_then(Value::as_str) == Some("thinking_tokens") => {
+            frame.is_reasoning = true;
+        }
+        _ => {}
+    }
+}
+
+fn content_blocks(value: &Value) -> &[Value] {
+    value
+        .pointer("/message/content")
+        .and_then(Value::as_array)
+        .map_or(&[], Vec::as_slice)
+}
+
+/// A message's text, its tool calls and its thinking go apart: the text stays
+/// the model's message, each call becomes an action, and a message that only
+/// thinks is reasoning.
+fn refine_assistant(value: &Value, frame: &mut NormalizedCliFrame) {
+    let mut text = Vec::new();
+    let mut thinking = false;
+    for block in content_blocks(value) {
+        match block.get("type").and_then(Value::as_str) {
+            Some("text") => {
+                if let Some(part) = block
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .filter(|part| !part.is_empty())
+                {
+                    text.push(part);
+                }
+            }
+            Some("tool_use") => frame.actions.push(ActionFrame::call(
+                CliBackend::Claude,
+                block.get("id").and_then(Value::as_str).map(str::to_owned),
+                block
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+                block.get("input").unwrap_or(&Value::Null),
+            )),
+            Some("thinking" | "redacted_thinking") => thinking = true,
+            _ => {}
+        }
+    }
+    if frame.actions.is_empty() && !thinking {
+        return;
+    }
+    if text.is_empty() {
+        // The calls' inputs (a file to write, a plan) are never the message.
+        frame.is_text = false;
+        frame.is_reasoning = thinking && frame.actions.is_empty();
+    } else {
+        frame.kind = TerminalEventKind::Message;
+        frame.content = sanitize_cli_frame_text(text.join("\n").as_bytes());
+        frame.is_text = true;
+    }
+}
+
+/// Each `tool_result` block answers the call with its `tool_use_id`. Its text
+/// is the result's output, the content the event carried before (ADR-040, 3.4).
+fn refine_tool_results(value: &Value, frame: &mut NormalizedCliFrame) {
+    for block in content_blocks(value) {
+        if block.get("type").and_then(Value::as_str) != Some("tool_result") {
+            continue;
+        }
+        let key = block.get("tool_use_id").and_then(Value::as_str);
+        let status = if denied_by_permission(value, key) {
+            ActionStatus::Denied
+        } else if block.get("is_error").and_then(Value::as_bool) == Some(true) {
+            ActionStatus::Error
+        } else {
+            ActionStatus::Ok
+        };
+        frame.actions.push(ActionFrame::result(
+            key.map(str::to_owned),
+            status,
+            None,
+            extract_visible_text(block).map(|text| sanitize_cli_frame_text(text.as_bytes())),
+        ));
+    }
+    if !frame.actions.is_empty() {
+        frame.is_text = false;
+    }
+}
+
+/// Claude records the permission decision of each call beside its result: a
+/// refusal there is the structured signal `denied` needs.
+fn denied_by_permission(value: &Value, key: Option<&str>) -> bool {
+    let Some(key) = key else {
+        return false;
+    };
+    value
+        .get("tool_result_meta")
+        .and_then(Value::as_array)
+        .is_some_and(|entries| {
+            entries.iter().any(|entry| {
+                entry.get("id").and_then(Value::as_str) == Some(key)
+                    && matches!(
+                        entry
+                            .pointer("/permission_decision/decision")
+                            .and_then(Value::as_str),
+                        Some("deny" | "denied" | "reject" | "rejected")
+                    )
+            })
+        })
 }
 
 /// Claude emits local API failures as assistant messages with a placeholder

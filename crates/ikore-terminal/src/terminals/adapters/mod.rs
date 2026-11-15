@@ -1,5 +1,6 @@
 use serde_json::Value;
 
+use super::actions::{ActionFrame, ActionStatus};
 use super::{
     CliBackend, CliCapabilities, CliInvocationRequest, CliOutputFormat, CliProcessSpec,
     CliQuotaBucket, TerminalError, TerminalEventKind, ThinkingLevel, extract_visible_text,
@@ -37,8 +38,12 @@ pub(super) struct NormalizedCliFrame {
     pub finish_reason: Option<String>,
     /// True when the frame says the model has started thinking. Nothing else
     /// arrives until it finishes, so the watchdog must widen its silence window
-    /// rather than read the quiet as a stuck process.
+    /// rather than read the quiet as a stuck process. A reasoning frame is
+    /// never text: its words must not reach the audit or the parsed answer.
     pub is_reasoning: bool,
+    /// The tool calls and results the frame carries (ADR-040, M1). Several
+    /// when one Claude message calls several tools at once.
+    pub actions: Vec<ActionFrame>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,6 +119,12 @@ pub(super) fn capabilities(backend: CliBackend, version: Option<&str>) -> CliCap
     adapter(backend).capabilities(version)
 }
 
+/// Whether the adapter reads tool calls and results from the frames. Its
+/// non-text tool frames are then superseded by the host's action summaries.
+pub(super) fn reads_actions(backend: CliBackend) -> bool {
+    adapter(backend).capabilities(None).action_frames
+}
+
 pub(super) fn auth_probe_args(backend: CliBackend) -> Option<&'static [&'static str]> {
     adapter(backend).auth_probe_args()
 }
@@ -184,6 +195,9 @@ fn base_capabilities(
         auth_probe,
         read_only,
         model_catalog,
+        action_frames: false,
+        // No CLI of the Etapa 0 corpus prints reasoning text (ADR-040, A10).
+        reasoning_blocks: false,
     }
 }
 
@@ -294,11 +308,15 @@ fn append_model(args: &mut Vec<String>, model: Option<&str>) {
     }
 }
 
-fn normalize_json_frame(
+/// The frame a JSON-lines CLI printed, classified by `classify`; then `refine`
+/// on the parsed stdout frame, where an adapter reads its tool calls and its
+/// reasoning without parsing the line twice.
+fn normalize_json_frame_with(
     backend: CliBackend,
     stream: &str,
     bytes: &[u8],
     classify: impl FnOnce(&Value) -> TerminalEventKind,
+    refine: impl FnOnce(&Value, &mut NormalizedCliFrame),
 ) -> NormalizedCliFrame {
     let sanitized = sanitize_cli_frame_text(bytes);
     if stream == "stderr" {
@@ -315,6 +333,7 @@ fn normalize_json_frame(
             is_delta: false,
             finish_reason: None,
             is_reasoning: false,
+            actions: Vec::new(),
         };
     }
     let Ok(value) = serde_json::from_str::<Value>(&sanitized) else {
@@ -331,6 +350,7 @@ fn normalize_json_frame(
             is_delta: false,
             finish_reason: None,
             is_reasoning: false,
+            actions: Vec::new(),
         };
     };
     let kind = classify(&value);
@@ -346,7 +366,8 @@ fn normalize_json_frame(
     // frames (emitted because the adapter passes `--include-partial-messages`).
     let is_delta = value.get("delta").and_then(Value::as_bool) == Some(true)
         || event_type(&value) == "stream_event";
-    NormalizedCliFrame {
+    let is_reasoning = is_reasoning_frame(&value);
+    let mut frame = NormalizedCliFrame {
         kind,
         content: sanitize_cli_frame_text(content.as_bytes()),
         native_session_id: find_session_id(&value),
@@ -358,10 +379,29 @@ fn normalize_json_frame(
         ),
         agent_id: find_string_for_keys(&value, &["agent_id", "agentId"]),
         is_model_generation,
-        is_text,
+        // Reasoning stays out of the audit and of the answer (ADR-040, M1).
+        is_text: is_text && !is_reasoning,
         is_delta,
         finish_reason: find_finish_reason(&value),
-        is_reasoning: is_reasoning_frame(&value),
+        is_reasoning,
+        actions: Vec::new(),
+    };
+    refine(&value, &mut frame);
+    if frame.is_reasoning {
+        frame.is_text = false;
+    }
+    frame
+}
+
+/// The status a result reports in a `status` field, by its usual spellings.
+fn reported_status(status: Option<&str>) -> Option<ActionStatus> {
+    match status?.to_ascii_lowercase().as_str() {
+        "completed" | "complete" | "success" | "succeeded" | "ok" | "done" => {
+            Some(ActionStatus::Ok)
+        }
+        "failed" | "failure" | "error" | "errored" => Some(ActionStatus::Error),
+        "declined" | "denied" | "rejected" => Some(ActionStatus::Denied),
+        _ => None,
     }
 }
 

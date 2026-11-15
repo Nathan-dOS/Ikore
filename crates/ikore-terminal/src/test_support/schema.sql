@@ -286,7 +286,8 @@ CREATE TABLE terminal_events (
   content TEXT NOT NULL,
   created_at TEXT NOT NULL, redaction_count INTEGER NOT NULL DEFAULT 0
   CHECK(redaction_count >= 0), redaction_categories_json TEXT NOT NULL DEFAULT '[]'
-  CHECK(json_valid(redaction_categories_json)),
+  CHECK(json_valid(redaction_categories_json)), detail_json TEXT
+  CHECK(detail_json IS NULL OR json_valid(detail_json)), observed_at TEXT,
   UNIQUE(run_id,sequence)
 );
 

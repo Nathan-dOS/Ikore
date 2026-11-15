@@ -934,12 +934,7 @@ mod tests {
         fn cancel(&self, run_id: String) -> AgentsFuture<bool> {
             panic!("Unexpected backend operation")
         }
-        fn events(
-            &self,
-            run_id: String,
-            after_sequence: u64,
-            limit: usize,
-        ) -> AgentsFuture<Vec<TerminalEvent>> {
+        fn events_tail(&self, run_id: String, limit: usize) -> AgentsFuture<Vec<TerminalEvent>> {
             panic!("Unexpected backend operation")
         }
         fn clear_history(

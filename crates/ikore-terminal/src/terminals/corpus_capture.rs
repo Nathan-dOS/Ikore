@@ -543,7 +543,7 @@ fn scrub_captured_corpus() {
 
 /// The committed corpus: `(backend, version, scenario, stdout lines)` for every
 /// `fixtures/cli/<backend>/<x.y.z>/<scenario>.jsonl`.
-fn committed_corpus() -> Vec<(CliBackend, String, String, Vec<String>)> {
+pub(super) fn committed_corpus() -> Vec<(CliBackend, String, String, Vec<String>)> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("fixtures")
         .join("cli");
@@ -705,6 +705,290 @@ fn real_frames_normalize_and_carry_the_pairing_keys_the_console_needs() {
         }
     }
     assert!(claude_results > 0);
+}
+
+/// The action summaries each recorded scenario yields (ADR-040, M1): the call
+/// with its name and target, then its outcome. Calls a cancelled stream never
+/// answered close as `unknown`.
+#[test]
+fn action_frames_match_corpus() {
+    use super::{ActionLedger, LedgerEntry};
+
+    let expected: &[(CliBackend, &str, &[&str])] = &[
+        (
+            CliBackend::Claude,
+            "tool-ok",
+            &["Read · notes.txt", "Read · ok"],
+        ),
+        (
+            CliBackend::Claude,
+            "tool-error",
+            &["Read · missing-notes.txt", "Read · error"],
+        ),
+        // A tool outside `--tools` comes back as an error, not a structured
+        // denial: free text never makes an action `denied`.
+        (
+            CliBackend::Claude,
+            "denied",
+            &["Write · created.txt", "Write · error"],
+        ),
+        (
+            CliBackend::Claude,
+            "secret-read",
+            &["Read · config.env", "Read · ok"],
+        ),
+        (
+            CliBackend::Claude,
+            "cancel",
+            &["Glob · \"*\" in .", "Glob · unknown"],
+        ),
+        (
+            CliBackend::Opencode,
+            "tool-ok",
+            &["read · notes.txt", "read · ok"],
+        ),
+        (
+            CliBackend::Opencode,
+            "tool-error",
+            &["read · missing-notes.txt", "read · error"],
+        ),
+        (
+            CliBackend::Opencode,
+            "secret-read",
+            &["read · config.env", "read · ok"],
+        ),
+        (
+            CliBackend::Opencode,
+            "cancel",
+            &["glob · \"*\" in .", "glob · ok"],
+        ),
+        (
+            CliBackend::Antigravity,
+            "tool-ok",
+            &["read_file · notes.txt", "read_file · ok"],
+        ),
+        (
+            CliBackend::Antigravity,
+            "tool-error",
+            &["read_file · missing-notes.txt", "read_file · error"],
+        ),
+        (
+            CliBackend::Antigravity,
+            "denied",
+            &["write_file · created.txt", "write_file · error"],
+        ),
+        (
+            CliBackend::Antigravity,
+            "secret-read",
+            &["read_file · config.env", "read_file · ok"],
+        ),
+        (
+            CliBackend::Antigravity,
+            "cancel",
+            &["run_command · Get-ChildItem -File", "run_command · error"],
+        ),
+    ];
+    let corpus = committed_corpus();
+    for (backend, version, scenario, lines) in &corpus {
+        let mut ledger = ActionLedger::new(&[PathBuf::from("<workspace>")]);
+        let mut summaries = Vec::new();
+        for line in lines {
+            let frame = adapters::normalize_frame(*backend, "stdout", line.as_bytes());
+            for action in &frame.actions {
+                summaries.extend(ledger.observe(action, Instant::now()));
+            }
+        }
+        summaries.extend(ledger.close_open());
+        let summaries = summaries
+            .iter()
+            .map(|entry| match entry {
+                LedgerEntry::Call(call) => call.summary(),
+                LedgerEntry::Result(result) => result.summary(),
+            })
+            .collect::<Vec<_>>();
+        // Codex never ran a command under the Windows sandbox (A2); Gemini's
+        // account was refused (A7); reasoning and denials elsewhere ran no tool.
+        let wanted = expected
+            .iter()
+            .find(|(known, name, _)| known == backend && name == scenario)
+            .map_or(&[][..], |(.., summaries)| *summaries);
+        assert_eq!(
+            summaries,
+            wanted,
+            "{} {version} {scenario}",
+            backend.as_str()
+        );
+    }
+    for (backend, scenario, _) in expected {
+        assert!(
+            corpus
+                .iter()
+                .any(|(known, _, name, _)| known == backend && name == scenario),
+            "{} {scenario} is missing from the corpus",
+            backend.as_str()
+        );
+    }
+}
+
+/// No reasoning frame is text: its words never reach the audit or the parsed
+/// answer (ADR-040, M1, finding 3). The corpus carries no reasoning text (A10),
+/// so the shapes the CLIs document are checked too.
+#[test]
+fn reasoning_frames_never_reach_text() {
+    let mut reasoning = HashMap::<CliBackend, usize>::new();
+    for (backend, version, scenario, lines) in committed_corpus() {
+        for line in &lines {
+            let frame = adapters::normalize_frame(backend, "stdout", line.as_bytes());
+            if frame.is_reasoning {
+                assert!(
+                    !frame.is_text,
+                    "{} {version} {scenario}: {line}",
+                    backend.as_str()
+                );
+                *reasoning.entry(backend).or_default() += 1;
+            }
+        }
+    }
+    // Claude 2.1.325 streams empty thinking blocks and thinking-token estimates.
+    assert!(
+        reasoning
+            .get(&CliBackend::Claude)
+            .is_some_and(|count| *count > 0)
+    );
+    for (backend, line) in [
+        (
+            CliBackend::Claude,
+            r#"{"type":"assistant","message":{"id":"m-1","model":"claude-haiku-5-5","content":[{"type":"thinking","thinking":"a private chain of thought","signature":"c2ln"}]}}"#,
+        ),
+        (
+            CliBackend::Claude,
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"a private chain of thought"}}}"#,
+        ),
+        (
+            CliBackend::Codex,
+            r#"{"type":"item.completed","item":{"id":"item_0","type":"reasoning","text":"a private chain of thought"}}"#,
+        ),
+        (
+            CliBackend::Opencode,
+            r#"{"type":"reasoning","part":{"id":"prt_1","type":"reasoning","text":"a private chain of thought","time":{"start":1,"end":2}}}"#,
+        ),
+        (
+            CliBackend::Gemini,
+            r#"{"type":"thought","content":"a private chain of thought"}"#,
+        ),
+        (
+            CliBackend::Antigravity,
+            r#"{"event":"step_update","step_update":{"step_index":1,"state":"ACTIVE","step_type":"planner_response","text_delta":"a private chain of thought"}}"#,
+        ),
+    ] {
+        let frame = adapters::normalize_frame(backend, "stdout", line.as_bytes());
+        assert!(frame.is_reasoning, "{}: {line}", backend.as_str());
+        assert!(!frame.is_text, "{}: {line}", backend.as_str());
+    }
+    // A message that thinks and then answers keeps only its answer as text.
+    let frame = adapters::normalize_frame(
+        CliBackend::Claude,
+        "stdout",
+        br#"{"type":"assistant","message":{"id":"m-1","model":"claude-haiku-5-5","content":[{"type":"thinking","thinking":"a private chain of thought"},{"type":"text","text":"The answer."}]}}"#,
+    );
+    assert!(frame.is_text && !frame.is_reasoning);
+    assert_eq!(frame.content, "The answer.");
+}
+
+/// The capabilities the corpus supports: every CLI but Custom reads actions,
+/// and none exposes reasoning text (A10).
+#[test]
+fn capabilities_match_corpus() {
+    for backend in [
+        CliBackend::Claude,
+        CliBackend::Codex,
+        CliBackend::Gemini,
+        CliBackend::Opencode,
+        CliBackend::Antigravity,
+        CliBackend::Custom,
+    ] {
+        let capabilities = adapters::capabilities(backend, None);
+        assert_eq!(
+            capabilities.action_frames,
+            backend != CliBackend::Custom,
+            "{}",
+            backend.as_str()
+        );
+        assert!(!capabilities.reasoning_blocks, "{}", backend.as_str());
+    }
+}
+
+/// A Codex command's `aggregated_output` becomes the result's text (spec 3.4);
+/// before M1 the result was a bare `CLI tool_result received.`.
+#[test]
+fn codex_command_output_becomes_result_text() {
+    let started = adapters::normalize_frame(
+        CliBackend::Codex,
+        "stdout",
+        br#"{"type":"item.started","item":{"id":"item_3","type":"command_execution","command":"cargo test","aggregated_output":"","exit_code":null,"status":"in_progress"}}"#,
+    );
+    let completed = adapters::normalize_frame(
+        CliBackend::Codex,
+        "stdout",
+        br#"{"type":"item.completed","item":{"id":"item_3","type":"command_execution","command":"cargo test","aggregated_output":"test result: FAILED. 1 failed\n","exit_code":101,"status":"failed"}}"#,
+    );
+    assert!(!started.is_text && !completed.is_text);
+    assert_eq!(
+        started.actions[0].target_text.as_deref(),
+        Some("cargo test")
+    );
+    let result = &completed.actions[0];
+    assert_eq!(
+        result.output.as_deref(),
+        Some("test result: FAILED. 1 failed\n")
+    );
+    assert_eq!(result.exit_code, Some(101));
+    assert_eq!(result.status, Some(super::ActionStatus::Error));
+    // A change names its first path and how many more it touches.
+    let change = adapters::normalize_frame(
+        CliBackend::Codex,
+        "stdout",
+        br#"{"type":"item.completed","item":{"id":"item_4","type":"file_change","changes":[{"path":"src/a.rs","kind":"update"},{"path":"src/b.rs","kind":"add"}],"status":"completed"}}"#,
+    );
+    assert_eq!(change.actions[0].name, "edit");
+    assert_eq!(
+        change.actions[0].target_text.as_deref(),
+        Some("src/a.rs +1")
+    );
+    // A command the policy declined is a structured denial.
+    let declined = adapters::normalize_frame(
+        CliBackend::Codex,
+        "stdout",
+        br#"{"type":"item.completed","item":{"id":"item_5","type":"command_execution","command":"rm -rf x","status":"declined"}}"#,
+    );
+    assert_eq!(
+        declined.actions[0].status,
+        Some(super::ActionStatus::Denied)
+    );
+}
+
+/// Opaque reasoning fields (`redacted_thinking`, `signature`,
+/// `encrypted_content`) are never read as text or as an action.
+#[test]
+fn opaque_reasoning_fields_are_ignored() {
+    for (backend, line) in [
+        (
+            CliBackend::Claude,
+            r#"{"type":"assistant","message":{"id":"m-1","model":"claude-haiku-5-5","content":[{"type":"redacted_thinking","data":"opaque-redacted-data"},{"type":"thinking","thinking":"","signature":"opaque-signature"}]}}"#,
+        ),
+        (
+            CliBackend::Claude,
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"opaque-signature"}}}"#,
+        ),
+        (
+            CliBackend::Codex,
+            r#"{"type":"item.completed","item":{"id":"item_1","type":"reasoning","text":"","encrypted_content":"opaque-encrypted"}}"#,
+        ),
+    ] {
+        let frame = adapters::normalize_frame(backend, "stdout", line.as_bytes());
+        assert!(frame.is_reasoning && !frame.is_text, "{line}");
+        assert!(frame.actions.is_empty(), "{line}");
+    }
 }
 
 /// What the coordinator spends per frame on the corpus, end to end: adapter,

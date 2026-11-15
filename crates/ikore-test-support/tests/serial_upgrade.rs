@@ -23,6 +23,30 @@ fn latest_migration_version() -> i64 {
         .expect("the embedded migration set is nonempty")
 }
 
+/// Columns later migrations add to existing tables. `ADD COLUMN` is additive
+/// (no rebuild, no row rewritten), but SQLite writes it into the table's
+/// stored definition: a test of an earlier migration compares the table as
+/// that migration left it.
+const LATER_COLUMNS: [(&str, &str); 1] = [(
+    "CREATE TABLE terminal_events (",
+    // V67, ADR-040 M1.
+    ", detail_json TEXT\n  CHECK(detail_json IS NULL OR json_valid(detail_json)), observed_at TEXT",
+)];
+
+fn without_later_columns(sql: &str) -> String {
+    LATER_COLUMNS
+        .iter()
+        .fold(sql.to_owned(), |sql, (table, columns)| {
+            if sql.starts_with(table) {
+                // The migration file may reach SQLite with either line ending.
+                sql.replace(columns, "")
+                    .replace(&columns.replace('\n', "\r\n"), "")
+            } else {
+                sql
+            }
+        })
+}
+
 #[test]
 fn v64_to_v65_preserves_resolution_history_and_adds_durable_unsent_drafts() {
     use ikore_core::companion_dock::{CompanionDockItem, CompanionDockLayout, CompanionDraft};
@@ -1874,7 +1898,7 @@ fn v50_to_v51_adds_the_review_boundary_tables_without_rebuilding_existing_ones()
         .unwrap();
     for table in before.iter().filter(|sql| !rebuilt_by_v54(sql)) {
         assert!(
-            after.contains(table),
+            after.iter().any(|sql| without_later_columns(sql) == *table),
             "no existing table was rebuilt: {table}"
         );
     }
@@ -1993,7 +2017,7 @@ fn v51_to_v52_adds_the_risk_scrutiny_tables_without_rebuilding_existing_ones() {
         .unwrap();
     for table in before.iter().filter(|sql| !rebuilt_by_v54(sql)) {
         assert!(
-            after.contains(table),
+            after.iter().any(|sql| without_later_columns(sql) == *table),
             "no existing table was rebuilt: {table}"
         );
     }
@@ -2102,7 +2126,7 @@ fn v52_to_v53_adds_the_forge_preflight_findings_without_rebuilding_existing_ones
         .unwrap();
     for table in before.iter().filter(|sql| !rebuilt_by_v54(sql)) {
         assert!(
-            after.contains(table),
+            after.iter().any(|sql| without_later_columns(sql) == *table),
             "no existing table was rebuilt: {table}"
         );
     }
@@ -2200,7 +2224,7 @@ fn v53_to_v54_adds_the_reconciler_role_and_the_reconciliation_tables() {
     let after = tables(&db);
     for table in before.iter().filter(|sql| !rebuilt_by_v54(sql)) {
         assert!(
-            after.contains(table),
+            after.iter().any(|sql| without_later_columns(sql) == *table),
             "only the role tables are rebuilt: {table}"
         );
     }
@@ -2373,7 +2397,11 @@ fn v54_to_v55_adds_cargo_evidence_without_rewriting_or_enabling_legacy_profiles(
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(after, definition, "V55 is additive: {name}");
+        assert_eq!(
+            without_later_columns(&after),
+            definition,
+            "V55 is additive: {name}"
+        );
     }
     for table in [
         "project_cargo_validation_policies",
@@ -2496,7 +2524,8 @@ fn v55_to_v57_adds_canvas_tables_without_rewriting_legacy_data() {
             )
             .unwrap();
         assert_eq!(
-            after, before,
+            without_later_columns(&after),
+            before,
             "Canvas does not rebuild an existing table: {name}"
         );
     }
@@ -2700,7 +2729,10 @@ fn v58_to_v59_adds_mandates_and_receipts_without_touching_running_pulsations() {
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
     let after = tables(&db);
     for table in &before {
-        assert!(after.contains(table), "V59 rebuilds nothing: {table}");
+        assert!(
+            after.iter().any(|sql| without_later_columns(sql) == *table),
+            "V59 rebuilds nothing: {table}"
+        );
     }
     assert_eq!(
         db.query_row("SELECT COUNT(*) FROM execution_mandates", [], |r| r
@@ -2819,7 +2851,10 @@ fn v59_to_v60_adds_attestations_without_sealing_pulsations_that_already_ended() 
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
     let after = tables(&db);
     for table in &before {
-        assert!(after.contains(table), "V60 rebuilds nothing: {table}");
+        assert!(
+            after.iter().any(|sql| without_later_columns(sql) == *table),
+            "V60 rebuilds nothing: {table}"
+        );
     }
     for table in ["attestation_seal_intents", "pulsation_attestations"] {
         assert_eq!(
@@ -2949,7 +2984,10 @@ fn v60_to_v61_adds_scope_requests_without_touching_parked_failures() {
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
     let after = tables(&db);
     for table in &before {
-        assert!(after.contains(table), "V61 rebuilds nothing: {table}");
+        assert!(
+            after.iter().any(|sql| without_later_columns(sql) == *table),
+            "V61 rebuilds nothing: {table}"
+        );
     }
     assert_eq!(
         db.query_row("SELECT COUNT(*) FROM mandate_scope_requests", [], |r| r
@@ -3059,7 +3097,10 @@ fn v61_to_v62_adds_the_exchange_log_without_backfilling_history() {
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
     let after = tables(&db);
     for table in &before {
-        assert!(after.contains(table), "V62 rebuilds nothing: {table}");
+        assert!(
+            after.iter().any(|sql| without_later_columns(sql) == *table),
+            "V62 rebuilds nothing: {table}"
+        );
     }
     let count = |table: &str| -> u32 {
         db.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
@@ -3162,7 +3203,10 @@ fn v62_to_v63_keeps_earlier_runs_strict_and_adds_the_resume_manifest() {
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
     let after = tables(&db);
     for table in &before {
-        assert!(after.contains(table), "V63 rebuilds nothing: {table}");
+        assert!(
+            after.iter().any(|sql| without_later_columns(sql) == *table),
+            "V63 rebuilds nothing: {table}"
+        );
     }
     let count = |table: &str| -> u32 {
         db.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
@@ -3279,7 +3323,10 @@ fn v63_to_v64_adds_pulsation_digests_without_backfilling_them() {
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
     let after = tables(&db);
     for table in &before {
-        assert!(after.contains(table), "V64 rebuilds nothing: {table}");
+        assert!(
+            after.iter().any(|sql| without_later_columns(sql) == *table),
+            "V64 rebuilds nothing: {table}"
+        );
     }
     let count = |table: &str| -> u32 {
         db.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
@@ -3356,4 +3403,80 @@ fn v63_to_v64_adds_pulsation_digests_without_backfilling_them() {
         .unwrap(),
         0
     );
+}
+
+/// V67 adds the structured detail of an action event and when its frame
+/// reached the host (ADR-040 M1). Purely additive, from V64 (`main`) and from
+/// V65 (the Companion dock): older events keep their content and both new
+/// columns stay NULL; only `terminal_events` gains columns.
+#[test]
+fn v64_and_v65_to_v67_add_event_details_without_touching_old_events() {
+    for from in [64, 65] {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("ikore.db");
+        let mut db = Connection::open(&path).unwrap();
+        db.pragma_update(None, "foreign_keys", "ON").unwrap();
+        cli_migrations::migrations::runner()
+            .set_target(refinery::Target::Version(from))
+            .run(&mut db)
+            .unwrap();
+        db.execute_batch(
+            "INSERT INTO projects(id,name,workspace_path,created_at,updated_at) VALUES('p','Fixture','C:/fixture','now','now');
+             INSERT INTO terminal_runs(id,project_id,agent_role,origin,execution_mode,backend,status,created_at,updated_at) VALUES('run','p','backend_agent','manual','cli_process','claude','completed','now','now');
+             INSERT INTO terminal_events(id,run_id,sequence,kind,stream,content,created_at) VALUES('old','run',1,'tool_use','stdout','CLI tool_use received.','now');",
+        )
+        .unwrap();
+        let tables = |db: &Connection| -> Vec<(String, String)> {
+            db.prepare(
+                "SELECT name,sql FROM sqlite_master WHERE type='table' AND sql IS NOT NULL ORDER BY name",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+        };
+        let before = tables(&db);
+        drop(db);
+
+        PersistenceService::initialize(root.path()).unwrap();
+        let db = Connection::open(&path).unwrap();
+        db.pragma_update(None, "foreign_keys", "ON").unwrap();
+        let after = tables(&db);
+        for table in before.iter().filter(|(name, _)| name != "terminal_events") {
+            assert!(
+                after.contains(table),
+                "V67 from V{from} rebuilds nothing: {table:?}"
+            );
+        }
+        // The one table V67 changes gains only its two columns.
+        let events = |tables: &[(String, String)]| {
+            tables
+                .iter()
+                .find(|(name, _)| name == "terminal_events")
+                .map(|(_, sql)| sql.clone())
+                .unwrap()
+        };
+        assert_eq!(without_later_columns(&events(&after)), events(&before));
+        let old: (String, Option<String>, Option<String>) = db
+            .query_row(
+                "SELECT content,detail_json,observed_at FROM terminal_events WHERE id='old'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(old, ("CLI tool_use received.".into(), None, None));
+        db.execute(
+            "INSERT INTO terminal_events(id,run_id,sequence,kind,stream,content,created_at,detail_json,observed_at)
+             VALUES('new','run',2,'tool_use',NULL,'Read · src/a.rs','now',?1,'2026-11-15T00:00:00.000Z')",
+            [r#"{"type":"action_call","v":1,"ordinal":1,"kind":"read","name":"Read"}"#],
+        )
+        .expect("an action event");
+        db.execute(
+            "INSERT INTO terminal_events(id,run_id,sequence,kind,content,created_at,detail_json)
+             VALUES('bad','run',3,'system','x','now','not json')",
+            [],
+        )
+        .expect_err("the detail is JSON");
+    }
 }

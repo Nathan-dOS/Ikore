@@ -85,12 +85,8 @@ pub(crate) trait AgentsBackend: Send + Sync {
     ) -> AgentsFuture<()>;
     fn reorder_free_form(&self, project_id: String, slot_ids: Vec<String>) -> AgentsFuture<()>;
     fn cancel(&self, run_id: String) -> AgentsFuture<bool>;
-    fn events(
-        &self,
-        run_id: String,
-        after_sequence: u64,
-        limit: usize,
-    ) -> AgentsFuture<Vec<TerminalEvent>>;
+    /// The last `limit` events of a run: a long run is read from its end.
+    fn events_tail(&self, run_id: String, limit: usize) -> AgentsFuture<Vec<TerminalEvent>>;
     fn clear_history(&self, project_id: String, role: Option<AgentRole>) -> AgentsFuture<usize>;
     fn clear_slot_history(&self, project_id: String, slot_id: String) -> AgentsFuture<usize>;
     fn export_history(&self, project_id: String, run_id: String) -> AgentsFuture<String>;
@@ -438,17 +434,12 @@ impl AgentsBackend for CoreAgentsBackend {
         Box::pin(async move { Ok(terminals.cancel_run(&run_id)) })
     }
 
-    fn events(
-        &self,
-        run_id: String,
-        after_sequence: u64,
-        limit: usize,
-    ) -> AgentsFuture<Vec<TerminalEvent>> {
+    fn events_tail(&self, run_id: String, limit: usize) -> AgentsFuture<Vec<TerminalEvent>> {
         let terminals = self.core.terminals();
         let runtime = self.core.runtime_handle().clone();
         Box::pin(async move {
             runtime
-                .spawn_blocking(move || terminals.load_events(&run_id, after_sequence, limit))
+                .spawn_blocking(move || terminals.load_events_tail(&run_id, limit))
                 .await
                 .map_err(|error| {
                     UiCommandError::worker(format!("history worker aborted: {error}"))
@@ -856,8 +847,11 @@ impl AgentsModel {
             self.model_catalogs.clear();
             self.active_model_picker = None;
             self.selected_agent = None;
+            self.events_by_run.clear();
         }
-        self.events_by_run.clear();
+        // The snapshot is merged into what live events already brought, so a
+        // quiet refresh never drops an event that arrived while it was read
+        // (ADR-040, M1).
         for agent in &snapshot.terminals.agents {
             if let Some(run) = agent.recent_runs.first() {
                 let selected = self
@@ -868,8 +862,7 @@ impl AgentsModel {
                     .unwrap_or_else(|| run.id.clone());
                 self.selected_run_by_role
                     .insert(agent.config.agent_role, selected);
-                self.events_by_run
-                    .insert(run.id.clone(), agent.recent_events.clone());
+                self.merge_events(&run.id, agent.recent_events.clone());
             } else {
                 self.selected_run_by_role.remove(&agent.config.agent_role);
             }
@@ -884,18 +877,37 @@ impl AgentsModel {
                     .unwrap_or_else(|| run.id.clone());
                 self.selected_run_by_slot
                     .insert(free_form.slot.id.clone(), selected);
-                self.events_by_run
-                    .insert(run.id.clone(), free_form.recent_events.clone());
+                self.merge_events(&run.id, free_form.recent_events.clone());
             } else {
                 self.selected_run_by_slot.remove(&free_form.slot.id);
             }
         }
         for free_form in &snapshot.terminals.archived_free_form_slots {
             if let Some(run) = free_form.recent_runs.first() {
-                self.events_by_run
-                    .insert(run.id.clone(), free_form.recent_events.clone());
+                self.merge_events(&run.id, free_form.recent_events.clone());
             }
         }
+        // Only runs the snapshot no longer lists, and no selection shows, go.
+        let referenced = snapshot
+            .terminals
+            .agents
+            .iter()
+            .flat_map(|agent| &agent.recent_runs)
+            .chain(
+                snapshot
+                    .terminals
+                    .free_form_slots
+                    .iter()
+                    .chain(&snapshot.terminals.archived_free_form_slots)
+                    .flat_map(|slot| &slot.recent_runs),
+            )
+            .map(|run| run.id.as_str())
+            .chain(self.selected_run_by_role.values().map(String::as_str))
+            .chain(self.selected_run_by_slot.values().map(String::as_str))
+            .map(str::to_owned)
+            .collect::<std::collections::HashSet<_>>();
+        self.events_by_run
+            .retain(|run_id, _| referenced.contains(run_id));
         self.fallbacks = snapshot.fallbacks;
         self.free_form_bindings = snapshot.free_form_bindings;
         self.api_executions = snapshot.api_executions;
@@ -1390,6 +1402,8 @@ mod tests {
                 redaction_count: 0,
                 redaction_categories: Vec::new(),
                 created_at: "2026-01-01T00:00:00Z".into(),
+                detail: None,
+                observed_at: None,
             },
         }
     }
@@ -1512,6 +1526,69 @@ mod tests {
             (gap.run_id.as_str(), gap.after, gap.before),
             ("run-1", 0, 3)
         );
+    }
+
+    /// ADR-040 M1: a snapshot read while live events kept arriving merges with
+    /// them instead of replacing the buffer, and keeps the newest 500.
+    #[test]
+    fn apply_snapshot_merges_live_events() {
+        let mut model = model();
+        let generation = model.begin_quiet();
+        // Live events 498..=502 arrive while the snapshot is being read.
+        for sequence in 498..=502 {
+            model.record_event(event_envelope(TerminalRunStatus::Running, sequence));
+        }
+        let mut terminals = model.snapshot.clone().unwrap();
+        terminals.agents[0].recent_runs = vec![run(TerminalRunStatus::Running)];
+        // The snapshot's tail ends at 500: it was read before 501 and 502.
+        terminals.agents[0].recent_events = (1..=500)
+            .map(|sequence| event_envelope(TerminalRunStatus::Running, sequence).event)
+            .collect();
+        assert!(model.apply_snapshot(
+            generation,
+            AgentsDashboardSnapshot {
+                terminals,
+                fallbacks: vec![],
+                free_form_bindings: vec![],
+                api_executions: HashMap::new(),
+                quota_deltas: Default::default(),
+            }
+        ));
+        let sequences = model.events_by_run["run-1"]
+            .iter()
+            .map(|event| event.sequence)
+            .collect::<Vec<_>>();
+        assert_eq!(sequences, (3..=502).collect::<Vec<_>>());
+    }
+
+    /// Runs neither the snapshot nor a selection references leave memory; a
+    /// selected older run stays.
+    #[test]
+    fn apply_snapshot_drops_unreferenced_runs() {
+        let mut model = model();
+        model.record_event(event_envelope(TerminalRunStatus::Running, 1));
+        model.events_by_run.insert("run-gone".into(), Vec::new());
+        model
+            .events_by_run
+            .insert("run-selected".into(), Vec::new());
+        model
+            .selected_run_by_role
+            .insert(AgentRole::TestAgent, "run-selected".into());
+        let generation = model.begin_quiet();
+        let terminals = model.snapshot.clone().unwrap();
+        assert!(model.apply_snapshot(
+            generation,
+            AgentsDashboardSnapshot {
+                terminals,
+                fallbacks: vec![],
+                free_form_bindings: vec![],
+                api_executions: HashMap::new(),
+                quota_deltas: Default::default(),
+            }
+        ));
+        assert!(!model.events_by_run.contains_key("run-gone"));
+        assert!(model.events_by_run.contains_key("run-1"));
+        assert!(model.events_by_run.contains_key("run-selected"));
     }
 
     #[test]

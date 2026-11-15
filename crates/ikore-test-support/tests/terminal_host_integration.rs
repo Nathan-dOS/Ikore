@@ -343,6 +343,8 @@ fn stage_dispatch_keeps_preflight_blockers_when_the_recheck_still_requires_login
             auth_probe: true,
             read_only: true,
             model_catalog: true,
+            action_frames: true,
+            reasoning_blocks: false,
         },
         quota: Vec::new(),
     }];

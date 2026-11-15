@@ -1572,6 +1572,8 @@ mod tests {
                     auth_probe: true,
                     read_only: true,
                     model_catalog: false,
+                    action_frames: false,
+                    reasoning_blocks: false,
                 },
             }],
             ..ChatModel::default()

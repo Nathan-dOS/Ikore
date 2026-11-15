@@ -1,8 +1,9 @@
 use super::{
-    CliAdapter, CliBackend, CliCapabilities, CliFailureKind, CliInvocationRequest, CliOutputFormat,
-    CliProcessSpec, NormalizedCliFrame, TerminalError, TerminalEventKind, ThinkingLevel, Value,
-    append_model, base_capabilities, classify_failure_text, normalize_json_frame,
-    sanitize_cli_frame_text, sanitize_terminal_text, version_supports_contract,
+    ActionFrame, ActionStatus, CliAdapter, CliBackend, CliCapabilities, CliFailureKind,
+    CliInvocationRequest, CliOutputFormat, CliProcessSpec, NormalizedCliFrame, TerminalError,
+    TerminalEventKind, ThinkingLevel, Value, append_model, base_capabilities,
+    classify_failure_text, normalize_json_frame_with, sanitize_cli_frame_text,
+    sanitize_terminal_text, version_supports_contract,
 };
 use crate::terminals::CliQuotaBucket;
 
@@ -15,19 +16,22 @@ const MAX_QUOTA_LABEL_CHARS: usize = 48;
 
 impl CliAdapter for AntigravityAdapter {
     fn capabilities(&self, version: Option<&str>) -> CliCapabilities {
-        base_capabilities(
-            CliOutputFormat::JsonLines,
-            true,
-            version_supports_contract(CliBackend::Antigravity, version),
-            &[
-                ThinkingLevel::Low,
-                ThinkingLevel::Medium,
-                ThinkingLevel::High,
-            ],
-            true,
-            true,
-            true,
-        )
+        CliCapabilities {
+            action_frames: true,
+            ..base_capabilities(
+                CliOutputFormat::JsonLines,
+                true,
+                version_supports_contract(CliBackend::Antigravity, version),
+                &[
+                    ThinkingLevel::Low,
+                    ThinkingLevel::Medium,
+                    ThinkingLevel::High,
+                ],
+                true,
+                true,
+                true,
+            )
+        }
     }
 
     fn build_process_spec(
@@ -79,101 +83,33 @@ impl CliAdapter for AntigravityAdapter {
     }
 
     fn normalize_frame(&self, stream: &str, bytes: &[u8]) -> NormalizedCliFrame {
-        let mut frame =
-            normalize_json_frame(
-                CliBackend::Antigravity,
-                stream,
-                bytes,
-                |value| match frame_event(value) {
-                    "init" => TerminalEventKind::System,
-                    "result" => {
-                        if value.pointer("/result/status").and_then(Value::as_str)
-                            == Some("SUCCESS")
-                        {
-                            TerminalEventKind::Completed
-                        } else {
-                            TerminalEventKind::Error
-                        }
+        normalize_json_frame_with(
+            CliBackend::Antigravity,
+            stream,
+            bytes,
+            |value| match frame_event(value) {
+                "init" => TerminalEventKind::System,
+                "result" => {
+                    if value.pointer("/result/status").and_then(Value::as_str) == Some("SUCCESS") {
+                        TerminalEventKind::Completed
+                    } else {
+                        TerminalEventKind::Error
                     }
-                    "error" => TerminalEventKind::Error,
-                    "step_update" => match step_type(value) {
-                        "agent_response" => TerminalEventKind::Message,
-                        "tool" if step_state(value) == "DONE" => TerminalEventKind::ToolResult,
-                        "tool" => TerminalEventKind::ToolUse,
-                        _ => TerminalEventKind::System,
-                    },
-                    _ => TerminalEventKind::Message,
-                },
-            );
-        if stream == "stderr" {
-            return frame;
-        }
-        let Ok(value) = serde_json::from_str::<Value>(&sanitize_cli_frame_text(bytes)) else {
-            return frame;
-        };
-        match frame_event(&value) {
-            "step_update" => {
-                let step = &value["step_update"];
-                let kind = step_type(&value);
-                frame.is_reasoning = ["think", "reason", "thought", "planner"]
-                    .iter()
-                    .any(|marker| kind.contains(marker));
-                if kind == "agent_response" {
-                    let delta = step
-                        .get("text_delta")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default();
-                    frame.content = sanitize_cli_frame_text(delta.as_bytes());
-                    frame.is_text = !frame.content.is_empty();
-                    frame.is_delta = true;
-                } else if kind == "tool" {
-                    let name = step
-                        .get("tool_name")
-                        .and_then(Value::as_str)
-                        .unwrap_or("tool");
-                    frame.content = sanitize_cli_frame_text(
-                        if frame.kind == TerminalEventKind::ToolUse {
-                            let parameters = step
-                                .pointer("/tool_info/parameters")
-                                .map(Value::to_string)
-                                .unwrap_or_default();
-                            format!("{name} {parameters}")
-                        } else {
-                            format!("{name} finished")
-                        }
-                        .trim()
-                        .as_bytes(),
-                    );
-                    frame.is_text = false;
-                    frame.is_delta = false;
-                } else {
-                    frame.is_text = false;
-                    frame.is_delta = false;
                 }
-            }
-            "result" => {
-                let result = &value["result"];
-                // The schema-checked object wins over the free text, which also
-                // carries the prose the model wrote before it.
-                let content = match result.get("structured_output") {
-                    Some(object) if !object.is_null() => object.to_string(),
-                    _ => result
-                        .get("response")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_owned(),
-                };
-                frame.content = sanitize_cli_frame_text(content.as_bytes());
-                frame.is_text = !frame.content.trim().is_empty();
-                frame.is_delta = false;
-            }
-            "init" => {
-                frame.is_text = false;
-                frame.is_delta = false;
-            }
-            _ => {}
-        }
-        frame
+                "error" => TerminalEventKind::Error,
+                "step_update" => match step_type(value) {
+                    "agent_response" => TerminalEventKind::Message,
+                    // A failed step is a result too (ADR-040, A6).
+                    "tool" if matches!(step_state(value), "DONE" | "ERROR") => {
+                        TerminalEventKind::ToolResult
+                    }
+                    "tool" => TerminalEventKind::ToolUse,
+                    _ => TerminalEventKind::System,
+                },
+                _ => TerminalEventKind::Message,
+            },
+            refine_frame,
+        )
     }
 
     fn auth_probe_args(&self) -> Option<&'static [&'static str]> {
@@ -227,6 +163,109 @@ impl CliAdapter for AntigravityAdapter {
             classify_failure_text(stderr)
         }
     }
+}
+
+fn refine_frame(value: &Value, frame: &mut NormalizedCliFrame) {
+    match frame_event(value) {
+        "step_update" => {
+            let step = &value["step_update"];
+            let kind = step_type(value);
+            frame.is_reasoning = ["think", "reason", "thought", "planner"]
+                .iter()
+                .any(|marker| kind.contains(marker));
+            if kind == "agent_response" {
+                let delta = step
+                    .get("text_delta")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                frame.content = sanitize_cli_frame_text(delta.as_bytes());
+                frame.is_text = !frame.content.is_empty();
+                frame.is_delta = true;
+            } else if kind == "tool" {
+                let name = step
+                    .get("tool_name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("tool");
+                frame.content = sanitize_cli_frame_text(
+                    if frame.kind == TerminalEventKind::ToolUse {
+                        let parameters = step
+                            .pointer("/tool_info/parameters")
+                            .map(Value::to_string)
+                            .unwrap_or_default();
+                        format!("{name} {parameters}")
+                    } else {
+                        format!("{name} finished")
+                    }
+                    .trim()
+                    .as_bytes(),
+                );
+                frame.is_text = false;
+                frame.is_delta = false;
+                frame.actions.extend(tool_action(step));
+            } else {
+                frame.is_text = false;
+                frame.is_delta = false;
+            }
+        }
+        "result" => {
+            let result = &value["result"];
+            // The schema-checked object wins over the free text, which also
+            // carries the prose the model wrote before it.
+            let content = match result.get("structured_output") {
+                Some(object) if !object.is_null() => object.to_string(),
+                _ => result
+                    .get("response")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+            };
+            frame.content = sanitize_cli_frame_text(content.as_bytes());
+            frame.is_text = !frame.content.trim().is_empty();
+            frame.is_delta = false;
+        }
+        "init" => {
+            frame.is_text = false;
+            frame.is_delta = false;
+        }
+        _ => {}
+    }
+}
+
+/// A tool step goes `ACTIVE`, then `DONE` or `ERROR`, under one `step_index`
+/// (ADR-040, A6). The finished step names the tool and its parameters again,
+/// so it opens the call itself when the active one never arrived. Its output
+/// is only a size ("2 lines, 79 bytes") and its error free text: neither is
+/// result text.
+fn tool_action(step: &Value) -> Option<ActionFrame> {
+    let name = step
+        .get("tool_name")
+        .or_else(|| step.pointer("/tool_info/name"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let key = step
+        .get("step_index")
+        .and_then(Value::as_u64)
+        .map(|index| format!("step-{index}"));
+    let input = step
+        .pointer("/tool_info/parameters")
+        .unwrap_or(&Value::Null);
+    let status = match step.get("state").and_then(Value::as_str)? {
+        "ACTIVE" => {
+            return Some(ActionFrame::call(CliBackend::Antigravity, key, name, input));
+        }
+        "DONE" => ActionStatus::Ok,
+        "ERROR" => ActionStatus::Error,
+        _ => return None,
+    };
+    Some(ActionFrame::call_with_result(
+        CliBackend::Antigravity,
+        key,
+        name,
+        input,
+        status,
+        None,
+        None,
+    ))
 }
 
 /// `agy` names its frame type `event`, not `type`.

@@ -1812,13 +1812,30 @@ async fn cli_sanitization_discards_incomplete_output_without_emitting_fragments(
         Arc::new(Mutex::new(None)),
         ProgressWatchdog::new(AgentTimeoutPolicy::default()),
         None,
-        Some(Arc::new(Mutex::new(Some(false)))),
+        Some(Arc::new(Mutex::new(Some(StreamEnd::Failed)))),
+        Vec::new(),
     )
     .await
     .unwrap();
     assert!(summary.raw_output.is_empty());
-    assert!(repository.list_events(&id, 0, 100).unwrap().is_empty());
-    assert!(collected.envelopes.lock().unwrap().is_empty());
+    // Only the host's own line leaves memory (ADR-040, M1), never a fragment.
+    let events = repository.list_events(&id, 0, 100).unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].kind, TerminalEventKind::System);
+    assert_eq!(events[0].content, "Output withheld: incomplete execution.");
+    assert_eq!(
+        events[0].detail,
+        Some(EventDetailV1::Withheld {
+            v: 1,
+            reason: WithheldReason::IncompleteExecution
+        })
+    );
+    let envelopes = collected.envelopes.lock().unwrap();
+    assert_eq!(envelopes.len(), 1);
+    assert!(envelopes.iter().all(|envelope| {
+        !envelope.event.content.contains("PRIVATE KEY")
+            && !envelope.event.content.contains("synthetic-partial")
+    }));
 }
 
 #[test]

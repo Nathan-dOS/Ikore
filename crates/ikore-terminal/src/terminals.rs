@@ -26,6 +26,7 @@ use crate::host::{
 };
 use ikore_contracts::{AgentRole, ResponseFormat, UnitContextScope};
 
+mod actions;
 mod adapters;
 mod codex_model_provenance;
 mod model_catalog;
@@ -35,6 +36,8 @@ mod plan_usage;
 mod resume_changes;
 pub use resume_changes::{MAX_RUN_BLOB_BYTES, ResumePreview};
 
+use actions::{ActionLedger, LedgerEntry};
+pub use actions::{ActionStatus, EventDetailV1, ToolKind, WithheldReason};
 pub use model_catalog::{
     CliModelCatalogEntry, CliModelCatalogService, CliModelCatalogSnapshot, CliModelCatalogSource,
     CliModelCatalogState, CliModelSelectionSource, cli_model_catalog_version,
@@ -1053,6 +1056,59 @@ pub struct TerminalEvent {
     pub redaction_count: u64,
     pub redaction_categories: Vec<String>,
     pub created_at: String,
+    /// The action or withholding the event records (ADR-040). `None` for
+    /// every other event and for events older than V67.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<EventDetailV1>,
+    /// When the frame reached the host, for an event held until the run
+    /// finished; when it was emitted, for a live one. RFC 3339, milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_at: Option<String>,
+}
+
+/// An event ready to persist: already redacted, numbered by its batch.
+struct RedactedEventInput {
+    kind: TerminalEventKind,
+    stream: Option<String>,
+    redacted: RedactionResult,
+    detail: Option<EventDetailV1>,
+    observed_at: String,
+}
+
+/// The current wall-clock time as an event's `observed_at`: RFC 3339, in
+/// milliseconds.
+fn wall_clock_now() -> String {
+    Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+/// Maps the instants a run observed to wall-clock time through one anchor
+/// taken when the run's coordinator starts (specification, 3.4): the
+/// `observed_at` of its events then follows the order the frames arrived.
+#[derive(Clone, Copy)]
+struct RunClock {
+    wall: chrono::DateTime<Utc>,
+    instant: Instant,
+}
+
+impl RunClock {
+    fn start() -> Self {
+        Self {
+            wall: Utc::now(),
+            instant: Instant::now(),
+        }
+    }
+
+    fn at(self, instant: Instant) -> String {
+        let since = |later: Instant, earlier: Instant| {
+            chrono::Duration::from_std(later.saturating_duration_since(earlier)).unwrap_or_default()
+        };
+        let wall = if instant >= self.instant {
+            self.wall + since(instant, self.instant)
+        } else {
+            self.wall - since(self.instant, instant)
+        };
+        wall.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2477,52 +2533,105 @@ impl TerminalRepository {
         stream: Option<&str>,
         redacted: RedactionResult,
     ) -> Result<TerminalEvent, TerminalError> {
-        if sequence == 0 {
+        let observed_at = wall_clock_now();
+        let mut events = self.append_redacted_events(
+            run_id,
+            sequence,
+            vec![RedactedEventInput {
+                kind,
+                stream: stream.map(str::to_owned),
+                redacted,
+                detail: None,
+                observed_at,
+            }],
+        )?;
+        events
+            .pop()
+            .ok_or_else(|| TerminalError::Process("the event was not recorded".into()))
+    }
+
+    /// Records events with consecutive sequences from `first_sequence`, in
+    /// one transaction: the held events of a run used to cost one commit
+    /// each, about 15 ms apiece (ADR-040, A14).
+    fn append_redacted_events(
+        &self,
+        run_id: &str,
+        first_sequence: u64,
+        inputs: Vec<RedactedEventInput>,
+    ) -> Result<Vec<TerminalEvent>, TerminalError> {
+        if first_sequence == 0 {
             return Err(TerminalError::Validation(
                 "sequence must be greater than zero".into(),
             ));
         }
-        if !matches!(stream, None | Some("stdout") | Some("stderr")) {
-            return Err(TerminalError::Validation("invalid stream".into()));
+        if inputs.is_empty() {
+            return Ok(Vec::new());
         }
-        let event = TerminalEvent {
-            id: Uuid::new_v4().to_string(),
-            run_id: required(run_id, "runId")?.to_string(),
-            sequence,
-            kind,
-            stream: stream.map(str::to_owned),
-            content: sanitize_terminal_text(redacted.text.as_bytes()),
-            redaction_count: redacted.count,
-            redaction_categories: redacted.categories,
-            created_at: Utc::now().to_rfc3339(),
-        };
+        let run_id = required(run_id, "runId")?.to_string();
+        let created_at = Utc::now().to_rfc3339();
+        let mut events = Vec::with_capacity(inputs.len());
+        for (offset, input) in inputs.into_iter().enumerate() {
+            if !matches!(
+                input.stream.as_deref(),
+                None | Some("stdout") | Some("stderr")
+            ) {
+                return Err(TerminalError::Validation("invalid stream".into()));
+            }
+            events.push(TerminalEvent {
+                id: Uuid::new_v4().to_string(),
+                run_id: run_id.clone(),
+                sequence: first_sequence.saturating_add(offset as u64),
+                kind: input.kind,
+                stream: input.stream,
+                content: sanitize_terminal_text(input.redacted.text.as_bytes()),
+                redaction_count: input.redacted.count,
+                redaction_categories: input.redacted.categories,
+                created_at: created_at.clone(),
+                detail: input.detail,
+                observed_at: Some(input.observed_at),
+            });
+        }
         let mut connection = self.connection()?;
         let transaction = connection.transaction()?;
-        transaction.execute(
-            "INSERT INTO terminal_events(
-               id,run_id,sequence,kind,stream,content,created_at,
-               redaction_count,redaction_categories_json
-             ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
-            params![
-                &event.id,
-                &event.run_id,
-                event.sequence,
-                event.kind.as_str(),
-                &event.stream,
-                &event.content,
-                &event.created_at,
-                event.redaction_count,
-                serde_json::to_string(&event.redaction_categories)?
-            ],
-        )?;
+        {
+            let mut insert = transaction.prepare_cached(
+                "INSERT INTO terminal_events(
+                   id,run_id,sequence,kind,stream,content,created_at,
+                   redaction_count,redaction_categories_json,detail_json,observed_at
+                 ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+            )?;
+            for event in &events {
+                insert.execute(params![
+                    &event.id,
+                    &event.run_id,
+                    event.sequence,
+                    event.kind.as_str(),
+                    &event.stream,
+                    &event.content,
+                    &event.created_at,
+                    event.redaction_count,
+                    serde_json::to_string(&event.redaction_categories)?,
+                    event
+                        .detail
+                        .as_ref()
+                        .map(serde_json::to_string)
+                        .transpose()?,
+                    &event.observed_at,
+                ])?;
+            }
+        }
+        let bytes = events
+            .iter()
+            .map(|event| event.content.len() as u64)
+            .sum::<u64>();
         transaction.execute(
             "UPDATE terminal_runs
-             SET event_count=event_count+1,output_bytes=output_bytes+?1,updated_at=?2
-             WHERE id=?3",
-            params![event.content.len(), event.created_at, event.run_id],
+             SET event_count=event_count+?1,output_bytes=output_bytes+?2,updated_at=?3
+             WHERE id=?4",
+            params![events.len() as u64, bytes, created_at, run_id],
         )?;
         transaction.commit()?;
-        Ok(event)
+        Ok(events)
     }
 
     pub fn next_event_sequence(&self, run_id: &str) -> Result<u64, TerminalError> {
@@ -2571,6 +2680,23 @@ impl TerminalRepository {
             .filter(|event| event.sequence > after_sequence)
             .take(limit)
             .collect())
+    }
+
+    /// The last `limit` events of a run, at most 500 (ADR-040, M1). A long
+    /// run's snapshot reads from its end, with the redaction context of any
+    /// page, instead of stopping at its first events.
+    pub fn list_events_tail(
+        &self,
+        run_id: &str,
+        limit: usize,
+    ) -> Result<Vec<TerminalEvent>, TerminalError> {
+        let limit = limit.clamp(1, 500);
+        let last: u64 = self.connection()?.query_row(
+            "SELECT COALESCE(MAX(sequence),0) FROM terminal_events WHERE run_id=?1",
+            [required(run_id, "runId")?],
+            |row| row.get(0),
+        )?;
+        self.list_events(run_id, last.saturating_sub(limit as u64), limit)
     }
 
     fn redacted_run_events(&self, run_id: &str) -> Result<Vec<TerminalEvent>, TerminalError> {
@@ -3576,6 +3702,14 @@ pub struct CliCapabilities {
     pub auth_probe: bool,
     pub read_only: bool,
     pub model_catalog: bool,
+    /// The adapter reads tool calls and results, so the console shows them as
+    /// actions (ADR-040, M1).
+    #[serde(default)]
+    pub action_frames: bool,
+    /// The CLI prints its reasoning as text the console could show on opt-in
+    /// (ADR-040, M6). False for every CLI of the Etapa 0 corpus.
+    #[serde(default)]
+    pub reasoning_blocks: bool,
 }
 
 /// One window of a CLI subscription's usage allowance. Antigravity supplies it through its
@@ -4507,6 +4641,38 @@ enum ProcessAbortReason {
     ProviderFailure,
 }
 
+/// How the CLI process ended, as the coordinator needs it to decide what the
+/// run publishes (ADR-040, A12).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StreamEnd {
+    /// Exited on its own, successfully: the stream is complete.
+    Succeeded,
+    /// Exited with a failure, or was stopped by the host.
+    Failed,
+    Cancelled,
+    TimedOut,
+}
+
+impl StreamEnd {
+    fn of(termination: &ProcessTermination, success: bool) -> Self {
+        match termination {
+            ProcessTermination::Exited if success => Self::Succeeded,
+            ProcessTermination::Exited => Self::Failed,
+            ProcessTermination::Cancelled => Self::Cancelled,
+            ProcessTermination::TimedOut(_) => Self::TimedOut,
+        }
+    }
+
+    /// Why a stream that did not succeed publishes only its actions.
+    fn withheld_reason(self) -> WithheldReason {
+        match self {
+            Self::Cancelled => WithheldReason::Cancelled,
+            Self::TimedOut => WithheldReason::TimedOut,
+            Self::Succeeded | Self::Failed => WithheldReason::IncompleteExecution,
+        }
+    }
+}
+
 #[derive(Debug)]
 enum ProcessStreamItem {
     Frame {
@@ -5250,7 +5416,9 @@ impl TerminalService {
                 .repository
                 .list_runs(project_id, config.agent_role, 20)?;
             let recent_events = match recent_runs.first() {
-                Some(run) => self.repository.list_events(&run.id, 0, 200)?,
+                Some(run) => self
+                    .repository
+                    .list_events_tail(&run.id, SNAPSHOT_TAIL_EVENTS)?,
                 None => Vec::new(),
             };
             agents.push(AgentTerminalSnapshot {
@@ -5270,7 +5438,9 @@ impl TerminalService {
                 20,
             )?;
             let recent_events = match recent_runs.first() {
-                Some(run) => self.repository.list_events(&run.id, 0, 200)?,
+                Some(run) => self
+                    .repository
+                    .list_events_tail(&run.id, SNAPSHOT_TAIL_EVENTS)?,
                 None => Vec::new(),
             };
             let archived = slot.archived;
@@ -5308,6 +5478,15 @@ impl TerminalService {
         limit: usize,
     ) -> Result<Vec<TerminalEvent>, TerminalError> {
         self.repository.list_events(run_id, after_sequence, limit)
+    }
+
+    /// The last `limit` events of a run (ADR-040, M1).
+    pub fn load_events_tail(
+        &self,
+        run_id: &str,
+        limit: usize,
+    ) -> Result<Vec<TerminalEvent>, TerminalError> {
+        self.repository.list_events_tail(run_id, limit)
     }
 
     pub fn clear_history(
@@ -6341,6 +6520,7 @@ impl TerminalService {
         let sanitization_db_path = self.repository.db_path.clone();
         let sanitization_run = run.clone();
         let host = self.host.clone();
+        let original_workspace = workspace.clone();
         let (safe_workspace, secured_launch) = tokio::task::spawn_blocking(move || {
             Ok::<_, TerminalError>((
                 host.prepare_workspace(&sanitization_db_path, &workspace, &sanitization_run)?,
@@ -6535,6 +6715,7 @@ impl TerminalService {
                 .unwrap_or_else(|| ProgressWatchdog::new(AgentTimeoutPolicy::manual())),
             output_ceiling,
             Some(Arc::clone(&output_completion)),
+            vec![safe_workspace.path().to_path_buf(), original_workspace],
         ));
         let stdout_task = tokio::spawn(read_process_stream(
             "stdout",
@@ -6612,7 +6793,7 @@ impl TerminalService {
         *output_completion
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
-            Some(termination == ProcessTermination::Exited && status.success());
+            Some(StreamEnd::of(&termination, status.success()));
         drop(stream_sender);
         let process_events = coordinator_task.await.map_err(|error| {
             TerminalError::Process(format!("coordenador de eventos interrompido: {error}"))
@@ -6987,6 +7168,7 @@ async fn coordinate_process_events(
         watchdog,
         output_ceiling,
         None,
+        Vec::new(),
     )
     .await
 }
@@ -7014,6 +7196,7 @@ fn coordinate_process_events_blocking(
         codex_sessions_root,
         output_ceiling,
         None,
+        Vec::new(),
     )
 }
 
@@ -7027,7 +7210,8 @@ async fn coordinate_process_events_with_completion(
     abort_reason: Arc<Mutex<Option<ProcessAbortReason>>>,
     _watchdog: ProgressWatchdog,
     output_ceiling: Option<u64>,
-    output_completion: Option<Arc<Mutex<Option<bool>>>>,
+    output_completion: Option<Arc<Mutex<Option<StreamEnd>>>>,
+    workspace_roots: Vec<PathBuf>,
 ) -> Result<ProcessEventSummary, TerminalError> {
     let failure_token = abort_token.clone();
     let failure_reason = abort_reason.clone();
@@ -7043,6 +7227,7 @@ async fn coordinate_process_events_with_completion(
             None,
             output_ceiling,
             output_completion,
+            workspace_roots,
         )
     })
     .await
@@ -7068,7 +7253,8 @@ fn coordinate_process_events_blocking_inner(
     abort_reason: Arc<Mutex<Option<ProcessAbortReason>>>,
     codex_sessions_root: Option<PathBuf>,
     output_ceiling: Option<u64>,
-    output_completion: Option<Arc<Mutex<Option<bool>>>>,
+    output_completion: Option<Arc<Mutex<Option<StreamEnd>>>>,
+    workspace_roots: Vec<PathBuf>,
 ) -> Result<ProcessEventSummary, TerminalError> {
     let host_owner = repository.host.clone();
     let host = host_owner.as_ref();
@@ -7080,7 +7266,11 @@ fn coordinate_process_events_blocking_inner(
         raw_output_delta_active: false,
         pending: None,
         held: Vec::new(),
+        clock: RunClock::start(),
+        observed_at: wall_clock_now(),
     };
+    let mut ledger = ActionLedger::new(&workspace_roots);
+    let reads_actions = adapters::reads_actions(backend);
     let mut event_count = 0usize;
     let mut observed_bytes = 0usize;
     let mut summary = ProcessEventSummary::default();
@@ -7145,6 +7335,7 @@ fn coordinate_process_events_blocking_inner(
         summary.max_queue_delay_ms = summary
             .max_queue_delay_ms
             .max(received_at.elapsed().as_millis());
+        writer.observe_frame(received_at);
         let persistence_started = Instant::now();
         let (frame, stream, input_bytes) = match item {
             ProcessStreamItem::Frame { stream, bytes, .. } => {
@@ -7171,15 +7362,16 @@ fn coordinate_process_events_blocking_inner(
                     let observed = usage.output_tokens_so_far();
                     if observed > ceiling {
                         // Stop first: every further token is billed. The
-                        // buffered deltas and the partial usage record are
+                        // partial usage record and the action summaries are
                         // best-effort, the abort is not.
                         signal_process_abort(
                             &abort_token,
                             &abort_reason,
                             ProcessAbortReason::OutputBudget,
                         );
-                        let _ = writer.flush(&mut summary);
                         let _ = usage.record_live_partial();
+                        let _ =
+                            writer.finish_actions_only(WithheldReason::OutputBudget, &mut ledger);
                         return Err(TerminalError::OutputBudgetExceeded { observed, ceiling });
                     }
                 }
@@ -7208,6 +7400,7 @@ fn coordinate_process_events_blocking_inner(
                         is_delta: false,
                         finish_reason: None,
                         is_reasoning: false,
+                        actions: Vec::new(),
                     },
                     stream,
                     input_bytes,
@@ -7227,6 +7420,7 @@ fn coordinate_process_events_blocking_inner(
             is_delta,
             finish_reason,
             is_reasoning: _,
+            actions,
         } = frame;
         // A frame that names a model opens a generation: it and everything
         // after it wait for identity checks, so it is never buffered and the
@@ -7234,7 +7428,8 @@ fn coordinate_process_events_blocking_inner(
         let coalescible = is_delta
             && kind == TerminalEventKind::Message
             && !is_model_generation
-            && observed_model.is_none();
+            && observed_model.is_none()
+            && actions.is_empty();
         if writer
             .pending
             .as_ref()
@@ -7342,6 +7537,7 @@ fn coordinate_process_events_blocking_inner(
                     &abort_reason,
                     ProcessAbortReason::ModelIntegrity,
                 );
+                let _ = writer.finish_actions_only(WithheldReason::UnverifiedModel, &mut ledger);
                 return Err(error);
             }
         }
@@ -7353,6 +7549,7 @@ fn coordinate_process_events_blocking_inner(
                     &abort_reason,
                     ProcessAbortReason::ModelIntegrity,
                 );
+                let _ = writer.finish_actions_only(WithheldReason::UnverifiedModel, &mut ledger);
                 return Err(TerminalError::ModelUnverified {
                     detail: format!(
                         "backend={}, messageId={}, agentId={}",
@@ -7381,6 +7578,8 @@ fn coordinate_process_events_blocking_inner(
                         &abort_reason,
                         ProcessAbortReason::ModelIntegrity,
                     );
+                    let _ =
+                        writer.finish_actions_only(WithheldReason::UnverifiedModel, &mut ledger);
                     return Err(TerminalError::ModelMismatch {
                         expected: run.model.clone().unwrap_or_else(|| "unselected".into()),
                         observed: model.to_owned(),
@@ -7392,6 +7591,8 @@ fn coordinate_process_events_blocking_inner(
                         &abort_reason,
                         ProcessAbortReason::ModelIntegrity,
                     );
+                    let _ =
+                        writer.finish_actions_only(WithheldReason::UnverifiedModel, &mut ledger);
                     return Err(TerminalError::ModelUnverified {
                         detail: format!(
                             "backend={}, requested={}, observed={}",
@@ -7403,32 +7604,58 @@ fn coordinate_process_events_blocking_inner(
                 }
             }
         }
-        if content.trim().is_empty() {
+        // The host's action summaries stand for the CLI's tool frames that
+        // carry no text, and a tool frame without an action is only progress.
+        let superseded = !is_text
+            && (!actions.is_empty()
+                || (reads_actions
+                    && matches!(
+                        kind,
+                        TerminalEventKind::ToolUse | TerminalEventKind::ToolResult
+                    )));
+        let writes_cli = !superseded && !content.trim().is_empty();
+        if !writes_cli && actions.is_empty() {
             continue;
         }
         event_count = event_count.saturating_add(1);
         observed_bytes = observed_bytes.saturating_add(input_bytes);
         if event_count > MAX_RUN_EVENTS || observed_bytes > MAX_RUN_OUTPUT_BYTES {
             signal_process_abort(&abort_token, &abort_reason, ProcessAbortReason::OutputLimit);
+            let _ = writer.finish_actions_only(WithheldReason::OutputBudget, &mut ledger);
             return Err(TerminalError::OutputLimit);
         }
-        let written = if coalescible {
-            writer.buffer(stream, is_text, &content, &mut summary)
-        } else {
-            writer.write(kind, stream, is_text, is_delta, &content, &mut summary)
-        };
-        if let Err(error) = written {
-            signal_process_abort(&abort_token, &abort_reason, ProcessAbortReason::Persistence);
-            return Err(error);
+        if writes_cli {
+            let written = if coalescible {
+                writer.buffer(stream, is_text, &content, &mut summary)
+            } else {
+                writer.write(kind, stream, is_text, is_delta, &content, &mut summary)
+            };
+            if let Err(error) = written {
+                signal_process_abort(&abort_token, &abort_reason, ProcessAbortReason::Persistence);
+                return Err(error);
+            }
+        }
+        for action in &actions {
+            for entry in ledger.observe(action, received_at) {
+                writer.hold_action(&entry, action.output.as_deref());
+            }
         }
         if backend == CliBackend::Claude && kind == TerminalEventKind::Error {
-            // An error terminates a possibly incomplete stream. Discard every
-            // held fragment; only a host-owned classification may leave memory.
+            // An error terminates a possibly incomplete stream. Every held
+            // fragment of CLI text is discarded; only host-owned words leave
+            // memory: the action summaries and a classification.
             signal_process_abort(
                 &abort_token,
                 &abort_reason,
                 ProcessAbortReason::ProviderFailure,
             );
+            // A read error reaches here as an error frame too.
+            let reason = if incomplete_stream {
+                WithheldReason::IncompleteStream
+            } else {
+                WithheldReason::IncompleteExecution
+            };
+            let _ = writer.finish_actions_only(reason, &mut ledger);
             let error = match adapters::classify_failure(backend, None, &content) {
                 adapters::CliFailureKind::AuthenticationRequired => {
                     TerminalError::AuthRequired(backend.label().into())
@@ -7463,12 +7690,19 @@ fn coordinate_process_events_blocking_inner(
         signal_process_abort(&abort_token, &abort_reason, ProcessAbortReason::Persistence);
         return Err(error);
     }
-    if output_completion.as_ref().is_some_and(|completion| {
+    let stream_end = output_completion.as_ref().map(|completion| {
         *completion
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            != Some(true)
-    }) {
+    });
+    if let Some(end) = stream_end
+        && end != Some(StreamEnd::Succeeded)
+    {
+        let reason = end.map_or(
+            WithheldReason::IncompleteExecution,
+            StreamEnd::withheld_reason,
+        );
+        let _ = writer.finish_actions_only(reason, &mut ledger);
         let failure = adapters::classify_failure(backend, None, &summary.last_stderr);
         summary.raw_output.clear();
         summary.last_stderr = match failure {
@@ -7489,6 +7723,7 @@ fn coordinate_process_events_blocking_inner(
             &abort_reason,
             ProcessAbortReason::ModelIntegrity,
         );
+        let _ = writer.finish_actions_only(WithheldReason::UnverifiedModel, &mut ledger);
         return Err(TerminalError::ModelUnverified {
             detail: format!(
                 "backend={} emitted output without a generation identity",
@@ -7502,6 +7737,7 @@ fn coordinate_process_events_blocking_inner(
             &abort_reason,
             ProcessAbortReason::ModelIntegrity,
         );
+        let _ = writer.finish_actions_only(WithheldReason::UnverifiedModel, &mut ledger);
         return Err(TerminalError::ModelUnverified {
             detail: format!(
                 "backend={} has an unverified model generation",
@@ -7510,6 +7746,7 @@ fn coordinate_process_events_blocking_inner(
         });
     }
     if incomplete_stream {
+        let _ = writer.finish_actions_only(WithheldReason::IncompleteStream, &mut ledger);
         usage.mark_partial()?;
         return Err(TerminalError::Process(
             "CLI output was incomplete; content was withheld.".into(),
@@ -7520,12 +7757,17 @@ fn coordinate_process_events_blocking_inner(
         .as_ref()
         .filter(|reason| adapters::is_output_truncation(reason))
     {
+        let _ = writer.finish_actions_only(WithheldReason::OutputTruncated, &mut ledger);
         usage.mark_partial()?;
         return Err(TerminalError::OutputTruncated {
             backend: backend.label().into(),
             reason: reason.clone(),
             produced_chars: summary.raw_output.chars().count(),
         });
+    }
+    // Calls the stream never answered end with an unknown status (section 3.3).
+    for entry in ledger.close_open() {
+        writer.hold_action(&entry, None);
     }
     writer.finish(&mut summary)?;
     Ok(summary)
@@ -7559,6 +7801,8 @@ struct PendingDeltas {
     is_text: bool,
     content: String,
     started: Instant,
+    /// When the first of them reached the host.
+    observed_at: String,
 }
 
 impl PendingDeltas {
@@ -7569,16 +7813,72 @@ impl PendingDeltas {
     }
 }
 
+/// Who wrote an event's content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EventOrigin {
+    /// The CLI's own output, held until the run completes (ADR-030).
+    Cli,
+    /// The host's summary of a frame: a tool, a target, a status (ADR-040).
+    Host,
+}
+
 struct HeldAuditEvent {
     kind: TerminalEventKind,
-    stream: String,
+    /// `None` for a host event, as for the host's lifecycle events.
+    stream: Option<String>,
+    origin: EventOrigin,
     is_text: bool,
     content: String,
+    detail: Option<EventDetailV1>,
+    /// The host's words for a result whose content is the CLI's text: what
+    /// the run publishes instead if it fails (specification, 4.2).
+    host_summary: Option<String>,
+    observed_at: String,
+}
+
+impl HeldAuditEvent {
+    fn host(
+        kind: TerminalEventKind,
+        content: String,
+        detail: EventDetailV1,
+        observed_at: String,
+    ) -> Self {
+        Self {
+            kind,
+            stream: None,
+            origin: EventOrigin::Host,
+            is_text: false,
+            content,
+            detail: Some(detail),
+            host_summary: None,
+            observed_at,
+        }
+    }
+
+    /// The continuous value the event is redacted with. A host summary is
+    /// whole in itself, so it is redacted alone: joined to the next one, a
+    /// secret ending a target would run into that summary's name.
+    fn segment(&self, index: usize) -> String {
+        match (self.origin, self.stream.as_deref()) {
+            (EventOrigin::Host, _) => format!("host-summary-{index}"),
+            (EventOrigin::Cli, Some("stdout")) if !self.is_text => "stdout-metadata".into(),
+            (EventOrigin::Cli, Some(stream)) => stream.into(),
+            (EventOrigin::Cli, None) => "system".into(),
+        }
+    }
+
+    fn is_action(&self) -> bool {
+        matches!(
+            self.detail,
+            Some(EventDetailV1::ActionCall { .. } | EventDetailV1::ActionResult { .. })
+        )
+    }
 }
 
 /// Coalesces content in memory. Publication waits for a complete successful
 /// stream, so a secret split over arbitrary frames or timer windows is scanned
-/// before any fragment reaches SQLite or subscribers.
+/// before any fragment reaches SQLite or subscribers. A run that fails
+/// publishes only the host's action summaries (ADR-040, M1).
 struct AuditWriter<'a> {
     repository: &'a TerminalRepository,
     event_sink: &'a Arc<dyn TerminalEventSink>,
@@ -7588,6 +7888,9 @@ struct AuditWriter<'a> {
     raw_output_delta_active: bool,
     pending: Option<PendingDeltas>,
     held: Vec<HeldAuditEvent>,
+    clock: RunClock,
+    /// When the frame being written reached the host.
+    observed_at: String,
 }
 
 impl AuditWriter<'_> {
@@ -7595,6 +7898,11 @@ impl AuditWriter<'_> {
         self.pending
             .as_ref()
             .is_some_and(|pending| pending.started.elapsed() >= DELTA_COALESCE_WINDOW)
+    }
+
+    /// Dates the events of the next frame.
+    fn observe_frame(&mut self, received_at: Instant) {
+        self.observed_at = self.clock.at(received_at);
     }
 
     fn buffer(
@@ -7609,6 +7917,7 @@ impl AuditWriter<'_> {
             is_text,
             content: String::new(),
             started: Instant::now(),
+            observed_at: self.observed_at.clone(),
         });
         // Text deltas continue one another; raw frames stay one per line.
         if !is_text && !pending.content.is_empty() {
@@ -7623,14 +7932,19 @@ impl AuditWriter<'_> {
 
     fn flush(&mut self, summary: &mut ProcessEventSummary) -> Result<(), TerminalError> {
         match self.pending.take() {
-            Some(pending) => self.write(
-                TerminalEventKind::Message,
-                pending.stream,
-                pending.is_text,
-                true,
-                &pending.content,
-                summary,
-            ),
+            Some(pending) => {
+                let current = std::mem::replace(&mut self.observed_at, pending.observed_at);
+                let written = self.write(
+                    TerminalEventKind::Message,
+                    pending.stream,
+                    pending.is_text,
+                    true,
+                    &pending.content,
+                    summary,
+                );
+                self.observed_at = current;
+                written
+            }
             None => Ok(()),
         }
     }
@@ -7651,11 +7965,15 @@ impl AuditWriter<'_> {
         } else {
             content
         };
-        self.held.push(HeldAuditEvent {
+        self.hold(HeldAuditEvent {
             kind,
-            stream: stream.into(),
+            stream: Some(stream.into()),
+            origin: EventOrigin::Cli,
             is_text,
             content: content.into(),
+            detail: None,
+            host_summary: None,
+            observed_at: self.observed_at.clone(),
         });
         if is_text
             && matches!(
@@ -7676,56 +7994,147 @@ impl AuditWriter<'_> {
         if stream == "stderr" {
             summary.last_stderr = content.into();
         }
-        self.sequence = self.sequence.saturating_add(1);
         Ok(())
     }
 
+    fn hold(&mut self, event: HeldAuditEvent) {
+        self.held.push(event);
+        self.sequence = self.sequence.saturating_add(1);
+    }
+
+    /// One action as the specification's table 3.4 records it: a call is the
+    /// host's summary; a result keeps the CLI's visible text when it had one,
+    /// as before M1, and is the host's summary otherwise.
+    fn hold_action(&mut self, entry: &LedgerEntry, output: Option<&str>) {
+        let observed_at = self.observed_at.clone();
+        let event = match entry {
+            LedgerEntry::Call(call) => HeldAuditEvent::host(
+                TerminalEventKind::ToolUse,
+                call.summary(),
+                call.detail(),
+                observed_at,
+            ),
+            LedgerEntry::Result(result) => match output.filter(|text| !text.trim().is_empty()) {
+                Some(text) => HeldAuditEvent {
+                    kind: TerminalEventKind::ToolResult,
+                    stream: Some("stdout".into()),
+                    origin: EventOrigin::Cli,
+                    is_text: true,
+                    content: text.into(),
+                    detail: Some(result.detail()),
+                    host_summary: Some(result.summary()),
+                    observed_at,
+                },
+                None => HeldAuditEvent::host(
+                    TerminalEventKind::ToolResult,
+                    result.summary(),
+                    result.detail(),
+                    observed_at,
+                ),
+            },
+        };
+        self.hold(event);
+    }
+
     fn finish(&mut self, summary: &mut ProcessEventSummary) -> Result<(), TerminalError> {
-        let segments = self
-            .held
+        // raw_output is the operational response assembled from the original
+        // decoded segments. Only the observer projection is persisted and
+        // emitted; replacing raw_output here would corrupt edit literals.
+        let events = self.persist_held()?;
+        summary.last_stderr.clear();
+        if let Some(stderr) = events
             .iter()
-            .map(|event| {
-                (
-                    if event.stream == "stdout" && !event.is_text {
-                        "stdout-metadata"
-                    } else {
-                        event.stream.as_str()
-                    },
-                    event.content.as_str(),
-                )
+            .rfind(|event| event.stream.as_deref() == Some("stderr"))
+        {
+            summary.last_stderr.clone_from(&stderr.content);
+        }
+        Ok(())
+    }
+
+    /// A run that failed after its stream began publishes its action
+    /// summaries and why the rest was withheld, never the CLI's text
+    /// (specification, 4.2). The kept events take consecutive sequences from
+    /// the first held one, so the next live event follows without a gap.
+    fn finish_actions_only(
+        &mut self,
+        reason: WithheldReason,
+        ledger: &mut ActionLedger,
+    ) -> Result<(), TerminalError> {
+        self.pending = None;
+        for entry in ledger.close_open() {
+            self.hold_action(&entry, None);
+        }
+        let first = self.sequence.saturating_sub(self.held.len() as u64);
+        let mut kept = std::mem::take(&mut self.held)
+            .into_iter()
+            .filter(HeldAuditEvent::is_action)
+            .map(|mut event| {
+                if let Some(host_summary) = event.host_summary.take() {
+                    event.content = host_summary;
+                    event.origin = EventOrigin::Host;
+                    event.stream = None;
+                    event.is_text = false;
+                }
+                event
             })
             .collect::<Vec<_>>();
+        kept.push(HeldAuditEvent::host(
+            TerminalEventKind::System,
+            reason.text().into(),
+            EventDetailV1::Withheld { v: 1, reason },
+            self.clock.at(Instant::now()),
+        ));
+        self.sequence = first.saturating_add(kept.len() as u64);
+        self.held = kept;
+        self.persist_held().map(|_| ())
+    }
+
+    /// Redacts the held events, records them in one transaction (ADR-040,
+    /// A14) and publishes them.
+    fn persist_held(&mut self) -> Result<Vec<TerminalEvent>, TerminalError> {
+        if self.held.is_empty() {
+            return Ok(Vec::new());
+        }
+        let keys = self
+            .held
+            .iter()
+            .enumerate()
+            .map(|(index, event)| event.segment(index))
+            .collect::<Vec<_>>();
+        let segments = keys
+            .iter()
+            .zip(&self.held)
+            .map(|(key, event)| (key.as_str(), event.content.as_str()))
+            .collect::<Vec<_>>();
         let sanitized = redact_continuous_segments(self.repository.host.as_ref(), &segments)?;
-        let mut sequence = self.sequence.saturating_sub(self.held.len() as u64);
-        summary.last_stderr.clear();
-        // raw_output is the operational response assembled from the original
-        // decoded segments. Only the observer projection below is persisted
-        // and emitted; replacing raw_output here would corrupt edit literals.
-        for (held, redacted) in self.held.iter().zip(sanitized) {
-            let event = self.repository.append_redacted_event(
-                &self.run.id,
-                sequence,
-                held.kind,
-                Some(&held.stream),
+        let first = self.sequence.saturating_sub(self.held.len() as u64);
+        let inputs = std::mem::take(&mut self.held)
+            .into_iter()
+            .zip(sanitized)
+            .map(|(held, redacted)| RedactedEventInput {
+                kind: held.kind,
+                stream: held.stream,
                 redacted,
-            )?;
-            let run = self.repository.get_run(&self.run.id)?;
+                detail: held.detail,
+                observed_at: held.observed_at,
+            })
+            .collect();
+        let events = self
+            .repository
+            .append_redacted_events(&self.run.id, first, inputs)?;
+        let run = self.repository.get_run(&self.run.id)?;
+        for event in &events {
             self.event_sink.emit(&TerminalEventEnvelope {
                 protocol_version: 2,
                 project_id: run.project_id.clone(),
                 agent_role: run.agent_role,
                 run_id: run.id.clone(),
-                sequence,
-                run,
+                sequence: event.sequence,
+                run: run.clone(),
                 event: event.clone(),
             });
-            if held.stream == "stderr" {
-                summary.last_stderr.clone_from(&event.content);
-            }
-            sequence = sequence.saturating_add(1);
         }
-        self.held.clear();
-        Ok(())
+        Ok(events)
     }
 }
 
@@ -7832,6 +8241,9 @@ fn redact_continuous_segments(
 /// split across the page boundary is still redacted.
 pub const RANGE_CONTEXT_EVENTS: u64 = 64;
 
+/// Events of its latest run a terminal snapshot carries, from the end.
+pub const SNAPSHOT_TAIL_EVENTS: usize = 500;
+
 /// Whether the run was recorded under a known sanitization policy.
 fn run_has_known_policy(connection: &Connection, run_id: &str) -> Result<bool, TerminalError> {
     Ok(connection.query_row(
@@ -7852,7 +8264,8 @@ fn read_run_events_range(
 ) -> Result<Vec<TerminalEvent>, TerminalError> {
     let mut statement = connection.prepare_cached(
         "SELECT id,run_id,sequence,kind,stream,content,created_at,
-                redaction_count,redaction_categories_json FROM terminal_events
+                redaction_count,redaction_categories_json,detail_json,observed_at
+         FROM terminal_events
          WHERE run_id=?1 AND sequence>?2 ORDER BY sequence LIMIT ?3",
     )?;
     let rows = statement.query_map(
@@ -7869,7 +8282,8 @@ fn read_run_history_events(
 ) -> Result<Vec<TerminalEvent>, TerminalError> {
     let mut statement = connection.prepare(
         "SELECT id,run_id,sequence,kind,stream,content,created_at,
-                redaction_count,redaction_categories_json FROM terminal_events
+                redaction_count,redaction_categories_json,detail_json,observed_at
+         FROM terminal_events
          WHERE run_id=?1 ORDER BY sequence LIMIT ?2",
     )?;
     let rows = statement.query_map(
@@ -7886,6 +8300,7 @@ fn read_run_history_events(
 fn map_terminal_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<TerminalEvent> {
     let kind: String = row.get(3)?;
     let categories: String = row.get(8)?;
+    let detail: Option<String> = row.get(9)?;
     Ok(TerminalEvent {
         id: row.get(0)?,
         run_id: row.get(1)?,
@@ -7902,6 +8317,10 @@ fn map_terminal_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<TerminalEvent
             )
         })?,
         created_at: row.get(6)?,
+        // A detail a later version wrote in a shape this one does not know
+        // leaves the event readable, as a plain one.
+        detail: detail.and_then(|detail| serde_json::from_str(&detail).ok()),
+        observed_at: row.get(10)?,
     })
 }
 
@@ -8027,21 +8446,27 @@ fn sanitize_history_events(
             );
         }
     }
-    let segments = events
+    let keys = events
         .iter()
-        .map(|event| {
-            (
-                if event.stream.as_deref() == Some("stdout")
-                    && event.content.starts_with("CLI ")
-                    && event.content.contains("received")
-                {
-                    "stdout-metadata"
-                } else {
-                    event.stream.as_deref().unwrap_or("system")
-                },
-                event.content.as_str(),
-            )
+        .enumerate()
+        .map(|(index, event)| {
+            if event.stream.is_none() && event.detail.is_some() {
+                // A host summary (ADR-040) is redacted alone, as it was written.
+                format!("host-summary-{index}")
+            } else if event.stream.as_deref() == Some("stdout")
+                && event.content.starts_with("CLI ")
+                && event.content.contains("received")
+            {
+                "stdout-metadata".into()
+            } else {
+                event.stream.as_deref().unwrap_or("system").into()
+            }
         })
+        .collect::<Vec<_>>();
+    let segments = keys
+        .iter()
+        .zip(events.iter())
+        .map(|(key, event)| (key.as_str(), event.content.as_str()))
         .collect::<Vec<_>>();
     let sanitized = redact_continuous_segments(host, &segments)?;
     for (event, redacted) in events.iter_mut().zip(sanitized) {
@@ -9365,6 +9790,8 @@ pub(crate) fn materialize_safe_workspace<H: TerminalHost + ?Sized>(
     Ok(safe_workspace)
 }
 
+#[cfg(test)]
+mod actions_tests;
 #[cfg(test)]
 mod corpus_capture;
 #[cfg(test)]

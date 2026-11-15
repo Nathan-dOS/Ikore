@@ -6527,7 +6527,7 @@ impl AppModel {
         let generation = self.agents.update(cx, |agents, _| agents.begin(false));
         cx.notify();
         self.agents_task = Some(cx.spawn(async move |this, cx| {
-            let result = backend.events(run_id.clone(), 0, 500).await;
+            let result = backend.events_tail(run_id.clone(), 500).await;
             let _ = this.update(cx, |model, cx| {
                 match result {
                     Ok(events) => {
@@ -6592,7 +6592,7 @@ impl AppModel {
         let generation = self.agents.update(cx, |agents, _| agents.begin(false));
         cx.notify();
         self.agents_task = Some(cx.spawn(async move |this, cx| {
-            let result = backend.events(run_id.clone(), 0, 500).await;
+            let result = backend.events_tail(run_id.clone(), 500).await;
             let _ = this.update(cx, |model, cx| {
                 match result {
                     Ok(events) => {
@@ -10208,6 +10208,8 @@ mod tests {
                         redaction_count: 0,
                         redaction_categories: Vec::new(),
                         created_at: "2026-11-15T00:00:00Z".into(),
+                        detail: None,
+                        observed_at: None,
                     },
                 })
                 .collect::<Vec<_>>();

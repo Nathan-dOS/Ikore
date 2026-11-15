@@ -3345,10 +3345,14 @@ fn refresh_agent_output_index(connection: &mut Connection, project_id: &str) -> 
     {
         let mut statement = connection
             .prepare(
+                // A result the host summarized ("Read · ok", ADR-040) has no
+                // stream: it is not agent output, so the index keeps only the
+                // results with the CLI's own text, as before.
                 "SELECT e.id,e.run_id,e.sequence,COALESCE(r.agent_role,r.free_form_label),
                         r.backend,r.model,r.status,e.content,e.created_at,e.stream
                  FROM terminal_events e JOIN terminal_runs r ON r.id=e.run_id
                  WHERE r.project_id=?1 AND e.kind IN ('message','tool_result','stdout')
+                   AND NOT (e.kind='tool_result' AND e.stream IS NULL)
                  ORDER BY e.run_id,e.sequence",
             )
             .map_err(|error| error.to_string())?;
@@ -6037,6 +6041,73 @@ mod tests {
         assert!(!projected.contains(&secret[10..]));
         let original:String=db.query_row("SELECT group_concat(content,'') FROM terminal_events WHERE run_id='legacy-split' ORDER BY sequence",[],|row|row.get(0)).unwrap();
         assert_eq!(original, secret);
+    }
+
+    /// ADR-040 M1: the host's action summaries reach `terminal_events`, but the
+    /// Companion still indexes only the CLI's own result text.
+    #[test]
+    fn companion_index_unchanged_for_tool_results() {
+        let (_temp, _workspace, service) = prepare_chat();
+        let mut db = service.connection().unwrap();
+        let now = now_iso();
+        db.execute("INSERT INTO terminal_runs(id,project_id,agent_role,origin,execution_mode,backend,status,created_at,updated_at) VALUES('actions','project-a','backend_agent','manual','cli_process','claude','completed',?1,?1)", [&now]).unwrap();
+        for (sequence, kind, stream, content, detail) in [
+            (
+                1,
+                "tool_use",
+                None,
+                "Read · notes.txt",
+                Some(r#"{"type":"action_call","v":1,"ordinal":1,"kind":"read","name":"Read"}"#),
+            ),
+            (
+                2,
+                "tool_result",
+                Some("stdout"),
+                "The second line is the answer.",
+                Some(r#"{"type":"action_result","v":1,"ordinal":1,"status":"ok"}"#),
+            ),
+            (
+                3,
+                "tool_use",
+                None,
+                "Grep · \"TODO\" in src",
+                Some(r#"{"type":"action_call","v":1,"ordinal":2,"kind":"search","name":"Grep"}"#),
+            ),
+            (
+                4,
+                "tool_result",
+                None,
+                "Grep · ok",
+                Some(r#"{"type":"action_result","v":1,"ordinal":2,"status":"ok"}"#),
+            ),
+            (5, "message", Some("stdout"), "Done.", None),
+        ] {
+            db.execute("INSERT INTO terminal_events(id,run_id,sequence,kind,stream,content,created_at,detail_json,observed_at) VALUES(?1,'actions',?2,?3,?4,?5,?6,?7,?6)", params![format!("action-event-{sequence}"),sequence,kind,stream,content,now,detail]).unwrap();
+        }
+        refresh_agent_output_index(&mut db, "project-a").unwrap();
+        let indexed: Vec<String> = db
+            .prepare("SELECT content FROM companion_agent_output_documents WHERE project_id='project-a' AND source_kind='terminal_event' ORDER BY stable_reference")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            indexed
+                .iter()
+                .any(|content| content.contains("The second line is the answer."))
+        );
+        assert!(indexed.iter().any(|content| content.contains("Done.")));
+        assert!(
+            indexed.iter().all(|content| !content.contains("Grep · ok")),
+            "{indexed:?}"
+        );
+        assert!(
+            indexed
+                .iter()
+                .all(|content| !content.contains("Read · notes.txt")),
+            "{indexed:?}"
+        );
     }
 
     #[derive(Default)]

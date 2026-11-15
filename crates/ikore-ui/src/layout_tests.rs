@@ -2467,6 +2467,8 @@ fn connections_show_cli_plan_windows_without_an_open_project_and_keep_bars_insid
                 auth_probe: true,
                 read_only: true,
                 model_catalog: true,
+                action_frames: true,
+                reasoning_blocks: false,
             },
             quota: vec![],
         };

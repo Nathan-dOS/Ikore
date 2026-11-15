@@ -2,8 +2,8 @@
 
 Date: 2026-11-08
 
-Status: accepted; not implemented yet. The preparation stage (Etapa 0) started
-on 2026-11-15. See [Implementation](#implementation).
+Status: accepted; being implemented. The preparation stage (Etapa 0) and the
+data milestone (M1) are done. See [Implementation](#implementation).
 
 ## Context
 
@@ -40,7 +40,19 @@ The Agents page shows what a CLI agent did, but only after the fact:
 
 ## Implementation
 
-Not started beyond the preparation stage.
+**M1, action summaries (2026-11-15).** Each adapter reads the tool calls and
+results in its frames (`src/terminals/actions.rs`), with tool names from a
+closed allowlist per CLI and targets made relative to the run's workspace.
+The coordinator records a call as a host line such as `Read · src/main.rs`
+and its result as the CLI's text, redacted, or as `Read · ok`, `exit 1`,
+`error`, `denied` or `unknown`. A structured `detail_json` column (migration
+V67) carries the ordinal, kind, status and duration, never free text. A run
+that fails after its stream began publishes only these summaries and an
+`Output withheld: …` line with the reason, keeping its event sequence
+contiguous. No reasoning frame reaches the audit as text. The held events of
+a run are written in one transaction. Snapshots and run selection read a
+run's last 500 events, and the Agents page merges a snapshot with live events
+instead of replacing them.
 
 **Etapa 0 (2026-11-15).** A corpus of real CLI frames is in
 `crates/ikore-terminal/fixtures/cli/<backend>/<version>/`, recorded on Windows
