@@ -29,6 +29,7 @@ Every scenario ran in a fresh workspace with `notes.txt`, `src/lib.rs` and
 
 | Backend | Version | Model | Scenarios |
 |---|---|---|---|
+| Claude | 2.1.325 | `haiku` (reported as `claude-haiku-5-5`) | all six |
 | Codex | 0.155.1 | CLI default | all six |
 | OpenCode | 1.18.32 | `groq/openai/gpt-oss-20b` | all six |
 | Antigravity | 1.4.0 | `gemini-3.8-flash` | all six |
@@ -39,8 +40,6 @@ ranges in `adapters/mod.rs`; their corpus is what widening a range needs.
 
 ## Not recorded yet
 
-- **Claude.** The CLI on the capturing machine was signed out (expired OAuth
-  session). Capture it after `claude auth login`.
 - **Gemini.** The account's tier ("Gemini Code Assist for individuals") is no
   longer accepted by the CLI, which points to Antigravity. Only that failure is
   recorded.
@@ -51,6 +50,13 @@ ranges in `adapters/mod.rs`; their corpus is what widening a range needs.
 
 ## What these frames show
 
+- **Claude 2.1.325.** A tool call streams as `input_json_delta` chunks, then an
+  `assistant` frame holds the whole `tool_use` block (`id`, `name`, `input`);
+  the `user` frame after it answers with a `tool_result` naming that `id`. A
+  tool outside `--tools` comes back as a `tool_result` holding
+  `<tool_use_error>`. Thinking arrives as a `thinking` block whose text is
+  empty: only its `signature` and `system`/`thinking_tokens` estimates are
+  printed.
 - **Codex 0.155.1, Windows, `--sandbox read-only -a never`.** Every command the
   model tried, including plain reads, was rejected ("blocked by policy") before
   an item existed. Only stderr says so; stdout has agent messages and no
@@ -67,9 +73,9 @@ ranges in `adapters/mod.rs`; their corpus is what widening a range needs.
 - **Antigravity 1.4.0.** A tool step goes `ACTIVE`, then `DONE` or `ERROR`, under
   one `step_index`. File reads report a size ("2 lines, 79 bytes"), not content.
   Thinking shows only as `thinking_tokens`.
-- **Reasoning text.** No backend in this corpus printed reasoning text: Codex
-  emitted no `reasoning` item, OpenCode no `reasoning` part, Antigravity only a
-  token count.
+- **Reasoning text.** No backend in this corpus printed reasoning text: Claude's
+  `thinking` blocks are empty, Codex emitted no `reasoning` item, OpenCode no
+  `reasoning` part, and Antigravity only a token count.
 
 ## Scrubbing
 

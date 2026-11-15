@@ -27,7 +27,7 @@
 //! pattern catches: keep the workspace on a neutral path, and read every
 //! scrubbed file before committing it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -669,6 +669,42 @@ fn real_frames_normalize_and_carry_the_pairing_keys_the_console_needs() {
     // Codex 0.155.1 on Windows, under the pipeline sandbox, never ran a command:
     // each one was rejected before an item existed, and only stderr says so.
     assert_eq!(tool_frames.get(&CliBackend::Codex), None);
+
+    // Claude: an `assistant` frame holds the `tool_use` block, and the `user`
+    // frame after it answers with a `tool_result` naming that block's `id`.
+    let mut claude_results = 0;
+    for (_, version, scenario, lines) in corpus
+        .iter()
+        .filter(|(backend, ..)| *backend == CliBackend::Claude)
+    {
+        let mut calls = HashSet::new();
+        for value in lines
+            .iter()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        {
+            let blocks = value["message"]["content"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            match value["type"].as_str() {
+                Some("assistant") => calls.extend(
+                    blocks
+                        .iter()
+                        .filter(|block| block["type"] == "tool_use")
+                        .filter_map(|block| block["id"].as_str().map(str::to_owned)),
+                ),
+                Some("user") => {
+                    for block in blocks.iter().filter(|block| block["type"] == "tool_result") {
+                        let id = block["tool_use_id"].as_str().unwrap_or_default();
+                        assert!(calls.contains(id), "{version} {scenario}: {id}");
+                        claude_results += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    assert!(claude_results > 0);
 }
 
 /// What the coordinator spends per frame on the corpus, end to end: adapter,
