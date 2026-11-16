@@ -66,7 +66,7 @@ function Assert-GpuiOnly {
         throw "Artefatos legados ainda presentes: $($remaining -join ', ')"
     }
 
-    $tree = (& cargo tree -p hvc-app --locked 2>&1 | Out-String)
+    $tree = (& cargo tree -p ikore-app --locked 2>&1 | Out-String)
     if ($LASTEXITCODE -ne 0) {
         throw 'cargo tree falhou durante a validação GPUI-only.'
     }
@@ -82,7 +82,7 @@ try {
     Invoke-GateStep 'cargo fmt' { cargo fmt --all -- --check }
     Invoke-GateStep 'Clippy' { cargo clippy --workspace --all-targets -- -D warnings }
     Invoke-GateStep 'testes Rust' { cargo test-all }
-    Invoke-GateStep 'build release GPUI' { cargo build --release -p hvc-app }
+    Invoke-GateStep 'build release GPUI' { cargo build --release -p ikore-app }
     Invoke-GateStep 'smoke Windows GPUI' { & (Join-Path $PSScriptRoot 'smoke-windows.ps1') }
     Invoke-GateStep 'licenças e fontes Rust' {
         & (Join-Path $PSScriptRoot 'audit-supply-chain.ps1') -EnforceDistribution:$EnforceDistribution

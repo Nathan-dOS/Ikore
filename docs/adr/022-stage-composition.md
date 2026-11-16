@@ -11,13 +11,13 @@ approve the stage or prove that a check ran.
 
 ## Contract files
 
-- [Composition module](../../crates/hvc-core/src/orchestration/composition/mod.rs)
-- [Versioned schema](../../crates/hvc-core/src/orchestration/composition/fixtures/stage-composition-v1.schema.json)
-- [Schema examples](../../crates/hvc-core/src/orchestration/composition/fixtures/stage-composition-v1.examples.json)
-- [Plan validation](../../crates/hvc-core/src/orchestration/composition/plan.rs)
-- [Payload validation](../../crates/hvc-core/src/orchestration/composition/validate.rs)
-- [Exact edits](../../crates/hvc-core/src/orchestration/composition/edits.rs)
-- [Host aggregation](../../crates/hvc-core/src/orchestration/composition/aggregate.rs)
+- [Composition module](../../crates/ikore-core/src/orchestration/composition/mod.rs)
+- [Versioned schema](../../crates/ikore-core/src/orchestration/composition/fixtures/stage-composition-v1.schema.json)
+- [Schema examples](../../crates/ikore-core/src/orchestration/composition/fixtures/stage-composition-v1.examples.json)
+- [Plan validation](../../crates/ikore-core/src/orchestration/composition/plan.rs)
+- [Payload validation](../../crates/ikore-core/src/orchestration/composition/validate.rs)
+- [Exact edits](../../crates/ikore-core/src/orchestration/composition/edits.rs)
+- [Host aggregation](../../crates/ikore-core/src/orchestration/composition/aggregate.rs)
 
 The schema/examples are available in this repository. Historical validation
 digests identify the original copies; this documentation does not change them.

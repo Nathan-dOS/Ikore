@@ -1,0 +1,17 @@
+Security Warning: Skipping system settings file '<home>\AppData\Local\Temp\.tmpKO4ONf': Parent directory '<home>\appdata\local\temp' is insecure: Directory '<home>\appdata\local\temp' is not owned by a trusted administrator or SYSTEM account. Current owner: <machine>\<user>. Directory '<home>\appdata\local\temp' is insecure. The following user groups have write permissions: S-1-5-21-0-0-0-1000, S-1-5-21-0-0-0-1000, <machine>\<user>, <machine>\CodexSandboxUsers, S-1-5-21-0-0-0-1000, S-1-5-21-0-0-0-1000. To fix this, remove Write and Modify permissions for these groups from the directory's ACLs.
+Approval mode overridden to "default" because the current folder is not trusted.
+Error authenticating: IneligibleTierError: This client is no longer supported for Gemini Code Assist for individuals. To continue using Gemini, please migrate to the Antigravity suite of products: https://antigravity.google
+    at throwIneligibleOrProjectIdError (file:///<home>/AppData/Roaming/npm/node_modules/@google/gemini-cli/bundle/chunk-M6NSK26M.js:310656:11)
+    at _doSetupUser (file:///<home>/AppData/Roaming/npm/node_modules/@google/gemini-cli/bundle/chunk-M6NSK26M.js:310645:5)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5) {
+  ineligibleTiers: [
+    {
+      reasonCode: 'UNSUPPORTED_CLIENT',
+      reasonMessage: 'This client is no longer supported for Gemini Code Assist for individuals. To continue using Gemini, please migrate to the Antigravity suite of products: https://antigravity.google',
+      tierId: 'free-tier',
+      tierName: 'Gemini Code Assist for individuals'
+    }
+  ]
+}
+Approval mode overridden to "default" because the current folder is not trusted.
+[31mGemini CLI is not running in a trusted directory. To proceed, either use `--skip-trust`, set the `GEMINI_CLI_TRUST_WORKSPACE=true` environment variable, or trust this directory in interactive mode. For more details, see https://geminicli.com/docs/cli/trusted-folders/#headless-and-automated-environments[0m

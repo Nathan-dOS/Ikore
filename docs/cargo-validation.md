@@ -56,7 +56,7 @@ selectors of 1,024 bytes each. Empty/absolute paths, drives, UNC, backslashes an
 `.`/`..` components are rejected. Every selector must match an allowed file;
 the permanent denylist takes precedence. Opaque assets and vendor inputs require
 explicit selection. Manifest metadata and its completion marker live beside the
-copy in `.<name>.hvc-candidate`, outside the command's candidate inputs.
+copy in `.<name>.ikore-candidate` (with legacy fallback for `.<name>.hvc-candidate`), outside the command's candidate inputs.
 
 ## Evidence and states
 
@@ -142,11 +142,11 @@ From the Ikore workspace, replace the placeholders with the local project root
 and an approved asset selector:
 
 ```text
-cargo run --locked --offline -p hvc-core --example cargo_candidate_capture -- "<project-root>" "<asset-pattern>"
+cargo run --locked --offline -p ikore-core --example cargo_candidate_capture -- "<project-root>" "<asset-pattern>"
 ```
 
 The asset argument is optional and repeatable. A development-environment example
-is `-- /workspace/Ikore crates/hvc-app/assets/icon.ico`; the placeholder form also
+is `-- /workspace/Ikore crates/ikore-app/assets/icon.ico`; the placeholder form also
 accepts Windows paths. The system temporary directory must be outside the target
 root. `cargo run` may compile the Ikore inspector itself; the example only captures,
 restores and verifies the target, without running its build, installing its
@@ -165,6 +165,6 @@ selection and Intake-frozen review policy fields introduced in schema 2.
 Reconciliation of ordinary project documentation remains part of freshness;
 only exact host-owned stage documents are excluded.
 
-For the Ikore capture pilot, approve both `crates/hvc-app/assets/icon.ico` and
+For the Ikore capture pilot, approve both `crates/ikore-app/assets/icon.ico` and
 `crates/*/fixtures/cli/*/current/hostile.txt`. The latter selects four intentional
 NUL-containing test fixtures. Their opaque bytes remain local to the candidate.

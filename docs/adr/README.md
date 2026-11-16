@@ -23,7 +23,7 @@ records automated results and the remaining Windows/GPUI qualification.
 The desktop application uses Rust and GPUI in one process, with typed core/UI
 calls. Only GPUI is vendored; the project does not reuse Zed's editor crates.
 The [workspace overview](../architecture.md) and
-[GPUI patch ledger](../../third_party/gpui/HVC-PATCHES.md) describe the boundary.
+[GPUI patch ledger](../../third_party/gpui/IKORE-PATCHES.md) describe the boundary.
 
 ## ADR-007: synchronization and preparation
 
@@ -46,7 +46,7 @@ candidates; human approval, expected hashes and host publication checks remain
 required for changes. Observe is the default mode.
 
 See [implementation and validation](../../quality/learning-context-optimization.md)
-and the [learning service](../../crates/hvc-core/src/orchestration/learning.rs).
+and the [learning service](../../crates/ikore-core/src/orchestration/learning.rs).
 
 ## ADR-010: CLI runtime
 
@@ -57,7 +57,7 @@ fallback requires an explicit human decision. Model identity and allowed
 operations remain host-validated.
 
 See the [threat model](../../quality/cli-threat-model.md) and
-[runtime implementation](../../crates/hvc-core/src/terminals.rs).
+[runtime implementation](../../crates/ikore-core/src/terminals.rs).
 
 ## ADR-013: generated artifact language
 
@@ -102,7 +102,7 @@ The host classifies supported failures and persists the actions it permits.
 Resolution validates checkpoint identity, expected state version and producer
 state. Retry does not renew a v4 stage's shared budget; revision invalidates
 affected downstream work; Abort is terminal. The UI cannot widen the persisted
-decision set. See the [failure service](../../crates/hvc-core/src/orchestration/failure.rs)
+decision set. See the [failure service](../../crates/ikore-core/src/orchestration/failure.rs)
 and [synchronization evidence](../../quality/cerebro-sync-validation-2026-09-09.md).
 
 ## ADR-022: stage composition
@@ -117,8 +117,8 @@ record. Confirm/Flag and revision diffs assist review; the host still admits
 the decision. Visualizer notes are non-normative. The end-of-pulsation report
 is rendered by the host, with lifecycle cleanup tied to its pulsation.
 
-Implementation: [review brief](../../crates/hvc-core/src/orchestration/review_brief/mod.rs)
-and [reports](../../crates/hvc-core/src/reports/mod.rs).
+Implementation: [review brief](../../crates/ikore-core/src/orchestration/review_brief/mod.rs)
+and [reports](../../crates/ikore-core/src/reports/mod.rs).
 Integration evidence: [2026-10-17 report](../../quality/main-merge-validation-2026-10-17.md).
 
 ## ADR-028: plan-quota meter
@@ -133,7 +133,7 @@ sent only to fixed provider hosts, is never refreshed or written back, and never
 reaches agents, logs, events or the database. Responses are validated and the
 meter fails closed; it never shows a guessed number. A one-time notice
 names the file read and the host contacted, and a kill switch
-(`HVC_DISABLE_QUOTA_ENDPOINTS=1`) and a per-CLI setting turn the credential read
+(`IKORE_DISABLE_QUOTA_ENDPOINTS=1`, or legacy `HVC_DISABLE_QUOTA_ENDPOINTS=1`) and a per-CLI setting turn the credential read
 off; a build without the `quota-credential-collectors` feature has no credential
 reader at all. A pre-flight check before each stage is advisory and uses the
 existing human checkpoint; it never switches provider by itself.
@@ -145,7 +145,7 @@ the API. Default builds therefore use only the official and local sources; the
 Claude bar fills from the events of the developer's own Claude Code runs.
 
 See the [threat model](../../quality/cli-threat-model.md) and the
-[quota module](../../crates/hvc-core/src/quota/mod.rs).
+[quota module](../../crates/ikore-core/src/quota/mod.rs).
 
 ## ADR-029: Companion notes
 
@@ -180,8 +180,8 @@ records current qualification; the
 [2026-10-26 medium report](../../quality/whisper-medium-validation-2026-10-26.md)
 remains historical evidence for the replaced Python backend.
 
-See the [notes module](../../crates/hvc-core/src/companion_notes/mod.rs), the
-[voice service](../../crates/hvc-core/src/voice.rs) and the
+See the [notes module](../../crates/ikore-core/src/companion_notes/mod.rs), the
+[voice service](../../crates/ikore-core/src/voice.rs) and the
 [threat model](../../quality/cli-threat-model.md).
 
 ## ADR-030: deterministic secret sanitization
@@ -200,7 +200,7 @@ and the [validation report](../../quality/secret-sanitization-validation-2026-10
 ## ADR-031: terminal and shared-contract boundaries
 
 CLI services, repository, adapters, processes and subscription quota belong to
-`hvc-terminal`; shared values belong to `hvc-contracts`. Core retains host
+`ikore-terminal`; shared values belong to `ikore-contracts`. Core retains host
 authorization, orchestration, migrations and compatibility facades. See the
 [decision and validation requirements](031-terminal-boundary.md). This decision
 was first numbered ADR-030; its 2026-10-23 report keeps that label.
@@ -278,3 +278,16 @@ change, lets a lagging UI reread from its cursor instead of reloading
 everything. An explicit CLI resume after workspace edits tells the agent what
 changed, within a budget. The Companion has two more read-only tools, over
 deterministic pulsation digests. See the [decision](037-agent-exchange.md).
+
+## ADR-040: agent console and bottom dock
+
+Accepted on 2026-11-08; implemented through M7 on 2026-11-16. One console
+renders on the Agents page and in a bottom dock (`Ctrl+J`) that follows the
+active agent. During a run the host publishes action summaries and a live
+phase pulse, never free text before completion; a failed run publishes only
+its action summaries; reasoning shows as a phase and a token count, never
+text. The Agents page groups its agents and gives each one a header and
+Activity, Configuration and History tabs. The preparation stage recorded a
+corpus of real CLI frames on 2026-11-15. See the
+[decision](040-agent-console.md) and the
+[corpus notes](../../crates/ikore-terminal/fixtures/cli/CORPUS.md).

@@ -6,24 +6,24 @@ The terminal and shared-contract boundaries were separated in ADR-031 (2026-10-2
 
 | Crate | Responsibility |
 |---|---|
-| [hvc-app](../crates/hvc-app/src/main.rs) | Application startup and composition root |
-| [hvc-contracts](../crates/hvc-contracts/src/lib.rs) | Shared execution, stage, timeout, usage and redaction values |
-| [hvc-terminal](../crates/hvc-terminal/src/lib.rs) | CLI services, repository, adapters, process isolation, discovery and subscription quota |
-| [hvc-voice](../crates/hvc-voice/src/lib.rs) | Pinned speech runtime install, microphone capture, global push-to-talk and earcons |
-| [hvc-core](../crates/hvc-core/src/lib.rs) | Domain, migrations, workspace, provider routing, orchestration and terminal host integration |
-| [hvc-ui](../crates/hvc-ui/src/lib.rs) | Native views, review controls and design system |
-| [hvc-editor](../crates/hvc-editor/src/lib.rs) | Text model, selection, undo, diff and Markdown support |
-| [hvc-test-support](../crates/hvc-test-support/src/lib.rs) | Isolated harnesses, doubles and integration fixtures |
+| [ikore-app](../crates/ikore-app/src/main.rs) | Application startup and composition root |
+| [ikore-contracts](../crates/ikore-contracts/src/lib.rs) | Shared execution, stage, timeout, usage and redaction values |
+| [ikore-terminal](../crates/ikore-terminal/src/lib.rs) | CLI services, repository, adapters, process isolation, discovery and subscription quota |
+| [ikore-voice](../crates/ikore-voice/src/lib.rs) | Pinned speech runtime install, microphone capture, global push-to-talk and earcons |
+| [ikore-core](../crates/ikore-core/src/lib.rs) | Domain, migrations, workspace, provider routing, orchestration and terminal host integration |
+| [ikore-ui](../crates/ikore-ui/src/lib.rs) | Native views, review controls and design system |
+| [ikore-editor](../crates/ikore-editor/src/lib.rs) | Text model, selection, undo, diff and Markdown support |
+| [ikore-test-support](../crates/ikore-test-support/src/lib.rs) | Isolated harnesses, doubles and integration fixtures |
 
-`hvc-core` does not depend on GPUI. The vendored GPUI package and its local
-changes are documented in [HVC-PATCHES.md](../third_party/gpui/HVC-PATCHES.md).
+`ikore-core` does not depend on GPUI. The vendored GPUI package and its local
+changes are documented in [IKORE-PATCHES.md](../third_party/gpui/IKORE-PATCHES.md).
 
-The dependency direction is `hvc-core -> hvc-terminal -> hvc-contracts`, with
+The dependency direction is `ikore-core -> ikore-terminal -> ikore-contracts`, with
 core also using contracts directly. Terminal has no dependency on core, UI or
 the integration harness, including development dependencies. Shared values are
 reexported through their established core paths. Core service facades retain
 the existing constructors and adapt application requests to the CLI subsystem.
-Core also depends on `hvc-voice`, a leaf with no local dependency at all. The
+Core also depends on `ikore-voice`, a leaf with no local dependency at all. The
 [boundary check](../scripts/check-crate-boundaries.ps1) validates the Cargo
 graph, including optional features and build/development edges.
 
@@ -150,12 +150,13 @@ Companion notes sit outside the pipeline. A capture is stored before the Notes
 Scribe structures it; the Scribe has no tools or repository and changes only
 its own note through a host-validated contract. Notes never create tasks,
 features or pulsations. See [ADR-029](adr/README.md#adr-029-companion-notes)
-and [companion_notes](../crates/hvc-core/src/companion_notes/mod.rs).
+and [companion_notes](../crates/ikore-core/src/companion_notes/mod.rs).
 
 Companion Canvas also sits outside the pipeline. Its framework-independent scene,
 geometry, validation and SVG exporter live in `companion_drawings`; GPUI owns input,
 camera and gesture history. SQLite commits content plus durable mirror intentions;
-a restricted writer materializes JSON/SVG under the project's `.hvc/drawings/`.
+a restricted writer materializes JSON/SVG under the project's `.ikore/drawings/`
+(with automatic migration from legacy `.hvc/drawings/`).
 Project deletion shares the drawing service's project guard. See
 [native canvas](native-canvas.md) for save, conflict and lifecycle behavior.
 
@@ -172,7 +173,7 @@ distinguishes that qualification from the earlier combined checkout and states
 the physical/live-provider limits and unexposed optional document resolver.
 
 Voice dictation feeds the same capture path. The core
-[voice service](../crates/hvc-core/src/voice.rs) owns the settings, installs the
+[voice service](../crates/ikore-core/src/voice.rs) owns the settings, installs the
 pinned runtime and model on request and registers the global push-to-talk only
 once both are ready. Settings retains Nemotron 3.5 ASR Streaming 0.6B with
 NeMo-Speech.cpp 0.2.0 CPU and offers Whisper large-v3-turbo Q5_0 with
@@ -193,8 +194,8 @@ the [2026-10-29 Whisper report](../quality/whisper-cpp-validation-2026-10-29.md)
 ## Storage and context
 
 SQLite stores domain state, migrations, events, checkpoints and usage records.
-`HVC_DATA_DIR` isolates development and test data; the default database location
-is `%APPDATA%\com.ikore.desktop\ikore.db`. Provider credentials
+`IKORE_DATA_DIR` (or legacy `HVC_DATA_DIR`) isolates development and test data;
+the default database location is `%APPDATA%\com.ikore.desktop\ikore.db`. Provider credentials
 are managed through Settings and the operating system keyring.
 
 The project was called Hard Vibe Code until 2026-11-10. The first start of a
@@ -202,8 +203,8 @@ renamed build moves the old data and cache folders (`com.hardvibecode.desktop`)
 and the database (`hard-vibe-code.db`, with its WAL) to the new names, and a
 credential stored under the old keyring service (`hard-vibe-code.runtime`) moves
 the first time it is read. A running pre-rename instance keeps its folder in use.
-Crates, environment variables and identifiers keep the `hvc` prefix. See
-[`app_names`](../crates/hvc-core/src/app_names.rs).
+Crates and environment variables use the `ikore` prefix with backward-compatibility fallbacks. See
+[`app_names`](../crates/ikore-core/src/app_names.rs).
 
 Project context combines Markdown notes, repository reads, Tree-sitter and
 local embeddings through Ollama. Context traces distinguish delivered sources
@@ -298,6 +299,23 @@ stages, files, risk and attestation, each section with its provenance line.
 The Companion's `search_pulsations` and `read_pulsation` tools search and read
 those digests, scoped to the conversation's project.
 See [ADR-037](adr/037-agent-exchange.md).
+
+## Agent console
+
+One console shows a CLI run on the Agents page and in a bottom dock that
+`Ctrl+J` hides and brings back on every other view. While the run goes on, the
+host publishes what the CLI does, not what it says: each tool call as a host
+line with its target made relative to the workspace, and an ephemeral pulse, at
+most four a second, with the phase, the actions and their counters. A target
+outside a closed grammar becomes `withheld`, and the pulse is never stored. The
+response text, held and redacted as before, appears when the run completes; a
+run that fails midway publishes only its action summaries. Reasoning shows as a
+phase and a token count, never text. The dock follows the active agent by
+pipeline priority unless the developer pins one, and keeps its mode, height and
+agent per project. A finished stage run ends with the files its job published;
+each opens in the work panel's Diff tab against the text the publication
+replaced, which the host keeps for every publication. See
+[ADR-040](adr/040-agent-console.md).
 
 Start with the [design summaries](adr/README.md), [test guide](testing.md) and
 [dated validation reports](../quality/README.md). The reports distinguish
