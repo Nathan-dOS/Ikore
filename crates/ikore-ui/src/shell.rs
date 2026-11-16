@@ -101,7 +101,8 @@ pub(crate) fn register_navigation_keybindings(cx: &mut App) {
         KeyBinding::new("ctrl-9", SelectNotesView, None),
         KeyBinding::new("ctrl-0", SelectCanvasView, None),
         KeyBinding::new("ctrl-,", SelectSettingsView, None),
-        // Cycle the current view's own section strip (Pulsations/Forge/Settings).
+        // Cycle the current view's own section strip (Pulsations/Forge/Settings) or the
+        // agent detail's tabs (Agents).
         KeyBinding::new("ctrl-shift-[", PreviousSection, None),
         KeyBinding::new("ctrl-shift-]", NextSection, None),
         // Runs the flow engine's primary suggested next step.

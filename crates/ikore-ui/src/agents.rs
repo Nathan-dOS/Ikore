@@ -567,6 +567,37 @@ pub(crate) struct CliModelPickerState {
     pub(crate) backend: CliBackend,
 }
 
+/// The tabs of an agent's detail (ADR-040 M7, specification 12.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum AgentDetailTab {
+    /// The console and the prompt.
+    #[default]
+    Activity,
+    Configuration,
+    /// The runs as a table; a row opens its run in Activity.
+    History,
+}
+
+impl AgentDetailTab {
+    pub(crate) const ALL: [Self; 3] = [Self::Activity, Self::Configuration, Self::History];
+
+    pub(crate) const fn id(self) -> &'static str {
+        match self {
+            Self::Activity => "activity",
+            Self::Configuration => "configuration",
+            Self::History => "history",
+        }
+    }
+
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Activity => "Activity",
+            Self::Configuration => "Configuration",
+            Self::History => "History",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ApiActivityFilter {
     All,
@@ -660,6 +691,10 @@ pub(crate) struct AgentsModel {
     pub(crate) consoles: crate::agent_console::model::Consoles,
     /// What each live run does now, from its pulses (ADR-040 M5).
     pub(crate) live: crate::agent_console::live::LiveActivity,
+    /// The tab the agent's detail shows (ADR-040 M7).
+    pub(crate) detail_tab: AgentDetailTab,
+    /// Whether the archived free-form slots are unfolded in the list.
+    pub(crate) show_archived: bool,
     pub(crate) api_activity: HashMap<AgentIdentifier, Vec<String>>,
     pub(crate) api_filters: HashMap<String, ApiActivityFilter>,
     pub(crate) api_executions: HashMap<String, Vec<LlmExecutionListItem>>,
@@ -703,6 +738,8 @@ impl Default for AgentsModel {
             event_filters: HashMap::new(),
             consoles: crate::agent_console::model::Consoles::default(),
             live: crate::agent_console::live::LiveActivity::default(),
+            detail_tab: AgentDetailTab::default(),
+            show_archived: false,
             api_activity: HashMap::new(),
             api_filters: HashMap::new(),
             api_executions: HashMap::new(),

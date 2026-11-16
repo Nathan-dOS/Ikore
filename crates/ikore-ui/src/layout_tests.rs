@@ -1792,6 +1792,8 @@ fn notification_and_direct_selector_overlays_do_not_move_controls(cx: &mut TestA
     for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
         visual.simulate_resize(size(px(width), px(height)));
         select(&model, visual, AppView::Agents);
+        // The backend selector lives in Configuration (ADR-040 M7).
+        click(visual, "agent-tab:task_specifier:configuration");
         let before = visual.debug_bounds("agents-cli-scroll").unwrap();
         let backend = visual.debug_bounds("agent-backend:task_specifier").unwrap();
         click(visual, "agent-backend:task_specifier");
@@ -1845,6 +1847,7 @@ fn changing_project_cancels_an_open_selector_and_isolates_history(cx: &mut TestA
             cx,
         )
     });
+    click(visual, "agent-tab:task_specifier:configuration");
     click(visual, "agent-backend:task_specifier");
     model.update(visual, |m, cx| {
         m.workspace
@@ -1872,6 +1875,7 @@ fn changing_project_cancels_an_open_selector_and_isolates_history(cx: &mut TestA
 fn closing_a_selector_does_not_activate_covered_navigation(cx: &mut TestAppContext) {
     let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
     select(&model, visual, AppView::Agents);
+    click(visual, "agent-tab:task_specifier:configuration");
     click(visual, "agent-backend:task_specifier");
     click(visual, "rail-settings");
     assert_eq!(
@@ -2583,8 +2587,10 @@ fn the_quota_pill_shows_the_worst_window_and_opens_every_window(cx: &mut TestApp
         });
         visual.run_until_parked();
 
-        // The Agents card of a Codex agent shows the same bars, tightest first.
+        // The Agents card of a Codex agent shows the same bars, tightest first,
+        // under Configuration (ADR-040 M7).
         select(&model, visual, AppView::Agents);
+        click(visual, "agent-tab:task_specifier:configuration");
         let column = visual.debug_bounds("agents-cli-scroll").unwrap();
         let rows = visual.debug_bounds("agent-quota:task_specifier").unwrap();
         assert!(rows.left() >= column.left() && rows.right() <= column.right());
@@ -4323,6 +4329,340 @@ fn an_api_route_is_followed_like_a_run(cx: &mut TestAppContext) {
     assert_eq!(model.read_with(visual, |m, _| m.agent_dock.tabs().len()), 1);
 }
 
+/// ADR-040 M7 (12.1): the list shows the pipeline's stages, then the support
+/// agents, then the free-form slots with the archived ones folded; a failed
+/// run marks its agent for attention.
+#[gpui::test]
+fn agents_list_groups_the_agents_and_folds_the_archived(cx: &mut TestAppContext) {
+    use ikore_core::terminals::{ExecutionOrigin, TerminalRunStatus};
+
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(1280.0), px(820.0)));
+    select(&model, visual, AppView::Agents);
+    model.update(visual, |model, cx| {
+        model.agents.update(cx, |agents, _| {
+            let snapshot = agents.snapshot.as_mut().unwrap();
+            // A support agent ahead of the stages in the snapshot still lists after them.
+            let mut feature = snapshot.agents[0].clone();
+            feature.config.agent_role = AgentRole::FeatureAgent;
+            snapshot.agents.insert(0, feature);
+            snapshot.agents[1].recent_runs = vec![dock_run(
+                AgentRole::TaskSpecifier,
+                "failed-run",
+                ExecutionOrigin::Manual,
+                TerminalRunStatus::Failed,
+            )];
+            let mut archived = snapshot.free_form_slots[0].clone();
+            archived.slot.id = "slot-archived".into();
+            archived.slot.label = "Old slot".into();
+            archived.slot.archived = true;
+            snapshot.archived_free_form_slots.push(archived);
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let order = [
+        "agents-group:pipeline",
+        "agent-select:task_specifier",
+        "agent-select:backend_agent",
+        "agents-group:support",
+        "agent-select:feature_agent",
+        "agents-group:free-form",
+        "agent-select:slot-free",
+        "agents-archived-toggle",
+    ];
+    for pair in order.windows(2) {
+        let above = visual
+            .debug_bounds(pair[0])
+            .unwrap_or_else(|| panic!("missing {}", pair[0]));
+        let below = visual
+            .debug_bounds(pair[1])
+            .unwrap_or_else(|| panic!("missing {}", pair[1]));
+        assert!(
+            above.top() < below.top(),
+            "{} is not above {}",
+            pair[0],
+            pair[1]
+        );
+    }
+    assert!(
+        visual
+            .debug_bounds("agent-transport:task_specifier")
+            .is_some()
+    );
+    assert!(visual.debug_bounds("agent-transport:slot-free").is_some());
+    assert!(
+        visual
+            .debug_bounds("agent-attention:task_specifier")
+            .is_some()
+    );
+    assert!(
+        visual
+            .debug_bounds("agent-attention:backend_agent")
+            .is_none()
+    );
+    // The archived slot shows once its group is unfolded.
+    assert!(visual.debug_bounds("agent-select:slot-archived").is_none());
+    click(visual, "agents-archived-toggle");
+    assert!(model.read_with(visual, |m, cx| m.agents.read(cx).show_archived));
+    assert!(visual.debug_bounds("agent-select:slot-archived").is_some());
+}
+
+/// ADR-040 M7 (12.2): the header keeps the agent, its model and Start over
+/// every tab; Configuration holds the transport and the backend; a History
+/// row opens its run in Activity.
+#[gpui::test]
+fn agent_detail_tabs_keep_the_header_and_history_opens_a_run(cx: &mut TestAppContext) {
+    use crate::agents::AgentDetailTab;
+    use ikore_core::terminals::{ExecutionOrigin, TerminalRunStatus};
+
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(1280.0), px(820.0)));
+    select(&model, visual, AppView::Agents);
+    model.update(visual, |model, cx| {
+        model.agents.update(cx, |agents, _| {
+            let snapshot = agents.snapshot.as_mut().unwrap();
+            snapshot.agents[0].recent_runs = vec![
+                dock_run(
+                    AgentRole::TaskSpecifier,
+                    "run-new",
+                    ExecutionOrigin::Manual,
+                    TerminalRunStatus::Completed,
+                ),
+                dock_run(
+                    AgentRole::TaskSpecifier,
+                    "run-old",
+                    ExecutionOrigin::Pipeline,
+                    TerminalRunStatus::Failed,
+                ),
+            ];
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    click(visual, "agent-select:task_specifier");
+    let tab = |model: &Entity<AppModel>, visual: &mut VisualTestContext| {
+        model.read_with(visual, |m, cx| m.agents.read(cx).detail_tab)
+    };
+    // Activity first: the console under the header.
+    assert_eq!(tab(&model, visual), AgentDetailTab::Activity);
+    let header = visual.debug_bounds("agent-header:task_specifier").unwrap();
+    let console = visual
+        .debug_bounds("agent-console-filter:task_specifier")
+        .unwrap();
+    assert!(header.bottom() <= console.top());
+    assert!(visual.debug_bounds("agent-start:task_specifier").is_some());
+
+    click(visual, "agent-tab:task_specifier:configuration");
+    assert_eq!(tab(&model, visual), AgentDetailTab::Configuration);
+    let transport = visual.debug_bounds("agent-mode:task_specifier").unwrap();
+    let backend = visual.debug_bounds("agent-backend:task_specifier").unwrap();
+    assert!(header.bottom() <= transport.top() && header.bottom() <= backend.top());
+    assert_eq!(
+        visual.debug_bounds("agent-header:task_specifier").unwrap(),
+        header
+    );
+
+    click(visual, "agent-tab:task_specifier:history");
+    assert_eq!(tab(&model, visual), AgentDetailTab::History);
+    let table = visual.debug_bounds("agent-history").unwrap();
+    assert!(header.bottom() <= table.top());
+    // Newest first; the older run opens in Activity.
+    let newer = visual.debug_bounds("agent-history-row:0").unwrap();
+    let older = visual.debug_bounds("agent-history-row:1").unwrap();
+    assert!(newer.top() < older.top());
+    click(visual, "agent-history-row:1");
+    assert_eq!(tab(&model, visual), AgentDetailTab::Activity);
+    assert_eq!(
+        model.read_with(visual, |m, cx| m
+            .agents
+            .read(cx)
+            .selected_run_by_role
+            .get(&AgentRole::TaskSpecifier)
+            .cloned()),
+        Some("run-old".to_owned())
+    );
+}
+
+/// ADR-040 M7: `Ctrl+Shift+]` and `Ctrl+Shift+[`, the other views' section
+/// keys, walk the agent detail's tabs, both ways round; a tab takes the focus.
+#[gpui::test]
+fn agent_detail_tabs_follow_the_section_keys(cx: &mut TestAppContext) {
+    use crate::agents::AgentDetailTab;
+
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.update(|_, cx| crate::shell::register_navigation_keybindings(cx));
+    visual.simulate_resize(size(px(1280.0), px(820.0)));
+    select(&model, visual, AppView::Agents);
+    click(visual, "agent-select:task_specifier");
+    click(visual, "agent-tab:task_specifier:activity");
+    assert!(
+        visual.update(|window, cx| window.focused(cx)).is_some(),
+        "a tab is focusable"
+    );
+    let tab = |model: &Entity<AppModel>, visual: &mut VisualTestContext| {
+        model.read_with(visual, |m, cx| m.agents.read(cx).detail_tab)
+    };
+    assert_eq!(tab(&model, visual), AgentDetailTab::Activity);
+    for (keys, expected) in [
+        ("ctrl-shift-]", AgentDetailTab::Configuration),
+        ("ctrl-shift-]", AgentDetailTab::History),
+        ("ctrl-shift-]", AgentDetailTab::Activity),
+        ("ctrl-shift-[", AgentDetailTab::History),
+        ("ctrl-shift-[", AgentDetailTab::Configuration),
+    ] {
+        visual.simulate_keystrokes(keys);
+        visual.run_until_parked();
+        assert_eq!(tab(&model, visual), expected, "after {keys}");
+    }
+    assert!(
+        visual
+            .debug_bounds("agent-backend:task_specifier")
+            .is_some()
+    );
+}
+
+/// ADR-040 M7: every action of the old page is still reachable, with the same
+/// confirmations: transport, backend, profile and model; Start and Resume;
+/// the run's history; the slot's controls, archive and delete.
+#[gpui::test]
+fn agents_actions_stay_reachable_with_their_confirmations(cx: &mut TestAppContext) {
+    use ikore_core::terminals::{ExecutionOrigin, TerminalRunStatus};
+
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(1280.0), px(820.0)));
+    select(&model, visual, AppView::Agents);
+    model.update(visual, |model, cx| {
+        model.agents.update(cx, |agents, _| {
+            let snapshot = agents.snapshot.as_mut().unwrap();
+            snapshot.agents[0].recent_runs = vec![dock_run(
+                AgentRole::TaskSpecifier,
+                "done-run",
+                ExecutionOrigin::Manual,
+                TerminalRunStatus::Completed,
+            )];
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    click(visual, "agent-select:task_specifier");
+    let present = |visual: &mut VisualTestContext, selectors: &[&'static str]| {
+        for selector in selectors {
+            assert!(
+                visual.debug_bounds(selector).is_some(),
+                "missing {selector}"
+            );
+        }
+    };
+    // The header and Activity: the actions, the runs and their history.
+    present(
+        visual,
+        &[
+            "agent-start:task_specifier",
+            "agent-resume:task_specifier",
+            "agent-history-older:task_specifier",
+            "agent-history-newer:task_specifier",
+            "agent-history-clear:task_specifier",
+            "agent-copy:task_specifier",
+            "agent-export:task_specifier",
+        ],
+    );
+    // Clearing still asks twice.
+    click(visual, "agent-history-clear:task_specifier");
+    model.read_with(visual, |m, cx| {
+        let agents = m.agents.read(cx);
+        assert_eq!(agents.pending_history_clear, Some(AgentRole::TaskSpecifier));
+        assert_eq!(
+            agents.snapshot.as_ref().unwrap().agents[0]
+                .recent_runs
+                .len(),
+            1
+        );
+    });
+    // Configuration: transport, backend, profile and model.
+    click(visual, "agent-tab:task_specifier:configuration");
+    present(
+        visual,
+        &[
+            "agent-mode:task_specifier",
+            "agent-backend:task_specifier",
+            "agent-thinking:task_specifier",
+            "agent-model:task_specifier",
+        ],
+    );
+    // The free-form slot: New session in the header, its controls in Configuration.
+    click(visual, "agent-select:slot-free");
+    present(
+        visual,
+        &[
+            "free-form-start:slot-free",
+            "free-form-mode:slot-free",
+            "free-form-backend:slot-free",
+            "free-form-thinking:slot-free",
+            "free-form-session:slot-free",
+            "free-form-model:slot-free",
+            "free-form-up:slot-free",
+            "free-form-down:slot-free",
+            "free-form-archive:slot-free",
+            "free-form-delete:slot-free",
+            "free-form-save:slot-free",
+        ],
+    );
+    // Deleting still asks twice.
+    click(visual, "free-form-delete:slot-free");
+    model.read_with(visual, |m, cx| {
+        let agents = m.agents.read(cx);
+        assert_eq!(
+            agents.pending_free_form_delete.as_deref(),
+            Some("slot-free")
+        );
+        assert_eq!(agents.snapshot.as_ref().unwrap().free_form_slots.len(), 1);
+    });
+}
+
+/// ADR-040 M7 (ADR-012, item 10): in the three sizes the list and the detail
+/// sit side by side, and the header keeps its actions inside the detail,
+/// above the tabs.
+#[gpui::test]
+fn agents_page_fits_the_three_sizes(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    select(&model, visual, AppView::Agents);
+    click(visual, "agent-select:task_specifier");
+    for (width, height) in [(960.0, 640.0), (1280.0, 820.0), (2560.0, 1440.0)] {
+        visual.simulate_resize(size(px(width), px(height)));
+        visual.run_until_parked();
+        let list = visual.debug_bounds("agents-list").unwrap();
+        let detail = visual.debug_bounds("agents-cli-scroll").unwrap();
+        assert!(
+            list.right() <= detail.left(),
+            "{width}: {list:?} {detail:?}"
+        );
+        assert!(detail.right() <= px(width), "{width}: {detail:?}");
+        let header = visual.debug_bounds("agent-header:task_specifier").unwrap();
+        assert!(
+            header.left() >= detail.left() && header.right() <= detail.right(),
+            "{width}: {header:?} {detail:?}"
+        );
+        let start = visual.debug_bounds("agent-start:task_specifier").unwrap();
+        assert!(
+            start.left() >= header.left()
+                && start.right() <= header.right()
+                && start.top() >= header.top()
+                && start.bottom() <= header.bottom(),
+            "{width}: {start:?} {header:?}"
+        );
+        for id in ["activity", "configuration", "history"] {
+            let tab = visual
+                .debug_bounds(leak(format!("agent-tab:task_specifier:{id}")))
+                .unwrap();
+            assert!(
+                tab.top() >= header.bottom() && tab.right() <= detail.right(),
+                "{width}: {id} {tab:?} {header:?}"
+            );
+        }
+    }
+}
+
 /// ADR-040 M3/M4 (11.2): Settings › General has the agent console's rows,
 /// and the Shortcuts page names `Ctrl+J`.
 #[gpui::test]
@@ -5298,6 +5638,7 @@ fn controls_size_to_content_instead_of_the_panel(cx: &mut TestAppContext) {
 
         // Agents: the console's event filter (ADR-040 M2) no longer spans the row.
         select(&model, visual, AppView::Agents);
+        click(visual, "agent-tab:task_specifier:activity");
         let column = visual.debug_bounds("agents-cli-scroll").unwrap();
         let filter = visual
             .debug_bounds("agent-console-filter:task_specifier")
@@ -5308,6 +5649,7 @@ fn controls_size_to_content_instead_of_the_panel(cx: &mut TestAppContext) {
             filter.size.width,
             column.size.width
         );
+        click(visual, "agent-tab:task_specifier:configuration");
         let backend = visual.debug_bounds("agent-backend:task_specifier").unwrap();
         assert!(backend.size.width <= px(360.0));
 

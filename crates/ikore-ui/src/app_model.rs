@@ -1161,6 +1161,17 @@ impl AppModel {
                 );
                 cx.notify();
             }
+            // The agent detail's tabs (ADR-040 M7).
+            AppView::Agents => {
+                self.agents.update(cx, |agents, _| {
+                    agents.detail_tab = cycle(
+                        &crate::agents::AgentDetailTab::ALL,
+                        agents.detail_tab,
+                        direction,
+                    );
+                });
+                cx.notify();
+            }
             _ => {}
         }
     }
@@ -6896,6 +6907,63 @@ impl AppModel {
                     Ok(events) => {
                         model.agents.update(cx, |agents, _| {
                             agents.apply_run_events(generation, role, run_id, events);
+                        });
+                    }
+                    Err(error) => {
+                        model.agents.update(cx, |agents, _| {
+                            agents.fail(generation, error);
+                        });
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    /// A row of the History tab (ADR-040 M7): its run opens in Activity, with
+    /// its events read when the buffer does not hold them.
+    pub(crate) fn open_agent_run(
+        &mut self,
+        agent: crate::agents::AgentIdentifier,
+        run_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::agents::{AgentDetailTab, AgentIdentifier};
+        // The run shows at once; its events follow when the buffer lacks them.
+        let buffered = self.agents.update(cx, |agents, _| {
+            agents.detail_tab = AgentDetailTab::Activity;
+            match &agent {
+                AgentIdentifier::Canonical(role) => {
+                    agents.selected_run_by_role.insert(*role, run_id.clone());
+                }
+                AgentIdentifier::FreeForm(slot) => {
+                    agents
+                        .selected_run_by_slot
+                        .insert(slot.clone(), run_id.clone());
+                }
+            }
+            agents.events_by_run.contains_key(&run_id)
+        });
+        cx.notify();
+        if buffered {
+            return;
+        }
+        let Some(backend) = self.agents_backend.clone() else {
+            return;
+        };
+        let generation = self.agents.update(cx, |agents, _| agents.begin(false));
+        self.agents_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend.events_tail(run_id.clone(), 500).await;
+            let _ = this.update(cx, |model, cx| {
+                match result {
+                    Ok(events) => {
+                        model.agents.update(cx, |agents, _| match agent {
+                            AgentIdentifier::Canonical(role) => {
+                                agents.apply_run_events(generation, role, run_id, events);
+                            }
+                            AgentIdentifier::FreeForm(slot) => {
+                                agents.apply_slot_run_events(generation, slot, run_id, events);
+                            }
                         });
                     }
                     Err(error) => {
