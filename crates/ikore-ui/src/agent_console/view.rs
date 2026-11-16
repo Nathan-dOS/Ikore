@@ -249,8 +249,10 @@ pub(crate) fn console(
         filter,
         expanded,
     } = surface;
-    let (view, focus, now_line, reasoning) = {
+    let (view, focus, now_line, reasoning, changes) = {
         let agents = model.agents.read(cx);
+        // PD6: what a finished stage run published.
+        let changes = run.and_then(|run| agents.run_changes.get(&run.id).cloned());
         let events = run
             .and_then(|run| agents.events_by_run.get(&run.id))
             .map_or(&[][..], Vec::as_slice);
@@ -275,8 +277,22 @@ pub(crate) fn console(
             agents.consoles.focus(&key, cx),
             live.map(|live| live.line(std::time::Instant::now())),
             reasoning,
+            changes,
         )
     };
+    // Read once per finished stage run, after this frame.
+    if let Some(run) = run.filter(|run| {
+        changes.is_none()
+            && run.job_id.is_some()
+            && run.status.is_terminal()
+            && model.agents_backend.is_some()
+    }) {
+        let app = cx.entity().downgrade();
+        let run = run.clone();
+        cx.defer(move |cx| {
+            let _ = app.update(cx, |model, cx| model.load_run_changes(&run, cx));
+        });
+    }
     let search = model.console_search_query(&key, cx);
     let matches = super::model::search_matches(&view.rows.rows, search.as_deref());
     let current_match = model
@@ -386,6 +402,15 @@ pub(crate) fn console(
                 .py_1(),
             );
         }
+    }
+    if let (Some(run), Some(crate::run_changes::RunChanges::Loaded(files))) = (run, &changes) {
+        panel = panel.children(crate::run_changes::changes_card(
+            &key,
+            agent_label,
+            run,
+            files,
+            cx,
+        ));
     }
     if !view.following && view.unseen > 0 {
         let pill_key = key.clone();

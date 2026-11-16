@@ -9012,7 +9012,7 @@ impl AppModel {
             scroll_top: Some(f64::from(editor_snapshot.scroll_top)),
             tabs,
             auto_open_review: self.auto_open_review,
-            work_panel_tab: Some(self.work_panel.tab.id().to_string()),
+            work_panel_tab: self.work_panel.tab.saved_id().map(str::to_owned),
             agent_dock: Some(self.agent_dock.session()),
         })
     }
@@ -10729,6 +10729,14 @@ mod tests {
         // Choosing the open tab again saves nothing.
         choose(visual, WorkPanelTab::Files);
         assert!(take().is_empty());
+        // Diff compares what lives in memory: the session keeps the tab saved
+        // before it, and no session opens on it (PD6).
+        choose(visual, WorkPanelTab::Diff);
+        let saved = take();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].work_panel_tab, None);
+        assert_eq!(WorkPanelTab::from_id("diff"), None);
+        assert_eq!(WorkPanelTab::from_id("files"), Some(WorkPanelTab::Files));
     }
 
     #[gpui::test]

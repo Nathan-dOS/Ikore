@@ -107,7 +107,7 @@ fn migrated_wal_databases_preserve_snapshots_rollback_and_reopen_at_page_size_li
             .unwrap()
             .collect::<Result<_, _>>()
             .unwrap();
-        assert_eq!(versions.last().unwrap().0, 67);
+        assert_eq!(versions.last().unwrap().0, 68);
         assert_eq!(read(&db), updated);
         drop((db, service, reader, writer));
         let reopened = PersistenceService::initialize(root.path()).unwrap();

@@ -133,6 +133,10 @@ mod project_sessions;
 pub use project_sessions::{ProjectSessions, SessionEntry, SessionKind, SessionState};
 #[path = "orchestration/serial.rs"]
 mod serial;
+// Reticle P1 with PI-Desktop PD6: what each publication replaced.
+#[path = "orchestration/preimages.rs"]
+mod preimages;
+pub use preimages::{PublishedBefore, PublishedChange};
 #[path = "orchestration/supervisor.rs"]
 mod supervisor;
 #[path = "orchestration/visualizer.rs"]

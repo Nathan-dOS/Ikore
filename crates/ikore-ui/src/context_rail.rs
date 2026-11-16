@@ -117,6 +117,7 @@ pub(crate) fn context_rail(
                 .into_any_element(),
             WorkPanelTab::Files => crate::work_panel::files_tab(model, cx),
             WorkPanelTab::Search => crate::work_panel::search_tab(model, cx),
+            WorkPanelTab::Diff => crate::run_changes::diff_tab(model, cx),
         };
         rail.child(
             div()

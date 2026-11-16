@@ -89,6 +89,23 @@ pub(crate) trait AgentsBackend: Send + Sync {
     fn cancel(&self, run_id: String) -> AgentsFuture<bool>;
     /// The last `limit` events of a run: a long run is read from its end.
     fn events_tail(&self, run_id: String, limit: usize) -> AgentsFuture<Vec<TerminalEvent>>;
+    /// The files a stage job published, with the lines each added and
+    /// removed (PI-Desktop PD6); empty where the backend cannot say.
+    fn run_changes(
+        &self,
+        _project_id: String,
+        _job_id: String,
+    ) -> AgentsFuture<Vec<crate::run_changes::RunFileChange>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+    /// One published file against what it replaced (PD6).
+    fn file_change(
+        &self,
+        _project_id: String,
+        _artifact_id: String,
+    ) -> AgentsFuture<Option<crate::run_changes::FileChangeDiff>> {
+        Box::pin(async { Ok(None) })
+    }
     fn clear_history(&self, project_id: String, role: Option<AgentRole>) -> AgentsFuture<usize>;
     fn clear_slot_history(&self, project_id: String, slot_id: String) -> AgentsFuture<usize>;
     fn export_history(&self, project_id: String, run_id: String) -> AgentsFuture<String>;
@@ -452,6 +469,53 @@ impl AgentsBackend for CoreAgentsBackend {
         })
     }
 
+    fn run_changes(
+        &self,
+        project_id: String,
+        job_id: String,
+    ) -> AgentsFuture<Vec<crate::run_changes::RunFileChange>> {
+        let core = Arc::clone(&self.core);
+        let runtime = self.core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn_blocking(move || {
+                    core.persistence()
+                        .job_changes(&project_id, &job_id)
+                        .map(|changes| {
+                            changes
+                                .iter()
+                                .map(crate::run_changes::run_file_change)
+                                .collect()
+                        })
+                })
+                .await
+                .map_err(|error| {
+                    UiCommandError::worker(format!("changes worker aborted: {error}"))
+                })?
+                .map_err(persistence_error)
+        })
+    }
+
+    fn file_change(
+        &self,
+        project_id: String,
+        artifact_id: String,
+    ) -> AgentsFuture<Option<crate::run_changes::FileChangeDiff>> {
+        let core = Arc::clone(&self.core);
+        let runtime = self.core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn_blocking(move || {
+                    core.persistence()
+                        .published_change(&project_id, &artifact_id)
+                        .map(|change| change.as_ref().map(crate::run_changes::file_change_diff))
+                })
+                .await
+                .map_err(|error| UiCommandError::worker(format!("diff worker aborted: {error}")))?
+                .map_err(persistence_error)
+        })
+    }
+
     fn clear_history(&self, project_id: String, role: Option<AgentRole>) -> AgentsFuture<usize> {
         let terminals = self.core.terminals();
         let runtime = self.core.runtime_handle().clone();
@@ -695,6 +759,8 @@ pub(crate) struct AgentsModel {
     pub(crate) detail_tab: AgentDetailTab,
     /// Whether the archived free-form slots are unfolded in the list.
     pub(crate) show_archived: bool,
+    /// What each finished stage run published, by run id (PI-Desktop PD6).
+    pub(crate) run_changes: HashMap<String, crate::run_changes::RunChanges>,
     pub(crate) api_activity: HashMap<AgentIdentifier, Vec<String>>,
     pub(crate) api_filters: HashMap<String, ApiActivityFilter>,
     pub(crate) api_executions: HashMap<String, Vec<LlmExecutionListItem>>,
@@ -740,6 +806,7 @@ impl Default for AgentsModel {
             live: crate::agent_console::live::LiveActivity::default(),
             detail_tab: AgentDetailTab::default(),
             show_archived: false,
+            run_changes: HashMap::new(),
             api_activity: HashMap::new(),
             api_filters: HashMap::new(),
             api_executions: HashMap::new(),

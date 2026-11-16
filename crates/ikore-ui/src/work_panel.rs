@@ -23,22 +23,31 @@ pub(crate) enum WorkPanelTab {
     General,
     Files,
     Search,
+    /// A run's changes against what they replaced (PI-Desktop PD6).
+    Diff,
 }
 
 impl WorkPanelTab {
-    pub(crate) const ALL: [Self; 3] = [Self::General, Self::Files, Self::Search];
+    pub(crate) const ALL: [Self; 4] = [Self::General, Self::Files, Self::Search, Self::Diff];
 
     pub(crate) fn id(self) -> &'static str {
         match self {
             Self::General => "general",
             Self::Files => "files",
             Self::Search => "search",
+            Self::Diff => "diff",
         }
     }
 
     /// The tab a saved session names; `None` for one this build does not know.
     pub(crate) fn from_id(id: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|tab| tab.id() == id)
+        Self::ALL.into_iter().find(|tab| tab.saved_id() == Some(id))
+    }
+
+    /// What the session keeps of this tab. Diff is not kept: what it compares
+    /// lives in memory, so the session keeps the tab saved before it.
+    pub(crate) fn saved_id(self) -> Option<&'static str> {
+        (self != Self::Diff).then(|| self.id())
     }
 
     fn label(self) -> &'static str {
@@ -46,6 +55,7 @@ impl WorkPanelTab {
             Self::General => "General",
             Self::Files => "Files",
             Self::Search => "Search",
+            Self::Diff => "Diff",
         }
     }
 
@@ -54,6 +64,7 @@ impl WorkPanelTab {
             Self::General => "The pipeline, what waits on you, the next steps and runtime health",
             Self::Files => "The files of the open project. A file opens in Workspace.",
             Self::Search => "Text search over every file the editor opens",
+            Self::Diff => "A run's changes, each file against what it replaced",
         }
     }
 }
@@ -64,6 +75,8 @@ pub(crate) struct WorkPanel {
     pub(crate) tab: WorkPanelTab,
     search: Option<WorkSearch>,
     focus: Option<PanelFocus>,
+    /// The run the Diff tab compares (PD6).
+    pub(crate) diff: Option<crate::run_changes::RunDiff>,
 }
 
 impl WorkPanel {
@@ -115,21 +128,27 @@ fn note(text: impl Into<SharedString>) -> AnyElement {
         .into_any_element()
 }
 
-/// The tabs, in the panel's header.
+/// The tabs, in the panel's header. Diff shows only while a run's change is
+/// open, and then the four tabs tighten to keep the fold button in the panel.
 pub(crate) fn tab_strip(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
     let active = model.work_panel.tab;
+    let tabs: Vec<_> = WorkPanelTab::ALL
+        .into_iter()
+        .filter(|tab| *tab != WorkPanelTab::Diff || model.work_panel.diff.is_some())
+        .collect();
+    let padding = if tabs.len() > 3 { px(5.0) } else { px(8.0) };
     div()
         .flex()
         .items_center()
         .gap(px(2.0))
-        .children(WorkPanelTab::ALL.into_iter().map(|tab| {
+        .children(tabs.into_iter().map(|tab| {
             let selector = format!("work-tab:{}", tab.id());
             let selected = tab == active;
             div()
                 .id(SharedString::from(selector.clone()))
                 .debug_selector(move || selector.clone())
                 .tab_index(0)
-                .px_2()
+                .px(padding)
                 .py(px(3.0))
                 .rounded_md()
                 .text_xs()

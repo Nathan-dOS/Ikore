@@ -4663,6 +4663,121 @@ fn agents_page_fits_the_three_sizes(cx: &mut TestAppContext) {
     }
 }
 
+/// PI-Desktop PD6: a finished stage run's console ends with the files its job
+/// published; a file opens in the work panel's Diff tab, which lists the
+/// run's files and compares the chosen one.
+#[gpui::test]
+fn a_stage_run_lists_its_changes_and_opens_them_in_the_diff_tab(cx: &mut TestAppContext) {
+    use crate::run_changes::{DiffLine, DiffView, FileChangeDiff, RunChanges, RunFileChange};
+    use crate::work_panel::WorkPanelTab;
+    use ikore_core::terminals::{ExecutionOrigin, TerminalRunStatus};
+    use std::sync::Arc;
+
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    select(&model, visual, AppView::Agents);
+    let mut run = dock_run(
+        AgentRole::TaskSpecifier,
+        "stage-run",
+        ExecutionOrigin::Pipeline,
+        TerminalRunStatus::Completed,
+    );
+    run.job_id = Some("job-1".into());
+    let files: Vec<RunFileChange> = (0..4)
+        .map(|index| RunFileChange {
+            artifact_id: format!("artifact-{index}"),
+            relative_path: format!("src/file_{index}.rs"),
+            added: index + 1,
+            removed: index,
+            note: (index == 3).then_some("Published before replaced texts were kept"),
+            pending: false,
+        })
+        .collect();
+    model.update(visual, |model, cx| {
+        model.agents.update(cx, |agents, _| {
+            agents.snapshot.as_mut().unwrap().agents[0].recent_runs = vec![run.clone()];
+            agents
+                .run_changes
+                .insert("stage-run".into(), RunChanges::Loaded(Arc::new(files)));
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    click(visual, "agent-select:task_specifier");
+    let console = visual.debug_bounds("agent-console:task_specifier").unwrap();
+    let card = visual
+        .debug_bounds("agent-console-changes:task_specifier")
+        .unwrap();
+    assert!(
+        card.top() >= console.top() && card.bottom() <= console.bottom(),
+        "{card:?} {console:?}"
+    );
+    for index in 0..3 {
+        assert!(
+            visual
+                .debug_bounds(leak(format!("agent-console-change:task_specifier:{index}")))
+                .is_some()
+        );
+    }
+    assert!(
+        visual
+            .debug_bounds("agent-console-changes-more:task_specifier")
+            .is_some()
+    );
+
+    click(visual, "agent-console-change:task_specifier:1");
+    model.read_with(visual, |m, _| {
+        assert_eq!(m.work_panel.tab, WorkPanelTab::Diff);
+        let diff = m.work_panel.diff.as_ref().unwrap();
+        assert_eq!(diff.selected, "artifact-1");
+        assert_eq!(diff.files.len(), 4);
+    });
+    // Without a backend the change stays loading: give it its lines.
+    model.update(visual, |m, cx| {
+        m.work_panel.diff.as_mut().unwrap().view = DiffView::Loaded(Arc::new(FileChangeDiff {
+            relative_path: "src/file_1.rs".into(),
+            lines: vec![
+                DiffLine::Skipped(4),
+                DiffLine::Context("fn kept() {}".into()),
+                DiffLine::Removed("let old = 1;".into()),
+                DiffLine::Added("let new = 2;".into()),
+            ],
+            added: 1,
+            removed: 1,
+            note: None,
+        }));
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let panel = visual.debug_bounds("context-rail").unwrap();
+    // Four tabs and the fold button still fit the panel.
+    let toggle = visual.debug_bounds("context-rail-toggle").unwrap();
+    let diff_tab = visual.debug_bounds("work-tab:diff").unwrap();
+    assert!(
+        toggle.right() <= panel.right() && diff_tab.right() <= toggle.left(),
+        "{diff_tab:?} {toggle:?} {panel:?}"
+    );
+    let diff = visual.debug_bounds("work-diff").unwrap();
+    assert!(
+        diff.left() >= panel.left() && diff.right() <= panel.right(),
+        "{diff:?} {panel:?}"
+    );
+    for index in 0..4 {
+        assert!(
+            visual
+                .debug_bounds(leak(format!("work-diff-file:{index}")))
+                .is_some()
+        );
+    }
+    // Another file of the run.
+    click(visual, "work-diff-file:2");
+    model.read_with(visual, |m, _| {
+        let diff = m.work_panel.diff.as_ref().unwrap();
+        assert_eq!(diff.selected, "artifact-2");
+        assert!(matches!(diff.view, DiffView::Loading));
+    });
+}
+
 /// ADR-040 M3/M4 (11.2): Settings › General has the agent console's rows,
 /// and the Shortcuts page names `Ctrl+J`.
 #[gpui::test]

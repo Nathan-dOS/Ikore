@@ -35,15 +35,44 @@ pub(super) struct PublicationBase {
     pub(super) reason: Option<&'static str>,
 }
 
+impl PublicationBase {
+    /// The same base with its bytes kept only up to `limit`.
+    pub(super) fn capped(&self, limit: usize) -> Self {
+        match &self.content {
+            Some(content) if content.len() > limit => Self {
+                state: "present_unstored",
+                sha256: self.sha256.clone(),
+                content: None,
+                byte_len: Some(content.len() as i64),
+                reason: Some("too_large"),
+            },
+            _ => self.clone(),
+        }
+    }
+}
+
 /// What `path` holds before a publication that expects `expected` and
 /// writes `desired`. A file that already holds `desired` is a replay after a
 /// crash: its pre-publication bytes are gone, so only the expected hash is
 /// recorded and the candidate is never mistaken for the base.
+#[cfg(test)]
 pub(super) fn publication_base(
     root: &Path,
     path: &str,
     expected: &ExpectedFileContent,
     desired: &str,
+) -> PublicationBase {
+    publication_capture(root, path, expected, desired, MAX_BASE_BYTES)
+}
+
+/// [`publication_base`] with its bytes kept up to `limit`: the publication
+/// limit for the preimage (Reticle P1), whose capped copy is the base.
+pub(super) fn publication_capture(
+    root: &Path,
+    path: &str,
+    expected: &ExpectedFileContent,
+    desired: &str,
+    limit: usize,
 ) -> PublicationBase {
     let ExpectedFileContent::Present(sha) = expected else {
         return PublicationBase {
@@ -73,7 +102,7 @@ pub(super) fn publication_base(
         .and_then(|repository| repository.read_original_for_sanitization(path))
     {
         Ok(text) if ContentSha256::of(text.as_bytes()).as_str() == sha.as_str() => {
-            if text.len() > MAX_BASE_BYTES {
+            if text.len() > limit {
                 PublicationBase {
                     byte_len: Some(text.len() as i64),
                     ..unstored("too_large")
@@ -1655,10 +1684,25 @@ impl PersistenceService {
             .map_err(invalid)?
             .map(ExpectedFileContent::Present)
             .unwrap_or(ExpectedFileContent::Absent);
-        // ADR-032: what the path held before this pulsation replaced it,
-        // read before the replacement and recorded with it below.
-        let base = (class != "background")
-            .then(|| publication_base(Path::new(&root), &path, &expected, &desired));
+        // What the path held before this publication, read before the
+        // replacement and recorded with it below: every publication keeps it
+        // up to the publication limit (Reticle P1), and a pipeline one also
+        // fixes its pulsation's base, capped at 256 KiB (ADR-032).
+        let preimage = publication_capture(
+            Path::new(&root),
+            &path,
+            &expected,
+            &desired,
+            super::preimages::MAX_PREIMAGE_BYTES,
+        );
+        let base = (class != "background").then(|| preimage.capped(MAX_BASE_BYTES));
+        let replaced = super::preimages::Replaced {
+            project_id: &project_id,
+            pulsation_id: &pulse,
+            artifact_id: id,
+            relative_path: &path,
+            capture: &preimage,
+        };
         // ADR-035 M1: checked again against the revision in force when the
         // file is written, which covers amendments and replay after a restart.
         let mandate_refusal = Self::mandate_write_refusal(
@@ -1703,6 +1747,7 @@ impl PersistenceService {
                     } else if kind == "component" {
                         tx.execute("UPDATE brownfield_component_notes SET publication_state='published',diagnostic=NULL,updated_at=?2 WHERE publication_artifact_id=?1",params![id,Self::now_iso()])?;
                     }
+                    super::preimages::record(&tx, &replaced, &Self::now_iso())?;
                     tx.commit()?;
                     if matches!(kind.as_str(), "component" | "knowledge_graph_patch") {
                         if kind == "knowledge_graph_patch" {
@@ -1733,6 +1778,7 @@ impl PersistenceService {
                         ],
                     )?;
                 }
+                super::preimages::record(&tx, &replaced, &Self::now_iso())?;
                 if path.starts_with("knowledge/obsidian/")
                     && Path::new(&path)
                         .extension()
