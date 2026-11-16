@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$BinaryPath = '',
     [ValidateRange(1, 60)]
@@ -12,13 +12,13 @@ if ([string]::IsNullOrWhiteSpace($BinaryPath)) {
 }
 $resolvedBinary = (Resolve-Path -LiteralPath $BinaryPath).Path
 
-if ($null -eq ('HvcSmoke.NativeWindow' -as [type])) {
+if ($null -eq ('IkoreSmoke.NativeWindow' -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
 using System.Text;
 
-namespace HvcSmoke
+namespace IkoreSmoke
 {
     public static class NativeWindow
     {
@@ -78,12 +78,13 @@ New-Item -ItemType Directory -Path $smokeRoot -Force | Out-Null
 $smokeDirectory = Join-Path $smokeRoot ([guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $smokeDirectory | Out-Null
 
-$previousDataDirectory = $env:HVC_DATA_DIR
+$previousDataDirectory = if ($env:IKORE_DATA_DIR) { $env:IKORE_DATA_DIR } else { $env:HVC_DATA_DIR }
 $process = $null
 $gracefulShutdown = $false
 $windowHandle = [IntPtr]::Zero
 
 try {
+    $env:IKORE_DATA_DIR = $smokeDirectory
     $env:HVC_DATA_DIR = $smokeDirectory
     $process = Start-Process -FilePath $resolvedBinary -PassThru -WindowStyle Hidden
     $deadline = [DateTime]::UtcNow.AddSeconds($StartupTimeoutSeconds)
@@ -92,7 +93,7 @@ try {
         Start-Sleep -Milliseconds 200
         $process.Refresh()
         if (-not $process.HasExited) {
-            $windowHandle = [HvcSmoke.NativeWindow]::FindForProcess($process.Id)
+            $windowHandle = [IkoreSmoke.NativeWindow]::FindForProcess($process.Id)
         }
         if ($process.HasExited -or $windowHandle -ne [IntPtr]::Zero) {
             break
@@ -111,7 +112,7 @@ try {
         throw "O AppCore não inicializou o banco isolado esperado: $databasePath"
     }
 
-    $closeRequested = [HvcSmoke.NativeWindow]::RequestClose($windowHandle)
+    $closeRequested = [IkoreSmoke.NativeWindow]::RequestClose($windowHandle)
     $gracefulShutdown = $closeRequested -and $process.WaitForExit(5000)
     if (-not $gracefulShutdown) {
         throw 'O binário não concluiu o shutdown gracioso dentro de 5 segundos.'
@@ -135,9 +136,11 @@ finally {
     }
 
     if ($null -eq $previousDataDirectory) {
+        Remove-Item Env:IKORE_DATA_DIR -ErrorAction SilentlyContinue
         Remove-Item Env:HVC_DATA_DIR -ErrorAction SilentlyContinue
     }
     else {
+        $env:IKORE_DATA_DIR = $previousDataDirectory
         $env:HVC_DATA_DIR = $previousDataDirectory
     }
 

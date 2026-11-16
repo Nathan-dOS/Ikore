@@ -1,8 +1,8 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$BinaryPath = '',
     [string]$OutputPath = '',
-    [ValidateSet('idle', 'dock-closed', 'dock-three-streams')]
+    [ValidateSet('idle', 'dock-closed', 'dock-three-streams', 'agent-dock-streams')]
     [string]$Scenario = 'idle',
     [ValidatePattern('^\d{3,4}x\d{3,4}$')]
     [string]$WindowSize = '1440x900',
@@ -26,12 +26,12 @@ if ([string]::IsNullOrWhiteSpace($OutputPath)) {
 $resolvedBinary = (Resolve-Path -LiteralPath $BinaryPath).Path
 $resolvedOutput = [System.IO.Path]::GetFullPath($OutputPath)
 
-if ($null -eq ('HvcUiBenchmark.NativeWindow' -as [type])) {
+if ($null -eq ('IkoreUiBenchmark.NativeWindow' -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
 
-namespace HvcUiBenchmark
+namespace IkoreUiBenchmark
 {
     public static class NativeWindow
     {
@@ -80,12 +80,12 @@ New-Item -ItemType Directory -Path $runtimeDirectory | Out-Null
 New-Item -ItemType Directory -Path ([System.IO.Path]::GetDirectoryName($resolvedOutput)) -Force | Out-Null
 Remove-Item -LiteralPath $resolvedOutput -Force -ErrorAction SilentlyContinue
 
-$previousDataDirectory = $env:HVC_DATA_DIR
-$previousReport = $env:HVC_BENCHMARK_UI_REPORT
-$previousSamples = $env:HVC_BENCHMARK_UI_SAMPLES
-$previousWarmup = $env:HVC_BENCHMARK_UI_WARMUP
-$previousScenario = $env:HVC_BENCHMARK_UI_SCENARIO
-$previousWindowSize = $env:HVC_BENCHMARK_UI_WINDOW_SIZE
+$previousDataDirectory = if ($env:IKORE_DATA_DIR) { $env:IKORE_DATA_DIR } else { $env:HVC_DATA_DIR }
+$previousReport = if ($env:IKORE_BENCHMARK_UI_REPORT) { $env:IKORE_BENCHMARK_UI_REPORT } else { $env:HVC_BENCHMARK_UI_REPORT }
+$previousSamples = if ($env:IKORE_BENCHMARK_UI_SAMPLES) { $env:IKORE_BENCHMARK_UI_SAMPLES } else { $env:HVC_BENCHMARK_UI_SAMPLES }
+$previousWarmup = if ($env:IKORE_BENCHMARK_UI_WARMUP) { $env:IKORE_BENCHMARK_UI_WARMUP } else { $env:HVC_BENCHMARK_UI_WARMUP }
+$previousScenario = if ($env:IKORE_BENCHMARK_UI_SCENARIO) { $env:IKORE_BENCHMARK_UI_SCENARIO } else { $env:HVC_BENCHMARK_UI_SCENARIO }
+$previousWindowSize = if ($env:IKORE_BENCHMARK_UI_WINDOW_SIZE) { $env:IKORE_BENCHMARK_UI_WINDOW_SIZE } else { $env:HVC_BENCHMARK_UI_WINDOW_SIZE }
 $process = $null
 $processMetrics = [System.Collections.Generic.List[object]]::new()
 
@@ -104,11 +104,17 @@ function Get-NearestRankPercentile {
 }
 
 try {
+    $env:IKORE_DATA_DIR = $runtimeDirectory
     $env:HVC_DATA_DIR = $runtimeDirectory
+    $env:IKORE_BENCHMARK_UI_REPORT = $resolvedOutput
     $env:HVC_BENCHMARK_UI_REPORT = $resolvedOutput
+    $env:IKORE_BENCHMARK_UI_SAMPLES = $Samples.ToString([System.Globalization.CultureInfo]::InvariantCulture)
     $env:HVC_BENCHMARK_UI_SAMPLES = $Samples.ToString([System.Globalization.CultureInfo]::InvariantCulture)
+    $env:IKORE_BENCHMARK_UI_WARMUP = $WarmupSamples.ToString([System.Globalization.CultureInfo]::InvariantCulture)
     $env:HVC_BENCHMARK_UI_WARMUP = $WarmupSamples.ToString([System.Globalization.CultureInfo]::InvariantCulture)
+    $env:IKORE_BENCHMARK_UI_SCENARIO = $Scenario
     $env:HVC_BENCHMARK_UI_SCENARIO = $Scenario
+    $env:IKORE_BENCHMARK_UI_WINDOW_SIZE = $WindowSize
     $env:HVC_BENCHMARK_UI_WINDOW_SIZE = $WindowSize
     # Uma janela oculta/minimizada deixa de receber animation frames no backend Win32.
     $process = Start-Process -FilePath $resolvedBinary -PassThru -WindowStyle Normal
@@ -193,9 +199,9 @@ try {
     }) -Force
     $report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $resolvedOutput -Encoding utf8
 
-    $window = [HvcUiBenchmark.NativeWindow]::FindVisibleForProcess($process.Id)
+    $window = [IkoreUiBenchmark.NativeWindow]::FindVisibleForProcess($process.Id)
     if ($window -ne [IntPtr]::Zero) {
-        [void][HvcUiBenchmark.NativeWindow]::RequestClose($window)
+        [void][IkoreUiBenchmark.NativeWindow]::RequestClose($window)
     }
     if (-not $process.WaitForExit(5000)) {
         throw 'O GPUI não concluiu o shutdown gracioso após o benchmark de latência.'
@@ -211,11 +217,17 @@ finally {
         $process.WaitForExit()
     }
     foreach ($entry in @(
+        @{ Name = 'IKORE_DATA_DIR'; Value = $previousDataDirectory },
         @{ Name = 'HVC_DATA_DIR'; Value = $previousDataDirectory },
+        @{ Name = 'IKORE_BENCHMARK_UI_REPORT'; Value = $previousReport },
         @{ Name = 'HVC_BENCHMARK_UI_REPORT'; Value = $previousReport },
+        @{ Name = 'IKORE_BENCHMARK_UI_SAMPLES'; Value = $previousSamples },
         @{ Name = 'HVC_BENCHMARK_UI_SAMPLES'; Value = $previousSamples },
+        @{ Name = 'IKORE_BENCHMARK_UI_WARMUP'; Value = $previousWarmup },
         @{ Name = 'HVC_BENCHMARK_UI_WARMUP'; Value = $previousWarmup },
+        @{ Name = 'IKORE_BENCHMARK_UI_SCENARIO'; Value = $previousScenario },
         @{ Name = 'HVC_BENCHMARK_UI_SCENARIO'; Value = $previousScenario },
+        @{ Name = 'IKORE_BENCHMARK_UI_WINDOW_SIZE'; Value = $previousWindowSize },
         @{ Name = 'HVC_BENCHMARK_UI_WINDOW_SIZE'; Value = $previousWindowSize }
     )) {
         if ($null -eq $entry.Value) {

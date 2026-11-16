@@ -61,21 +61,21 @@ On Windows 10 or 11 with [rustup](https://rustup.rs) and Visual Studio Build
 Tools 2022 (C++ workload):
 
 ```powershell
-$env:HVC_DATA_DIR = "$PWD\target\dev-data"
-cargo run --locked -p hvc-app
+$env:IKORE_DATA_DIR = "$PWD\target\dev-data"
+cargo run --locked -p ikore-app
 ```
 
-`HVC_DATA_DIR` keeps your experiments away from your real profile. To explore
+`IKORE_DATA_DIR` keeps your experiments away from your real profile. To explore
 a paused pulsation without API keys, use the demo fixture described in the
 [README](../README.md#try-it-with-demo-data). On Linux or macOS you can work on
-the headless crates (`hvc-core`, `hvc-editor`, `hvc-test-support` and others),
+the headless crates (`ikore-core`, `ikore-editor`, `ikore-test-support` and others),
 natively or through Docker.
 
 ## 4. Change the code and add tests
 
 - Keep the change small and focused on one problem.
-- Respect the crate boundaries: `hvc-core` never depends on GPUI, and
-  `hvc-test-support` is never used by production code.
+- Respect the crate boundaries: `ikore-core` never depends on GPUI, and
+  `ikore-test-support` is never used by production code.
 - Add a test that fails without your change. Tests use isolated directories,
   an isolated keyring and no network.
 - Write code, comments, identifiers and commit messages in English.

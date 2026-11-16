@@ -1,0 +1,63 @@
+[package]
+name = "ikore-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Framework-agnostic domain and application core for Ikore"
+
+[features]
+# ADR-028 G10: the plan-quota collectors that read a CLI's own access token. Off by
+# default since 2026-11-10: Anthropic's Claude Code terms do not allow other
+# applications to collect or use Claude sign-in tokens, and OpenAI's terms do not
+# allow programmatic extraction of ChatGPT data outside the API. The official and
+# local quota sources do not depend on this feature.
+default = []
+quota-credential-collectors = ["ikore-terminal/quota-credential-collectors"]
+
+[dependencies]
+ikore-contracts.workspace = true
+ikore-terminal = { workspace = true, default-features = false }
+ikore-voice.workspace = true
+anyhow.workspace = true
+# ADR-036: Ed25519 signing of pulsation attestations with `ring`, `base64` for the
+# DSSE envelope and `zeroize` for the decoded key. All three were already in the
+# graph through rustls; none adds a package.
+base64 = "0.23"
+chrono.workspace = true
+fs2 = "0.4"
+futures.workspace = true
+globset = "0.4"
+ignore = "0.4"
+icu_normalizer = { version = "2.3", default-features = false, features = ["compiled_data"] }
+# Schemas are host-defined and inline: no remote or file `$ref` resolution, which would
+# also pull a second reqwest and the aws-lc native TLS build.
+jsonschema = { version = "0.60", default-features = false, features = ["idna"] }
+keyring = { version = "3", default-features = false, features = ["apple-native", "windows-native", "sync-secret-service"] }
+notify = "8"
+refinery = { version = "0.10", features = ["rusqlite"] }
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+ring = "0.17"
+rusqlite = { version = "0.41.0", features = ["bundled", "fallible_uint"] }
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml = "0.9"
+sha2 = "0.11"
+tempfile = "3"
+thiserror = "2"
+tokio.workspace = true
+tokio-util.workspace = true
+toml = "1.1.4"
+tree-sitter = "=0.26.13"
+tree-sitter-rust = "=0.24.2"
+tree-sitter-typescript = "=0.23.2"
+uuid = { version = "1", features = ["v4"] }
+walkdir = "2"
+zeroize = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

@@ -5,7 +5,7 @@
       "id": "shell-001",
       "area": "shell_lifecycle",
       "source": "src/app/applicationController.test.ts::polls every 1.2 seconds without overlapping and disposes listeners and timers",
-      "target": "hvc_ui::lifecycle::tests::polls_without_overlap_and_disposes_resources",
+      "target": "ikore_ui::lifecycle::tests::polls_without_overlap_and_disposes_resources",
       "status": "covered",
       "rationale": "O lifecycle GPUI serializa o polling de 1,2 s, impede sobreposição e cancela listener e timer com o AppModel."
     },
@@ -13,7 +13,7 @@
       "id": "shell-002",
       "area": "shell_lifecycle",
       "source": "src/app/applicationController.test.ts::persists restorable layout and domain selections with debounce",
-      "target": "hvc_ui::app_model::tests::persists_layout_and_domain_selections_with_debounce",
+      "target": "ikore_ui::app_model::tests::persists_layout_and_domain_selections_with_debounce",
       "status": "covered",
       "rationale": "O AppModel persiste layout, abas e seleções tipadas após debounce determinístico de 600 ms."
     },
@@ -21,7 +21,7 @@
       "id": "shell-003",
       "area": "shell_lifecycle",
       "source": "src/app/applicationController.test.ts::flushes the latest pending session when the application stops inside the debounce window",
-      "target": "hvc_ui::app_model::tests::flushes_pending_session_during_shutdown",
+      "target": "ikore_ui::app_model::tests::flushes_pending_session_during_shutdown",
       "status": "covered",
       "rationale": "O callback on_app_quit cancela o debounce e aguarda o snapshot mais recente antes do shutdown do core."
     },
@@ -29,7 +29,7 @@
       "id": "shell-004",
       "area": "shell_lifecycle",
       "source": "src/app/applicationController.test.ts::rehydrates every persisted domain selection when reopening a workspace",
-      "target": "hvc_ui::app_model::tests::rehydrates_all_domain_selections",
+      "target": "ikore_ui::app_model::tests::rehydrates_all_domain_selections",
       "status": "covered",
       "rationale": "A reabertura restaura todas as abas/drafts, cursor, scroll, view, HITL, Vault, Chat e layout V8/V9."
     },
@@ -37,7 +37,7 @@
       "id": "shell-005",
       "area": "shell_lifecycle",
       "source": "src/App.test.tsx::switches between all six dedicated views without remounting the shell",
-      "target": "hvc_ui::app_model::tests::navigates_all_six_views",
+      "target": "ikore_ui::app_model::tests::navigates_all_six_views",
       "status": "covered",
       "rationale": "O modelo GPUI mantém as seis entidades e alterna a view raiz."
     },
@@ -45,7 +45,7 @@
       "id": "shell-006",
       "area": "shell_lifecycle",
       "source": "src/App.test.tsx::shows semantic badges and preserves collapsed navigation across view changes",
-      "target": "hvc_ui::shell::tests::preserves_collapsed_navigation_and_semantic_badges",
+      "target": "ikore_ui::shell::tests::preserves_collapsed_navigation_and_semantic_badges",
       "status": "covered",
       "rationale": "A sidebar GPUI preserva o estado recolhido e apresenta badges separados para HITL e agentes em background."
     },
@@ -53,7 +53,7 @@
       "id": "shell-007",
       "area": "shell_lifecycle",
       "source": "src/components/layout/AppHeader.test.tsx::keeps warnings and errors in header flow and reveals the queued notice after dismissal",
-      "target": "hvc_ui::shell::tests::queues_header_errors_warnings_and_notices",
+      "target": "ikore_ui::shell::tests::queues_header_errors_warnings_and_notices",
       "status": "covered",
       "rationale": "O header nativo mantém erro/aviso em fluxo, ordena por prioridade e revela o notice após dismiss."
     },
@@ -61,7 +61,7 @@
       "id": "shell-008",
       "area": "shell_lifecycle",
       "source": "src/state/viewStore.test.ts::hydrates persisted layout preferences and resets transient fullscreen state",
-      "target": "hvc_ui::app_model::tests::hydrates_persisted_layout_and_resets_transient_state",
+      "target": "ikore_ui::app_model::tests::hydrates_persisted_layout_and_resets_transient_state",
       "status": "covered",
       "rationale": "A hidratação restaura view/sidebar/drawer e reinicia o estado transitório de diff expandido."
     },
@@ -70,7 +70,7 @@
       "id": "contract-001",
       "area": "rust_contracts",
       "source": "src/ipc/client.test.ts::normalizes a serialized domain error",
-      "target": "hvc_test_support::contracts::preserves_typed_domain_error_fields",
+      "target": "ikore_test_support::contracts::preserves_typed_domain_error_fields",
       "status": "covered",
       "rationale": "A fronteira direta preserva code, message, details e remediation em um conflito real de revisão."
     },
@@ -78,7 +78,7 @@
       "id": "contract-002",
       "area": "rust_contracts",
       "source": "src/ipc/client.test.ts::falls back to io_error for a regular Error",
-      "target": "hvc_ui::errors::tests::maps_untyped_failures_to_safe_io_error",
+      "target": "ikore_ui::errors::tests::maps_untyped_failures_to_safe_io_error",
       "status": "covered",
       "rationale": "UiCommandError normaliza falhas de worker sem tipo como io_error seguro e remediável."
     },
@@ -86,7 +86,7 @@
       "id": "contract-003",
       "area": "rust_contracts",
       "source": "src/ipc/client.test.ts::preserves enriched LLM error details and remediation",
-      "target": "hvc_test_support::contracts::preserves_llm_details_and_remediation",
+      "target": "ikore_test_support::contracts::preserves_llm_details_and_remediation",
       "status": "covered",
       "rationale": "O teste público provoca missing_api_key e valida details e remediation sem expor a credencial."
     },
@@ -94,7 +94,7 @@
       "id": "contract-004",
       "area": "rust_contracts",
       "source": "src/ipc/client.test.ts::invokes open_workspace with the request envelope",
-      "target": "hvc_test_support::contracts::opens_workspace_through_typed_request",
+      "target": "ikore_test_support::contracts::opens_workspace_through_typed_request",
       "status": "covered",
       "rationale": "OpenWorkspaceRequest atravessa diretamente AppCore e retorna árvore e root canônico sem envelope IPC."
     },
@@ -102,7 +102,7 @@
       "id": "contract-005",
       "area": "rust_contracts",
       "source": "src/ipc/client.test.ts::starts and cancels chat turns through read-only chat IPC",
-      "target": "hvc_ui::chat::tests::starts_and_cancels_chat_turns_without_ipc",
+      "target": "ikore_ui::chat::tests::starts_and_cancels_chat_turns_without_ipc",
       "status": "covered",
       "rationale": "O AppModel inicia e cancela o turno pelo backend Rust tipado, sem invoke, JSON ou IPC."
     },
@@ -110,7 +110,7 @@
       "id": "contract-006",
       "area": "rust_contracts",
       "source": "src/ipc/client.test.ts::turns a backend domain error into WorkspaceClientError",
-      "target": "hvc_ui::errors::tests::renders_workspace_command_error_without_losing_fields",
+      "target": "ikore_ui::errors::tests::renders_workspace_command_error_without_losing_fields",
       "status": "covered",
       "rationale": "UiCommandError mantém todos os campos do erro de workspace e produz apresentação com remediação."
     },
@@ -118,7 +118,7 @@
       "id": "contract-007",
       "area": "rust_contracts",
       "source": "src/ipc/client.test.ts::sends a connection secret only in the write request",
-      "target": "hvc_test_support::contracts::never_persists_or_logs_connection_secret",
+      "target": "ikore_test_support::contracts::never_persists_or_logs_connection_secret",
       "status": "covered",
       "rationale": "O request redige Debug, a resposta não serializa segredo e apenas o MemoryCredentialStore recebe a chave."
     },
@@ -126,7 +126,7 @@
       "id": "contract-008",
       "area": "rust_contracts",
       "source": "src/ipc/client.test.ts::lists provider profiles",
-      "target": "hvc_core::llm::profiles::tests::exposes_eight_tool_calling_providers_and_legacy_openai_profile",
+      "target": "ikore_core::llm::profiles::tests::exposes_eight_tool_calling_providers_and_legacy_openai_profile",
       "status": "covered",
       "rationale": "O catálogo Rust valida os profiles expostos."
     },
@@ -134,7 +134,7 @@
       "id": "contract-009",
       "area": "rust_contracts",
       "source": "src/ipc/client.test.ts::tests a provider connection and deletes it",
-      "target": "hvc_test_support::contracts::tests_and_deletes_provider_connection",
+      "target": "ikore_test_support::contracts::tests_and_deletes_provider_connection",
       "status": "covered",
       "rationale": "O fluxo direto cria, testa em servidor loopback e exclui a mesma conexão tipada."
     },
@@ -142,7 +142,7 @@
       "id": "contract-010",
       "area": "rust_contracts",
       "source": "src/ipc/client.test.ts::manages routes and bindings",
-      "target": "hvc_test_support::contracts::manages_routes_targets_and_bindings",
+      "target": "ikore_test_support::contracts::manages_routes_targets_and_bindings",
       "status": "covered",
       "rationale": "A interface pública persiste conexão, rota ordenada e binding exato de projeto, agente e estágio."
     },
@@ -150,7 +150,7 @@
       "id": "contract-011",
       "area": "rust_contracts",
       "source": "src/ipc/client.test.ts::handles resilience snapshots and reset",
-      "target": "hvc_test_support::contracts::loads_and_resets_resilience_snapshot",
+      "target": "ikore_test_support::contracts::loads_and_resets_resilience_snapshot",
       "status": "covered",
       "rationale": "Snapshot e reset de resiliência são exercitados pela interface pública tipada."
     },
@@ -158,7 +158,7 @@
       "id": "contract-012",
       "area": "rust_contracts",
       "source": "src/ipc/client.test.ts::retrieves execution snapshot, metrics and compression preview",
-      "target": "hvc_test_support::contracts::loads_execution_metrics_and_compression_preview",
+      "target": "ikore_test_support::contracts::loads_execution_metrics_and_compression_preview",
       "status": "covered",
       "rationale": "Execution snapshot, routing metrics e compression preview são validados em um contrato direto consolidado."
     },
@@ -167,7 +167,7 @@
       "id": "workspace-001",
       "area": "workspace_editor",
       "source": "src/components/editor/HitlActionBar.test.tsx::supports workspace review shortcuts while ignoring typing targets",
-      "target": "hvc_ui::hitl::tests::handles_review_shortcuts_outside_typing_targets",
+      "target": "ikore_ui::hitl::tests::handles_review_shortcuts_outside_typing_targets",
       "status": "covered",
       "rationale": "Enter e R são registrados no contexto GPUI HitlReview, separado do EntityInputHandler do editor."
     },
@@ -175,7 +175,7 @@
       "id": "workspace-002",
       "area": "workspace_editor",
       "source": "src/components/editor/HitlActionBar.test.tsx::disables actions and shortcuts while a decision is pending",
-      "target": "hvc_ui::hitl::tests::disables_decisions_while_request_is_pending",
+      "target": "ikore_ui::hitl::tests::disables_decisions_while_request_is_pending",
       "status": "covered",
       "rationale": "HitlReviewState bloqueia botões e atalhos enquanto a decisão persistida está em andamento."
     },
@@ -183,7 +183,7 @@
       "id": "workspace-003",
       "area": "workspace_editor",
       "source": "src/markdown/renderMarkdown.test.ts::renders basic Markdown and GFM",
-      "target": "hvc_editor::markdown::tests::parses_gfm_blocks_and_ignores_raw_html",
+      "target": "ikore_editor::markdown::tests::parses_gfm_blocks_and_ignores_raw_html",
       "status": "covered",
       "rationale": "O parser Rust habilita as extensões GFM necessárias."
     },
@@ -191,7 +191,7 @@
       "id": "workspace-004",
       "area": "workspace_editor",
       "source": "src/markdown/renderMarkdown.test.ts::neutralizes script tags",
-      "target": "hvc_editor::markdown::tests::parses_gfm_blocks_and_ignores_raw_html",
+      "target": "ikore_editor::markdown::tests::parses_gfm_blocks_and_ignores_raw_html",
       "status": "covered",
       "rationale": "HTML bruto é descartado pelo renderer Rust."
     },
@@ -199,7 +199,7 @@
       "id": "workspace-005",
       "area": "workspace_editor",
       "source": "src/markdown/renderMarkdown.test.ts::removes unsafe URL protocols",
-      "target": "hvc_editor::markdown::tests::rejects_unsafe_link_protocols",
+      "target": "ikore_editor::markdown::tests::rejects_unsafe_link_protocols",
       "status": "covered",
       "rationale": "O renderer ignora HTML bruto e sanitize_link_destination aceita somente destinos relativos, HTTP(S) e mailto."
     },
@@ -207,7 +207,7 @@
       "id": "workspace-006",
       "area": "workspace_editor",
       "source": "src/state/editorStore.test.ts::opens a tab once and makes it active",
-      "target": "hvc_ui::workspace::tests::opens_each_tab_once_and_activates_it",
+      "target": "ikore_ui::workspace::tests::opens_each_tab_once_and_activates_it",
       "status": "covered",
       "rationale": "WorkspaceEditorModel abre cada caminho uma vez, mantém todas as abas e ativa a solicitada."
     },
@@ -215,7 +215,7 @@
       "id": "workspace-007",
       "area": "workspace_editor",
       "source": "src/state/editorStore.test.ts::tracks dirty state relative to the saved base content",
-      "target": "hvc_editor::buffer::tests::acknowledges_an_older_save_without_losing_newer_dirty_state",
+      "target": "ikore_editor::buffer::tests::acknowledges_an_older_save_without_losing_newer_dirty_state",
       "status": "covered",
       "rationale": "O Rope e o modelo por aba comparam o conteúdo atual com a base efetivamente persistida, inclusive durante saves concorrentes."
     },
@@ -223,7 +223,7 @@
       "id": "workspace-008",
       "area": "workspace_editor",
       "source": "src/state/editorStore.test.ts::clears transient state after a successful save",
-      "target": "hvc_ui::workspace::tests::clears_saving_conflict_and_error_after_save",
+      "target": "ikore_ui::workspace::tests::clears_saving_conflict_and_error_after_save",
       "status": "covered",
       "rationale": "O autosave GPUI usa debounce determinístico de 1 s, escrita atômica no core e limpa saving, conflict e erro no sucesso."
     },
@@ -231,7 +231,7 @@
       "id": "workspace-009",
       "area": "workspace_editor",
       "source": "src/state/editorStore.test.ts::activates the last remaining tab when the current tab closes",
-      "target": "hvc_ui::workspace::tests::activates_last_remaining_tab_after_close",
+      "target": "ikore_ui::workspace::tests::activates_last_remaining_tab_after_close",
       "status": "covered",
       "rationale": "Fechar a aba ativa seleciona a última aba restante e restaura seu cursor, scroll e buffer."
     },
@@ -239,7 +239,7 @@
       "id": "workspace-010",
       "area": "workspace_editor",
       "source": "src/components/SanitizedMarkdown.test.tsx::removes executable markup and unsafe URLs before DOM insertion",
-      "target": "hvc_editor::markdown::tests::sanitizes_executable_markup_and_urls",
+      "target": "ikore_editor::markdown::tests::sanitizes_executable_markup_and_urls",
       "status": "covered",
       "rationale": "O preview nativo ignora markup executável e rejeita protocolos de URL não permitidos antes de qualquer renderização."
     },
@@ -248,7 +248,7 @@
       "id": "pulsations-001",
       "area": "pulsations",
       "source": "src/state/pulsationStore.test.ts::hydrates the active checkpoint, counters, and artifacts",
-      "target": "hvc_ui::pulsations::tests::hydrates_checkpoint_counters_and_artifacts",
+      "target": "ikore_ui::pulsations::tests::hydrates_checkpoint_counters_and_artifacts",
       "status": "covered",
       "rationale": "A entidade GPUI hidrata snapshot, checkpoint ativo, contadores e artefatos por um backend Rust tipado."
     },
@@ -256,7 +256,7 @@
       "id": "pulsations-002",
       "area": "pulsations",
       "source": "src/state/pulsationStore.test.ts::refreshes artifacts for the same selected pulsation",
-      "target": "hvc_ui::pulsations::tests::refreshes_artifacts_for_selected_pulsation",
+      "target": "ikore_ui::pulsations::tests::refreshes_artifacts_for_selected_pulsation",
       "status": "covered",
       "rationale": "Seleção e refresh assíncrono preservam a pulsação ativa e descartam resultados de artefatos que já ficaram obsoletos."
     },
@@ -265,7 +265,7 @@
       "id": "vault-001",
       "area": "vault",
       "source": "src/state/vaultStore.test.ts::derives deterministic graph and context layouts",
-      "target": "hvc_ui::vault::tests::derives_deterministic_graph_and_context_layouts",
+      "target": "ikore_ui::vault::tests::derives_deterministic_graph_and_context_layouts",
       "status": "covered",
       "rationale": "O índice alimenta um grafo GPUI determinístico e o context drawer seleciona e carrega documentos relacionados de forma estável."
     },
@@ -273,7 +273,7 @@
       "id": "vault-002",
       "area": "vault",
       "source": "src/state/vaultStore.test.ts::delegates substring or regex search through the typed IPC boundary",
-      "target": "hvc_ui::vault::tests::runs_typed_substring_and_regex_search",
+      "target": "ikore_ui::vault::tests::runs_typed_substring_and_regex_search",
       "status": "covered",
       "rationale": "A busca substring ou regex, inclusive case-sensitive, atravessa um backend Rust tipado e popula resultados navegáveis no modelo GPUI."
     },
@@ -281,7 +281,7 @@
       "id": "vault-003",
       "area": "vault",
       "source": "src/state/vaultStore.test.ts::renames relative notes, updates cached documents, and refreshes tree and graph",
-      "target": "hvc_ui::vault::tests::renames_note_and_refreshes_all_dependent_state",
+      "target": "ikore_ui::vault::tests::renames_note_and_refreshes_all_dependent_state",
       "status": "covered",
       "rationale": "A coordenação GPUI renomeia a nota, move o cache, restaura a seleção e atualiza árvore, índice, grafo e abas abertas sem sobrescrever conteúdo sujo."
     },
@@ -289,7 +289,7 @@
       "id": "vault-004",
       "area": "vault",
       "source": "src/state/vaultStore.test.ts::loads each context document once even when requests overlap",
-      "target": "hvc_ui::vault::tests::deduplicates_overlapping_context_document_loads",
+      "target": "ikore_ui::vault::tests::deduplicates_overlapping_context_document_loads",
       "status": "covered",
       "rationale": "O modelo GPUI mantém cache e conjunto de leituras em voo, deduplicando caminhos repetidos em solicitações concorrentes."
     },
@@ -298,7 +298,7 @@
       "id": "settings-001",
       "area": "settings",
       "source": "src/components/LlmRoutingSettings.test.tsx::accepts consecutive events, discards stale events, and detects gaps",
-      "target": "hvc_ui::logs::tests::classifies_consecutive_stale_and_gap_llm_events",
+      "target": "ikore_ui::logs::tests::classifies_consecutive_stale_and_gap_llm_events",
       "status": "covered",
       "rationale": "LogsModel aceita sequência consecutiva, descarta duplicata/stale, detecta gap e exige snapshot persistido."
     },
@@ -306,7 +306,7 @@
       "id": "settings-002",
       "area": "settings",
       "source": "src/components/LlmRoutingSettings.test.tsx::renders the store-backed connections, routes, and bindings",
-      "target": "hvc_ui::settings::tests::renders_connections_routes_and_bindings",
+      "target": "ikore_ui::settings::tests::renders_connections_routes_and_bindings",
       "status": "covered",
       "rationale": "A view GPUI renderiza snapshots reais de profiles, conexões, rotas, targets e bindings."
     },
@@ -314,7 +314,7 @@
       "id": "settings-003",
       "area": "settings",
       "source": "src/components/LlmRoutingSettings.test.tsx::delegates routing mode changes to the runtime store",
-      "target": "hvc_ui::settings::tests::updates_routing_mode_through_core",
+      "target": "ikore_ui::settings::tests::updates_routing_mode_through_core",
       "status": "covered",
       "rationale": "O controle nativo alterna off/shadow/on e persiste o modo pelo AppCore sem IPC."
     },
@@ -322,7 +322,7 @@
       "id": "settings-004",
       "area": "settings",
       "source": "src/components/LlmRoutingSettings.test.tsx::tests the selected provider connection through the runtime store",
-      "target": "hvc_ui::settings::tests::tests_selected_provider_connection",
+      "target": "ikore_ui::settings::tests::tests_selected_provider_connection",
       "status": "covered",
       "rationale": "A conexão selecionada é testada assincronamente no Tokio com feedback tipado à UI."
     },
@@ -330,7 +330,7 @@
       "id": "settings-005",
       "area": "settings",
       "source": "src/components/LlmRoutingSettings.test.tsx::sends a credential directly to the store and clears the uncontrolled field",
-      "target": "hvc_ui::settings::tests::writes_secret_once_and_clears_input",
+      "target": "ikore_ui::settings::tests::writes_secret_once_and_clears_input",
       "status": "covered",
       "rationale": "O campo nativo mascarado envia a credencial uma vez ao keyring e é limpo antes do await."
     },
@@ -338,7 +338,7 @@
       "id": "settings-006",
       "area": "settings",
       "source": "src/components/LlmRoutingSettings.test.tsx::clears the credential field even when persistence fails",
-      "target": "hvc_ui::settings::tests::clears_secret_input_after_persistence_failure",
+      "target": "ikore_ui::settings::tests::clears_secret_input_after_persistence_failure",
       "status": "covered",
       "rationale": "O teste com MemoryCredentialStore em falha comprova que o campo secreto permanece vazio após o erro."
     },
@@ -347,7 +347,7 @@
       "id": "chat-001",
       "area": "chat",
       "source": "src/views/ChatView.test.tsx::shows only connections explicitly eligible for chat tool calling",
-      "target": "hvc_ui::chat::tests::filters_connections_by_chat_tool_capability",
+      "target": "ikore_ui::chat::tests::filters_connections_by_chat_tool_capability",
       "status": "covered",
       "rationale": "A entidade Chat carrega as conexões persistidas e expõe somente as marcadas como chat_eligible."
     },
@@ -355,7 +355,7 @@
       "id": "chat-002",
       "area": "chat",
       "source": "src/views/ChatView.test.tsx::requires a project before exposing the composer",
-      "target": "hvc_ui::chat::tests::requires_active_project_before_composer",
+      "target": "ikore_ui::chat::tests::requires_active_project_before_composer",
       "status": "covered",
       "rationale": "O composer nativo só fica disponível com projeto e conversa ativos."
     },
@@ -363,7 +363,7 @@
       "id": "chat-003",
       "area": "chat",
       "source": "src/components/chat/ChatMessageContent.test.tsx::recognizes only unified diffs with matching a/ and b/ headers",
-      "target": "hvc_editor::diff::tests::recognizes_only_matching_unified_diff_headers",
+      "target": "ikore_editor::diff::tests::recognizes_only_matching_unified_diff_headers",
       "status": "covered",
       "rationale": "O parser Rust reconhece apenas fences diff com headers --- a/ e +++ b/ apontando para o mesmo arquivo."
     },
@@ -371,7 +371,7 @@
       "id": "chat-004",
       "area": "chat",
       "source": "src/components/chat/ChatMessageContent.test.tsx::sanitizes markdown and offers copy without any apply action",
-      "target": "hvc_ui::chat_view::tests::renders_safe_markdown_with_copy_only_diff",
+      "target": "ikore_ui::chat_view::tests::renders_safe_markdown_with_copy_only_diff",
       "status": "covered",
       "rationale": "A mensagem usa Markdown seguro, remove HTML executável e oferece apenas cópia da proposta de diff."
     },
@@ -379,7 +379,7 @@
       "id": "chat-005",
       "area": "chat",
       "source": "src/state/chatStore.test.ts::classifies duplicate, next and gap sequences",
-      "target": "hvc_ui::chat::tests::classifies_duplicate_next_and_gap_sequences",
+      "target": "ikore_ui::chat::tests::classifies_duplicate_next_and_gap_sequences",
       "status": "covered",
       "rationale": "O reconciliador Rust classifica eventos consecutivos, duplicados e lacunas antes de alterar a entidade."
     },
@@ -387,7 +387,7 @@
       "id": "chat-006",
       "area": "chat",
       "source": "src/state/chatStore.test.ts::deduplicates deltas and reconciles a detected gap",
-      "target": "hvc_ui::chat::tests::deduplicates_deltas_and_reconciles_gap_snapshot",
+      "target": "ikore_ui::chat::tests::deduplicates_deltas_and_reconciles_gap_snapshot",
       "status": "covered",
       "rationale": "Deltas duplicados são descartados e lacunas recarregam o snapshot persistido sem aplicar o incremental inconsistente."
     },
@@ -395,7 +395,7 @@
       "id": "chat-007",
       "area": "chat",
       "source": "src/state/chatStore.test.ts::cancels the active execution without changing provider state",
-      "target": "hvc_ui::chat::tests::cancels_active_turn_without_mutating_provider_state",
+      "target": "ikore_ui::chat::tests::cancels_active_turn_without_mutating_provider_state",
       "status": "covered",
       "rationale": "A ação nativa cancela a execução ativa pelo backend sem alterar a configuração do provider."
     },
@@ -403,7 +403,7 @@
       "id": "chat-008",
       "area": "chat",
       "source": "src/state/chatStore.test.ts::discards a late conversation response after switching projects",
-      "target": "hvc_ui::chat::tests::discards_late_response_after_project_switch",
+      "target": "ikore_ui::chat::tests::discards_late_response_after_project_switch",
       "status": "covered",
       "rationale": "O generation token da hidratação impede que uma resposta tardia do projeto anterior substitua o estado atual."
     },
@@ -411,7 +411,7 @@
       "id": "chat-009",
       "area": "chat",
       "source": "src/state/chatStore.test.ts::falls back to the newest persisted conversation when the restored selection was deleted",
-      "target": "hvc_ui::chat::tests::falls_back_to_newest_existing_conversation",
+      "target": "ikore_ui::chat::tests::falls_back_to_newest_existing_conversation",
       "status": "covered",
       "rationale": "Quando a seleção restaurada não existe mais, a hidratação escolhe a conversa persistida mais recente."
     }

@@ -1,0 +1,29 @@
+[package]
+name = "ikore-app"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Native GPUI desktop application for Ikore"
+
+[[bin]]
+name = "ikore"
+path = "src/main.rs"
+
+[features]
+# ADR-028 G10: off by default since 2026-11-10; see the ikore-core manifest.
+default = []
+quota-credential-collectors = ["ikore-ui/quota-credential-collectors"]
+
+[dependencies]
+anyhow.workspace = true
+gpui.workspace = true
+ikore-core.workspace = true
+ikore-ui.workspace = true
+tokio.workspace = true
+
+[build-dependencies]
+embed-resource = "3.0.8"
+
+[lints]
+workspace = true

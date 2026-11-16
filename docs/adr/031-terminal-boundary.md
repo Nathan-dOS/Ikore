@@ -9,7 +9,7 @@ validation report keeps its original label.
 ## Context
 
 The CLI runtime, its SQL repository, provider adapters, process isolation and
-subscription quota were implemented inside hvc-core. Moving that module without
+subscription quota were implemented inside ikore-core. Moving that module without
 separating its host dependencies would create a reverse dependency on core's
 orchestration, workspace, sanitization and usage services.
 
@@ -20,9 +20,9 @@ improvement must be measured rather than assumed.
 
 ## Decision
 
-Introduce two internal packages. hvc-contracts owns shared values for roles,
+Introduce two internal packages. ikore-contracts owns shared values for roles,
 execution targets, response formats, stage vocabulary, timeout policies, usage
-and redaction results. hvc-terminal owns terminal services and repository,
+and redaction results. ikore-terminal owns terminal services and repository,
 adapters, discovery/probes, model catalogs, process management, stream auditing,
 session recovery, observation and subscription quota. The dependency direction
 is core -> terminal -> contracts, with an additional core -> contracts edge.
