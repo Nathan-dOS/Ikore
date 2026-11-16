@@ -55,6 +55,7 @@ mod notes;
 mod notes_view;
 mod notifications;
 mod performance;
+mod performance_agent_dock;
 mod pipeline_status;
 mod projects_sidebar;
 mod pulsations;

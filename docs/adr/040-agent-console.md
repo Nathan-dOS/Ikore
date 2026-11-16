@@ -2,8 +2,9 @@
 
 Date: 2026-11-08
 
-Status: accepted; being implemented. The preparation stage (Etapa 0) and the
-data milestone (M1) are done. See [Implementation](#implementation).
+Status: accepted; implemented. The preparation stage (Etapa 0) and milestones
+M1 to M7 are done; M8 records the qualification. See
+[Implementation](#implementation).
 
 ## Context
 
@@ -31,14 +32,55 @@ The Agents page shows what a CLI agent did, but only after the fact:
   ADR-030 and ADR-012).
 - **Failed runs.** A run that fails midway publishes only its action summaries,
   never response text, raw output or result bodies.
-- **Reasoning.** Off by default; the developer can opt in per project to see the
-  reasoning blocks a CLI exposes, redacted whole.
+- **Reasoning.** No CLI in the corpus prints reasoning text, so the console
+  shows the `Thinking` phase and the reasoning token count each CLI reports,
+  never text (decided 2026-11-15). Capturing text stays out of scope until a
+  CLI provides it.
 - **Snapshot from the end.** The snapshot loads a run's last events and merges
   them with the live buffer.
 - **Preferences per project.** Dock mode, height, agent and following persist
   with the project.
 
 ## Implementation
+
+**M7, the Agents page (2026-11-16).** `agents_view.rs` is split into
+`agents_view/` (list, detail, configuration, history, API Mode and free-form
+modules). The list groups the pipeline's stages in order, then the support
+agents, then the free-form slots with the archived ones folded; each item shows
+its status and run time, a transport badge (`CLI · claude`, `API · route`), the
+live "now" line and an attention mark. The detail keeps one header over its
+tabs (name, stage, status, model, session with copy, and Start, Stop and
+Resume) and has Activity, Configuration and History tabs; a History row opens
+its run in Activity, and `Ctrl+Shift+[` and `Ctrl+Shift+]` cycle the tabs.
+
+**M5 and M6, the live pulse and reasoning counts (2026-11-16).** While a CLI
+runs, the coordinator publishes an ephemeral `terminal://activity` pulse, at
+most four a second: the phase (starting, thinking, running a tool, writing,
+waiting, finishing), the actions started and finished, with targets from a
+closed grammar (a workspace-relative path, a program or a host; anything else
+is `withheld`), and counters. Nothing of it is stored. The console shows the
+run's actions provisionally until the persisted ones arrive, and the dock, its
+strip and the status bar show a "now" line such as
+`Running tool · Read src/main.rs · 4 read · 1:12`. Phases the host knows
+without a pulse (queued, falling back, retrying, waiting on you) come from the
+run and the pulsation. Reasoning shows as episodes and the token count each CLI
+reports, never text.
+
+**M3 and M4, the bottom dock (2026-11-16).** The dock sits at the bottom of the
+centre column on every view but Agents. `Ctrl+J` hides it and brings it back;
+it opens as a strip or expanded, with a sash. Its mode, height, following and
+agent persist per project with the UI session, without a migration. By default
+it follows the active agent, choosing by pipeline priority with a short
+debounce; the developer can pin an agent or turn following off. A status bar
+item shows the followed agent and an attention count.
+
+**M2, the console (2026-11-15).** The Agents page shows the selected run as
+blocks with their results. The list follows the newest block and pauses when
+the developer scrolls up, counting what arrives until `Jump to latest`. The run
+header says the status, duration and action count; after the run, consecutive
+actions fold into one line (`5 actions · 3 read · 2 searched`). Filters (All,
+Actions, Messages, Output, Errors), search, copy and the keyboard work in the
+console, and the API Mode viewer uses the same frame.
 
 **M1, action summaries (2026-11-15).** Each adapter reads the tool calls and
 results in its frames (`src/terminals/actions.rs`), with tool names from a

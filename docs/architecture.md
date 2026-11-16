@@ -300,6 +300,23 @@ The Companion's `search_pulsations` and `read_pulsation` tools search and read
 those digests, scoped to the conversation's project.
 See [ADR-037](adr/037-agent-exchange.md).
 
+## Agent console
+
+One console shows a CLI run on the Agents page and in a bottom dock that
+`Ctrl+J` hides and brings back on every other view. While the run goes on, the
+host publishes what the CLI does, not what it says: each tool call as a host
+line with its target made relative to the workspace, and an ephemeral pulse, at
+most four a second, with the phase, the actions and their counters. A target
+outside a closed grammar becomes `withheld`, and the pulse is never stored. The
+response text, held and redacted as before, appears when the run completes; a
+run that fails midway publishes only its action summaries. Reasoning shows as a
+phase and a token count, never text. The dock follows the active agent by
+pipeline priority unless the developer pins one, and keeps its mode, height and
+agent per project. A finished stage run ends with the files its job published;
+each opens in the work panel's Diff tab against the text the publication
+replaced, which the host keeps for every publication. See
+[ADR-040](adr/040-agent-console.md).
+
 Start with the [design summaries](adr/README.md), [test guide](testing.md) and
 [dated validation reports](../quality/README.md). The reports distinguish
 implemented behavior, executed checks and remaining work.

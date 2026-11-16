@@ -338,6 +338,43 @@ mod tests {
         }
     }
 
+    /// Specification 13: applying a pulse costs at most 0.2 ms on average,
+    /// without rendering, the "now" line included. A measurement for the
+    /// validation record, run on demand:
+    /// `cargo test -p ikore-ui --lib a_pulse_costs -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "measurement, run on demand for the validation record"]
+    fn a_pulse_costs_under_two_tenths_of_a_millisecond() {
+        let now = Instant::now();
+        let mut live = LiveActivity::default();
+        // Ten minutes at four pulses a second, each closing an action and starting the next.
+        let pulses: Vec<_> = (1..=2_400_u32)
+            .map(|ordinal| {
+                pulse(
+                    u64::from(ordinal),
+                    ActivityPhase::RunningTool,
+                    vec![
+                        PulseActionDelta::Finished {
+                            ordinal: ordinal.saturating_sub(1).max(1),
+                            status: ActionStatus::Ok,
+                            duration_ms: 10,
+                        },
+                        started(ordinal),
+                    ],
+                )
+            })
+            .collect();
+        let measured = Instant::now();
+        for pulse in &pulses {
+            live.record(pulse, now);
+            let line = live.get("run-1").map(|run| run.line(now));
+            assert!(line.is_some());
+        }
+        let mean = measured.elapsed() / 2_400;
+        eprintln!("pulse: {mean:?} on average over 2400 pulses");
+        assert!(mean.as_micros() < 200, "{mean:?} per pulse");
+    }
+
     #[test]
     fn pulses_apply_in_order_and_an_older_one_is_dropped() {
         let now = Instant::now();

@@ -416,6 +416,35 @@ fn exchange_m2_terminal_reread() {
     );
 }
 
+/// ADR-040 M8 (specification 13): the snapshot and a run's selection read
+/// its last 500 events with redaction context (`list_events_tail`, M1).
+/// Acceptance: p95 at most 50 ms on a 100,000-event run.
+#[test]
+#[ignore = "ADR-040 M8 measurement; run explicitly with --ignored --nocapture"]
+fn agent_console_tail_snapshot() {
+    let events: u64 = 100_000;
+    let data = tempfile::tempdir().expect("data dir");
+    let workspace = tempfile::tempdir().expect("workspace");
+    let service = PersistenceService::initialize(data.path()).expect("service");
+    let project_id = project_id(&service, workspace.path());
+    let repository = TerminalRepository::new(service.database_path());
+    let run = running_cli_run(&repository, &project_id);
+    record_launch_receipt(&service, &project_id, &run);
+    bulk_events(&service, &run.id, 1, events);
+    let mut samples = Vec::new();
+    for _ in 0..50 {
+        let started = Instant::now();
+        let tail = repository.list_events_tail(&run.id, 500).expect("tail");
+        samples.push(started.elapsed());
+        assert_eq!(tail.len(), 500);
+        assert_eq!(tail.last().map(|event| event.sequence), Some(events));
+    }
+    report(
+        "adr040_tail_snapshot",
+        json!({ "events": events, "tail_500": summary(samples) }),
+    );
+}
+
 /// What the load rehearsal's subscriber saw.
 #[derive(Debug, Default)]
 struct SubscriberTally {

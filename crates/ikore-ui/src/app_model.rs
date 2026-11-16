@@ -1210,7 +1210,15 @@ impl AppModel {
             .as_mut()
             .and_then(|probe| probe.fixture_frame())
         {
-            let updates = crate::performance::apply_streaming_fixture(self, frame, cx);
+            let agent_dock = self
+                .performance_probe
+                .as_ref()
+                .is_some_and(crate::performance::FrameLatencyProbe::drives_agent_dock);
+            let updates = if agent_dock {
+                crate::performance_agent_dock::apply(self, frame, cx)
+            } else {
+                crate::performance::apply_streaming_fixture(self, frame, cx)
+            };
             if let Some(probe) = self.performance_probe.as_mut() {
                 probe.record_fixture_updates(updates);
             }

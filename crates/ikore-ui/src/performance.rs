@@ -13,6 +13,8 @@ enum BenchmarkScenario {
     Idle,
     Closed,
     ThreeStreams,
+    /// ADR-040 M8: three CLI runs streaming, the agent dock expanded.
+    AgentDock,
 }
 impl BenchmarkScenario {
     fn parse(value: &str) -> Option<Self> {
@@ -20,6 +22,7 @@ impl BenchmarkScenario {
             "idle" => Some(Self::Idle),
             "dock-closed" => Some(Self::Closed),
             "dock-three-streams" => Some(Self::ThreeStreams),
+            "agent-dock-streams" => Some(Self::AgentDock),
             _ => None,
         }
     }
@@ -28,7 +31,13 @@ impl BenchmarkScenario {
             Self::Idle => "idle",
             Self::Closed => "dock-closed",
             Self::ThreeStreams => "dock-three-streams",
+            Self::AgentDock => "agent-dock-streams",
         }
+    }
+
+    /// A workload updates three streams on every frame.
+    fn streams(self) -> bool {
+        matches!(self, Self::ThreeStreams | Self::AgentDock)
     }
 }
 
@@ -105,7 +114,7 @@ impl FrameLatencyProbe {
         self.frame_intervals_ms.sort_by(f64::total_cmp);
         let p95_ms = percentile(&self.frame_intervals_ms, 0.95);
         let p99_ms = percentile(&self.frame_intervals_ms, 0.99);
-        let fixture_ready = self.scenario != BenchmarkScenario::ThreeStreams
+        let fixture_ready = !self.scenario.streams()
             || (self.fixture_frames > self.warmup_samples as u64
                 && self.fixture_updates == self.fixture_frames * 3);
         write_report(
@@ -116,7 +125,7 @@ impl FrameLatencyProbe {
                 "metric": "gpui_animation_frame_callback_interval_ms",
                 "scope": "Interval between GPUI render callbacks; compositor presentation is not observed directly",
                 "scenario": self.scenario.label(),
-                "streamingFixture": self.scenario == BenchmarkScenario::ThreeStreams,
+                "streamingFixture": self.scenario.streams(),
                 "fixtureFrames": self.fixture_frames,
                 "updatedConversations": self.fixture_updates,
                 "fixtureReady": fixture_ready,
@@ -135,8 +144,13 @@ impl FrameLatencyProbe {
         true
     }
 
+    /// The workload drives the agent dock rather than the Companion.
+    pub(crate) fn drives_agent_dock(&self) -> bool {
+        self.scenario == BenchmarkScenario::AgentDock
+    }
+
     pub(crate) fn fixture_frame(&mut self) -> Option<u64> {
-        if self.scenario != BenchmarkScenario::ThreeStreams {
+        if !self.scenario.streams() {
             return None;
         }
         let frame = self.fixture_frames;
@@ -279,7 +293,34 @@ mod tests {
             BenchmarkScenario::parse("dock-closed"),
             Some(BenchmarkScenario::Closed)
         );
+        assert_eq!(
+            BenchmarkScenario::parse("agent-dock-streams"),
+            Some(BenchmarkScenario::AgentDock)
+        );
+        assert!(BenchmarkScenario::AgentDock.streams());
+        assert!(!BenchmarkScenario::Closed.streams());
         assert_eq!(BenchmarkScenario::parse("arbitrary"), None);
+    }
+
+    /// ADR-040 M8: the agent dock workload opens the dock on three running
+    /// stages and feeds each run an event and a pulse per frame.
+    #[gpui::test]
+    fn agent_dock_fixture_streams_three_runs_without_a_backend(cx: &mut gpui::TestAppContext) {
+        let model = cx.new(crate::AppModel::new_for_test);
+        model.update(cx, |model, cx| {
+            assert_eq!(crate::performance_agent_dock::apply(model, 0, cx), 3);
+            assert_eq!(crate::performance_agent_dock::apply(model, 1, cx), 3);
+            assert_eq!(
+                model.agent_dock.mode,
+                Some(crate::agent_dock::DockMode::Expanded)
+            );
+            let agents = model.agents.read(cx);
+            for role in ["backend_agent", "test_agent", "task_specifier"] {
+                let run = format!("benchmark-run-{role}");
+                assert_eq!(agents.events_by_run.get(&run).map(Vec::len), Some(2));
+                assert!(agents.live.get(&run).is_some());
+            }
+        });
     }
 
     #[gpui::test]
