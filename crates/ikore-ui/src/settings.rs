@@ -74,6 +74,35 @@ pub(crate) trait SettingsBackend: Send + Sync {
     /// verifying what it signed (ADR-036 M3).
     fn create_attestation_key(&self) -> SettingsFuture<()>;
     fn set_attestation_sealing(&self, enabled: bool) -> SettingsFuture<()>;
+    /// The MCP servers a project sees (ADR-043); none where the backend has no gateway.
+    fn mcp_servers(
+        &self,
+        _project_id: String,
+    ) -> SettingsFuture<Vec<ikore_core::mcp::McpServerView>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+    fn save_mcp_server(
+        &self,
+        _request: ikore_core::mcp::SaveMcpServerRequest,
+    ) -> SettingsFuture<String> {
+        Box::pin(async { Err(mcp_unavailable()) })
+    }
+    /// "Test connection": the server starts, lists its tools and stops.
+    fn connect_mcp_server(&self, _server_id: String) -> SettingsFuture<()> {
+        Box::pin(async { Err(mcp_unavailable()) })
+    }
+    fn delete_mcp_server(&self, _server_id: String) -> SettingsFuture<()> {
+        Box::pin(async { Err(mcp_unavailable()) })
+    }
+    fn set_mcp_grant(
+        &self,
+        _project_id: String,
+        _server_id: String,
+        _tool: String,
+        _granted: bool,
+    ) -> SettingsFuture<()> {
+        Box::pin(async { Err(mcp_unavailable()) })
+    }
     fn verify_attestation_file(
         &self,
         bundle: String,
@@ -211,6 +240,32 @@ fn command_error(
     UiCommandError::from(PersistenceCommandError::from(error))
 }
 
+fn mcp_unavailable() -> UiCommandError {
+    UiCommandError::from_chat_parts("mcp_unavailable", "MCP servers are not available here.")
+}
+
+impl CoreSettingsBackend {
+    /// Runs a gateway operation off the UI thread (ADR-043).
+    fn mcp<T: Send + 'static>(
+        &self,
+        operation: impl FnOnce(
+            &ikore_core::mcp::McpGateway,
+        ) -> Result<T, ikore_core::mcp::McpGatewayError>
+        + Send
+        + 'static,
+    ) -> SettingsFuture<T> {
+        let gateway = self.core.mcp();
+        let runtime = self.core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn_blocking(move || operation(&gateway))
+                .await
+                .map_err(|error| UiCommandError::worker(error.to_string()))?
+                .map_err(|error| UiCommandError::from_chat_parts("mcp_error", error.to_string()))
+        })
+    }
+}
+
 impl CoreSettingsBackend {
     fn blocking<T: Send + 'static>(
         &self,
@@ -237,6 +292,40 @@ impl SettingsBackend for CoreSettingsBackend {
     fn create_attestation_key(&self) -> SettingsFuture<()> {
         self.blocking(|persistence| persistence.create_attestation_key().map(|_| ()))
     }
+    fn mcp_servers(
+        &self,
+        project_id: String,
+    ) -> SettingsFuture<Vec<ikore_core::mcp::McpServerView>> {
+        self.mcp(move |gateway| gateway.servers(&project_id))
+    }
+
+    fn save_mcp_server(
+        &self,
+        request: ikore_core::mcp::SaveMcpServerRequest,
+    ) -> SettingsFuture<String> {
+        self.mcp(move |gateway| gateway.save_server(request))
+    }
+
+    fn connect_mcp_server(&self, server_id: String) -> SettingsFuture<()> {
+        self.mcp(move |gateway| gateway.connect(&server_id))
+    }
+
+    fn delete_mcp_server(&self, server_id: String) -> SettingsFuture<()> {
+        self.mcp(move |gateway| gateway.delete_server(&server_id))
+    }
+
+    fn set_mcp_grant(
+        &self,
+        project_id: String,
+        server_id: String,
+        tool: String,
+        granted: bool,
+    ) -> SettingsFuture<()> {
+        self.mcp(move |gateway| {
+            gateway.set_companion_grant(&project_id, &server_id, &tool, granted)
+        })
+    }
+
     fn set_attestation_sealing(&self, enabled: bool) -> SettingsFuture<()> {
         self.blocking(move |persistence| persistence.set_attestation_sealing_enabled(enabled))
     }
@@ -752,6 +841,7 @@ pub(crate) enum SettingsPage {
     Embeddings,
     Voice,
     SecondBrain,
+    Mcp,
     Preparation,
     Composition,
     Timeouts,
@@ -781,7 +871,7 @@ impl SettingsGroup {
 }
 
 impl SettingsPage {
-    pub(crate) const ALL: [Self; 16] = [
+    pub(crate) const ALL: [Self; 17] = [
         Self::General,
         Self::Usage,
         Self::Projects,
@@ -792,6 +882,7 @@ impl SettingsPage {
         Self::Embeddings,
         Self::Voice,
         Self::SecondBrain,
+        Self::Mcp,
         Self::Preparation,
         Self::Composition,
         Self::Timeouts,
@@ -812,6 +903,7 @@ impl SettingsPage {
             Self::Embeddings => "embeddings",
             Self::Voice => "voice",
             Self::SecondBrain => "second-brain",
+            Self::Mcp => "mcp",
             Self::Preparation => "preparation",
             Self::Composition => "composition",
             Self::Timeouts => "timeouts",
@@ -833,6 +925,7 @@ impl SettingsPage {
             Self::Embeddings => "Embeddings & RAG",
             Self::Voice => "Voice dictation",
             Self::SecondBrain => "Second Brain",
+            Self::Mcp => "MCP servers",
             Self::Preparation => "Preparation & context",
             Self::Composition => "Stage composition",
             Self::Timeouts => "Agent timeouts",
@@ -858,6 +951,9 @@ impl SettingsPage {
             Self::Embeddings => "Vector search over your notes, served by a local Ollama.",
             Self::Voice => "Speak a note with a held shortcut; a local model transcribes it.",
             Self::SecondBrain => "How far agents navigate the note graph and resolve code from it.",
+            Self::Mcp => {
+                "Local MCP servers the host runs, and the read-only tools the Companion may call."
+            }
             Self::Preparation => {
                 "Refinement before Specification, the handoff budget and learning after a run."
             }
@@ -882,6 +978,7 @@ impl SettingsPage {
             Self::Embeddings => Icon::Database,
             Self::Voice => Icon::Mic,
             Self::SecondBrain => Icon::Brain,
+            Self::Mcp => Icon::Plug,
             Self::Preparation => Icon::ListTodo,
             Self::Composition => Icon::Workflow,
             Self::Timeouts => Icon::Clock,
@@ -901,7 +998,8 @@ impl SettingsPage {
             | Self::Routes
             | Self::Embeddings
             | Self::Voice
-            | Self::SecondBrain => SettingsGroup::AiModels,
+            | Self::SecondBrain
+            | Self::Mcp => SettingsGroup::AiModels,
             Self::Preparation | Self::Composition | Self::Timeouts => SettingsGroup::Pipeline,
             Self::Labs | Self::Security | Self::About => SettingsGroup::System,
         }
@@ -926,6 +1024,9 @@ impl SettingsPage {
                 "speech microphone push to talk hotkey dictation transcription nemotron whisper large v3 turbo q5 portuguese cpu"
             }
             Self::SecondBrain => "adaptive navigation vault notes graph wikilinks",
+            Self::Mcp => {
+                "mcp model context protocol tools servers capabilities permissions grants companion connectors"
+            }
             Self::Preparation => "taskrefine prespec vagueness budget learning brownfield",
             Self::Composition => "v4 composed batches units validation checks overrides",
             Self::Timeouts => "deadline inactivity ceiling streaming",
@@ -945,6 +1046,7 @@ impl SettingsPage {
                 | Self::Usage
                 | Self::Shortcuts
                 | Self::Voice
+                | Self::Mcp
                 | Self::Timeouts
                 | Self::About
         )
@@ -1101,6 +1203,8 @@ pub(crate) struct SettingsModel {
     pub(crate) cli_connections_loading: bool,
     pub(crate) cli_connections_error: Option<UiCommandError>,
     pub(crate) usage: crate::usage::UsageState,
+    /// Settings › MCP servers (ADR-043).
+    pub(crate) mcp: crate::mcp_settings::McpSettings,
     pub(crate) deletion_preview: Option<ProjectDeletionPreview>,
     pub(crate) deletion_project_id: Option<String>,
     pub(crate) deletion_loading: bool,
@@ -1158,6 +1262,7 @@ impl Default for SettingsModel {
             cli_connections_loading: false,
             cli_connections_error: None,
             usage: Default::default(),
+            mcp: Default::default(),
             deletion_preview: None,
             deletion_project_id: None,
             deletion_loading: false,

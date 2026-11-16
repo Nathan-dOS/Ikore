@@ -4778,6 +4778,96 @@ fn a_stage_run_lists_its_changes_and_opens_them_in_the_diff_tab(cx: &mut TestApp
     });
 }
 
+/// ADR-043: Settings › MCP servers lists each server with its tools; only a
+/// read-only tool can be allowed for the Companion; the form keeps variable
+/// values out of sight; deleting asks twice.
+#[gpui::test]
+fn the_mcp_page_lists_servers_tools_and_the_form(cx: &mut TestAppContext) {
+    use ikore_core::mcp::{McpServerView, McpToolView};
+
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    model.update(visual, |model, cx| {
+        model.settings.update(cx, |settings, _| {
+            settings.mcp.project_id = Some("layout-project".into());
+            settings.mcp.servers = vec![McpServerView {
+                id: "server-1".into(),
+                project_id: Some("layout-project".into()),
+                name: "docs".into(),
+                command: "npx".into(),
+                args: vec!["-y".into(), "docs-server".into()],
+                env_names: vec!["DOCS_TOKEN".into()],
+                enabled: true,
+                connected_at: Some("2026-11-16T10:00:00Z".into()),
+                last_error: None,
+                version: 1,
+                tools: vec![
+                    McpToolView {
+                        name: "search".into(),
+                        description: "Search the docs".into(),
+                        read_only: true,
+                        granted_to_companion: true,
+                    },
+                    McpToolView {
+                        name: "delete".into(),
+                        description: "Delete a page".into(),
+                        read_only: false,
+                        granted_to_companion: false,
+                    },
+                ],
+                overridden: false,
+            }];
+        });
+    });
+    open_settings(&model, visual, Some(SettingsPage::Mcp));
+    for selector in [
+        "mcp-server:server-1",
+        "mcp-tool:server-1:0",
+        "mcp-tool:server-1:1",
+        "mcp-grant:server-1:0",
+        "mcp-grant:server-1:1",
+        "mcp-connect:server-1",
+        "mcp-add",
+    ] {
+        assert!(
+            visual.debug_bounds(selector).is_some(),
+            "missing {selector}"
+        );
+    }
+    // Deleting asks twice.
+    click(visual, "mcp-delete:server-1");
+    assert_eq!(
+        model.read_with(visual, |m, cx| m.settings.read(cx).mcp.delete_armed.clone()),
+        Some("server-1".to_owned())
+    );
+    // The form: a variable's value goes in hidden and is listed by name only.
+    click(visual, "mcp-add");
+    assert!(visual.debug_bounds("mcp-form").is_some());
+    model.update(visual, |model, cx| {
+        let (variable, value) = {
+            let form = model.settings.read(cx).mcp.form.as_ref().unwrap();
+            (form.variable.clone(), form.value.clone())
+        };
+        variable.update(cx, |input, cx| input.set_value("API_TOKEN", cx));
+        value.update(cx, |input, cx| input.set_value("secret-value", cx));
+    });
+    // The form sits below the fold of the modal: drive its buttons directly.
+    assert!(visual.debug_bounds("mcp-add-variable").is_some());
+    model.update(visual, |model, cx| model.add_mcp_variable(cx));
+    visual.run_until_parked();
+    model.read_with(visual, |m, cx| {
+        let form = m.settings.read(cx).mcp.form.as_ref().unwrap();
+        assert_eq!(
+            form.env,
+            [("API_TOKEN".to_owned(), Some("secret-value".to_owned()))]
+        );
+        assert!(form.value.read(cx).value().is_empty());
+    });
+    assert!(visual.debug_bounds("mcp-cancel").is_some());
+    model.update(visual, |model, cx| model.cancel_mcp_form(cx));
+    assert!(model.read_with(visual, |m, cx| m.settings.read(cx).mcp.form.is_none()));
+}
+
 /// ADR-040 M3/M4 (11.2): Settings › General has the agent console's rows,
 /// and the Shortcuts page names `Ctrl+J`.
 #[gpui::test]

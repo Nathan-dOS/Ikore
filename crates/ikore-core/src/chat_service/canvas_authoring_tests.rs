@@ -58,6 +58,8 @@ fn canvas_terminal_offer_is_explicit_closed_and_keeps_the_read_allowlist() {
             "list_pending_decisions",
             "read_pending_decision",
             "read_feature_brief",
+            "list_mcp_tools",
+            "call_mcp_tool",
         ]
     );
     assert!(!is_companion_tool(CANVAS_OFFER_CONTROL));

@@ -48,6 +48,7 @@ mod layout_tests;
 mod lifecycle;
 mod logs;
 mod logs_view;
+mod mcp_settings;
 mod motion;
 mod native_editor;
 mod notes;

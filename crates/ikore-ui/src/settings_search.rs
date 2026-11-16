@@ -729,6 +729,23 @@ pub(crate) static ENTRIES: &[SettingsEntry] = &[
         "Checks a saved .intoto.jsonl bundle against this machine's keys or the public key file saved with it.",
         "attestation verify bundle dsse pem import",
     ),
+    // MCP servers (ADR-043)
+    entry(
+        "mcp-servers",
+        P::Mcp,
+        "Servers",
+        "MCP servers",
+        "Local servers the host starts only to test them or to run a tool you allowed, and stops right after. Variable values stay in the system's credential store.",
+        "mcp servers tools connect test command variables",
+    ),
+    entry(
+        "mcp-pipeline",
+        P::Mcp,
+        "Pipeline",
+        "Pipeline agents",
+        "Pipeline agents and free-form slots keep their fixed profile: no MCP server reaches a CLI.",
+        "pipeline cli capabilities profile permissions",
+    ),
     // About
     entry(
         "about-version",

@@ -285,6 +285,8 @@ pub struct AppCore {
     doc_reconciler: Arc<crate::doc_reconciliation::DocReconcilerRuntime>,
     voice: Arc<crate::voice::VoiceService>,
     terminals: Arc<TerminalService>,
+    /// The store MCP server variables live in (ADR-043).
+    credentials: Arc<dyn CredentialStore>,
     workspace: Mutex<WorkspaceContext>,
     worker_cancellation: CancellationToken,
     worker_task: Mutex<Option<JoinHandle<()>>>,
@@ -336,6 +338,7 @@ impl AppCore {
         dependencies: AppCoreDependencies,
     ) -> Result<Arc<Self>, AppCoreError> {
         let data_lock = DataDirectoryLock::acquire(&paths)?;
+        let credentials = dependencies.credentials.clone();
         let events = Arc::new(AppEventBus::default());
         let llm_sink: Arc<dyn LlmEventSink> = events.clone();
         let chat_http_client = dependencies.http_client.clone();
@@ -416,6 +419,7 @@ impl AppCore {
             doc_reconciler,
             voice,
             terminals,
+            credentials,
             workspace: Mutex::new(WorkspaceContext::default()),
             worker_cancellation,
             worker_task: Mutex::new(None),
@@ -450,6 +454,14 @@ impl AppCore {
 
     pub fn persistence(&self) -> &PersistenceService {
         &self.persistence
+    }
+
+    /// The host's MCP gateway (ADR-043).
+    pub fn mcp(&self) -> crate::mcp::McpGateway {
+        crate::mcp::McpGateway::new(
+            self.persistence.database_path().to_path_buf(),
+            self.credentials.clone(),
+        )
     }
 
     pub fn drawings(&self) -> crate::companion_drawings::service::CompanionDrawingsService {
