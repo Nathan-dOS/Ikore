@@ -9128,6 +9128,12 @@ impl AppModel {
             self.apply_indexing_event(event, cx);
             return;
         }
+        // A pulse says what a live run does now (ADR-040 M5): it never counts as an event,
+        // never changes the status line and repaints only a surface that shows its run.
+        if let AppEvent::TerminalActivity(pulse) = event {
+            self.handle_activity_pulse(*pulse, cx);
+            return;
+        }
         // Doorbells are frequent and say nothing new about themselves.
         if let AppEvent::Exchange(doorbell) = event {
             self.handle_exchange_doorbell(doorbell, cx);
@@ -9263,6 +9269,8 @@ impl AppModel {
                 self.schedule_doc_drift_refresh(cx);
             }
             AppEvent::Llm(envelope) => {
+                // The dock follows API routes as it follows runs (ADR-040, vector 10).
+                self.note_agent_dock_route(&envelope, cx);
                 let execution_id = envelope.execution_id.clone();
                 let terminal = matches!(
                     envelope.event,
@@ -9390,6 +9398,7 @@ impl AppModel {
             AppEvent::Indexing(_) => unreachable!(),
             AppEvent::ModelPull(_) => unreachable!(),
             AppEvent::Exchange(_) => unreachable!(),
+            AppEvent::TerminalActivity(_) => unreachable!(),
         }
         cx.notify();
     }

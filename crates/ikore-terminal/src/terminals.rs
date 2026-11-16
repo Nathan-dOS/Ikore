@@ -27,6 +27,7 @@ use crate::host::{
 use ikore_contracts::{AgentRole, ResponseFormat, UnitContextScope};
 
 mod actions;
+mod activity;
 mod adapters;
 mod codex_model_provenance;
 mod handoff;
@@ -40,6 +41,11 @@ pub use resume_changes::{MAX_RUN_BLOB_BYTES, ResumePreview};
 
 use actions::{ActionLedger, LedgerEntry};
 pub use actions::{ActionStatus, EventDetailV1, ToolKind, WithheldReason};
+pub use activity::{
+    ACTIVITY_PROTOCOL_VERSION, ActivityCounters, ActivityPhase, AgentActivityPulseV1,
+    AgentActivitySnapshotV1, PulseActionDelta, PulseTarget,
+};
+use activity::{ActivityTracker, LiveActivityRecorder, PulseIdentity, pulse_target};
 pub use model_catalog::{
     CliModelCatalogEntry, CliModelCatalogService, CliModelCatalogSnapshot, CliModelCatalogSource,
     CliModelCatalogState, CliModelSelectionSource, cli_model_catalog_version,
@@ -1143,6 +1149,9 @@ impl TerminalEventEnvelope {
 
 pub trait TerminalEventSink: Send + Sync {
     fn emit(&self, envelope: &TerminalEventEnvelope);
+    /// A live run's activity pulse (ADR-040 M5). It is ephemeral: never persisted, never in
+    /// the exchange log; a sink with no use for it drops it.
+    fn emit_activity(&self, _pulse: &AgentActivityPulseV1) {}
 }
 
 #[derive(Debug, Clone)]
@@ -4791,6 +4800,9 @@ pub struct TerminalService {
     /// starts when it serves a stale snapshot.
     discovery_refreshing: Arc<std::sync::atomic::AtomicBool>,
     quota: Arc<crate::quota::QuotaMeter>,
+    /// The live runs' latest activity, for a snapshot (ADR-040 M5). It is also the sink every
+    /// run publishes through.
+    live: Arc<LiveActivityRecorder>,
 }
 
 impl TerminalService {
@@ -4815,22 +4827,29 @@ impl TerminalService {
         let repository =
             TerminalRepository::new(db_path.clone(), host.clone()).with_quota_meter(quota.clone());
         repository.recover_interrupted_runs()?;
+        let live = Arc::new(LiveActivityRecorder::new(event_sink));
         Ok(Self {
             repository,
             model_catalog: CliModelCatalogService::new(db_path, host.clone()),
             host,
             runtime,
-            event_sink,
+            event_sink: live.clone(),
             active: Mutex::new(HashMap::new()),
             active_changed: Notify::new(),
             discovery_cache: Arc::new(Mutex::new(None)),
             discovery_refreshing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             quota,
+            live,
         })
     }
 
     pub fn repository(&self) -> &TerminalRepository {
         &self.repository
+    }
+
+    /// What each live run of `project_id` is doing, as its last pulse said (ADR-040 M5).
+    pub fn live_activity(&self, project_id: &str) -> Vec<AgentActivitySnapshotV1> {
+        self.live.snapshots(project_id)
     }
 
     /// The plan-quota meter (ADR-028).
@@ -7148,17 +7167,10 @@ fn observe_received_frame(
     bytes: &[u8],
 ) {
     if stream != "stdout" {
-        if backend == CliBackend::Gemini
-            && let Ok(text) = std::str::from_utf8(bytes)
+        if let Ok(text) = std::str::from_utf8(bytes)
+            && adapters::is_backoff_line(backend, text)
         {
-            let lower = text.to_ascii_lowercase();
-            if lower.contains("503")
-                || lower.contains("service unavailable")
-                || lower.contains("overloaded")
-                || lower.contains("retrying")
-            {
-                watchdog.set_reasoning(true);
-            }
+            watchdog.set_reasoning(true);
         }
         return;
     }
@@ -7275,7 +7287,55 @@ async fn coordinate_process_events_with_completion(
     result
 }
 
+/// Coordinates a run's stream, with its activity pulse (ADR-040 M5): the
+/// first pulse goes out at once, and the last, `Finishing`, before the
+/// caller publishes the run's terminal status, whatever way the stream ends.
 fn coordinate_process_events_blocking_inner(
+    repository: TerminalRepository,
+    event_sink: Arc<dyn TerminalEventSink>,
+    run: TerminalRun,
+    backend: CliBackend,
+    receiver: mpsc::Receiver<ProcessStreamItem>,
+    abort_token: CancellationToken,
+    abort_reason: Arc<Mutex<Option<ProcessAbortReason>>>,
+    codex_sessions_root: Option<PathBuf>,
+    output_ceiling: Option<u64>,
+    output_completion: Option<Arc<Mutex<Option<StreamEnd>>>>,
+    workspace_roots: Vec<PathBuf>,
+) -> Result<ProcessEventSummary, TerminalError> {
+    let mut tracker = ActivityTracker::start(
+        PulseIdentity {
+            project_id: run.project_id.clone(),
+            run_id: run.id.clone(),
+            agent_role: run.agent_role,
+            slot_id: run.agent_role.is_none().then(|| run.slot_id.clone()),
+        },
+        Instant::now(),
+    );
+    if let Some(pulse) = tracker.poll(Instant::now()) {
+        event_sink.emit_activity(&pulse);
+    }
+    let sink = Arc::clone(&event_sink);
+    let result = coordinate_tracked(
+        repository,
+        event_sink,
+        run,
+        backend,
+        receiver,
+        abort_token,
+        abort_reason,
+        codex_sessions_root,
+        output_ceiling,
+        output_completion,
+        workspace_roots,
+        &mut tracker,
+    );
+    sink.emit_activity(&tracker.finish(Instant::now()));
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn coordinate_tracked(
     repository: TerminalRepository,
     event_sink: Arc<dyn TerminalEventSink>,
     run: TerminalRun,
@@ -7287,9 +7347,15 @@ fn coordinate_process_events_blocking_inner(
     output_ceiling: Option<u64>,
     output_completion: Option<Arc<Mutex<Option<StreamEnd>>>>,
     workspace_roots: Vec<PathBuf>,
+    tracker: &mut ActivityTracker,
 ) -> Result<ProcessEventSummary, TerminalError> {
     let host_owner = repository.host.clone();
     let host = host_owner.as_ref();
+    // A live target the redactor finds anything in is withheld (specification 5.2).
+    let clean = |value: &str| {
+        host.redact_secrets(value)
+            .is_ok_and(|result| result.count == 0)
+    };
     let mut writer = AuditWriter {
         repository: &repository,
         event_sink: &event_sink,
@@ -7332,14 +7398,19 @@ fn coordinate_process_events_blocking_inner(
             TerminalError::Database(error)
         })?;
     loop {
-        let item = if writer.pending.is_none() {
+        // A pulse goes out once something changed and its interval passed.
+        if let Some(pulse) = tracker.poll(Instant::now()) {
+            event_sink.emit_activity(&pulse);
+        }
+        let item = if writer.pending.is_none() && !tracker.pending() {
             match receiver.blocking_recv() {
                 Some(item) => item,
                 None => break,
             }
         } else {
             // Buffered deltas reach the database once the stream pauses for a
-            // window, so a quiet model never leaves its last words unsaved.
+            // window, so a quiet model never leaves its last words unsaved; a
+            // waiting pulse goes out when its interval passes.
             match receiver.try_recv() {
                 Ok(item) => item,
                 Err(mpsc::error::TryRecvError::Empty) => {
@@ -7388,6 +7459,16 @@ fn coordinate_process_events_blocking_inner(
                     );
                     return Err(error.into());
                 }
+                if stream == "stdout" {
+                    // ADR-040 M6: how much the model reasoned, as the CLI counts it.
+                    tracker.tokens(
+                        Some(usage.output_tokens_so_far()),
+                        usage
+                            .totals()
+                            .reasoning_tokens
+                            .and_then(|tokens| u64::try_from(tokens).ok()),
+                    );
+                }
                 if stream == "stdout"
                     && let Some(ceiling) = output_ceiling
                 {
@@ -7433,6 +7514,7 @@ fn coordinate_process_events_blocking_inner(
                         finish_reason: None,
                         is_reasoning: false,
                         actions: Vec::new(),
+                        is_waiting: false,
                     },
                     stream,
                     input_bytes,
@@ -7451,9 +7533,23 @@ fn coordinate_process_events_blocking_inner(
             is_text,
             is_delta,
             finish_reason,
-            is_reasoning: _,
+            is_reasoning,
             actions,
+            is_waiting,
         } = frame;
+        // The pulse's phase (specification 5.3): never the frame's text.
+        let observed = Instant::now();
+        if is_waiting {
+            tracker.waiting(observed);
+        } else if is_reasoning {
+            tracker.reasoning(observed);
+        } else if kind == TerminalEventKind::Completed {
+            tracker.completed(observed);
+        } else if is_text && kind == TerminalEventKind::Message {
+            tracker.writing(observed);
+        } else {
+            tracker.activity(observed);
+        }
         // A frame that names a model opens a generation: it and everything
         // after it wait for identity checks, so it is never buffered and the
         // deltas before it are written first.
@@ -7669,6 +7765,21 @@ fn coordinate_process_events_blocking_inner(
         }
         for action in &actions {
             for entry in ledger.observe(action, received_at) {
+                match &entry {
+                    LedgerEntry::Call(call) => tracker.call(
+                        call.ordinal,
+                        call.kind,
+                        &call.name,
+                        pulse_target(action, &workspace_roots, clean),
+                        observed,
+                    ),
+                    LedgerEntry::Result(result) => tracker.result(
+                        result.ordinal,
+                        result.status,
+                        result.duration_ms.unwrap_or(0),
+                        observed,
+                    ),
+                }
                 writer.hold_action(&entry, action.output.as_deref());
             }
         }
@@ -7799,6 +7910,9 @@ fn coordinate_process_events_blocking_inner(
     }
     // Calls the stream never answered end with an unknown status (section 3.3).
     for entry in ledger.close_open() {
+        if let LedgerEntry::Result(result) = &entry {
+            tracker.result(result.ordinal, result.status, 0, Instant::now());
+        }
         writer.hold_action(&entry, None);
     }
     writer.finish(&mut summary)?;
@@ -9824,6 +9938,8 @@ pub(crate) fn materialize_safe_workspace<H: TerminalHost + ?Sized>(
 
 #[cfg(test)]
 mod actions_tests;
+#[cfg(test)]
+mod activity_tests;
 #[cfg(test)]
 mod corpus_capture;
 #[cfg(test)]

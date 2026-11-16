@@ -454,9 +454,58 @@ fn strip(
     .into_any_element()
 }
 
-/// What the agent does now: the run's status and time.
-fn now_text(_model: &AppModel, summary: &AgentSummary, _cx: &App) -> String {
-    run_line(summary.run.as_ref())
+/// What the agent does now: its live phase, target and counters from the
+/// pulse (M5), a phase of the host's own (PD5), or the run's status and time.
+fn now_text(model: &AppModel, summary: &AgentSummary, cx: &App) -> String {
+    let Some(run) = summary.run.as_ref() else {
+        return run_line(None);
+    };
+    if let Some(live) = model.agents.read(cx).live.get(&run.id) {
+        return live.line(Instant::now());
+    }
+    host_phase(model, run, cx).unwrap_or_else(|| run_line(Some(run)))
+}
+
+/// The phases only the host knows (PD5): waiting for the agent's slot,
+/// waiting for a fallback decision, a run tried again after a restart, and a
+/// stage whose review waits on the developer.
+fn host_phase(model: &AppModel, run: &TerminalRun, cx: &App) -> Option<String> {
+    use ikore_core::persistence_service::PulsationStatus;
+    use ikore_core::terminals::ActivityPhase;
+    let (phase, detail) = match run.status {
+        TerminalRunStatus::Queued => (ActivityPhase::Queued, "waiting for the agent's slot"),
+        TerminalRunStatus::AwaitingFallback => {
+            (ActivityPhase::FallingBack, "waiting for your decision")
+        }
+        status
+            if status.is_active()
+                && run.continuation_reason.as_deref() == Some("restart_recovery") =>
+        {
+            (ActivityPhase::Retrying, "after a restart")
+        }
+        status
+            if status.is_terminal()
+                && run.pulsation_id.as_deref().is_some_and(|id| {
+                    model
+                        .pulsations
+                        .read(cx)
+                        .pulsations
+                        .iter()
+                        .any(|pulsation| {
+                            pulsation.id == id && pulsation.status == PulsationStatus::Checkpoint
+                        })
+                }) =>
+        {
+            (ActivityPhase::WaitingOnUser, "the review is yours")
+        }
+        _ => return None,
+    };
+    let mut line = format!("{} · {detail}", phase.label());
+    if let Some(time) = run_time(run) {
+        line.push_str(" · ");
+        line.push_str(&time);
+    }
+    Some(line)
 }
 
 fn tab(

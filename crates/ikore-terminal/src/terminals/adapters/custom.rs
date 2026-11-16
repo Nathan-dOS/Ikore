@@ -97,6 +97,7 @@ impl CliAdapter for CustomAdapter {
                 finish_reason: None,
                 is_reasoning: false,
                 actions: Vec::new(),
+                is_waiting: false,
             };
         }
         NormalizedCliFrame {
@@ -117,6 +118,7 @@ impl CliAdapter for CustomAdapter {
             finish_reason: None,
             is_reasoning: false,
             actions: Vec::new(),
+            is_waiting: false,
         }
     }
 

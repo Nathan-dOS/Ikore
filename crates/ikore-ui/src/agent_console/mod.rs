@@ -5,10 +5,12 @@
 //! - `model`: each surface's list, following, selection and grouping.
 //! - `view`: the rendering.
 //! - `follow`: which agent the dock shows (pure).
+//! - `live`: what a running run does now, from its pulses (pure).
 //!
 //! The `AppModel` methods below are the console's actions.
 
 pub(crate) mod follow;
+pub(crate) mod live;
 pub(crate) mod model;
 pub(crate) mod projection;
 #[cfg(test)]
@@ -247,5 +249,66 @@ impl AppModel {
             _ => return false,
         }
         true
+    }
+}
+
+impl AppModel {
+    /// A live run's pulse (ADR-040 M5, specification 5.6): the state always
+    /// takes it; the window repaints only when a surface shows the run.
+    pub(crate) fn handle_activity_pulse(
+        &mut self,
+        pulse: ikore_core::terminals::AgentActivityPulseV1,
+        cx: &mut Context<Self>,
+    ) {
+        let changed = self.agents.update(cx, |agents, _| {
+            agents
+                .snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.project_id == pulse.project_id)
+                && agents.live.record(&pulse, std::time::Instant::now())
+        });
+        if changed && self.shows_run(&pulse.run_id, cx) {
+            cx.notify();
+        }
+    }
+
+    /// Whether a surface shows `run_id`: the dock's agent, in its strip, its
+    /// panel or the status bar item; or the agent open on the Agents page.
+    pub(crate) fn shows_run(&self, run_id: &str, cx: &gpui::App) -> bool {
+        use crate::agents::AgentIdentifier;
+        let docked = self
+            .agent_dock
+            .shown()
+            .and_then(|agent| crate::agent_dock_view::summarize(self, &agent, cx).run)
+            .is_some_and(|run| run.id == run_id);
+        if docked {
+            return true;
+        }
+        if self.active_view() != crate::app_model::AppView::Agents {
+            return false;
+        }
+        let agents = self.agents.read(cx);
+        let Some(snapshot) = agents.snapshot.as_ref() else {
+            return false;
+        };
+        match agents.selected_agent.as_ref() {
+            Some(AgentIdentifier::Canonical(role)) => {
+                agents
+                    .selected_run_by_role
+                    .get(role)
+                    .is_some_and(|id| id == run_id)
+                    || snapshot
+                        .agents
+                        .iter()
+                        .find(|agent| agent.config.agent_role == *role)
+                        .and_then(|agent| agent.recent_runs.first())
+                        .is_some_and(|run| run.id == run_id)
+            }
+            Some(AgentIdentifier::FreeForm(slot)) => agents
+                .selected_run_by_slot
+                .get(slot)
+                .is_some_and(|id| id == run_id),
+            None => false,
+        }
     }
 }

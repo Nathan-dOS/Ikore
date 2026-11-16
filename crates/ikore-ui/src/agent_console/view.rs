@@ -58,7 +58,7 @@ pub(crate) fn duration_label(ms: u64) -> String {
 }
 
 /// The milliseconds a run took, or has taken so far.
-fn run_duration_ms(run: &TerminalRun) -> Option<u64> {
+pub(crate) fn run_duration_ms(run: &TerminalRun) -> Option<u64> {
     let start = run.started_at.as_deref().unwrap_or(&run.created_at);
     let start = chrono::DateTime::parse_from_rfc3339(start).ok()?;
     let end = match run.finished_at.as_deref() {
@@ -249,19 +249,33 @@ pub(crate) fn console(
         filter,
         expanded,
     } = surface;
-    let (view, focus) = {
+    let (view, focus, now_line, reasoning) = {
         let agents = model.agents.read(cx);
         let events = run
             .and_then(|run| agents.events_by_run.get(&run.id))
             .map_or(&[][..], Vec::as_slice);
-        let view: ConsoleView = agents.consoles.view(
+        let live = run.and_then(|run| agents.live.get(&run.id));
+        let view: ConsoleView = agents.consoles.view_live(
             &key,
             run.map(|run| run.id.as_str()),
             run.is_some_and(|run| run.status.is_terminal()),
             events,
             filter,
+            live,
         );
-        (view, agents.consoles.focus(&key, cx))
+        // M6: how much a finished run's model reasoned, never what.
+        let reasoning = run
+            .and_then(|run| agents.live.finished(&run.id))
+            .filter(|counters| counters.reasoning_blocks > 0 || counters.reasoning_tokens.is_some())
+            .map(|counters| {
+                super::live::reasoning_label(counters.reasoning_blocks, counters.reasoning_tokens)
+            });
+        (
+            view,
+            agents.consoles.focus(&key, cx),
+            live.map(|live| live.line(std::time::Instant::now())),
+            reasoning,
+        )
     };
     let search = model.console_search_query(&key, cx);
     let matches = super::model::search_matches(&view.rows.rows, search.as_deref());
@@ -312,7 +326,15 @@ pub(crate) fn console(
             }
         }),
     )
-    .child(run_header(&key, run, filter, &view, expanded, cx));
+    .child(run_header(
+        &key,
+        run,
+        filter,
+        &view,
+        reasoning.as_deref(),
+        expanded,
+        cx,
+    ));
     if let Some(query) = search.as_ref() {
         panel = panel.child(search_bar(model, &key, query, &matches, current_match, cx));
     }
@@ -375,16 +397,23 @@ pub(crate) fn console(
         ));
     }
     if run.is_some_and(|run| run.status.is_active()) {
-        panel = panel.child(
-            div()
-                .px_2()
-                .py_1()
-                .border_t_1()
-                .border_color(theme::border())
-                .text_xs()
-                .text_color(theme::text_muted())
-                .child("Response text appears when the run completes."),
-        );
+        // What the run does now (M5), or why its text has not shown yet.
+        let selector = format!("agent-console-now:{key}");
+        panel =
+            panel.child(
+                div()
+                    .debug_selector(move || selector.clone())
+                    .px_2()
+                    .py_1()
+                    .border_t_1()
+                    .border_color(theme::border())
+                    .text_xs()
+                    .text_color(theme::text_muted())
+                    .truncate()
+                    .child(now_line.unwrap_or_else(|| {
+                        "Response text appears when the run completes.".to_owned()
+                    })),
+            );
     }
     panel.into_any_element()
 }
@@ -396,6 +425,7 @@ fn run_header(
     run: Option<&TerminalRun>,
     filter: ConsoleFilter,
     view: &ConsoleView,
+    reasoning: Option<&str>,
     expanded: bool,
     cx: &mut Context<AppModel>,
 ) -> AnyElement {
@@ -408,7 +438,14 @@ fn run_header(
     };
     let summary = run.map_or_else(
         || "No run".to_owned(),
-        |run| run_summary(run, view.rows.actions, view.rows.failed),
+        |run| {
+            let mut summary = run_summary(run, view.rows.actions, view.rows.failed);
+            if let Some(reasoning) = reasoning {
+                summary.push_str(" · ");
+                summary.push_str(reasoning);
+            }
+            summary
+        },
     );
     let search_key = key.to_owned();
     let copy_key = key.to_owned();

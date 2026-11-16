@@ -33,6 +33,8 @@ pub(crate) struct AgentsDashboardSnapshot {
     pub(crate) api_executions: HashMap<String, Vec<LlmExecutionListItem>>,
     /// Plan-window change per recent CLI run, by run id (ADR-028 attribution).
     pub(crate) quota_deltas: HashMap<String, Vec<ikore_core::quota::RunQuotaDelta>>,
+    /// What each live run did last, for a UI that opens mid-run (ADR-040 M5).
+    pub(crate) live_activity: Vec<ikore_core::terminals::AgentActivitySnapshotV1>,
 }
 
 pub(crate) trait AgentsBackend: Send + Sync {
@@ -171,12 +173,14 @@ fn complete_dashboard_snapshot(
             .flat_map(|agent| &agent.recent_runs)
             .map(|run| run.id.as_str()),
     );
+    let live_activity = core.terminals().live_activity(&terminals.project_id);
     Ok(AgentsDashboardSnapshot {
         terminals,
         fallbacks,
         free_form_bindings,
         api_executions,
         quota_deltas,
+        live_activity,
     })
 }
 
@@ -623,7 +627,7 @@ impl AgentIdentifier {
         self.target().stable_key()
     }
 
-    fn from_target(target: &AgentExecutionTarget) -> Self {
+    pub(crate) fn from_target(target: &AgentExecutionTarget) -> Self {
         match target {
             AgentExecutionTarget::Canonical { agent_role } => Self::Canonical(*agent_role),
             AgentExecutionTarget::Ephemeral { agent_role, .. } => Self::Canonical(*agent_role),
@@ -654,6 +658,8 @@ pub(crate) struct AgentsModel {
     pub(crate) event_filters: HashMap<String, crate::agent_console::projection::ConsoleFilter>,
     /// The consoles' lists, following and selection, and the runs' blocks.
     pub(crate) consoles: crate::agent_console::model::Consoles,
+    /// What each live run does now, from its pulses (ADR-040 M5).
+    pub(crate) live: crate::agent_console::live::LiveActivity,
     pub(crate) api_activity: HashMap<AgentIdentifier, Vec<String>>,
     pub(crate) api_filters: HashMap<String, ApiActivityFilter>,
     pub(crate) api_executions: HashMap<String, Vec<LlmExecutionListItem>>,
@@ -696,6 +702,7 @@ impl Default for AgentsModel {
             selected_run_by_slot: HashMap::new(),
             event_filters: HashMap::new(),
             consoles: crate::agent_console::model::Consoles::default(),
+            live: crate::agent_console::live::LiveActivity::default(),
             api_activity: HashMap::new(),
             api_filters: HashMap::new(),
             api_executions: HashMap::new(),
@@ -796,7 +803,11 @@ impl AgentsModel {
             self.selected_agent = None;
             self.events_by_run.clear();
             self.consoles = crate::agent_console::model::Consoles::default();
+            self.live = crate::agent_console::live::LiveActivity::default();
         }
+        // A UI that opens mid-run learns what each live run did last (ADR-040 M5).
+        self.live
+            .seed(&snapshot.live_activity, std::time::Instant::now());
         // The snapshot is merged into what live events already brought, so a
         // quiet refresh never drops an event that arrived while it was read
         // (ADR-040, M1).
@@ -991,6 +1002,7 @@ impl AgentsModel {
         let slot_id = envelope.run.slot_id.clone();
         let run_id = envelope.run_id.clone();
         let run_is_active = envelope.run.status.is_active();
+        let run_ended = envelope.run.status.is_terminal();
         if let Some(role) = role {
             let agent = snapshot
                 .agents
@@ -1021,6 +1033,21 @@ impl AgentsModel {
             .last()
             .is_none_or(|event| event.sequence < envelope.sequence)
         {
+            // The run's persisted actions take the provisional ones' place, and
+            // a run that ended is not live any more (ADR-040 M5, 5.6).
+            if matches!(
+                envelope.event.detail,
+                Some(
+                    ikore_core::terminals::EventDetailV1::ActionCall { .. }
+                        | ikore_core::terminals::EventDetailV1::ActionResult { .. }
+                        | ikore_core::terminals::EventDetailV1::Withheld { .. }
+                )
+            ) {
+                self.live.clear_provisional(&envelope.run_id);
+            }
+            if run_ended {
+                self.live.finish(&envelope.run_id);
+            }
             self.consoles.append(&envelope.run_id, &envelope.event);
             events.push(envelope.event);
             if events.len() > 500 {
@@ -1475,6 +1502,7 @@ mod tests {
                 free_form_bindings: vec![],
                 api_executions: HashMap::new(),
                 quota_deltas: Default::default(),
+                live_activity: Vec::new(),
             }
         ));
         assert_eq!(
@@ -1501,6 +1529,7 @@ mod tests {
                 free_form_bindings: vec![],
                 api_executions: HashMap::new(),
                 quota_deltas: Default::default(),
+                live_activity: Vec::new(),
             }
         ));
         assert!(!model.in_flight());
@@ -1564,6 +1593,7 @@ mod tests {
                 free_form_bindings: vec![],
                 api_executions: HashMap::new(),
                 quota_deltas: Default::default(),
+                live_activity: Vec::new(),
             }
         ));
         let sequences = model.events_by_run["run-1"]
@@ -1596,6 +1626,7 @@ mod tests {
                 free_form_bindings: vec![],
                 api_executions: HashMap::new(),
                 quota_deltas: Default::default(),
+                live_activity: Vec::new(),
             }
         ));
         assert!(!model.events_by_run.contains_key("run-gone"));
@@ -1624,6 +1655,61 @@ mod tests {
             .map(|event| event.sequence)
             .collect();
         assert_eq!(sequences, vec![1, 2, 3, 4]);
+    }
+
+    /// ADR-040 M5 and M6: the persisted actions take the provisional ones' place,
+    /// and an ended run leaves its last counters for its header.
+    #[test]
+    fn persisted_actions_and_the_end_reconcile_the_live_run() {
+        use ikore_core::terminals::{
+            ActivityCounters, ActivityPhase, AgentActivityPulseV1, EventDetailV1, PulseActionDelta,
+            ToolKind,
+        };
+        let mut model = model();
+        let pulse = AgentActivityPulseV1 {
+            protocol_version: 1,
+            project_id: "project-1".into(),
+            run_id: "run-1".into(),
+            agent_role: Some(AgentRole::BackendAgent),
+            slot_id: None,
+            pulse_sequence: 1,
+            emitted_at: "2026-11-16T10:00:00.000Z".into(),
+            phase: ActivityPhase::RunningTool,
+            phase_since_ms: 0,
+            last_activity_ms_ago: 0,
+            actions: vec![PulseActionDelta::Started {
+                ordinal: 1,
+                kind: ToolKind::Read,
+                name: "Read".into(),
+                target: None,
+            }],
+            actions_dropped: 0,
+            counters: ActivityCounters {
+                reasoning_blocks: 2,
+                reasoning_tokens: Some(830),
+                ..ActivityCounters::default()
+            },
+        };
+        assert!(model.live.record(&pulse, std::time::Instant::now()));
+        model.record_event(event_envelope(TerminalRunStatus::Running, 1));
+        assert_eq!(model.live.get("run-1").unwrap().provisional().len(), 1);
+        let mut action = event_envelope(TerminalRunStatus::Running, 2);
+        action.event.kind = TerminalEventKind::ToolUse;
+        action.event.detail = Some(EventDetailV1::ActionCall {
+            v: 1,
+            ordinal: 1,
+            kind: ToolKind::Read,
+            name: "Read".into(),
+        });
+        model.record_event(action);
+        assert!(model.live.get("run-1").unwrap().provisional().is_empty());
+        model.record_event(event_envelope(TerminalRunStatus::Completed, 3));
+        assert!(model.live.get("run-1").is_none());
+        let counters = model.live.finished("run-1").unwrap();
+        assert_eq!(
+            (counters.reasoning_blocks, counters.reasoning_tokens),
+            (2, Some(830))
+        );
     }
 
     #[test]

@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use gpui::{App, FocusHandle, ListAlignment, ListOffset, ListState, ScrollHandle, px};
 use ikore_core::terminals::{TerminalEvent, ToolKind};
 
+use super::live::LiveRunActivity;
 use super::projection::{BlockBody, ConsoleBlock, ConsoleFilter, Projector};
 
 /// Pixels the list renders beyond its viewport.
@@ -180,6 +181,8 @@ pub(crate) struct SurfaceState {
     /// Where the console's keys go; made on the first render.
     focus: Option<FocusHandle>,
     synced_revision: u64,
+    /// The revision of the run's provisional actions the rows show.
+    synced_live: u64,
     rows: Rc<ConsoleRows>,
 }
 
@@ -197,6 +200,7 @@ impl Default for SurfaceState {
             display: RunDisplay::Grouped,
             focus: None,
             synced_revision: 0,
+            synced_live: 0,
             rows: Rc::default(),
         }
     }
@@ -385,6 +389,7 @@ impl Consoles {
     /// Brings `key`'s list in step with `run_id`'s events, and returns what it
     /// renders. While a run goes on, only the rows from the first one that
     /// changed are spliced; a finished run may group its actions (PD4).
+    #[cfg(test)]
     pub(crate) fn view(
         &self,
         key: &str,
@@ -393,6 +398,21 @@ impl Consoles {
         events: &[TerminalEvent],
         filter: ConsoleFilter,
     ) -> ConsoleView {
+        self.view_live(key, run_id, run_finished, events, filter, None)
+    }
+
+    /// [`Self::view`] with what the run's pulses announced: while it goes on,
+    /// the actions it started follow the persisted ones (ADR-040 M5).
+    pub(crate) fn view_live(
+        &self,
+        key: &str,
+        run_id: Option<&str>,
+        run_finished: bool,
+        events: &[TerminalEvent],
+        filter: ConsoleFilter,
+        live: Option<&LiveRunActivity>,
+    ) -> ConsoleView {
+        let live = live.filter(|_| !run_finished);
         let mut surfaces = self.surfaces.borrow_mut();
         let surface = surfaces.entry(key.to_owned()).or_default();
         match run_id {
@@ -405,7 +425,7 @@ impl Consoles {
                     surface.synced_revision = 0;
                 }
             }
-            Some(run_id) => self.sync(surface, run_id, run_finished, events, filter),
+            Some(run_id) => self.sync(surface, run_id, run_finished, events, filter, live),
         }
         if surface.following() {
             // Scrolled back to the end: nothing waits unseen.
@@ -430,7 +450,10 @@ impl Consoles {
         run_finished: bool,
         events: &[TerminalEvent],
         filter: ConsoleFilter,
+        live: Option<&LiveRunActivity>,
     ) {
+        let provisional = live.map_or(&[][..], LiveRunActivity::provisional);
+        let live_revision = live.map_or(0, |live| live.revision);
         let mut projections = self.projections.borrow_mut();
         let projector = projections.entry(run_id.to_owned()).or_insert_with(|| {
             let mut projector = Projector::default();
@@ -465,18 +488,23 @@ impl Consoles {
             surface.filter = filter;
             surface.grouped = grouped;
         }
-        if surface.synced_revision == projector.revision() && surface.synced_revision != 0 {
+        if surface.synced_revision == projector.revision()
+            && surface.synced_live == live_revision
+            && surface.synced_revision != 0
+        {
             return;
         }
         let blocks = projector
             .blocks()
             .iter()
+            .chain(provisional)
             .filter(|block| filter.accepts(&block.body))
             .cloned()
             .collect::<Vec<_>>();
         let (actions, failed) = projector
             .blocks()
             .iter()
+            .chain(provisional)
             .filter_map(|block| match &block.body {
                 BlockBody::Action(action) => Some(action.failed()),
                 _ => None,
@@ -509,6 +537,7 @@ impl Consoles {
             failed,
         });
         surface.synced_revision = projector.revision().max(1);
+        surface.synced_live = live_revision;
     }
 
     /// Brings a console of `len` lines in step: it stays at the end while it
@@ -743,6 +772,63 @@ mod tests {
         let refreshed = consoles.view("agent", Some("run-1"), false, &events, ConsoleFilter::All);
         assert_eq!(refreshed.rows.rows.len(), count + 1);
         assert_eq!(refreshed.list.item_count(), count + 1);
+    }
+
+    /// ADR-040 M5: while the run goes on, the actions its pulses announced
+    /// follow the persisted rows; they leave when the persisted actions arrive.
+    #[test]
+    fn provisional_actions_follow_the_persisted_rows_while_the_run_goes_on() {
+        use crate::agent_console::live::LiveActivity;
+        use ikore_core::terminals::{
+            ActivityCounters, ActivityPhase, AgentActivityPulseV1, PulseActionDelta, PulseTarget,
+        };
+        let consoles = Consoles::default();
+        let events = vec![event(1, TerminalEventKind::System, "Run starting.")];
+        let mut live = LiveActivity::default();
+        live.record(
+            &AgentActivityPulseV1 {
+                protocol_version: 1,
+                project_id: "p".into(),
+                run_id: "run-1".into(),
+                agent_role: None,
+                slot_id: None,
+                pulse_sequence: 1,
+                emitted_at: "2026-11-16T10:00:00.000Z".into(),
+                phase: ActivityPhase::RunningTool,
+                phase_since_ms: 0,
+                last_activity_ms_ago: 0,
+                actions: vec![PulseActionDelta::Started {
+                    ordinal: 1,
+                    kind: ToolKind::Read,
+                    name: "Read".into(),
+                    target: Some(PulseTarget::WorkspacePath("src/a.rs".into())),
+                }],
+                actions_dropped: 0,
+                counters: ActivityCounters::default(),
+            },
+            Instant::now(),
+        );
+        let view = |live: &LiveActivity, finished: bool| {
+            consoles.view_live(
+                "agent",
+                Some("run-1"),
+                finished,
+                &events,
+                ConsoleFilter::All,
+                live.get("run-1"),
+            )
+        };
+        let running = view(&live, false);
+        assert_eq!(running.rows.rows.len(), 2);
+        assert_eq!(running.rows.rows[1].key(), "live:1");
+        assert_eq!(running.rows.actions, 1);
+        // A finished run never shows them.
+        assert_eq!(view(&live, true).rows.rows.len(), 1);
+        assert_eq!(view(&live, false).rows.rows.len(), 2);
+        live.clear_provisional("run-1");
+        let persisted = view(&live, false);
+        assert_eq!(persisted.rows.rows.len(), 1);
+        assert_eq!(persisted.list.item_count(), 1);
     }
 
     #[test]

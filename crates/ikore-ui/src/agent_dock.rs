@@ -465,6 +465,52 @@ impl AppModel {
     }
 }
 
+impl AppModel {
+    /// An API route of an agent started or ended: the dock follows it as it
+    /// follows a run (ADR-040, vector 10).
+    pub(crate) fn note_agent_dock_route(
+        &mut self,
+        envelope: &ikore_core::llm::LlmEventEnvelope,
+        cx: &mut Context<Self>,
+    ) {
+        use ikore_core::llm::LlmStreamEvent;
+        let Some(context) = envelope.context.as_ref() else {
+            return;
+        };
+        let status = match envelope.event {
+            LlmStreamEvent::RouteStarted { .. } => TerminalRunStatus::Running,
+            LlmStreamEvent::RouteCompleted { .. } => TerminalRunStatus::Completed,
+            LlmStreamEvent::RouteFailed { .. } => TerminalRunStatus::Failed,
+            _ => return,
+        };
+        if self
+            .agents
+            .read(cx)
+            .snapshot
+            .as_ref()
+            .is_none_or(|snapshot| snapshot.project_id != context.project_id)
+        {
+            return;
+        }
+        let priority = if context.pulsation_id.is_some() {
+            Priority::Pipeline
+        } else {
+            Priority::Interactive
+        };
+        let changed = self.agent_dock.note_run(
+            AgentIdentifier::from_target(&context.target),
+            &envelope.execution_id,
+            status,
+            priority,
+            Instant::now(),
+        );
+        if changed {
+            self.schedule_session_persistence(cx);
+        }
+        self.ensure_agent_dock_tick(cx);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -84,6 +84,7 @@ pub(crate) fn fixture(cx: &mut Context<AppModel>) -> AppModel {
                 free_form_bindings: vec![],
                 api_executions: Default::default(),
                 quota_deltas: Default::default(),
+                live_activity: Vec::new(),
             },
         );
     });
@@ -4197,6 +4198,131 @@ fn agent_dock_sash_limits_and_attention(cx: &mut TestAppContext) {
     );
 }
 
+/// ADR-040 M5: a pulse reaches the status bar item and the dock's "now"
+/// line, its actions show in the console while the run goes on, and only a
+/// run a surface shows repaints the window.
+#[gpui::test]
+fn an_agent_pulse_reaches_the_status_bar_and_the_console(cx: &mut TestAppContext) {
+    use ikore_core::terminals::{
+        ActivityCounters, ActivityPhase, AgentActivityPulseV1, ExecutionOrigin, PulseActionDelta,
+        PulseTarget, TerminalRunStatus, ToolKind,
+    };
+
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(1280.0), px(820.0)));
+    select(&model, visual, AppView::Workspace);
+    let run = dock_run(
+        AgentRole::TaskSpecifier,
+        "pulse-run",
+        ExecutionOrigin::Manual,
+        TerminalRunStatus::Running,
+    );
+    deliver_run_event(&model, visual, &run, 1);
+    let pulse = AgentActivityPulseV1 {
+        protocol_version: 1,
+        project_id: "layout-project".into(),
+        run_id: "pulse-run".into(),
+        agent_role: Some(AgentRole::TaskSpecifier),
+        slot_id: None,
+        pulse_sequence: 1,
+        emitted_at: "2026-11-16T10:00:00.000Z".into(),
+        phase: ActivityPhase::RunningTool,
+        phase_since_ms: 0,
+        last_activity_ms_ago: 0,
+        actions: vec![PulseActionDelta::Started {
+            ordinal: 1,
+            kind: ToolKind::Read,
+            name: "Read".into(),
+            target: Some(PulseTarget::WorkspacePath("src/main.rs".into())),
+        }],
+        actions_dropped: 0,
+        counters: ActivityCounters {
+            tool_calls: 1,
+            files_read: 1,
+            elapsed_ms: 5_000,
+            ..ActivityCounters::default()
+        },
+    };
+    model.update(visual, |m, cx| m.handle_activity_pulse(pulse.clone(), cx));
+    visual.run_until_parked();
+    let (_, label, _) = model.read_with(visual, |m, cx| m.agent_console_status(cx));
+    assert!(
+        label.starts_with("Spec · TaskSpecifier · Running tool · Read src/main.rs · 1 read"),
+        "{label}"
+    );
+    assert!(model.read_with(visual, |m, cx| m.shows_run("pulse-run", cx)));
+    assert!(!model.read_with(visual, |m, cx| m.shows_run("another-run", cx)));
+    // A repeated pulse changes nothing.
+    assert!(!model.update(visual, |m, cx| {
+        m.agents.update(cx, |agents, _| {
+            agents.live.record(&pulse, std::time::Instant::now())
+        })
+    }));
+
+    // On the Agents page, the console shows the provisional action after the
+    // persisted line, and the "now" line under it.
+    select(&model, visual, AppView::Agents);
+    click(visual, "agent-select:task_specifier");
+    model.update(visual, |m, cx| m.toggle_agents_terminal_expanded(cx));
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("agent-console-block:1").is_some());
+    assert!(
+        visual
+            .debug_bounds("agent-console-now:task_specifier")
+            .is_some()
+    );
+}
+
+/// ADR-040 vector 10: an API Mode route is followed like a run, and the
+/// dock shows the agent's API lines.
+#[gpui::test]
+fn an_api_route_is_followed_like_a_run(cx: &mut TestAppContext) {
+    use ikore_core::llm::{
+        AgentExecutionContext, AgentExecutionTarget, LlmEventEnvelope, LlmStreamEvent,
+    };
+
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(1280.0), px(820.0)));
+    select(&model, visual, AppView::Workspace);
+    let envelope = |event| LlmEventEnvelope {
+        protocol_version: 2,
+        execution_id: "execution-1".into(),
+        generation_id: "generation-1".into(),
+        sequence: 1,
+        context: Some(AgentExecutionContext {
+            project_id: "layout-project".into(),
+            pulsation_id: Some("pulse-1".into()),
+            job_id: Some("job-1".into()),
+            target: AgentExecutionTarget::canonical(AgentRole::BackendAgent),
+            stage: "backend".into(),
+        }),
+        event,
+    };
+    model.update(visual, |m, cx| {
+        m.note_agent_dock_route(
+            &envelope(LlmStreamEvent::RouteStarted {
+                route_id: "route-1".into(),
+            }),
+            cx,
+        );
+    });
+    visual.run_until_parked();
+    let backend = crate::agents::AgentIdentifier::Canonical(AgentRole::BackendAgent);
+    assert!(model.read_with(visual, |m, _| m.agent_dock.tabs().contains(&backend)));
+    assert!(model.read_with(visual, |m, _| m.agent_dock.follow.needs_tick()));
+    // Another project's route never reaches the dock.
+    model.update(visual, |m, cx| {
+        let mut other = envelope(LlmStreamEvent::RouteStarted {
+            route_id: "route-2".into(),
+        });
+        other.context.as_mut().unwrap().project_id = "another-project".into();
+        other.context.as_mut().unwrap().target =
+            AgentExecutionTarget::canonical(AgentRole::TaskSpecifier);
+        m.note_agent_dock_route(&other, cx);
+    });
+    assert_eq!(model.read_with(visual, |m, _| m.agent_dock.tabs().len()), 1);
+}
+
 /// ADR-040 M3/M4 (11.2): Settings › General has the agent console's rows,
 /// and the Shortcuts page names `Ctrl+J`.
 #[gpui::test]
@@ -5162,6 +5288,7 @@ fn controls_size_to_content_instead_of_the_panel(cx: &mut TestAppContext) {
                     free_form_bindings: vec![],
                     api_executions: Default::default(),
                     quota_deltas: Default::default(),
+                    live_activity: Vec::new(),
                 },
             );
         });

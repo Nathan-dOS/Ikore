@@ -44,6 +44,9 @@ pub(super) struct NormalizedCliFrame {
     /// The tool calls and results the frame carries (ADR-040, M1). Several
     /// when one Claude message calls several tools at once.
     pub actions: Vec<ActionFrame>,
+    /// The CLI says it waits: a rate limit it hit, or a backoff between
+    /// retries (ADR-040, M5: the `Waiting` phase).
+    pub is_waiting: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -320,6 +323,7 @@ fn normalize_json_frame_with(
 ) -> NormalizedCliFrame {
     let sanitized = sanitize_cli_frame_text(bytes);
     if stream == "stderr" {
+        let is_waiting = is_backoff_line(backend, &sanitized);
         return NormalizedCliFrame {
             kind: TerminalEventKind::Stderr,
             content: sanitized,
@@ -334,6 +338,7 @@ fn normalize_json_frame_with(
             finish_reason: None,
             is_reasoning: false,
             actions: Vec::new(),
+            is_waiting,
         };
     }
     let Ok(value) = serde_json::from_str::<Value>(&sanitized) else {
@@ -351,6 +356,7 @@ fn normalize_json_frame_with(
             finish_reason: None,
             is_reasoning: false,
             actions: Vec::new(),
+            is_waiting: false,
         };
     };
     let kind = classify(&value);
@@ -385,12 +391,37 @@ fn normalize_json_frame_with(
         finish_reason: find_finish_reason(&value),
         is_reasoning,
         actions: Vec::new(),
+        is_waiting: is_rate_limited(backend, &value),
     };
     refine(&value, &mut frame);
     if frame.is_reasoning {
         frame.is_text = false;
     }
     frame
+}
+
+/// Gemini CLI prints its 503 and backoff messages to stderr while it sleeps
+/// between retries.
+pub(super) fn is_backoff_line(backend: CliBackend, text: &str) -> bool {
+    if backend != CliBackend::Gemini {
+        return false;
+    }
+    let lower = text.to_ascii_lowercase();
+    lower.contains("503")
+        || lower.contains("service unavailable")
+        || lower.contains("overloaded")
+        || lower.contains("retrying")
+}
+
+/// Claude reports the rate limit of the account in `rate_limit_event`; only
+/// a status other than `allowed` and `allowed_warning` makes the turn wait.
+fn is_rate_limited(backend: CliBackend, value: &Value) -> bool {
+    backend == CliBackend::Claude
+        && event_type(value) == "rate_limit_event"
+        && value
+            .pointer("/rate_limit_info/status")
+            .and_then(Value::as_str)
+            .is_some_and(|status| !matches!(status, "allowed" | "allowed_warning"))
 }
 
 /// The status a result reports in a `status` field, by its usual spellings.

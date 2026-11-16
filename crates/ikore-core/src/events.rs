@@ -8,7 +8,7 @@ use crate::embedding_service::{ModelPullEvent, ModelPullEventSink};
 use crate::llm::{LlmEventEnvelope, LlmEventSink};
 use crate::orchestration::{IndexingEvent, IndexingEventSink};
 use crate::persistence_service::PersistenceService;
-use crate::terminals::{TerminalEventEnvelope, TerminalEventSink};
+use crate::terminals::{AgentActivityPulseV1, TerminalEventEnvelope, TerminalEventSink};
 use crate::workspace_service::{WorkspaceChangedEvent, WorkspaceEventSink};
 
 pub const DEFAULT_EVENT_CAPACITY: usize = 1_024;
@@ -29,6 +29,9 @@ pub enum AppEvent {
     Chat(ChatEventEnvelope),
     CanvasAuthoring(crate::chat_service::canvas_authoring::CanvasAuthoringChangedV1),
     Terminal(Box<TerminalEventEnvelope>),
+    /// What a live CLI run is doing now (ADR-040 M5): never persisted, never in the exchange
+    /// log, never in a prompt.
+    TerminalActivity(Box<AgentActivityPulseV1>),
     Indexing(IndexingEvent),
     ModelPull(ModelPullEvent),
     /// An exchange log item was committed (ADR-037 M2).
@@ -65,6 +68,7 @@ impl AppEvent {
             Self::Chat(envelope) => envelope.event_name(),
             Self::CanvasAuthoring(_) => "canvas-authoring://changed",
             Self::Terminal(envelope) => envelope.event_name(),
+            Self::TerminalActivity(_) => "terminal://activity",
             Self::Indexing(event) => match event {
                 IndexingEvent::Progress { .. } => "indexing://progress",
                 IndexingEvent::Paused { .. } => "indexing://paused",
@@ -99,6 +103,7 @@ impl AppEvent {
             },
             Self::Terminal(_) => EventClass::OwnSequence,
             Self::Llm(_)
+            | Self::TerminalActivity(_)
             | Self::Indexing(_)
             | Self::ModelPull(_)
             | Self::Voice(_)
@@ -191,6 +196,10 @@ impl TerminalEventSink for AppEventBus {
     fn emit(&self, envelope: &TerminalEventEnvelope) {
         self.publish(AppEvent::Terminal(Box::new(envelope.clone())));
     }
+
+    fn emit_activity(&self, pulse: &AgentActivityPulseV1) {
+        self.publish(AppEvent::TerminalActivity(Box::new(pulse.clone())));
+    }
 }
 
 impl IndexingEventSink for AppEventBus {
@@ -275,6 +284,28 @@ mod tests {
         assert_eq!(workspace.class(), EventClass::Ephemeral);
         assert_eq!(doorbell.class(), EventClass::Doorbell);
         assert_eq!(doorbell.event_name(), "exchange://doorbell");
+    }
+
+    /// ADR-040 M5: a pulse is ephemeral; a subscriber that missed one waits for the next.
+    #[test]
+    fn event_inventory_classifies_terminal_activity() {
+        let pulse = AppEvent::TerminalActivity(Box::new(AgentActivityPulseV1 {
+            protocol_version: crate::terminals::ACTIVITY_PROTOCOL_VERSION,
+            project_id: "p".into(),
+            run_id: "r".into(),
+            agent_role: None,
+            slot_id: Some("slot".into()),
+            pulse_sequence: 1,
+            emitted_at: "2026-11-16T10:00:00.000Z".into(),
+            phase: crate::terminals::ActivityPhase::Starting,
+            phase_since_ms: 0,
+            last_activity_ms_ago: 0,
+            actions: Vec::new(),
+            actions_dropped: 0,
+            counters: crate::terminals::ActivityCounters::default(),
+        }));
+        assert_eq!(pulse.class(), EventClass::Ephemeral);
+        assert_eq!(pulse.event_name(), "terminal://activity");
     }
 
     #[tokio::test]
