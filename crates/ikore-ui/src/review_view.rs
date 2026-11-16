@@ -178,6 +178,12 @@ fn failure_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
                 })
                 .child(crate::review_brief_view::failure_choices_card(&checkpoint))
                 .child(failure_facts(&checkpoint))
+                .when_some(
+                    detail
+                        .as_ref()
+                        .and_then(|detail| detail.validation_context.clone()),
+                    |panel, context| panel.child(validation_failure_card(&context)),
+                )
                 .child(match (detail_loading, detail_error, detail) {
                     (true, _, _) => div()
                         .text_sm()
@@ -401,6 +407,26 @@ fn failure_facts(checkpoint: &StageFailureCheckpoint) -> AnyElement {
                 )
                 .child(div().flex_1().min_w_0().text_sm().child(value))
         }))
+        .into_any_element()
+}
+
+fn validation_failure_card(
+    context: &ikore_core::orchestration::composition::recovery::ValidationFailureContextV1,
+) -> AnyElement {
+    div().debug_selector(|| "failure-validation-evidence".into())
+        .flex().flex_col().gap_2().p_3().rounded_md().bg(theme::surface_raised())
+        .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Validation results"))
+        .child(div().text_sm().child("The revision agent receives a bounded selection of this evidence automatically. You can add guidance without writing code or copying diagnostics."))
+        .children(context.checks.iter().map(|check| {
+            div().min_w_0().flex().flex_col().gap_1()
+                .child(div().text_sm().child(format!("{} · {:?} · {}", check.check_ref, check.status, if check.required { "required" } else { "optional" })))
+                .children(check.diagnostics.iter().map(|message| div().text_xs().text_color(theme::text_muted()).child(message.clone())))
+                .when(check.output_truncated || check.diagnostics_omitted > 0, |row| row.child(div().text_xs().child("Some diagnostic output is omitted; these excerpts are incomplete.")))
+        }))
+        .when(!context.tests.is_empty(), |card| card.child(div().text_sm().child("Preserved test evidence")))
+        .children(context.tests.iter().map(|test| div().text_xs().child(format!("{} · {}", test.path, test.unavailable_reason.as_deref().unwrap_or(if test.content_sanitized { "captured with sensitive content removed" } else { "captured" })))))
+        .when(context.omitted_checks > 0 || context.omitted_tests > 0, |card| card.child(div().text_sm().child(format!("Capture limits: {} checks and {} test paths omitted.", context.omitted_checks, context.omitted_tests))))
+        .children(context.limitations.iter().map(|limit| div().text_xs().text_color(theme::text_muted()).child(limit.clone())))
         .into_any_element()
 }
 

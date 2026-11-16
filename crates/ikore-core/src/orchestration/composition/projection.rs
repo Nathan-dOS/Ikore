@@ -75,6 +75,7 @@ fn labelled_heading(user: &mut String, title: &str, item: &ExchangeItemV1, body:
 
 #[derive(Debug, Clone, Default)]
 pub struct UnitPromptInputs<'a> {
+    pub recovery_context: Option<&'a super::recovery::ValidationFailureContextV1>,
     /// Approved requirement text per criterion handle.
     pub requirements: Vec<(&'a Handle, &'a str)>,
     /// This unit's criteria the approved specification marked `not_applicable`.
@@ -726,6 +727,9 @@ pub fn render_unit_prompt(
     );
 
     // Attempt-specific diagnostics follow every frozen policy/context block.
+    if let Some(context) = inputs.recovery_context {
+        user.push_str(&context.model_projection());
+    }
     if let Some(correction) = inputs.correction {
         // The rejected answer is discarded whole and never shown: asking for
         // "only the fix" produced a partial answer the same validation
@@ -1011,6 +1015,7 @@ mod tests {
             correction: None,
             extra_instructions: None,
             review: None,
+            recovery_context: None,
         };
         let prompt = render_unit_prompt(
             &plan,
