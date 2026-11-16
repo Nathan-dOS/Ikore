@@ -3822,6 +3822,408 @@ fn agent_console_follows_pauses_and_resumes(cx: &mut TestAppContext) {
     assert!(visual.debug_bounds("agent-console-block:62").is_some());
 }
 
+/// A run of `role` in the layout project, for the dock tests.
+fn dock_run(
+    role: AgentRole,
+    id: &str,
+    origin: ikore_core::terminals::ExecutionOrigin,
+    status: ikore_core::terminals::TerminalRunStatus,
+) -> ikore_core::terminals::TerminalRun {
+    ikore_core::terminals::TerminalRun {
+        id: id.into(),
+        project_id: "layout-project".into(),
+        slot: ikore_core::terminals::SessionSlot::Canonical { agent_role: role },
+        slot_id: format!("canonical:layout-project:{}", role.as_str()),
+        agent_role: Some(role),
+        origin,
+        execution_mode: AgentExecutionMode::CliProcess,
+        backend: Some(CliBackend::Claude),
+        model: Some("claude-haiku-5-5".into()),
+        requested_model_profile: None,
+        model_source: CliModelSelectionSource::Default,
+        observed_model: None,
+        native_session_id: None,
+        pulsation_id: None,
+        job_id: None,
+        agent_run_id: None,
+        llm_execution_id: None,
+        status,
+        exit_code: None,
+        error_code: None,
+        error_message: None,
+        created_at: "2026-11-15T10:00:00Z".into(),
+        started_at: Some("2026-11-15T10:00:00Z".into()),
+        finished_at: None,
+        updated_at: "2026-11-15T10:00:00Z".into(),
+        deadline_at: None,
+        termination_reason: None,
+        output_bytes: 0,
+        event_count: 0,
+        workspace_snapshot_hash: None,
+        launch_identity_sha256: None,
+        detected_cli_version: None,
+        adapter_contract_version: 1,
+        parent_run_id: None,
+        continuation_reason: None,
+        session_fingerprint: None,
+        observation_trial_id: None,
+    }
+}
+
+/// One event of `run`, delivered as `handle_event` does: the dock learns of
+/// the run, then the agents' buffer takes the event.
+fn deliver_run_event(
+    model: &Entity<AppModel>,
+    visual: &mut VisualTestContext,
+    run: &ikore_core::terminals::TerminalRun,
+    sequence: u64,
+) {
+    use ikore_core::terminals::{TerminalEvent, TerminalEventEnvelope, TerminalEventKind};
+    let envelope = TerminalEventEnvelope {
+        protocol_version: 2,
+        project_id: "layout-project".into(),
+        agent_role: run.agent_role,
+        run_id: run.id.clone(),
+        sequence,
+        run: run.clone(),
+        event: TerminalEvent {
+            id: format!("{}-{sequence}", run.id),
+            run_id: run.id.clone(),
+            sequence,
+            kind: TerminalEventKind::System,
+            stream: None,
+            content: "Run in progress.".into(),
+            redaction_count: 0,
+            redaction_categories: vec![],
+            created_at: "2026-11-15T10:00:00Z".into(),
+            detail: None,
+            observed_at: None,
+        },
+    };
+    model.update(visual, |model, cx| {
+        model.note_agent_dock_run(&envelope, cx);
+        model.agents.update(cx, |agents, _| {
+            agents.record_event(envelope);
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+}
+
+/// ADR-040 M3: the dock starts by the window's height, keeps the strip's
+/// height until a run appears, leaves the view above 240 px, and never shows
+/// on Agents.
+#[gpui::test]
+fn agent_dock_starts_by_window_height_and_hides_on_agents(cx: &mut TestAppContext) {
+    use ikore_core::terminals::{ExecutionOrigin, TerminalRunStatus};
+
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(960.0), px(640.0)));
+    select(&model, visual, AppView::Workspace);
+    let strip = visual
+        .debug_bounds("agent-dock-strip")
+        .expect("a short window starts with the strip");
+    assert_eq!(strip.size.height, px(32.0));
+    assert_eq!(model.read_with(visual, |m, _| m.agent_dock.mode), None);
+
+    // A tall window starts expanded, which keeps the strip's height until a run.
+    visual.simulate_resize(size(px(1280.0), px(820.0)));
+    visual.run_until_parked();
+    assert_eq!(
+        visual.debug_bounds("agent-dock").unwrap().size.height,
+        px(32.0)
+    );
+    let run = dock_run(
+        AgentRole::TaskSpecifier,
+        "dock-run",
+        ExecutionOrigin::Manual,
+        TerminalRunStatus::Running,
+    );
+    deliver_run_event(&model, visual, &run, 1);
+    let dock = visual.debug_bounds("agent-dock").unwrap();
+    assert_eq!(dock.size.height, px(crate::agent_dock::DEFAULT_HEIGHT));
+    assert!(visual.debug_bounds("agent-dock-console").is_some());
+    assert!(visual.debug_bounds("agent-dock-now").is_some());
+    assert!(
+        visual
+            .debug_bounds("agent-dock-tab:role:task_specifier")
+            .is_some()
+    );
+    let frame = visual.debug_bounds("shell-frame").unwrap();
+    assert!(frame.size.height >= px(240.0), "{frame:?}");
+    assert!(frame.bottom() <= dock.top(), "{frame:?} {dock:?}");
+
+    // Agents never shows it, and its state stays for the other views.
+    select(&model, visual, AppView::Agents);
+    assert_eq!(
+        model.read_with(visual, |m, _| m.agent_dock_inset()),
+        px(0.0)
+    );
+    select(&model, visual, AppView::Workspace);
+    assert!(model.read_with(visual, |m, _| m.agent_dock_inset()) > px(0.0));
+}
+
+/// ADR-040 M3: `Ctrl+J` hides and brings the dock back while an input keeps
+/// the focus; the strip's own controls and the status bar item do the same.
+#[gpui::test]
+fn ctrl_j_and_the_status_item_toggle_the_dock_without_moving_the_focus(cx: &mut TestAppContext) {
+    use crate::agent_dock::DockMode;
+
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.update(|_, cx| crate::shell::register_navigation_keybindings(cx));
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    select(&model, visual, AppView::Workspace);
+    click(visual, "work-tab:search");
+    let input = model.read_with(visual, |m, _| m.work_panel.search_input().unwrap());
+    let focused = |visual: &mut VisualTestContext| {
+        visual.update(|window, cx| {
+            gpui::Focusable::focus_handle(input.read(cx), cx).is_focused(window)
+        })
+    };
+    assert!(focused(visual));
+    visual.simulate_keystrokes("ctrl-j");
+    visual.run_until_parked();
+    assert_eq!(
+        model.read_with(visual, |m, _| m.agent_dock.mode),
+        Some(DockMode::Hidden)
+    );
+    assert!(focused(visual), "hiding keeps the focus");
+    visual.simulate_keystrokes("ctrl-j");
+    visual.run_until_parked();
+    assert_eq!(
+        model.read_with(visual, |m, _| m.agent_dock.mode),
+        Some(DockMode::Expanded)
+    );
+    assert!(focused(visual), "opening never moves the focus");
+
+    // The status bar item says nothing runs, and toggles the same way.
+    click(visual, "status-agent-console");
+    assert_eq!(
+        model.read_with(visual, |m, _| m.agent_dock.mode),
+        Some(DockMode::Hidden)
+    );
+    click(visual, "status-agent-console");
+    assert_eq!(
+        model.read_with(visual, |m, _| m.agent_dock.mode),
+        Some(DockMode::Expanded)
+    );
+    // The strip folds and hides from its own buttons.
+    model.update(visual, |m, cx| m.set_agent_dock_mode(DockMode::Strip, cx));
+    visual.run_until_parked();
+    click(visual, "agent-dock-expand");
+    assert_eq!(
+        model.read_with(visual, |m, _| m.agent_dock.mode),
+        Some(DockMode::Expanded)
+    );
+}
+
+/// ADR-040 M3 (9.6): the Companion keeps clear of the dock, folded or
+/// expanded, in the three sizes the specification names.
+#[gpui::test]
+fn the_companion_stays_above_the_agent_dock(cx: &mut TestAppContext) {
+    use crate::agent_dock::DockMode;
+    use ikore_core::terminals::{ExecutionOrigin, TerminalRunStatus};
+
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    select(&model, visual, AppView::Workspace);
+    let run = dock_run(
+        AgentRole::BackendAgent,
+        "companion-run",
+        ExecutionOrigin::Pipeline,
+        TerminalRunStatus::Running,
+    );
+    deliver_run_event(&model, visual, &run, 1);
+    for (width, height) in [(960.0, 640.0), (1280.0, 820.0), (2560.0, 1440.0)] {
+        visual.simulate_resize(size(px(width), px(height)));
+        for mode in [DockMode::Strip, DockMode::Expanded] {
+            model.update(visual, |m, cx| m.set_agent_dock_mode(mode, cx));
+            visual.run_until_parked();
+            let dock = visual.debug_bounds("agent-dock").unwrap();
+            let companion = visual.debug_bounds("companion-dock").unwrap();
+            // The sash, or the strip's gap, sits 6 px above the dock's box.
+            assert!(
+                companion.bottom() <= dock.top() - px(6.0),
+                "{width}x{height} {mode:?}: companion {companion:?} over dock {dock:?}"
+            );
+            let frame = visual.debug_bounds("shell-frame").unwrap();
+            assert!(frame.size.height >= px(240.0), "{width}x{height} {mode:?}");
+        }
+    }
+}
+
+/// ADR-040 M3/M4: tabs in the pipeline's order; a run the dock does not
+/// show gets a dot; a held-back switch shows the chip, which switches; a
+/// closed tab comes back with the agent's next run; Esc folds the dock.
+#[gpui::test]
+fn agent_dock_tabs_follow_and_hold_back_a_switch(cx: &mut TestAppContext) {
+    use crate::agent_console::follow::FollowInput;
+    use crate::agent_dock::DockMode;
+    use crate::agents::AgentIdentifier;
+    use ikore_core::terminals::{ExecutionOrigin, TerminalRunStatus};
+
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(1280.0), px(820.0)));
+    select(&model, visual, AppView::Workspace);
+    let code = dock_run(
+        AgentRole::BackendAgent,
+        "code-run",
+        ExecutionOrigin::Pipeline,
+        TerminalRunStatus::Running,
+    );
+    let spec = dock_run(
+        AgentRole::TaskSpecifier,
+        "spec-run",
+        ExecutionOrigin::Manual,
+        TerminalRunStatus::Running,
+    );
+    deliver_run_event(&model, visual, &code, 1);
+    deliver_run_event(&model, visual, &spec, 1);
+    let backend = AgentIdentifier::Canonical(AgentRole::BackendAgent);
+    let task_specifier = AgentIdentifier::Canonical(AgentRole::TaskSpecifier);
+    // Spec comes before Code, whatever started first.
+    let spec_tab = visual
+        .debug_bounds("agent-dock-tab:role:task_specifier")
+        .unwrap();
+    let code_tab = visual
+        .debug_bounds("agent-dock-tab:role:backend_agent")
+        .unwrap();
+    assert!(spec_tab.right() <= code_tab.left());
+    // The developer reads Code: a manual run never takes the dock from it, and
+    // its tab gets a dot.
+    click(visual, "agent-dock-tab:role:backend_agent");
+    assert_eq!(
+        model.read_with(visual, |m, _| m.agent_dock.shown()),
+        Some(backend.clone())
+    );
+    model.update(visual, |m, cx| m.resume_agent_dock_following(cx));
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds("agent-dock-tab-new:role:task_specifier")
+            .is_some()
+    );
+
+    // A switch waits while the developer touches the dock: the chip offers it.
+    model.update(visual, |m, cx| {
+        let now = std::time::Instant::now();
+        let follow = &mut m.agent_dock.follow;
+        follow.current = Some(task_specifier.clone());
+        follow.pending = Some((backend.clone(), now - std::time::Duration::from_secs(3)));
+        follow.apply(FollowInput::Interaction { at: now });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    click(visual, "agent-dock-switch-chip");
+    assert_eq!(
+        model.read_with(visual, |m, _| m.agent_dock.shown()),
+        Some(backend.clone())
+    );
+
+    // A closed tab stays closed for its run, and comes back with the next.
+    click(visual, "agent-dock-tab-close:role:task_specifier");
+    assert!(!model.read_with(visual, |m, _| m.agent_dock.tabs().contains(&task_specifier)));
+    deliver_run_event(&model, visual, &spec, 2);
+    assert!(!model.read_with(visual, |m, _| m.agent_dock.tabs().contains(&task_specifier)));
+    let next = dock_run(
+        AgentRole::TaskSpecifier,
+        "spec-run-2",
+        ExecutionOrigin::Manual,
+        TerminalRunStatus::Running,
+    );
+    deliver_run_event(&model, visual, &next, 1);
+    assert!(model.read_with(visual, |m, _| m.agent_dock.tabs().contains(&task_specifier)));
+
+    // Esc in the dock folds it to the strip.
+    visual.update(|window, cx| {
+        let focus = model
+            .read(cx)
+            .agents
+            .read(cx)
+            .consoles
+            .focus(crate::agent_dock::DOCK_SURFACE, cx);
+        window.focus(&focus);
+    });
+    visual.run_until_parked();
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    assert_eq!(
+        model.read_with(visual, |m, _| m.agent_dock.mode),
+        Some(DockMode::Strip)
+    );
+}
+
+/// ADR-040 M3/M4: the sash keeps the dock between its limits, and a double
+/// click goes between the default and the tallest height; the attention
+/// count reaches the status bar, and nothing opens the dock on its own.
+#[gpui::test]
+fn agent_dock_sash_limits_and_attention(cx: &mut TestAppContext) {
+    use crate::agent_dock::{AgentDock, DEFAULT_HEIGHT, DockMode, MIN_HEIGHT};
+    use ikore_core::terminals::{ExecutionOrigin, TerminalRunStatus};
+
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(1280.0), px(820.0)));
+    select(&model, visual, AppView::Workspace);
+    let body = px(820.0) - crate::sizing::HEADER_HEIGHT - crate::sizing::STATUS_BAR_HEIGHT;
+    let max = AgentDock::max_height(body);
+    model.update(visual, |m, cx| {
+        m.agent_dock.drag = Some((px(500.0), DEFAULT_HEIGHT));
+        m.drag_agent_dock(px(-2000.0), body, cx);
+        assert_eq!(m.agent_dock.height, Some(max));
+        m.drag_agent_dock(px(2000.0), body, cx);
+        assert_eq!(m.agent_dock.height, Some(MIN_HEIGHT));
+        m.end_agent_dock_drag(cx);
+        assert!(m.agent_dock.drag.is_none());
+        m.toggle_agent_dock_height(body, cx);
+        assert_eq!(m.agent_dock.height, Some(max));
+        m.toggle_agent_dock_height(body, cx);
+        assert_eq!(m.agent_dock.height, Some(DEFAULT_HEIGHT));
+    });
+
+    // A failed run counts on the status bar and never opens a hidden dock.
+    model.update(visual, |m, cx| m.set_agent_dock_mode(DockMode::Hidden, cx));
+    let failed = dock_run(
+        AgentRole::BackendAgent,
+        "failed-run",
+        ExecutionOrigin::Pipeline,
+        TerminalRunStatus::Failed,
+    );
+    deliver_run_event(&model, visual, &failed, 1);
+    let (_, label, attention) = model.read_with(visual, |m, cx| m.agent_console_status(cx));
+    assert_eq!(label, "No agent running");
+    assert_eq!(attention, 1);
+    assert_eq!(
+        model.read_with(visual, |m, _| m.agent_dock.mode),
+        Some(DockMode::Hidden)
+    );
+}
+
+/// ADR-040 M3/M4 (11.2): Settings › General has the agent console's rows,
+/// and the Shortcuts page names `Ctrl+J`.
+#[gpui::test]
+fn settings_agent_console_section(cx: &mut TestAppContext) {
+    use crate::agent_dock::DockMode;
+
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(1280.0), px(820.0)));
+    model.update(visual, |m, cx| {
+        m.open_settings(Some(SettingsPage::General), cx)
+    });
+    visual.run_until_parked();
+    click(visual, "settings-agent-console");
+    assert_eq!(
+        model.read_with(visual, |m, _| m.agent_dock.mode),
+        Some(DockMode::Hidden)
+    );
+    click(visual, "settings-agent-console-follow");
+    assert!(!model.read_with(visual, |m, _| m.agent_dock.follow.enabled));
+    for id in ["agent-console", "agent-console-follow"] {
+        assert_eq!(
+            crate::settings_search::entry_by_id(id).page,
+            SettingsPage::General
+        );
+    }
+}
+
 #[gpui::test]
 fn agents_api_detail_accepts_vertical_wheel_scrolling(cx: &mut TestAppContext) {
     let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
@@ -8305,6 +8707,12 @@ fn the_attestation_card_shows_a_signed_record_and_what_changed_since(cx: &mut Te
     let pulse = model.read_with(visual, |m, cx| {
         m.pulsations.read(cx).pulsations[0].id.clone()
     });
+    // The agent dock's strip takes the bottom of the window (ADR-040 M3); hidden, the trailer
+    // is in view without scrolling, as this test expects.
+    model.update(visual, |m, cx| {
+        m.set_agent_dock_mode(crate::agent_dock::DockMode::Hidden, cx)
+    });
+    visual.run_until_parked();
     click(visual, "attestation-trailer");
     visual.update(|_, cx| {
         assert_eq!(

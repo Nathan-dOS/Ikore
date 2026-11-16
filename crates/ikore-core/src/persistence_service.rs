@@ -523,7 +523,66 @@ pub struct UiSessionState {
     /// new column. `None` until a save names one.
     #[serde(default)]
     pub work_panel_tab: Option<String>,
+    /// The bottom agent dock (ADR-040 M3/M4), kept in `runtime_settings` beside the row like
+    /// the work panel tab. `None` until a save names it, or when this build cannot read it.
+    #[serde(default)]
+    pub agent_dock: Option<AgentDockSession>,
     pub updated_at: String,
+}
+
+/// The bottom agent dock of one project (ADR-040 M3/M4): what the developer left it as.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentDockSession {
+    /// `hidden`, `strip` or `expanded`; `None` is the default for the window's height.
+    #[serde(default)]
+    pub mode: Option<String>,
+    /// The expanded height, in logical pixels; `None` is the default.
+    #[serde(default)]
+    pub height: Option<f64>,
+    /// Follow the agent that started last; on by default.
+    #[serde(default = "default_dock_follow")]
+    pub follow: bool,
+    /// The agent shown: `role:<agent role>` or `slot:<free-form slot>`.
+    #[serde(default)]
+    pub agent: Option<String>,
+}
+
+fn default_dock_follow() -> bool {
+    true
+}
+
+const AGENT_DOCK_MODES: [&str; 3] = ["hidden", "strip", "expanded"];
+
+impl AgentDockSession {
+    /// Refuses what this build does not know, so a stored dock always reads back.
+    fn validate(&self) -> Result<(), String> {
+        if let Some(mode) = self.mode.as_deref()
+            && !AGENT_DOCK_MODES.contains(&mode)
+        {
+            return Err("agentDock.mode must be `hidden`, `strip` or `expanded`.".to_string());
+        }
+        if let Some(height) = self.height
+            && !(height.is_finite() && (100.0..=4_000.0).contains(&height))
+        {
+            return Err("agentDock.height must be between 100 and 4000.".to_string());
+        }
+        if let Some(agent) = self.agent.as_deref() {
+            let known = match (agent.strip_prefix("role:"), agent.strip_prefix("slot:")) {
+                (Some(role), _) => crate::llm::AgentRole::parse(role).is_some(),
+                (_, Some(slot)) => {
+                    (1..=200).contains(&slot.chars().count()) && !slot.chars().any(char::is_control)
+                }
+                _ => false,
+            };
+            if !known {
+                return Err(
+                    "agentDock.agent must be `role:<agent role>` or `slot:<id>`.".to_string(),
+                );
+            }
+        }
+        Ok(())
+    }
 }
 
 fn default_active_view() -> String {
@@ -573,6 +632,9 @@ pub struct SaveUiSessionRequest {
     /// `None` leaves the stored tab as it is.
     #[serde(default)]
     pub work_panel_tab: Option<String>,
+    /// `None` leaves the stored dock as it is.
+    #[serde(default)]
+    pub agent_dock: Option<AgentDockSession>,
 }
 
 #[derive(Debug, Serialize)]
@@ -2899,6 +2961,7 @@ impl PersistenceService {
                     tabs: Vec::new(),
                     auto_open_review: row.get::<_, i64>("auto_open_review")? != 0,
                     work_panel_tab: None,
+                    agent_dock: None,
                     updated_at: row.get("updated_at")?,
                 })
             })
@@ -2914,6 +2977,10 @@ impl PersistenceService {
         session.work_panel_tab =
             Self::read_runtime_setting(&connection, &work_panel_tab_key(&project_id))?
                 .filter(|tab| WORK_PANEL_TABS.contains(&tab.as_str()));
+        // A dock this build cannot read falls back to the defaults.
+        session.agent_dock = Self::read_runtime_setting(&connection, &agent_dock_key(&project_id))?
+            .and_then(|value| serde_json::from_str::<AgentDockSession>(&value).ok())
+            .filter(|dock| dock.validate().is_ok());
 
         let mut tabs_statement = connection.prepare(
             "SELECT relative_path, draft_content, base_revision, cursor_line, cursor_column, scroll_top
@@ -2963,6 +3030,17 @@ impl PersistenceService {
                 ));
             }
             tab => tab.map(str::to_owned),
+        };
+        let agent_dock = match &request.agent_dock {
+            Some(dock) => {
+                dock.validate()
+                    .map_err(PersistenceServiceError::Validation)?;
+                Some(
+                    serde_json::to_string(dock)
+                        .map_err(|error| PersistenceServiceError::Validation(error.to_string()))?,
+                )
+            }
+            None => None,
         };
         let updated_at = Self::now_iso();
         let connection = self.connection()?;
@@ -3027,6 +3105,9 @@ impl PersistenceService {
         )?;
         if let Some(tab) = &work_panel_tab {
             Self::upsert_runtime_setting(&transaction, &work_panel_tab_key(&project_id), tab)?;
+        }
+        if let Some(dock) = &agent_dock {
+            Self::upsert_runtime_setting(&transaction, &agent_dock_key(&project_id), dock)?;
         }
 
         transaction.execute(
@@ -6699,6 +6780,10 @@ fn work_panel_tab_key(project_id: &str) -> String {
     format!("ui.work_panel_tab.{project_id}")
 }
 
+fn agent_dock_key(project_id: &str) -> String {
+    format!("ui.agent_dock.{project_id}")
+}
+
 #[cfg(test)]
 #[path = "sqlite_runtime_tests.rs"]
 mod sqlite_runtime_tests;
@@ -7622,6 +7707,7 @@ mod tests {
         let invalid_mode_result = service.save_ui_session(SaveUiSessionRequest {
             auto_open_review: false,
             work_panel_tab: None,
+            agent_dock: None,
             project_id: project.id,
             workspace_root: "C:/workspace/view-mode".to_string(),
             active_tab_path: None,
@@ -7656,6 +7742,7 @@ mod tests {
         let result = service.save_ui_session(SaveUiSessionRequest {
             auto_open_review: false,
             work_panel_tab: None,
+            agent_dock: None,
             project_id: project.id,
             workspace_root: "C:/workspace/active-view".to_string(),
             active_tab_path: None,
@@ -7693,6 +7780,7 @@ mod tests {
                 .save_ui_session(SaveUiSessionRequest {
                     auto_open_review: false,
                     work_panel_tab: None,
+                    agent_dock: None,
                     project_id: project.id.clone(),
                     workspace_root: "C:/workspace/notes-view".to_string(),
                     active_tab_path: None,
@@ -7724,6 +7812,7 @@ mod tests {
         let response = service.save_ui_session(SaveUiSessionRequest {
             auto_open_review: false,
             work_panel_tab: None,
+            agent_dock: None,
             project_id: "missing-project".to_string(),
             workspace_root: "C:/workspace/missing".to_string(),
             active_tab_path: None,
@@ -7757,6 +7846,7 @@ mod tests {
         let request = |tab: Option<&str>| SaveUiSessionRequest {
             auto_open_review: false,
             work_panel_tab: tab.map(str::to_owned),
+            agent_dock: None,
             project_id: project.id.clone(),
             workspace_root: project.workspace_path.clone(),
             active_tab_path: None,
@@ -7807,6 +7897,94 @@ mod tests {
         assert_eq!(stored_tab(), None);
     }
 
+    /// ADR-040 M3/M4: each project keeps its dock, and only what this build knows.
+    #[test]
+    fn the_agent_dock_is_kept_per_project_and_unknown_values_are_refused() {
+        let (_root, service) = prepare_service();
+        let project = |name: &str| {
+            service
+                .ensure_project_for_workspace(EnsureProjectForWorkspaceRequest {
+                    workspace_path: format!("C:/workspace/{name}"),
+                    preferred_name: Some(name.to_string()),
+                })
+                .expect("project should be created")
+                .project
+        };
+        let (first, second) = (project("dock-a"), project("dock-b"));
+        let request = |project: &Project, dock: Option<AgentDockSession>| SaveUiSessionRequest {
+            auto_open_review: false,
+            work_panel_tab: None,
+            agent_dock: dock,
+            project_id: project.id.clone(),
+            workspace_root: project.workspace_path.clone(),
+            active_tab_path: None,
+            workspace_view_mode: "editor".to_string(),
+            active_view: "workspace".to_string(),
+            sidebar_collapsed: false,
+            context_drawer_open: true,
+            active_pulsation_id: None,
+            selected_vault_path: None,
+            active_chat_conversation_id: None,
+            scroll_top: None,
+            tabs: vec![],
+        };
+        let stored = |project: &Project| {
+            service
+                .load_ui_session(LoadUiSessionRequest {
+                    project_id: project.id.clone(),
+                })
+                .expect("session should load")
+                .session
+                .expect("session should exist")
+                .agent_dock
+        };
+        let dock = |mode: &str, height: f64, follow: bool, agent: &str| AgentDockSession {
+            mode: Some(mode.to_string()),
+            height: Some(height),
+            follow,
+            agent: Some(agent.to_string()),
+        };
+        let strip = dock("strip", 300.0, false, "role:backend_agent");
+        let expanded = dock("expanded", 420.0, true, "slot:slot-a");
+        service
+            .save_ui_session(request(&first, Some(strip.clone())))
+            .expect("the dock should save");
+        service
+            .save_ui_session(request(&second, Some(expanded.clone())))
+            .expect("the dock should save");
+        assert_eq!(stored(&first), Some(strip.clone()));
+        assert_eq!(stored(&second), Some(expanded));
+        // A save that names no dock leaves the stored one.
+        service
+            .save_ui_session(request(&first, None))
+            .expect("the session should save");
+        assert_eq!(stored(&first), Some(strip.clone()));
+        for refused in [
+            dock("floating", 300.0, true, "role:backend_agent"),
+            dock("strip", f64::NAN, true, "role:backend_agent"),
+            dock("strip", 20.0, true, "role:backend_agent"),
+            dock("strip", 300.0, true, "role:nobody"),
+            dock("strip", 300.0, true, "slot:"),
+            dock("strip", 300.0, true, "backend_agent"),
+        ] {
+            assert!(matches!(
+                service.save_ui_session(request(&first, Some(refused))),
+                Err(PersistenceServiceError::Validation(_))
+            ));
+        }
+        assert_eq!(stored(&first), Some(strip));
+        // A dock this build cannot read comes back as the defaults.
+        service
+            .connection()
+            .expect("connection should open")
+            .execute(
+                "UPDATE runtime_settings SET value = '{\"mode\":\"floating\"}' WHERE key = ?1",
+                [agent_dock_key(&first.id)],
+            )
+            .expect("the setting should update");
+        assert_eq!(stored(&first), None);
+    }
+
     #[test]
     fn save_ui_session_overwrites_previous_tabs_and_skips_empty_relative_paths() {
         let (_root, service) = prepare_service();
@@ -7822,6 +8000,7 @@ mod tests {
             .save_ui_session(SaveUiSessionRequest {
                 auto_open_review: false,
                 work_panel_tab: None,
+                agent_dock: None,
                 project_id: project.id.clone(),
                 workspace_root: project.workspace_path.clone(),
                 active_tab_path: Some("first.md".to_string()),
@@ -7858,6 +8037,7 @@ mod tests {
             .save_ui_session(SaveUiSessionRequest {
                 auto_open_review: false,
                 work_panel_tab: None,
+                agent_dock: None,
                 project_id: project.id.clone(),
                 workspace_root: project.workspace_path.clone(),
                 active_tab_path: Some("third.md".to_string()),
@@ -7907,6 +8087,7 @@ mod tests {
             .save_ui_session(SaveUiSessionRequest {
                 auto_open_review: false,
                 work_panel_tab: None,
+                agent_dock: None,
                 project_id: project.id.clone(),
                 workspace_root: project.workspace_path.clone(),
                 active_tab_path: None,
@@ -7935,6 +8116,7 @@ mod tests {
         let rejected = service.save_ui_session(SaveUiSessionRequest {
             auto_open_review: false,
             work_panel_tab: None,
+            agent_dock: None,
             project_id: project.id.clone(),
             workspace_root: project.workspace_path.clone(),
             active_tab_path: None,
@@ -7980,6 +8162,7 @@ mod tests {
             .save_ui_session(SaveUiSessionRequest {
                 auto_open_review: false,
                 work_panel_tab: None,
+                agent_dock: None,
                 project_id: project.id.clone(),
                 workspace_root: project.workspace_path.clone(),
                 active_tab_path: Some("notes/todo.md".to_string()),
@@ -8057,6 +8240,7 @@ mod tests {
             .save_ui_session(SaveUiSessionRequest {
                 auto_open_review: false,
                 work_panel_tab: None,
+                agent_dock: None,
                 project_id: project.id.clone(),
                 workspace_root: project.workspace_path.clone(),
                 active_tab_path: Some("stable.md".to_string()),
@@ -8082,6 +8266,7 @@ mod tests {
         let failed = service.save_ui_session(SaveUiSessionRequest {
             auto_open_review: false,
             work_panel_tab: None,
+            agent_dock: None,
             project_id: project.id.clone(),
             workspace_root: project.workspace_path,
             active_tab_path: Some("duplicate.md".to_string()),
@@ -8166,6 +8351,7 @@ mod tests {
                 .save_ui_session(SaveUiSessionRequest {
                     auto_open_review: false,
                     work_panel_tab: None,
+                    agent_dock: None,
                     project_id: project.id.clone(),
                     workspace_root: project.workspace_path.clone(),
                     active_tab_path: None,

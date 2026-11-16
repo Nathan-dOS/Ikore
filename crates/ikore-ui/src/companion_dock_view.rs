@@ -144,7 +144,8 @@ fn target_control(
 pub(crate) fn dock(model: &AppModel, window: &Window, cx: &mut Context<AppModel>) -> AnyElement {
     let dock = &model.companion_dock;
     let width = f32::from(window.viewport_size().width);
-    let height = f32::from(window.viewport_size().height);
+    // The agent dock takes the bottom of the window; the windows fit above it.
+    let height = f32::from(window.viewport_size().height) - f32::from(model.agent_dock_inset());
     let visible = dock.visible_windows(width);
     let has_project = dock.project_id.is_some();
     let show_history = dock.open && (dock.history_open || visible.is_empty());
@@ -170,7 +171,8 @@ pub(crate) fn dock(model: &AppModel, window: &Window, cx: &mut Context<AppModel>
         .debug_selector(|| "companion-dock".into())
         .absolute()
         .right(px(12.0))
-        .bottom(px(34.0))
+        // Above the status bar, and above the agent dock when it shows (ADR-040, 9.6).
+        .bottom(px(34.0) + model.agent_dock_inset())
         .max_w(px((width - 24.0).max(100.0)))
         .flex()
         .flex_col()

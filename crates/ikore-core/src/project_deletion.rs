@@ -402,6 +402,7 @@ fn purge_project(
             format!("forge.navigation.{id}"),
             format!("brownfield.onboarding_consent.{id}"),
             format!("ui.work_panel_tab.{id}"),
+            format!("ui.agent_dock.{id}"),
         ] {
             tx.execute("DELETE FROM runtime_settings WHERE key=?1", [key])?;
         }
@@ -661,6 +662,11 @@ mod tests {
             [format!("ui.work_panel_tab.{}", deleted.id)],
         )
         .unwrap();
+        db.execute(
+            "INSERT INTO runtime_settings(key,value,updated_at) VALUES(?1,'{\"follow\":true}','2026-09-26')",
+            [format!("ui.agent_dock.{}", deleted.id)],
+        )
+        .unwrap();
         db.execute("INSERT INTO runtime_settings(key,value,updated_at) VALUES('runtime.provider','openai','2026-09-26') ON CONFLICT(key) DO UPDATE SET value=excluded.value",[]).unwrap();
         // Mandates and receipts are append-only, yet still go with the project.
         let digest = "0".repeat(64);
@@ -797,6 +803,7 @@ mod tests {
         for key in [
             format!("companion.target.{}", deleted.id),
             format!("ui.work_panel_tab.{}", deleted.id),
+            format!("ui.agent_dock.{}", deleted.id),
         ] {
             assert_eq!(
                 db.query_row(

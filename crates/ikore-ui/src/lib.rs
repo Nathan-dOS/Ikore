@@ -3,6 +3,8 @@
 
 mod activity;
 mod agent_console;
+mod agent_dock;
+mod agent_dock_view;
 mod agents;
 mod agents_view;
 mod app_model;

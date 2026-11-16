@@ -252,6 +252,7 @@ fn seed_profile(root: &Path) {
             tabs: Vec::new(),
             auto_open_review: false,
             work_panel_tab: None,
+            agent_dock: None,
         })
         .unwrap();
     std::fs::write(root.join("AGENTS_UI_FIXTURE"), FIXTURE_MARKER).unwrap();

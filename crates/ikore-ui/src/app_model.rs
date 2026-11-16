@@ -404,6 +404,8 @@ pub struct AppModel {
     /// Every project and its recent work, beside the nav rail (ADR-042).
     pub(crate) projects_sidebar: crate::projects_sidebar::ProjectsSidebar,
     pub(crate) work_panel: crate::work_panel::WorkPanel,
+    /// The bottom agent dock (ADR-040, M3 and M4).
+    pub(crate) agent_dock: crate::agent_dock::AgentDock,
     /// Scroll of the open conversation, which the question navigator reads and moves.
     pub(crate) chat_scroll: gpui::ScrollHandle,
     /// Where the questions of the open conversation were laid out last; shared with its prepaint.
@@ -971,6 +973,7 @@ impl AppModel {
             chat_composer_subscriptions: HashMap::new(),
             projects_sidebar: Default::default(),
             work_panel: Default::default(),
+            agent_dock: Default::default(),
             chat_scroll: gpui::ScrollHandle::new(),
             chat_question_layout: Default::default(),
             cli_model_search_input,
@@ -8729,6 +8732,10 @@ impl AppModel {
             .and_then(|value| value.work_panel_tab.as_deref())
             .and_then(crate::work_panel::WorkPanelTab::from_id)
             .unwrap_or_default();
+        // The project's dock: mode, height, following and agent (ADR-040 M3/M4).
+        self.agent_dock = crate::agent_dock::AgentDock::restore(
+            session.and_then(|value| value.agent_dock.as_ref()),
+        );
         self.activity.clear();
         self.indexing_status = None;
         self.workspace.update(cx, |workspace, cx| {
@@ -8938,6 +8945,7 @@ impl AppModel {
             tabs,
             auto_open_review: self.auto_open_review,
             work_panel_tab: Some(self.work_panel.tab.id().to_string()),
+            agent_dock: Some(self.agent_dock.session()),
         })
     }
 
@@ -9336,6 +9344,8 @@ impl AppModel {
                         !matches!(status, TerminalRunStatus::Completed),
                     );
                 }
+                // The dock learns of the run: its tab, and whether it follows it.
+                self.note_agent_dock_run(&envelope, cx);
                 let gap = self
                     .agents
                     .update(cx, |agents, _| agents.record_event(*envelope));
@@ -10662,6 +10672,7 @@ mod tests {
             tabs: Vec::new(),
             auto_open_review: true,
             work_panel_tab: Some("search".into()),
+            agent_dock: None,
             updated_at: "now".into(),
         };
         model.update(cx, |model, cx| {
@@ -10779,6 +10790,7 @@ mod tests {
                         auto_open_review: false,
                         // A tab a newer build saved opens the default one.
                         work_panel_tab: Some("timeline".into()),
+                        agent_dock: None,
                         updated_at: "now".into(),
                     }),
                     tabs: Vec::new(),

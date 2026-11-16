@@ -354,6 +354,14 @@ impl Consoles {
         self.surfaces.get_mut().entry(key.to_owned()).or_default()
     }
 
+    /// Whether `key`'s console shows its newest row; a console never drawn does.
+    pub(crate) fn following(&self, key: &str) -> bool {
+        self.surfaces
+            .borrow()
+            .get(key)
+            .is_none_or(SurfaceState::following)
+    }
+
     /// How `key`'s console shows a finished run's actions.
     pub(crate) fn display(&self, key: &str) -> RunDisplay {
         self.surfaces

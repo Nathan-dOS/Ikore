@@ -46,6 +46,7 @@ actions!(
         RunPrimaryFlowStep,
         ToggleContextRail,
         ToggleCompanionDock,
+        ToggleAgentDock,
         ToggleProjectsSidebar,
         SearchProject,
         PreviousChatQuestion,
@@ -110,6 +111,8 @@ pub(crate) fn register_navigation_keybindings(cx: &mut App) {
             Some("Shell && !CompanionDock && !NativeTextInput"),
         ),
         KeyBinding::new("ctrl-shift-c", ToggleCompanionDock, None),
+        // The bottom agent console, from any view and any focus (ADR-040 M3).
+        KeyBinding::new("ctrl-j", ToggleAgentDock, None),
         // Walks the questions of the open conversation, from the composer too.
         KeyBinding::new("alt-up", PreviousChatQuestion, None),
         KeyBinding::new("alt-down", NextChatQuestion, None),
@@ -220,6 +223,8 @@ impl Render for AppModel {
         let projects_trigger = self.observe_projects_sidebar_focus(window, cx);
         self.observe_work_panel_focus(window, cx);
         let unread = self.notifications.queue.unread();
+        // Rendered before the centre view: it records the height the Companion keeps clear.
+        let agent_dock = crate::agent_dock_view::dock(self, window, cx);
         if self.agents.read(cx).active_model_picker.is_some()
             && matches!(active, AppView::Agents | AppView::Chat)
         {
@@ -317,6 +322,9 @@ impl Render for AppModel {
             .on_action(cx.listener(|model, _: &ToggleCompanionDock, _, cx| {
                 model.toggle_companion_dock(cx);
             }))
+            .on_action(cx.listener(|model, _: &ToggleAgentDock, window, cx| {
+                model.toggle_agent_dock(AppModel::shell_body_height(window), cx);
+            }))
             .on_action(cx.listener(|model, _: &FocusNextControl, window, cx| {
                 model.move_keyboard_focus(true, window, cx);
             }))
@@ -344,14 +352,18 @@ impl Render for AppModel {
                     .child(
                         // The one framed surface: the centre view sits in a raised container
                         // on the canvas; the rails, header and footer around it are frameless.
+                        // The agent dock (ADR-040 M3) sits under the view in this row's bottom
+                        // padding, placed absolutely: as a column, the row would change how the
+                        // views measure their text (see `chat_view::centred`).
                         div()
                             .id("shell-center")
                             .debug_selector(|| "shell-center".into())
+                            .relative()
                             .flex()
                             .flex_1()
                             .min_w_0()
                             .min_h_0()
-                            .pb_2()
+                            .pb(px(8.0).max(self.agent_dock_inset()))
                             .when(active == AppView::Home, |center| center.pr_2())
                             .child(
                                 div()
@@ -368,7 +380,8 @@ impl Render for AppModel {
                                     .bg(theme::surface())
                                     .overflow_hidden()
                                     .child(content_panel(self, active, window, cx)),
-                            ),
+                            )
+                            .children(agent_dock),
                     )
                     .when_some(
                         crate::context_rail::context_rail(self, window, cx),
@@ -975,6 +988,7 @@ fn status_bar(model: &AppModel, badges: TabBadges, cx: &mut Context<AppModel>) -
                 .flex()
                 .items_center()
                 .gap_3()
+                .child(agent_console_item(model, hitl_count, cx))
                 .when_some(tokens, |right, tokens| {
                     right.child(status_readout(
                         "status-tokens",
@@ -997,6 +1011,59 @@ fn status_bar(model: &AppModel, badges: TabBadges, cx: &mut Context<AppModel>) -
                 ))
                 .child(status_readout("status-clock", Some(Icon::Clock), clock)),
         )
+}
+
+/// `● {agent} · {what it does} · {time}`, or `No agent running`, with the
+/// count of what needs attention; a click shows or hides the agent console.
+/// Nothing opens the dock on its own (ADR-040, 9.5).
+fn agent_console_item(
+    model: &AppModel,
+    hitl_count: usize,
+    cx: &mut Context<AppModel>,
+) -> AnyElement {
+    let (color, label, attention) = model.agent_console_status(cx);
+    let attention = attention + hitl_count;
+    div()
+        .id("status-agent-console")
+        .debug_selector(|| "status-agent-console".into())
+        .flex()
+        .items_center()
+        .gap_1()
+        .px_1()
+        .rounded_sm()
+        .cursor_pointer()
+        .hover(|style| style.bg(theme::surface_hover()))
+        .tooltip(|_, cx| {
+            cx.new(|_| {
+                crate::widgets::Tooltip::new("Show or hide the agent console")
+                    .with_shortcut("Ctrl+J")
+            })
+            .into()
+        })
+        .on_click(cx.listener(|model, _, window, cx| {
+            model.toggle_agent_dock(AppModel::shell_body_height(window), cx);
+        }))
+        .when_some(color, |item, color| {
+            item.child(crate::widgets::status_dot(color))
+        })
+        .child(
+            div()
+                .max_w(px(320.0))
+                .truncate()
+                .text_color(theme::text_muted())
+                .child(label),
+        )
+        .when(attention > 0, |item| {
+            item.child(
+                div()
+                    .px_1()
+                    .rounded_full()
+                    .bg(theme::warning())
+                    .text_color(theme::surface())
+                    .child(attention.to_string()),
+            )
+        })
+        .into_any_element()
 }
 
 #[cfg(test)]

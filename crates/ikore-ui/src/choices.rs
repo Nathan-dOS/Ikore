@@ -332,6 +332,19 @@ impl AppModel {
                 .map(|filter| Choice::new(filter.value(), filter.label(), filter == current))
                 .collect();
         }
+        // The dock's tabs past the sixth (ADR-040 M3).
+        if id == "agent-dock-more" {
+            return self
+                .agent_dock
+                .tabs()
+                .into_iter()
+                .skip(crate::agent_dock::VISIBLE_TABS)
+                .map(|agent| {
+                    let label = crate::agent_dock_view::summarize(self, &agent, cx).label;
+                    Choice::new(crate::agent_dock::agent_key(&agent), label, false)
+                })
+                .collect();
+        }
         if field == "agent-console-display" {
             let current = self.agents.read(cx).consoles.display(key);
             return RunDisplay::ALL
@@ -707,6 +720,12 @@ impl AppModel {
         if field == "agent-console-filter" {
             if let Some(filter) = ConsoleFilter::from_value(value) {
                 self.console_set_filter(key, filter, cx);
+            }
+            return;
+        }
+        if id == "agent-dock-more" {
+            if let Some(agent) = crate::agent_dock::agent_from_key(value) {
+                self.pin_agent_dock(agent, cx);
             }
             return;
         }

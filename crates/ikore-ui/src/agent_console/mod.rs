@@ -4,9 +4,11 @@
 //! - `projection`: a run's events folded into blocks (pure).
 //! - `model`: each surface's list, following, selection and grouping.
 //! - `view`: the rendering.
+//! - `follow`: which agent the dock shows (pure).
 //!
 //! The `AppModel` methods below are the console's actions.
 
+pub(crate) mod follow;
 pub(crate) mod model;
 pub(crate) mod projection;
 #[cfg(test)]

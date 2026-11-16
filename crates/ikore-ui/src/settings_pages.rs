@@ -65,6 +65,9 @@ pub(crate) fn page_content(
 fn general_page(model: &AppModel, hl: Option<&str>, cx: &mut Context<AppModel>) -> PageContent {
     let rail_visible = !model.context_rail_collapsed(cx);
     let reduced_motion = model.settings_modal.reduced_motion();
+    // The dock's switch says whether it shows on the views that have it.
+    let dock_shown = model.agent_dock.mode != Some(crate::agent_dock::DockMode::Hidden);
+    let dock_follows = model.agent_dock.follow.enabled;
     PageContent::new(SettingsPage::General.label())
         .description(SettingsPage::General.description())
         .section(
@@ -106,6 +109,52 @@ fn general_page(model: &AppModel, hl: Option<&str>, cx: &mut Context<AppModel>) 
                             |model, cx| model.toggle_context_rail(cx),
                         )),
                 )],
+            ),
+        )
+        .section(
+            "Agent console",
+            section(
+                "Agent console",
+                None,
+                vec![
+                    row(
+                        "agent-console",
+                        hl,
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .child(keycaps("ctrl-j"))
+                            .child(switch(
+                                "settings-agent-console",
+                                dock_shown,
+                                true,
+                                cx,
+                                move |model, cx| {
+                                    let mode = if dock_shown {
+                                        crate::agent_dock::DockMode::Hidden
+                                    } else {
+                                        model
+                                            .agent_dock
+                                            .last_visible
+                                            .unwrap_or(crate::agent_dock::DockMode::Strip)
+                                    };
+                                    model.set_agent_dock_mode(mode, cx);
+                                },
+                            )),
+                    ),
+                    row(
+                        "agent-console-follow",
+                        hl,
+                        switch(
+                            "settings-agent-console-follow",
+                            dock_follows,
+                            true,
+                            cx,
+                            move |model, cx| model.set_agent_dock_follow(!dock_follows, cx),
+                        ),
+                    ),
+                ],
             ),
         )
         .section(
@@ -196,6 +245,7 @@ pub(crate) fn shortcut_catalog() -> Vec<Shortcut> {
         ),
         shortcut(NAV, "ctrl-enter", "Run the suggested next step", true),
         shortcut(NAV, "ctrl-b", "Show or hide the work panel", true),
+        shortcut(NAV, "ctrl-j", "Show or hide the agent console", true),
         shortcut(
             NAV,
             "ctrl-shift-e",

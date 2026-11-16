@@ -78,6 +78,7 @@ fn main() {
             tabs: Vec::new(),
             auto_open_review: false,
             work_panel_tab: None,
+            agent_dock: None,
         })
         .unwrap();
     let handle = core.runtime_handle().clone();

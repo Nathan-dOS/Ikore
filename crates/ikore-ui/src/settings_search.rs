@@ -78,6 +78,22 @@ pub(crate) static ENTRIES: &[SettingsEntry] = &[
         "context rail sidebar right panel ctrl-b files search ctrl-shift-f",
     ),
     entry(
+        "agent-console",
+        P::General,
+        "Agent console",
+        "Show the agent console",
+        "A bottom panel that shows what the running agent is doing on every view except Agents.",
+        "dock terminal bottom panel ctrl-j",
+    ),
+    entry(
+        "agent-console-follow",
+        P::General,
+        "Agent console",
+        "Follow the active agent",
+        "Switch the agent console to the agent that started most recently. Pipeline stages take precedence over background agents.",
+        "follow active agent auto switch",
+    ),
+    entry(
         "reduced-motion",
         P::General,
         "Accessibility",
