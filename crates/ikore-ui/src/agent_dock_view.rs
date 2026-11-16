@@ -20,6 +20,10 @@ use crate::app_model::{AppModel, AppView};
 use crate::icons::Icon;
 use crate::theme;
 
+/// How far a tab gives way on a narrow window: its dot, the start of its
+/// label and its close button.
+const TAB_MIN_WIDTH: f32 = 72.0;
+
 /// What a tab and the strip say about an agent.
 pub(crate) struct AgentSummary {
     pub(crate) agent: AgentIdentifier,
@@ -526,11 +530,13 @@ fn tab(
         }
         (status_color(run.status), text)
     });
+    // Tabs give way on a narrow window: their texts shorten, the close button and
+    // the overflow control stay in reach (QA, 960x640).
     div()
         .id(SharedString::from(selector.clone()))
         .debug_selector(move || selector.clone())
         .flex()
-        .flex_shrink_0()
+        .min_w(px(TAB_MIN_WIDTH))
         .items_center()
         .gap_1()
         .px_2()
@@ -548,6 +554,7 @@ fn tab(
             tab.child(
                 div()
                     .debug_selector(move || selector.clone())
+                    .flex_shrink_0()
                     .size_1()
                     .rounded_full()
                     .bg(theme::accent()),
@@ -555,6 +562,8 @@ fn tab(
         })
         .child(
             div()
+                .min_w_0()
+                .truncate()
                 .text_color(if shown {
                     theme::text()
                 } else {
@@ -563,7 +572,7 @@ fn tab(
                 .child(summary.label.clone()),
         )
         .when_some(status, |tab, (color, text)| {
-            tab.child(div().text_color(color).child(text))
+            tab.child(div().min_w_0().truncate().text_color(color).child(text))
         })
         .when(summary.needs_attention(), |tab| {
             tab.child(crate::widgets::icon(
@@ -579,6 +588,7 @@ fn tab(
                     let selector = format!("agent-dock-tab-close:{key}");
                     move || selector.clone()
                 })
+                .flex_shrink_0()
                 .px_1()
                 .rounded_sm()
                 .text_color(theme::text_subtle())
@@ -630,13 +640,17 @@ fn expanded_dock(
                     tab(summary, is_shown, marked, cx)
                 }))
                 .when(overflow > 0, |row| {
-                    row.child(crate::select_menu::compact_control(
-                        "agent-dock-more".to_owned(),
-                        "More",
-                        format!("+{overflow}"),
-                        true,
-                        cx,
-                    ))
+                    row.child(
+                        div()
+                            .flex_shrink_0()
+                            .child(crate::select_menu::compact_control(
+                                "agent-dock-more".to_owned(),
+                                "More",
+                                format!("+{overflow}"),
+                                true,
+                                cx,
+                            )),
+                    )
                 }),
         )
         .when_some(chip, |header, label| {
@@ -927,6 +941,12 @@ mod tests {
         let now = chrono::DateTime::parse_from_rfc3339("2026-11-15T10:05:00Z").unwrap();
         let start = "2026-11-15T10:02:46Z";
         assert_eq!(time_label(true, start, start, now).as_deref(), Some("2:14"));
+        // Past the hour, hours lead instead of a minute count that keeps growing.
+        let long = "2026-11-15T08:02:46Z";
+        assert_eq!(
+            time_label(true, long, long, now).as_deref(),
+            Some("2:02:14")
+        );
         let end = "2026-11-15T10:02:00Z";
         assert_eq!(
             time_label(false, start, end, now).as_deref(),

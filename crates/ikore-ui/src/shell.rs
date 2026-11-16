@@ -89,6 +89,8 @@ pub(crate) const RAIL_SHORTCUTS: [(AppView, &str); 10] = [
 ];
 
 pub(crate) fn register_navigation_keybindings(cx: &mut App) {
+    let mapper = cx.keyboard_mapper().clone();
+    cx.bind_keys(section_keybindings(mapper.as_ref()));
     cx.bind_keys([
         KeyBinding::new("ctrl-1", SelectHomeView, None),
         KeyBinding::new("ctrl-2", SelectForgeView, None),
@@ -101,10 +103,6 @@ pub(crate) fn register_navigation_keybindings(cx: &mut App) {
         KeyBinding::new("ctrl-9", SelectNotesView, None),
         KeyBinding::new("ctrl-0", SelectCanvasView, None),
         KeyBinding::new("ctrl-,", SelectSettingsView, None),
-        // Cycle the current view's own section strip (Pulsations/Forge/Settings) or the
-        // agent detail's tabs (Agents).
-        KeyBinding::new("ctrl-shift-[", PreviousSection, None),
-        KeyBinding::new("ctrl-shift-]", NextSection, None),
         // Runs the flow engine's primary suggested next step.
         KeyBinding::new(
             "ctrl-enter",
@@ -130,6 +128,21 @@ pub(crate) fn register_navigation_keybindings(cx: &mut App) {
             Some("Shell && !NativeEditor"),
         ),
     ]);
+}
+
+/// `ctrl-shift-[` / `ctrl-shift-]` cycle the current view's own section strip
+/// (Pulsations/Forge/Settings) or the agent detail's tabs (Agents). They go through the
+/// keyboard layout: on Windows GPUI reads Shift plus a punctuation key as the shifted
+/// character with Shift consumed (`ctrl-}`), so the bindings as written never matched there.
+fn section_keybindings(mapper: &dyn gpui::PlatformKeyboardMapper) -> [KeyBinding; 2] {
+    let binding = |keys: &str, action: Box<dyn gpui::Action>| {
+        KeyBinding::load(keys, action, None, false, None, mapper)
+            .expect("the section shortcuts are valid keystrokes")
+    };
+    [
+        binding("ctrl-shift-[", Box::new(PreviousSection)),
+        binding("ctrl-shift-]", Box::new(NextSection)),
+    ]
 }
 
 /// Keyboard hint shown in a rail tooltip for `view`.
@@ -213,6 +226,12 @@ fn parse_qa_window_size(value: &str) -> Option<(f32, f32)> {
 
 impl Render for AppModel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.shell_focus_claimed {
+            self.shell_focus_claimed = true;
+            if window.focused(cx).is_none() {
+                self.shell_focus.focus(window);
+            }
+        }
         self.observe_canvas_focus(window, cx);
         self.observe_performance_frame(window, cx);
         self.note_window_activation(window.is_window_active(), cx);
@@ -245,6 +264,8 @@ impl Render for AppModel {
             .font_family(theme::FONT_UI)
             // Named so bindings can exclude a descendant (Tab stays with the code editor).
             .key_context("Shell")
+            // Where the keyboard starts: zero-size, so no click ever lands on it.
+            .child(div().absolute().size_0().track_focus(&self.shell_focus))
             .on_action(cx.listener(|model, _: &SelectHomeView, _, cx| {
                 model.select_view(AppView::Home, cx);
             }))
@@ -1084,6 +1105,45 @@ mod tests {
         assert_eq!(parse_qa_window_size("1024x639"), None);
         assert_eq!(parse_qa_window_size("NaNx768"), None);
         assert_eq!(parse_qa_window_size("invalid"), None);
+    }
+
+    /// Windows reads Ctrl+Shift+] as `ctrl-}`: the section shortcuts must take
+    /// the layout's mapping instead of matching only the keystroke as written.
+    #[test]
+    fn section_shortcuts_match_what_the_keyboard_layout_reads() {
+        struct ShiftedPunctuation;
+        impl gpui::PlatformKeyboardMapper for ShiftedPunctuation {
+            fn map_key_equivalent(
+                &self,
+                mut keystroke: gpui::Keystroke,
+                _use_key_equivalents: bool,
+            ) -> gpui::KeybindingKeystroke {
+                let shifted = match keystroke.key.as_str() {
+                    "[" => Some("{"),
+                    "]" => Some("}"),
+                    _ => None,
+                };
+                if let Some(shifted) = shifted.filter(|_| keystroke.modifiers.shift) {
+                    keystroke.modifiers.shift = false;
+                    keystroke.key = shifted.into();
+                }
+                gpui::KeybindingKeystroke::from_keystroke(keystroke)
+            }
+
+            fn get_key_equivalents(&self) -> Option<&collections::HashMap<char, char>> {
+                None
+            }
+        }
+
+        let typed = |keys: &str| [gpui::Keystroke::parse(keys).expect("keystroke")];
+        let [previous, next] = section_keybindings(&ShiftedPunctuation);
+        assert_eq!(previous.match_keystrokes(&typed("ctrl-{")), Some(false));
+        assert_eq!(next.match_keystrokes(&typed("ctrl-}")), Some(false));
+        assert_eq!(next.match_keystrokes(&typed("ctrl-shift-]")), None);
+
+        // Where nothing is remapped (the test platform), the keystroke as written.
+        let [_, next] = section_keybindings(&gpui::DummyKeyboardMapper);
+        assert_eq!(next.match_keystrokes(&typed("ctrl-shift-]")), Some(false));
     }
 
     #[gpui::test]

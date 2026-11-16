@@ -25,6 +25,8 @@ tokio.workspace = true
 raw-window-handle = "0.6"
 
 [dev-dependencies]
+# Already in the graph through gpui; names the keyboard mapper's map in a test.
+collections = { package = "gpui_collections", version = "0.2.2" }
 gpui = { workspace = true, features = ["test-support"] }
 ikore-test-support.workspace = true
 

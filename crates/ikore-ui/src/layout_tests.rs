@@ -2010,6 +2010,44 @@ fn header_is_informational_and_fits_the_minimum_width(cx: &mut TestAppContext) {
     assert!(context.size.width > px(0.0));
 }
 
+/// Visual QA (2026-11-16): the Shell holds the keyboard from the first frame,
+/// so shortcuts and Tab answer before any click. A deliberate blur stays the
+/// developer's: the Shell does not take the keyboard back.
+#[gpui::test]
+fn shortcuts_answer_from_the_first_frame(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.update(|_, cx| crate::shell::register_navigation_keybindings(cx));
+    visual.simulate_resize(size(px(1280.0), px(820.0)));
+    visual.run_until_parked();
+    assert!(
+        model.read_with(visual, |model, _| model.active_view()) != AppView::Agents,
+        "the fixture opens elsewhere"
+    );
+    visual.simulate_keystrokes("ctrl-5");
+    visual.run_until_parked();
+    assert_eq!(
+        model.read_with(visual, |model, _| model.active_view()),
+        AppView::Agents
+    );
+    let tab = model.read_with(visual, |model, cx| model.agents.read(cx).detail_tab);
+    visual.simulate_keystrokes("ctrl-shift-]");
+    visual.run_until_parked();
+    assert_ne!(
+        model.read_with(visual, |model, cx| model.agents.read(cx).detail_tab),
+        tab
+    );
+    visual.simulate_keystrokes("tab");
+    visual.run_until_parked();
+    let focused = visual.update(|window, cx| window.focused(cx));
+    assert!(focused.is_some_and(|focused| {
+        model.read_with(visual, |model, _| focused != model.shell_focus)
+    }));
+
+    visual.update(|window, _| window.blur());
+    visual.run_until_parked();
+    visual.update(|window, cx| assert!(window.focused(cx).is_none()));
+}
+
 #[gpui::test]
 fn keyboard_shortcuts_follow_rail_order(cx: &mut TestAppContext) {
     let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
@@ -4055,6 +4093,58 @@ fn the_companion_stays_above_the_agent_dock(cx: &mut TestAppContext) {
             let frame = visual.debug_bounds("shell-frame").unwrap();
             assert!(frame.size.height >= px(240.0), "{width}x{height} {mode:?}");
         }
+    }
+}
+
+/// Visual QA (2026-11-16): on the narrowest window, seven running agents
+/// give six tabs and the overflow control. The tabs give way instead of
+/// pushing the last one and the control under the header's buttons.
+#[gpui::test]
+fn agent_dock_tabs_give_way_on_a_narrow_window(cx: &mut TestAppContext) {
+    use crate::agent_dock::{DockMode, VISIBLE_TABS};
+    use ikore_core::terminals::{ExecutionOrigin, TerminalRunStatus};
+
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(960.0), px(640.0)));
+    select(&model, visual, AppView::Workspace);
+    let roles = [
+        AgentRole::IntakeRouter,
+        AgentRole::TaskSpecifier,
+        AgentRole::ContractAgent,
+        AgentRole::BackendAgent,
+        AgentRole::TestAgent,
+        AgentRole::Integrator,
+        AgentRole::FeatureAgent,
+    ];
+    for (index, role) in roles.into_iter().enumerate() {
+        let run = dock_run(
+            role,
+            &format!("narrow-run-{index}"),
+            ExecutionOrigin::Pipeline,
+            TerminalRunStatus::Running,
+        );
+        deliver_run_event(&model, visual, &run, 1);
+    }
+    model.update(visual, |m, cx| {
+        m.set_agent_dock_mode(DockMode::Expanded, cx)
+    });
+    visual.run_until_parked();
+
+    let more = visual
+        .debug_bounds("agent-dock-more")
+        .expect("the seventh agent goes to More");
+    let follow = visual.debug_bounds("agent-dock-follow").unwrap();
+    assert!(more.right() <= follow.left(), "{more:?} under {follow:?}");
+    // Support comes after the stages, so the six stages keep the tabs.
+    let closes: Vec<_> = roles
+        .iter()
+        .filter_map(|role| {
+            visual.debug_bounds(leak(format!("agent-dock-tab-close:role:{}", role.as_str())))
+        })
+        .collect();
+    assert_eq!(closes.len(), VISIBLE_TABS);
+    for close in closes {
+        assert!(close.right() <= more.left(), "{close:?} under {more:?}");
     }
 }
 

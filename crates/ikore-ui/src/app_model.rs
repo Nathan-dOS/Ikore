@@ -359,6 +359,12 @@ pub struct AppModel {
     pub(crate) stage_feedback_input: Entity<NativeTextInput>,
     /// Keeps the Review's C/F/Tab/Enter/R/D bindings reachable after a click on the brief.
     pub(crate) review_focus: gpui::FocusHandle,
+    /// Holds the keyboard from the first frame. With nothing focused, GPUI sends a key
+    /// only to the window's root view node, outside the Shell's context and actions, so
+    /// no shortcut answered until a click focused a control (visual QA, 2026-11-16).
+    pub(crate) shell_focus: gpui::FocusHandle,
+    /// The first frame took the keyboard; a deliberate blur later still leaves none.
+    pub(crate) shell_focus_claimed: bool,
     /// Notes of flagged brief items, by item index, for the checkpoint in
     /// `brief_notes_scope` (ADR-024 M2). Never persisted.
     pub(crate) brief_notes: HashMap<usize, Entity<NativeTextInput>>,
@@ -935,6 +941,8 @@ impl AppModel {
             description_review_input,
             stage_feedback_input,
             review_focus: cx.focus_handle(),
+            shell_focus: cx.focus_handle(),
+            shell_focus_claimed: false,
             brief_notes: HashMap::new(),
             brief_notes_scope: None,
             stage_feedback_scope: None,
@@ -8878,7 +8886,11 @@ impl AppModel {
         self.active_view = active_view;
         self.needs_resync = false;
         self.session_dirty = false;
-        self.status = format!("Session restored: {}", restored.root_path).into();
+        self.status = format!(
+            "Session restored: {}",
+            crate::widgets::display_path(&restored.root_path)
+        )
+        .into();
         if let Some(notice) = restored.notice {
             self.push_header_notice(HeaderNoticeKind::Notice, notice, cx);
         }

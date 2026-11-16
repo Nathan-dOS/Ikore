@@ -3034,6 +3034,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "gpui",
+ "gpui_collections",
  "ikore-contracts",
  "ikore-core",
  "ikore-editor",

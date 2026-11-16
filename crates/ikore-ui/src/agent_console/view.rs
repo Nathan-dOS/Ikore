@@ -45,15 +45,22 @@ pub(crate) fn tool_icon(kind: ToolKind) -> Icon {
     }
 }
 
-/// `0.2 s`, `16 s`, `2:14`.
+/// `0.2 s`, `16 s`, `2:14`, `1:02:14`.
 pub(crate) fn duration_label(ms: u64) -> String {
+    let seconds = ms / 1000;
     if ms < 10_000 {
         format!("{:.1} s", ms as f64 / 1000.0)
     } else if ms < 60_000 {
-        format!("{} s", ms / 1000)
-    } else {
-        let seconds = ms / 1000;
+        format!("{seconds} s")
+    } else if seconds < 3600 {
         format!("{}:{:02}", seconds / 60, seconds % 60)
+    } else {
+        format!(
+            "{}:{:02}:{:02}",
+            seconds / 3600,
+            seconds / 60 % 60,
+            seconds % 60
+        )
     }
 }
 
