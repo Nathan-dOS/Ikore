@@ -148,6 +148,7 @@ pub(super) fn agent_detail_panel(
                             run: selected_run,
                             filter: event_filter,
                             expanded: false,
+                            narrow: false,
                         },
                         cx,
                     );
@@ -297,6 +298,7 @@ pub(super) fn expanded_cli_detail_panel(
                 run: selected_run.as_ref(),
                 filter,
                 expanded: true,
+                narrow: false,
             },
             cx,
         );
@@ -409,6 +411,7 @@ pub(super) fn expanded_cli_detail_panel(
                 run: selected_run.as_ref(),
                 filter,
                 expanded: true,
+                narrow: false,
             },
             cx,
         );

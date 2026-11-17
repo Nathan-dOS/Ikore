@@ -187,6 +187,7 @@ pub(super) fn free_form_card(
             run: selected_run,
             filter: event_filter,
             expanded: false,
+            narrow: false,
         },
         cx,
     );

@@ -66,6 +66,7 @@ mod resolution_view;
 mod review_brief_view;
 mod review_view;
 mod run_changes;
+mod run_tab;
 mod scope_request_view;
 mod select_menu;
 mod selectable_message;

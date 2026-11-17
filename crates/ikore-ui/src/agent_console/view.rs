@@ -28,6 +28,20 @@ pub(crate) struct ConsoleSurface<'a> {
     pub(crate) filter: ConsoleFilter,
     /// The panel fills its column instead of the card's fixed height.
     pub(crate) expanded: bool,
+    /// A narrow column, the work panel's Run tab: the header's controls go
+    /// under the run's summary instead of beside it.
+    pub(crate) narrow: bool,
+}
+
+/// Where the run header puts its controls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HeaderFit {
+    /// A card of fixed height: the controls, then the button that expands it.
+    Card,
+    /// A panel that fills its column: the controls beside the summary.
+    Panel,
+    /// A narrow column: the controls under the summary, wrapping.
+    Narrow,
 }
 
 pub(crate) fn tool_icon(kind: ToolKind) -> Icon {
@@ -255,7 +269,13 @@ pub(crate) fn console(
         run,
         filter,
         expanded,
+        narrow,
     } = surface;
+    let fit = match (narrow, expanded) {
+        (true, _) => HeaderFit::Narrow,
+        (false, true) => HeaderFit::Panel,
+        (false, false) => HeaderFit::Card,
+    };
     let (view, focus, now_line, reasoning, changes) = {
         let agents = model.agents.read(cx);
         // PD6: what a finished stage run published.
@@ -355,7 +375,7 @@ pub(crate) fn console(
         filter,
         &view,
         reasoning.as_deref(),
-        expanded,
+        fit,
         cx,
     ));
     if let Some(query) = search.as_ref() {
@@ -458,7 +478,7 @@ fn run_header(
     filter: ConsoleFilter,
     view: &ConsoleView,
     reasoning: Option<&str>,
-    expanded: bool,
+    fit: HeaderFit,
     cx: &mut Context<AppModel>,
 ) -> AnyElement {
     let color = match run.map(|run| run.status) {
@@ -482,45 +502,41 @@ fn run_header(
     let search_key = key.to_owned();
     let copy_key = key.to_owned();
     let follow_key = key.to_owned();
-    div()
-        .id(SharedString::from(format!("agent-console-header:{key}")))
-        .flex()
-        .items_center()
-        .gap_2()
-        .px_2()
-        .py_1()
-        .border_b_1()
-        .border_color(theme::border())
-        .text_xs()
-        .child(crate::widgets::status_dot(color))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .text_color(theme::text())
-                .child(summary),
-        )
-        .when(
-            run.is_some_and(|run| run.status.is_terminal()) && view.rows.actions > 1,
-            |header| {
-                header.child(crate::select_menu::compact_control(
-                    format!("agent-console-display:{key}"),
-                    "Actions",
-                    view.display.label(),
-                    true,
-                    cx,
-                ))
-            },
-        )
-        .child(crate::select_menu::compact_control(
+    let status = [
+        crate::widgets::status_dot(color),
+        div()
+            .flex_1()
+            .min_w_0()
+            .truncate()
+            .text_color(theme::text())
+            .child(summary)
+            .into_any_element(),
+    ];
+    let display =
+        (run.is_some_and(|run| run.status.is_terminal()) && view.rows.actions > 1).then(|| {
+            crate::select_menu::compact_control(
+                format!("agent-console-display:{key}"),
+                "Actions",
+                view.display.label(),
+                true,
+                cx,
+            )
+        });
+    let follow = follow_control(
+        format!("agent-console-follow:{key}"),
+        view.following,
+        cx,
+        move |model, cx| model.console_follow(&follow_key, cx),
+    );
+    let tools = [
+        crate::select_menu::compact_control(
             format!("agent-console-filter:{key}"),
             "Filter",
             filter.label(),
             run.is_some(),
             cx,
-        ))
-        .child(crate::widgets::icon_button(
+        ),
+        crate::widgets::icon_button(
             SharedString::from(format!("agent-console-search:{search_key}")),
             Icon::Search,
             crate::widgets::Tooltip::new("Search the console").with_shortcut("Ctrl+F"),
@@ -529,8 +545,8 @@ fn run_header(
             !view.rows.rows.is_empty(),
             cx,
             move |model, window, cx| model.console_open_search(&search_key, window, cx),
-        ))
-        .child(crate::widgets::icon_button(
+        ),
+        crate::widgets::icon_button(
             SharedString::from(format!("agent-console-copy-all:{copy_key}")),
             if view.copied.as_deref() == Some("*") {
                 Icon::Check
@@ -547,14 +563,50 @@ fn run_header(
             !view.rows.rows.is_empty(),
             cx,
             move |model, _, cx| model.console_copy_all(&copy_key, cx),
-        ))
-        .child(follow_control(
-            format!("agent-console-follow:{key}"),
-            view.following,
-            cx,
-            move |model, cx| model.console_follow(&follow_key, cx),
-        ))
-        .when(!expanded, |header| {
+        ),
+    ];
+    let header = div()
+        .id(SharedString::from(format!("agent-console-header:{key}")))
+        .px_2()
+        .py_1()
+        .border_b_1()
+        .border_color(theme::border())
+        .text_xs();
+    if fit == HeaderFit::Narrow {
+        // No room beside the summary: `Live` stays on its line, the tools take
+        // the next one, and wrap.
+        return header
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .children(status)
+                    .child(follow),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_1()
+                    .children(display)
+                    .children(tools),
+            )
+            .into_any_element();
+    }
+    header
+        .flex()
+        .items_center()
+        .gap_2()
+        .children(status)
+        .children(display)
+        .children(tools)
+        .child(follow)
+        .when(fit == HeaderFit::Card, |header| {
             header.child(crate::widgets::icon_button(
                 SharedString::from(format!("agent-expand:{key}")),
                 Icon::ChevronUp,
