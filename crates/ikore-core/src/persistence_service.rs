@@ -7007,15 +7007,19 @@ mod tests {
         (format!("http://{address}"), handle)
     }
 
-    fn spawn_delayed_sse() -> (String, thread::JoinHandle<()>) {
+    /// Streams one SSE event and then stalls: the rest never comes, and the
+    /// connection stays open until the client hangs up, so only the client's
+    /// attempt timeout can end the attempt.
+    fn spawn_stalled_sse() -> (String, thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("fake provider should bind");
         let address = listener
             .local_addr()
             .expect("fake provider address should resolve");
         let handle = thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("fake provider should accept");
+            // Only bounds a broken test: the client hangs up long before.
             stream
-                .set_read_timeout(Some(Duration::from_secs(5)))
+                .set_read_timeout(Some(Duration::from_secs(30)))
                 .expect("read timeout should set");
             let mut request = [0_u8; 16 * 1024];
             let _ = stream.read(&mut request);
@@ -7030,7 +7034,9 @@ mod tests {
                 .write_all(chunk.as_bytes())
                 .expect("first SSE chunk should write");
             stream.flush().expect("first SSE chunk should flush");
-            thread::sleep(Duration::from_millis(1_200));
+            // Stall until the client closes the connection (EOF or reset).
+            let mut rest = [0_u8; 1024];
+            while matches!(stream.read(&mut rest), Ok(read) if read > 0) {}
         });
         (format!("http://{address}"), handle)
     }
@@ -10180,7 +10186,7 @@ mod tests {
         };
         use std::time::Instant;
 
-        let (stream_endpoint, stream_server) = spawn_delayed_sse();
+        let (stream_endpoint, stream_server) = spawn_stalled_sse();
         let unused_listener =
             TcpListener::bind("127.0.0.1:0").expect("unused endpoint should bind");
         let unused_endpoint = format!(
@@ -10236,8 +10242,12 @@ mod tests {
                 name: "Stream no fallback".to_string(),
                 strategy: "priority".to_string(),
                 max_attempts: Some(3),
-                attempt_timeout_ms: Some(100),
-                route_timeout_ms: Some(2_000),
+                // The repository raises any attempt timeout below 1 s to 1 s.
+                attempt_timeout_ms: Some(1_000),
+                // Generous on purpose: only the attempt timeout may end the
+                // stalled stream. Between attempts the router writes to
+                // SQLite, which can take a second or more on a loaded machine.
+                route_timeout_ms: Some(60_000),
                 enabled: Some(true),
                 targets: vec![
                     crate::llm::RouteTarget {
@@ -10282,7 +10292,7 @@ mod tests {
             response_format: ResponseFormat::Text,
             max_output_tokens: 8,
             temperature: 0.0,
-            deadline: Instant::now() + Duration::from_secs(2),
+            deadline: Instant::now() + Duration::from_secs(60),
             stream: true,
             legacy_provider: "openai".to_string(),
             legacy_model: "unused".to_string(),
@@ -10309,6 +10319,9 @@ mod tests {
         assert!(snapshot.visible_output.is_none());
         assert!(!snapshot.visible_output_complete);
         assert_eq!(snapshot.attempts.len(), 2);
+        // Dropping the runtime closes the abandoned connection, which ends
+        // the fake provider's stall.
+        drop(runtime);
         stream_server.join().unwrap();
     }
 
