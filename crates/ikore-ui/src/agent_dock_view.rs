@@ -1,6 +1,7 @@
 //! The bottom agent dock's rendering (ADR-040, M3; specification 9): the
 //! 32 px strip, or the expanded panel with its tabs, the "now" line and the
-//! shared console, under a sash.
+//! shared console, under a sash. The work panel's Run tab (`run_tab`) shows
+//! the same agent with the pieces it borrows from here.
 
 use std::time::Instant;
 
@@ -250,8 +251,11 @@ pub(crate) fn dock(
     cx: &mut Context<AppModel>,
 ) -> Option<AnyElement> {
     let body = AppModel::shell_body_height(window);
+    // The Run tab reads the same agent: its reading counts with the dock hidden too.
+    let run_tab = crate::run_tab::on_screen(model, window, cx);
     if !model.agent_dock_visible(body) {
         model.agent_dock.rendered = px(0.0);
+        note_reading(model, false, run_tab, cx);
         return None;
     }
     let mode = model.agent_dock.effective_mode(body);
@@ -279,30 +283,7 @@ pub(crate) fn dock(
     } else {
         strip(model, &tabs, shown.as_ref(), mode, body, cx)
     };
-    // Reading the console higher up, or searching it, holds a switch back (10.3, rule 4).
-    let now = Instant::now();
-    let scrolled_up = expanded && !model.agents.read(cx).consoles.following(DOCK_SURFACE);
-    let searching = expanded
-        && model
-            .agent_console_search
-            .as_ref()
-            .is_some_and(|(key, _)| key == DOCK_SURFACE);
-    let mut switched = false;
-    if model.agent_dock.follow.scrolled_up != scrolled_up {
-        switched |= model.agent_dock.follow.apply(FollowInput::ScrolledUp {
-            up: scrolled_up,
-            at: now,
-        });
-    }
-    if model.agent_dock.follow.search_focused != searching {
-        switched |= model.agent_dock.follow.apply(FollowInput::SearchFocused {
-            focused: searching,
-            at: now,
-        });
-    }
-    if switched {
-        cx.notify();
-    }
+    note_reading(model, expanded, run_tab, cx);
     let dragging = model.agent_dock.drag.is_some();
     // In the bottom padding of `shell-center`, which `agent_dock_inset` sizes: the sash (or
     // the strip's top gap) and the dock, 8 px above the status bar.
@@ -350,6 +331,42 @@ pub(crate) fn dock(
             )
             .into_any_element(),
     )
+}
+
+/// Reading a console of the followed agent higher up, or searching it, holds
+/// a switch back (10.3, rule 4): the expanded dock's console, and the work
+/// panel's Run tab while it is on screen.
+fn note_reading(model: &mut AppModel, dock: bool, run_tab: bool, cx: &mut Context<AppModel>) {
+    let read = |key: &str| {
+        (dock && key == DOCK_SURFACE) || (run_tab && key == crate::run_tab::RUN_TAB_SURFACE)
+    };
+    let scrolled_up = {
+        let consoles = &model.agents.read(cx).consoles;
+        [DOCK_SURFACE, crate::run_tab::RUN_TAB_SURFACE]
+            .into_iter()
+            .any(|key| read(key) && !consoles.following(key))
+    };
+    let searching = model
+        .agent_console_search
+        .as_ref()
+        .is_some_and(|(key, _)| read(key));
+    let now = Instant::now();
+    let mut switched = false;
+    if model.agent_dock.follow.scrolled_up != scrolled_up {
+        switched |= model.agent_dock.follow.apply(FollowInput::ScrolledUp {
+            up: scrolled_up,
+            at: now,
+        });
+    }
+    if model.agent_dock.follow.search_focused != searching {
+        switched |= model.agent_dock.follow.apply(FollowInput::SearchFocused {
+            focused: searching,
+            at: now,
+        });
+    }
+    if switched {
+        cx.notify();
+    }
 }
 
 /// The strip: who is at work, what they are doing, and the other tabs as dots.
@@ -460,7 +477,7 @@ fn strip(
 
 /// What the agent does now: its live phase, target and counters from the
 /// pulse (M5), a phase of the host's own (PD5), or the run's status and time.
-fn now_text(model: &AppModel, summary: &AgentSummary, cx: &App) -> String {
+pub(crate) fn now_text(model: &AppModel, summary: &AgentSummary, cx: &App) -> String {
     let Some(run) = summary.run.as_ref() else {
         return run_line(None);
     };
@@ -654,23 +671,9 @@ fn expanded_dock(
                 }),
         )
         .when_some(chip, |header, label| {
-            header.child(
-                div()
-                    .id("agent-dock-switch-chip")
-                    .debug_selector(|| "agent-dock-switch-chip".into())
-                    .flex_shrink_0()
-                    .px_2()
-                    .py_1()
-                    .rounded_full()
-                    .bg(theme::accent())
-                    .text_xs()
-                    .text_color(theme::surface())
-                    .cursor_pointer()
-                    .on_click(cx.listener(|model, _, _, cx| model.take_agent_dock_switch(cx)))
-                    .child(format!("Switch to {label} →")),
-            )
+            header.child(switch_chip("agent-dock-switch-chip", &label, cx))
         })
-        .child(agent_follow_control(following, cx))
+        .child(agent_follow_control("agent-dock-follow", following, cx))
         .when_some(
             shown.map(|summary| summary.agent.clone()),
             |header, agent| {
@@ -706,7 +709,7 @@ fn expanded_dock(
             .text_color(theme::text_muted())
             .child("No agent activity yet · Ctrl+J")
             .into_any_element(),
-        Some(summary) if summary.api => api_lines(model, summary, cx),
+        Some(summary) if summary.api => api_lines(model, summary, "agent-dock-api", cx),
         Some(summary) => {
             let filter = model
                 .agents
@@ -723,6 +726,7 @@ fn expanded_dock(
                     run: summary.run.as_ref(),
                     filter,
                     expanded: true,
+                    narrow: false,
                 },
                 cx,
             )
@@ -763,9 +767,31 @@ fn expanded_dock(
         .into_any_element()
 }
 
+/// `Switch to {agent} →`: the switch the developer's reading held back
+/// (10.3, rule 4), now.
+pub(crate) fn switch_chip(id: &'static str, label: &str, cx: &mut Context<AppModel>) -> AnyElement {
+    div()
+        .id(id)
+        .debug_selector(move || id.into())
+        .flex_shrink_0()
+        .px_2()
+        .py_1()
+        .rounded_full()
+        .bg(theme::accent())
+        .text_xs()
+        .text_color(theme::surface())
+        .cursor_pointer()
+        .on_click(cx.listener(|model, _, _, cx| model.take_agent_dock_switch(cx)))
+        .child(format!("Switch to {label} →"))
+        .into_any_element()
+}
+
 /// `Following`, or `Pinned · Resume following` (9.4).
-fn agent_follow_control(following: bool, cx: &mut Context<AppModel>) -> AnyElement {
-    let selector = "agent-dock-follow";
+pub(crate) fn agent_follow_control(
+    selector: &'static str,
+    following: bool,
+    cx: &mut Context<AppModel>,
+) -> AnyElement {
     div()
         .id(selector)
         .debug_selector(move || selector.into())
@@ -801,9 +827,15 @@ fn agent_follow_control(following: bool, cx: &mut Context<AppModel>) -> AnyEleme
         .into_any_element()
 }
 
-/// An API Mode agent's live lines, oldest first (vector 10).
-fn api_lines(model: &AppModel, summary: &AgentSummary, cx: &mut Context<AppModel>) -> AnyElement {
-    let key = "dock-api".to_owned();
+/// An API Mode agent's live lines, oldest first (vector 10). `key` names the
+/// surface's own scroll and its elements: the dock's, or the Run tab's.
+pub(crate) fn api_lines(
+    model: &AppModel,
+    summary: &AgentSummary,
+    key: &str,
+    cx: &mut Context<AppModel>,
+) -> AnyElement {
+    let key = key.to_owned();
     let (lines, view) = {
         let agents = model.agents.read(cx);
         let lines = agents
@@ -837,7 +869,7 @@ fn api_lines(model: &AppModel, summary: &AgentSummary, cx: &mut Context<AppModel
                         .child(format!("API · {}", summary.label)),
                 )
                 .child(follow_control(
-                    "agent-dock-api-follow".to_owned(),
+                    format!("{key}-follow"),
                     view.following,
                     cx,
                     move |model, cx| model.console_follow_lines(&follow_key, cx),
@@ -845,7 +877,7 @@ fn api_lines(model: &AppModel, summary: &AgentSummary, cx: &mut Context<AppModel
         )
         .child(
             div()
-                .id("agent-dock-api-lines")
+                .id(SharedString::from(format!("{key}-lines")))
                 .flex_1()
                 .min_h_0()
                 .overflow_y_scroll()
@@ -869,7 +901,7 @@ fn api_lines(model: &AppModel, summary: &AgentSummary, cx: &mut Context<AppModel
         );
     if !view.following && view.unseen > 0 {
         frame = frame.child(crate::agent_console::view::new_pill(
-            "agent-dock-api-pill".to_owned(),
+            format!("{key}-pill"),
             view.unseen,
             cx,
             move |model, cx| model.console_follow_lines(&pill_key, cx),

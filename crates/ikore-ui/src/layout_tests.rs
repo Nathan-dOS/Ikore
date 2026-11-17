@@ -4875,13 +4875,25 @@ fn a_stage_run_lists_its_changes_and_opens_them_in_the_diff_tab(cx: &mut TestApp
     });
     visual.run_until_parked();
     let panel = visual.debug_bounds("context-rail").unwrap();
-    // Four tabs and the fold button still fit the panel.
+    // Five tabs with Run (ADR-042, item 6): what the row cannot hold goes under it,
+    // and the fold button stays in the panel, clear of every tab.
     let toggle = visual.debug_bounds("context-rail-toggle").unwrap();
-    let diff_tab = visual.debug_bounds("work-tab:diff").unwrap();
-    assert!(
-        toggle.right() <= panel.right() && diff_tab.right() <= toggle.left(),
-        "{diff_tab:?} {toggle:?} {panel:?}"
-    );
+    assert!(toggle.right() <= panel.right(), "{toggle:?} {panel:?}");
+    for tab in [
+        "work-tab:general",
+        "work-tab:files",
+        "work-tab:search",
+        "work-tab:run",
+        "work-tab:diff",
+    ] {
+        let bounds = visual.debug_bounds(tab).unwrap();
+        assert!(
+            bounds.left() >= panel.left()
+                && bounds.right() <= panel.right()
+                && !bounds.intersects(&toggle),
+            "{tab} {bounds:?} {toggle:?} {panel:?}"
+        );
+    }
     let diff = visual.debug_bounds("work-diff").unwrap();
     assert!(
         diff.left() >= panel.left() && diff.right() <= panel.right(),
@@ -4901,6 +4913,222 @@ fn a_stage_run_lists_its_changes_and_opens_them_in_the_diff_tab(cx: &mut TestApp
         assert_eq!(diff.selected, "artifact-2");
         assert!(matches!(diff.view, DiffView::Loading));
     });
+}
+
+/// ADR-042, item 6: the work panel's Run tab shows the run the dock follows,
+/// in the panel's column. It shows the dock's agent and resumes following
+/// with it, keeps its own place in the console, holds a switch back while
+/// the developer reads it with the dock hidden, and opens from the folded
+/// strip; a run that starts never opens it (item 7).
+#[gpui::test]
+fn the_run_tab_shows_the_run_the_dock_follows(cx: &mut TestAppContext) {
+    use crate::agent_console::follow::FollowInput;
+    use crate::agent_dock::{DOCK_SURFACE, DockMode};
+    use crate::run_tab::RUN_TAB_SURFACE;
+    use crate::work_panel::WorkPanelTab;
+    use ikore_core::terminals::{
+        EventDetailV1, ExecutionOrigin, TerminalEvent, TerminalEventEnvelope, TerminalEventKind,
+        TerminalRun, TerminalRunStatus, ToolKind,
+    };
+    use std::time::{Duration, Instant};
+
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    select(&model, visual, AppView::Workspace);
+    // Actions of `run`, as `handle_event` delivers them: rows enough to scroll.
+    let deliver = |visual: &mut VisualTestContext,
+                   run: &TerminalRun,
+                   sequences: std::ops::RangeInclusive<u64>| {
+        model.update(visual, |model, cx| {
+            for sequence in sequences {
+                let envelope = TerminalEventEnvelope {
+                    protocol_version: 2,
+                    project_id: "layout-project".into(),
+                    agent_role: run.agent_role,
+                    run_id: run.id.clone(),
+                    sequence,
+                    run: run.clone(),
+                    event: TerminalEvent {
+                        id: format!("{}-{sequence}", run.id),
+                        run_id: run.id.clone(),
+                        sequence,
+                        kind: TerminalEventKind::ToolUse,
+                        stream: None,
+                        content: format!("Read · src/file_{sequence}.rs"),
+                        redaction_count: 0,
+                        redaction_categories: vec![],
+                        created_at: "2026-11-15T10:00:00Z".into(),
+                        detail: Some(EventDetailV1::ActionCall {
+                            v: 1,
+                            ordinal: u32::try_from(sequence).unwrap(),
+                            kind: ToolKind::Read,
+                            name: "Read".into(),
+                        }),
+                        observed_at: None,
+                    },
+                };
+                model.note_agent_dock_run(&envelope, cx);
+                model
+                    .agents
+                    .update(cx, |agents, _| agents.record_event(envelope));
+            }
+            cx.notify();
+        });
+        visual.run_until_parked();
+    };
+    let spec = AgentIdentifier::Canonical(AgentRole::TaskSpecifier);
+    let backend = AgentIdentifier::Canonical(AgentRole::BackendAgent);
+
+    // Before any run, the tab says what it will show; a run that starts leaves the
+    // panel on the tab the developer chose.
+    click(visual, "work-tab:run");
+    assert!(visual.debug_bounds("work-run").is_some());
+    assert!(visual.debug_bounds("run-tab-agent").is_none());
+    click(visual, "work-tab:general");
+    let spec_run = dock_run(
+        AgentRole::TaskSpecifier,
+        "spec-run",
+        ExecutionOrigin::Manual,
+        TerminalRunStatus::Running,
+    );
+    deliver(visual, &spec_run, 1..=60);
+    assert_eq!(
+        model.read_with(visual, |m, _| m.work_panel.tab),
+        WorkPanelTab::General
+    );
+
+    // The dock's agent and its console, inside the panel: the console's controls go
+    // under its summary, and the tabs keep clear of the fold button.
+    click(visual, "work-tab:run");
+    assert_eq!(
+        model.read_with(visual, |m, _| m.agent_dock.shown()),
+        Some(spec.clone())
+    );
+    let panel = visual.debug_bounds("context-rail").unwrap();
+    let toggle = visual.debug_bounds("context-rail-toggle").unwrap();
+    // Four tabs keep one row, clear of the fold button.
+    let row = visual.debug_bounds("work-tab:general").unwrap().top();
+    for tab in [
+        "work-tab:general",
+        "work-tab:files",
+        "work-tab:search",
+        "work-tab:run",
+    ] {
+        let bounds = visual.debug_bounds(tab).unwrap();
+        assert!(
+            bounds.left() >= panel.left() && bounds.right() <= toggle.left() && bounds.top() == row,
+            "{tab} {bounds:?} leaves the row or overlaps the toggle {toggle:?}"
+        );
+    }
+    for element in [
+        "work-run",
+        "run-tab-agent",
+        "run-tab-follow",
+        "run-tab-now",
+        "agent-console:run-tab",
+        "agent-console-filter:run-tab",
+        "agent-console-follow:run-tab",
+    ] {
+        let bounds = visual
+            .debug_bounds(element)
+            .unwrap_or_else(|| panic!("missing {element}"));
+        assert!(
+            bounds.left() >= panel.left() && bounds.right() <= panel.right(),
+            "{element} {bounds:?} leaves {panel:?}"
+        );
+    }
+    assert_readable(visual, "run-tab-agent", 60.0, 24.0);
+
+    // Its own place: reading earlier rows here leaves the dock's console at the end.
+    assert_eq!(
+        model.read_with(visual, |m, _| m.agent_dock.mode),
+        None,
+        "the dock is expanded by the window's height"
+    );
+    let console = visual.debug_bounds("agent-console:run-tab").unwrap();
+    let scroll_up = |visual: &mut VisualTestContext| {
+        visual.simulate_event(ScrollWheelEvent {
+            position: console.center(),
+            delta: ScrollDelta::Pixels(point(px(0.0), px(2000.0))),
+            ..Default::default()
+        });
+        visual.run_until_parked();
+    };
+    scroll_up(visual);
+    let following = |visual: &mut VisualTestContext, key: &'static str| {
+        model.read_with(visual, |m, cx| m.agents.read(cx).consoles.following(key))
+    };
+    assert!(!following(visual, RUN_TAB_SURFACE));
+    assert!(following(visual, DOCK_SURFACE));
+    click(visual, "agent-console-follow:run-tab");
+    assert!(following(visual, RUN_TAB_SURFACE));
+
+    // Reading the tab holds a switch back with the dock hidden: the tab's chip offers it.
+    model.update(visual, |m, cx| m.set_agent_dock_mode(DockMode::Hidden, cx));
+    visual.run_until_parked();
+    assert!(!model.read_with(visual, |m, _| m.agent_dock.follow.scrolled_up));
+    scroll_up(visual);
+    assert!(model.read_with(visual, |m, _| m.agent_dock.follow.scrolled_up));
+    // Only the reading holds it: the clicks above set the touch guard.
+    model.update(visual, |m, _| m.agent_dock.follow.guard_until = None);
+    let code_run = dock_run(
+        AgentRole::BackendAgent,
+        "code-run",
+        ExecutionOrigin::Pipeline,
+        TerminalRunStatus::Running,
+    );
+    deliver(visual, &code_run, 1..=1);
+    // A pipeline stage outranks the manual run once its wait is over.
+    let switched = model.update(visual, |m, cx| {
+        let follow = &mut m.agent_dock.follow;
+        let (candidate, _) = follow.pending.clone().expect("Code waits to take the dock");
+        follow.pending = Some((candidate, Instant::now() - Duration::from_secs(3)));
+        let switched = follow.apply(FollowInput::Tick(Instant::now()));
+        cx.notify();
+        switched
+    });
+    visual.run_until_parked();
+    assert!(!switched, "no switch while the developer reads the tab");
+    assert_eq!(
+        model.read_with(visual, |m, _| m.agent_dock.shown()),
+        Some(spec.clone())
+    );
+    click(visual, "run-tab-switch-chip");
+    assert_eq!(
+        model.read_with(visual, |m, _| m.agent_dock.shown()),
+        Some(backend.clone())
+    );
+
+    // Pinned with the dock, and back to following from the tab.
+    model.update(visual, |m, cx| m.pin_agent_dock(spec.clone(), cx));
+    visual.run_until_parked();
+    click(visual, "run-tab-follow");
+    assert_eq!(
+        model.read_with(visual, |m, _| (
+            m.agent_dock.follow.pinned(),
+            m.agent_dock.shown()
+        )),
+        (false, Some(backend.clone()))
+    );
+    // Touching the tab holds a switch back for a moment, as touching the dock does.
+    model.update(visual, |m, _| m.agent_dock.follow.guard_until = None);
+    click(visual, "run-tab-now");
+    assert!(model.read_with(visual, |m, _| m.agent_dock.follow.guard_until.is_some()));
+
+    // Folded, the strip opens the panel on the tab.
+    model.update(visual, |m, cx| {
+        m.work_panel.tab = WorkPanelTab::General;
+        m.set_context_rail_collapsed(true, cx);
+    });
+    visual.run_until_parked();
+    click(visual, "rail-strip-run");
+    assert_eq!(
+        model.read_with(visual, |m, cx| (
+            m.context_rail_collapsed(cx),
+            m.work_panel.tab
+        )),
+        (false, WorkPanelTab::Run)
+    );
 }
 
 /// ADR-043: Settings › MCP servers lists each server with its tools; only a

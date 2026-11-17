@@ -10750,6 +10750,12 @@ mod tests {
         // Choosing the open tab again saves nothing.
         choose(visual, WorkPanelTab::Files);
         assert!(take().is_empty());
+        // Run is kept: the agent it shows comes back with the dock's session
+        // (ADR-042, item 6).
+        choose(visual, WorkPanelTab::Run);
+        let saved = take();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].work_panel_tab.as_deref(), Some("run"));
         // Diff compares what lives in memory: the session keeps the tab saved
         // before it, and no session opens on it (PD6).
         choose(visual, WorkPanelTab::Diff);
@@ -10758,6 +10764,7 @@ mod tests {
         assert_eq!(saved[0].work_panel_tab, None);
         assert_eq!(WorkPanelTab::from_id("diff"), None);
         assert_eq!(WorkPanelTab::from_id("files"), Some(WorkPanelTab::Files));
+        assert_eq!(WorkPanelTab::from_id("run"), Some(WorkPanelTab::Run));
     }
 
     #[gpui::test]

@@ -3035,7 +3035,7 @@ impl PersistenceService {
         let work_panel_tab = match request.work_panel_tab.as_deref().map(str::trim) {
             Some(tab) if !WORK_PANEL_TABS.contains(&tab) => {
                 return Err(PersistenceServiceError::Validation(
-                    "workPanelTab must be `general`, `files` or `search`.".to_string(),
+                    "workPanelTab must be `general`, `files`, `search` or `run`.".to_string(),
                 ));
             }
             tab => tab.map(str::to_owned),
@@ -6784,8 +6784,10 @@ fn brownfield_consent_key(project_id: &str) -> String {
     format!("brownfield.onboarding_consent.{project_id}")
 }
 
-/// The ids of the UI's work panel tabs (PI-Desktop analysis, PD7).
-const WORK_PANEL_TABS: [&str; 3] = ["general", "files", "search"];
+/// The ids of the UI's work panel tabs the session keeps (PI-Desktop analysis,
+/// PD7; Run from ADR-042, item 6). Diff is never kept: what it compares lives
+/// in the UI's memory.
+const WORK_PANEL_TABS: [&str; 4] = ["general", "files", "search", "run"];
 
 fn work_panel_tab_key(project_id: &str) -> String {
     format!("ui.work_panel_tab.{project_id}")
@@ -7888,6 +7890,10 @@ mod tests {
                 .work_panel_tab
         };
 
+        service
+            .save_ui_session(request(Some("run")))
+            .expect("the Run tab should save");
+        assert_eq!(stored_tab().as_deref(), Some("run"));
         service
             .save_ui_session(request(Some("search")))
             .expect("the tab should save");

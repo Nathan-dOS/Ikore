@@ -1,6 +1,7 @@
 //! The work panel (ADR-042, item 6): the right-hand column of the shell, in tabs. General keeps
-//! the context cards; Files and Search reach the open project's files from any view. The panel
-//! never opens or changes tab by itself (item 7): only the developer does.
+//! the context cards; Files and Search reach the open project's files from any view; Run shows
+//! the run the agent dock follows (`run_tab`); Diff compares a run's changes (`run_changes`).
+//! The panel never opens or changes tab by itself (item 7): only the developer does.
 
 use gpui::{
     AnyElement, Context, Entity, FocusHandle, Focusable, IntoElement, KeyDownEvent, SharedString,
@@ -23,18 +24,29 @@ pub(crate) enum WorkPanelTab {
     General,
     Files,
     Search,
+    /// The run the agent dock follows (ADR-040), in the panel's column.
+    Run,
     /// A run's changes against what they replaced (PI-Desktop PD6).
     Diff,
 }
 
 impl WorkPanelTab {
-    pub(crate) const ALL: [Self; 4] = [Self::General, Self::Files, Self::Search, Self::Diff];
+    /// In the strip's order. Diff, which comes and goes, stays last so the
+    /// others keep their place.
+    pub(crate) const ALL: [Self; 5] = [
+        Self::General,
+        Self::Files,
+        Self::Search,
+        Self::Run,
+        Self::Diff,
+    ];
 
     pub(crate) fn id(self) -> &'static str {
         match self {
             Self::General => "general",
             Self::Files => "files",
             Self::Search => "search",
+            Self::Run => "run",
             Self::Diff => "diff",
         }
     }
@@ -45,7 +57,8 @@ impl WorkPanelTab {
     }
 
     /// What the session keeps of this tab. Diff is not kept: what it compares
-    /// lives in memory, so the session keeps the tab saved before it.
+    /// lives in memory, so the session keeps the tab saved before it. Run is:
+    /// the agent it shows comes back with the dock's session.
     pub(crate) fn saved_id(self) -> Option<&'static str> {
         (self != Self::Diff).then(|| self.id())
     }
@@ -55,6 +68,7 @@ impl WorkPanelTab {
             Self::General => "General",
             Self::Files => "Files",
             Self::Search => "Search",
+            Self::Run => "Run",
             Self::Diff => "Diff",
         }
     }
@@ -64,6 +78,7 @@ impl WorkPanelTab {
             Self::General => "The pipeline, what waits on you, the next steps and runtime health",
             Self::Files => "The files of the open project. A file opens in Workspace.",
             Self::Search => "Text search over every file the editor opens",
+            Self::Run => "The run the agent dock follows: what the agent does, and its console",
             Self::Diff => "A run's changes, each file against what it replaced",
         }
     }
@@ -118,7 +133,8 @@ impl WorkSearch {
     }
 }
 
-fn note(text: impl Into<SharedString>) -> AnyElement {
+/// A muted line of the panel: an empty state or a status.
+pub(crate) fn note(text: impl Into<SharedString>) -> AnyElement {
     div()
         .px_2()
         .py_1()
@@ -129,7 +145,9 @@ fn note(text: impl Into<SharedString>) -> AnyElement {
 }
 
 /// The tabs, in the panel's header. Diff shows only while a run's change is
-/// open, and then the four tabs tighten to keep the fold button in the panel.
+/// open. Past three tabs they sit tighter; five, with Diff, do not fit the
+/// row at 256 px, so the last goes under the others instead of pushing the
+/// fold button out of the panel.
 pub(crate) fn tab_strip(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
     let active = model.work_panel.tab;
     let tabs: Vec<_> = WorkPanelTab::ALL
@@ -138,7 +156,10 @@ pub(crate) fn tab_strip(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElem
         .collect();
     let padding = if tabs.len() > 3 { px(5.0) } else { px(8.0) };
     div()
+        .flex_1()
+        .min_w_0()
         .flex()
+        .flex_wrap()
         .items_center()
         .gap(px(2.0))
         .children(tabs.into_iter().map(|tab| {
@@ -148,6 +169,7 @@ pub(crate) fn tab_strip(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElem
                 .id(SharedString::from(selector.clone()))
                 .debug_selector(move || selector.clone())
                 .tab_index(0)
+                .flex_shrink_0()
                 .px(padding)
                 .py(px(3.0))
                 .rounded_md()

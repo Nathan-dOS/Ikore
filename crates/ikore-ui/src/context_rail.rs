@@ -2,8 +2,8 @@
 //! the state of the run visible while a workbench view owns the centre. Its General tab holds
 //! five short cards — pipeline, what is waiting on the developer, the flow engine's next actions,
 //! runtime health and the active pulsation's token usage — each collapsing to one icon on the
-//! 48px strip. The Files and Search tabs live in `work_panel`. Home does not render it: Home *is*
-//! the rail unfolded.
+//! 48px strip. The Files and Search tabs live in `work_panel`, Run in `run_tab` and Diff in
+//! `run_changes`. Home does not render it: Home *is* the rail unfolded.
 
 use gpui::{
     AnyElement, App, Context, FontWeight, IntoElement, SharedString, Window, div, prelude::*, px,
@@ -117,6 +117,7 @@ pub(crate) fn context_rail(
                 .into_any_element(),
             WorkPanelTab::Files => crate::work_panel::files_tab(model, cx),
             WorkPanelTab::Search => crate::work_panel::search_tab(model, cx),
+            WorkPanelTab::Run => crate::run_tab::run_tab(model, cx),
             WorkPanelTab::Diff => crate::run_changes::diff_tab(model, cx),
         };
         rail.child(
@@ -124,12 +125,12 @@ pub(crate) fn context_rail(
                 .flex_shrink_0()
                 .flex()
                 .items_center()
-                .justify_between()
+                .gap_1()
                 .pl_2()
                 .pr_1()
                 .py_1()
                 .child(crate::work_panel::tab_strip(model, cx))
-                .child(toggle),
+                .child(div().flex_shrink_0().child(toggle)),
         )
         .child(body)
         .into_any_element()
@@ -668,6 +669,16 @@ fn strip(model: &AppModel, forced: bool, cx: &mut Context<AppModel>) -> AnyEleme
                     true,
                     cx,
                     |model, window, cx| model.open_work_panel_tab(WorkPanelTab::Search, window, cx),
+                ))
+                .child(icon_button(
+                    "rail-strip-run",
+                    Icon::ScrollText,
+                    "The run the agent dock follows — open in the panel",
+                    false,
+                    None,
+                    true,
+                    cx,
+                    |model, window, cx| model.open_work_panel_tab(WorkPanelTab::Run, window, cx),
                 ))
         })
         .into_any_element()
