@@ -1,5 +1,10 @@
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+// Tokio's `Instant` reads the same monotonic clock as `std::time::Instant`
+// unless a test pauses tokio's clock, so the windows below can be tested on a
+// virtual clock instead of racing the real one.
+use tokio::time::Instant;
 
 pub use ikore_contracts::timeout::{AgentTimeoutPolicy, CliTimeoutBudget, TimeoutReason};
 
@@ -130,19 +135,21 @@ impl ProgressWatchdog {
     }
 
     /// Retorna o prazo corrente ativo.
-    pub fn current_deadline(&self) -> Instant {
+    pub fn current_deadline(&self) -> std::time::Instant {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .current_deadline
+            .into_std()
     }
 
     /// Retorna o teto máximo absoluto.
-    pub fn max_deadline(&self) -> Instant {
+    pub fn max_deadline(&self) -> std::time::Instant {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .max_deadline
+            .into_std()
     }
 
     /// Aguarda assincronamente até que ocorra inatividade excessiva ou o teto máximo seja atingido.
@@ -181,7 +188,7 @@ impl ProgressWatchdog {
                     // Novo progresso recebido, recalcula o timer
                     continue;
                 }
-                _ = tokio::time::sleep_until(tokio::time::Instant::from_std(target_instant)) => {
+                _ = tokio::time::sleep_until(target_instant) => {
                     let state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     let now = Instant::now();
                     if now >= state.max_deadline {
@@ -205,7 +212,7 @@ mod tests {
 
     #[test]
     fn cli_budget_separates_initial_timeout_from_absolute_ceiling() {
-        let before = Instant::now();
+        let before = std::time::Instant::now();
         let budget = CliTimeoutBudget::for_role(AgentRole::TaskSpecifier, 180_000);
         assert_eq!(budget.policy.base_timeout_ms, 240_000);
         assert_eq!(budget.policy.max_timeout_ms, 900_000);
@@ -280,7 +287,11 @@ mod tests {
     /// 90s each, right after `OpenCode` emitted `step_start`. The model was
     /// reasoning - it later reported 8,877 reasoning tokens on that turn - and
     /// a reasoning turn streams nothing at all until it is done.
-    #[tokio::test]
+    ///
+    /// The clock is paused: tokio advances it straight to the next timer, so
+    /// the 90 ms probe always lands between the 40 ms ordinary window and the
+    /// 120 ms reasoning window, however the machine schedules the test.
+    #[tokio::test(start_paused = true)]
     async fn a_reasoning_turn_is_given_a_wider_silence_window_than_a_stuck_process() {
         let policy = AgentTimeoutPolicy::for_role(AgentRole::Integrator);
         assert_eq!(policy.inactivity_window_ms, 90_000);
