@@ -82,6 +82,32 @@ Aliases already contain `--`; use `cargo test-ui --list` without adding a second
 separator. Keep each checkout's own `target/`. Compare timings only with the
 same selection, toolchain, cache conditions and concurrency.
 
+## Compression dependency security (REV-0002 C006)
+
+The current workspace lock pins `libz-sys` 1.1.33, the patched floor for
+RUSTSEC-2026-0544. The security regression compares the vulnerable 1.1.31 lock
+with the minimal patched lock using the same official cargo-audit executable
+and identified RustSec snapshot, without advisory ignores. This tests the
+advisory condition rather than adding a unit test that repeats a version string.
+Informational maintenance warnings remain visible and have separate follow-up.
+
+On Windows, the application's normal/build graph excludes this package; GPUI's
+development/test-support chain uses it through git2/libgit2-sys. Validation must
+therefore include that development selection and the complete workspace suite,
+as well as the technical license/source audit. A successful advisory audit is
+not a gzip exploit reproduction or a binary-distribution approval.
+
+```powershell
+cargo tree --locked --offline --target x86_64-pc-windows-msvc -p ikore-app -e normal,build --prefix none
+cargo tree --locked --offline --target x86_64-pc-windows-msvc --workspace -e normal,build,dev -i libz-sys
+./scripts/audit-supply-chain.ps1
+```
+
+The review's paired audit retains its database revision and RED/GREEN outputs.
+For a routine audit against the current advisory database, use
+`./scripts/audit-advisories.ps1`. Historical qualification lock snapshots remain
+dated evidence; the change applies to the workspace's active `Cargo.lock`.
+
 ## SQLite security and compatibility
 
 The `persistence_service::sqlite_runtime_tests` selection checks the linked
