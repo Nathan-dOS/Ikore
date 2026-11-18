@@ -339,7 +339,9 @@ pub struct SearchMatch {
 #[serde(rename_all = "camelCase")]
 pub struct SearchWorkspaceTextResponse {
     pub matches: Vec<SearchMatch>,
+    /// The result limit was reached or files above the search read limit were omitted.
     pub truncated: bool,
+    /// Files read completely within the byte limit and searched as UTF-8 text.
     pub scanned_files: usize,
 }
 
@@ -1232,6 +1234,15 @@ pub fn search_workspace_text(
     root: &Path,
     request: SearchWorkspaceTextRequest,
 ) -> Result<SearchWorkspaceTextResponse, WorkspaceServiceError> {
+    search_workspace_text_before_read(root, request, |_| {})
+}
+
+/// Tests can change a file after the size check, before the search opens it.
+fn search_workspace_text_before_read(
+    root: &Path,
+    request: SearchWorkspaceTextRequest,
+    mut before_read: impl FnMut(&Path),
+) -> Result<SearchWorkspaceTextResponse, WorkspaceServiceError> {
     let normalized_query = request.query.trim();
     if normalized_query.is_empty() {
         return Err(WorkspaceServiceError::InvalidQuery(
@@ -1256,11 +1267,13 @@ pub fn search_workspace_text(
         if !entry.file_type().is_file() || !is_allowed_extension(entry.path()) {
             continue;
         }
-        // Search reads each file whole; a file the editor would refuse is skipped, not loaded.
+        // Avoid opening an already oversized file. The bounded read below also covers growth
+        // or replacement after this metadata check.
         if entry
             .metadata()
             .is_ok_and(|metadata| metadata.len() > MAX_EDITOR_FILE_BYTES)
         {
+            truncated = true;
             continue;
         }
 
@@ -1269,13 +1282,12 @@ pub fn search_workspace_text(
         })?;
         let relative_path_string = normalize_relative_path(relative_path);
 
-        let content = fs::read_to_string(entry.path()).map_err(|error| {
-            if error.kind() == io::ErrorKind::InvalidData {
-                WorkspaceServiceError::InvalidUtf8(entry.path().to_string_lossy().to_string())
-            } else {
-                WorkspaceServiceError::Io(error)
-            }
-        })?;
+        before_read(entry.path());
+        let Some(content) = read_search_content(fs::File::open(entry.path())?, entry.path())?
+        else {
+            truncated = true;
+            continue;
+        };
 
         scanned_files += 1;
 
@@ -1306,6 +1318,30 @@ pub fn search_workspace_text(
         truncated,
         scanned_files,
     })
+}
+
+fn read_search_content(
+    reader: impl Read,
+    path: &Path,
+) -> Result<Option<String>, WorkspaceServiceError> {
+    let mut bytes = Vec::new();
+    reader
+        .take(MAX_EDITOR_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| {
+            if error.kind() == io::ErrorKind::InvalidData {
+                WorkspaceServiceError::InvalidUtf8(path.to_string_lossy().to_string())
+            } else {
+                WorkspaceServiceError::Io(error)
+            }
+        })?;
+    if bytes.len() as u64 > MAX_EDITOR_FILE_BYTES {
+        // Do not search an incomplete prefix or attempt to decode its possibly split UTF-8.
+        return Ok(None);
+    }
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|_| WorkspaceServiceError::InvalidUtf8(path.to_string_lossy().to_string()))
 }
 
 pub fn get_workspace_vault_index(
@@ -3627,6 +3663,179 @@ mod tests {
         );
 
         assert!(matches!(result, Err(WorkspaceServiceError::InvalidUtf8(_))));
+    }
+
+    fn bounded_search_request() -> SearchWorkspaceTextRequest {
+        SearchWorkspaceTextRequest {
+            query: "needle".into(),
+            mode: SearchMode::Substring,
+            case_sensitive: true,
+            max_results: 200,
+        }
+    }
+
+    fn assert_only_the_small_search_file_was_scanned(response: &SearchWorkspaceTextResponse) {
+        assert!(
+            response.truncated,
+            "an omitted file makes results incomplete"
+        );
+        assert_eq!(response.scanned_files, 1);
+        assert_eq!(response.matches.len(), 1);
+        assert_eq!(response.matches[0].relative_path, "small.md");
+        assert_eq!(response.matches[0].line_text, "needle in the small file");
+    }
+
+    #[test]
+    fn search_bounded_reader_consumes_no_more_than_the_limit_plus_one() {
+        struct CountedReader {
+            remaining: u64,
+            consumed: Arc<std::sync::atomic::AtomicU64>,
+        }
+        impl Read for CountedReader {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                let count = (buffer.len() as u64).min(self.remaining) as usize;
+                buffer[..count].fill(b'a');
+                self.remaining -= count as u64;
+                self.consumed
+                    .fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed);
+                Ok(count)
+            }
+        }
+        let consumed = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let content = read_search_content(
+            CountedReader {
+                remaining: 2 * MAX_EDITOR_FILE_BYTES,
+                consumed: consumed.clone(),
+            },
+            Path::new("growing.md"),
+        )
+        .expect("an oversized stream can be omitted");
+        assert_eq!(
+            consumed.load(std::sync::atomic::Ordering::Relaxed),
+            MAX_EDITOR_FILE_BYTES + 1,
+            "check the bytes consumed, not just a size check after an unbounded read"
+        );
+        assert!(content.is_none());
+    }
+
+    #[test]
+    fn search_bounded_growth_after_metadata_omits_the_entire_file() {
+        let root = prepare_root();
+        let growing = root.path().join("growing.md");
+        fs::write(&growing, "needle before growth").unwrap();
+        fs::write(root.path().join("small.md"), "needle in the small file").unwrap();
+        let mut changed = false;
+        let response =
+            search_workspace_text_before_read(root.path(), bounded_search_request(), |path| {
+                if path == growing {
+                    assert!(!changed);
+                    changed = true;
+                    let mut file = fs::OpenOptions::new().write(true).open(path).unwrap();
+                    file.set_len(MAX_EDITOR_FILE_BYTES + 1).unwrap();
+                    file.write_all(b"needle after growth\n").unwrap();
+                }
+            })
+            .expect("other files remain searchable");
+        assert!(
+            changed,
+            "the change must happen after metadata, before read"
+        );
+        assert_only_the_small_search_file_was_scanned(&response);
+    }
+
+    #[test]
+    fn search_bounded_replacement_after_metadata_is_also_omitted() {
+        let root = prepare_root();
+        let replaced = root.path().join("replaced.md");
+        let replacement = root.path().join("replacement.tmp");
+        fs::write(&replaced, "needle before replacement").unwrap();
+        let mut file = fs::File::create(&replacement).unwrap();
+        file.write_all(b"needle after replacement\n").unwrap();
+        file.set_len(MAX_EDITOR_FILE_BYTES + 1).unwrap();
+        drop(file);
+        fs::write(root.path().join("small.md"), "needle in the small file").unwrap();
+        let mut changed = false;
+        let response =
+            search_workspace_text_before_read(root.path(), bounded_search_request(), |path| {
+                if path == replaced {
+                    assert!(!changed);
+                    changed = true;
+                    fs::remove_file(path).unwrap();
+                    fs::rename(&replacement, path).unwrap();
+                }
+            })
+            .expect("an oversized replacement is omitted");
+        assert!(changed);
+        assert_only_the_small_search_file_was_scanned(&response);
+    }
+
+    #[test]
+    fn search_bounded_preexisting_oversize_is_reported_without_reading_it() {
+        let root = prepare_root();
+        let oversized = root.path().join("oversized.md");
+        fs::File::create(&oversized)
+            .unwrap()
+            .set_len(MAX_EDITOR_FILE_BYTES + 1)
+            .unwrap();
+        fs::write(root.path().join("small.md"), "needle in the small file").unwrap();
+        let response =
+            search_workspace_text_before_read(root.path(), bounded_search_request(), |path| {
+                assert_ne!(
+                    path, oversized,
+                    "the metadata fast path must not open this file"
+                )
+            })
+            .unwrap();
+        assert_only_the_small_search_file_was_scanned(&response);
+    }
+
+    #[test]
+    fn search_bounded_exact_limit_keeps_unicode_positions_and_empty_files() {
+        let root = prepare_root();
+        let suffix = "\né needle";
+        let mut bytes = vec![b'x'; MAX_EDITOR_FILE_BYTES as usize - suffix.len()];
+        bytes.extend_from_slice(suffix.as_bytes());
+        fs::write(root.path().join("exact.md"), bytes).unwrap();
+        fs::write(root.path().join("empty.txt"), "").unwrap();
+        let response = search_workspace_text(root.path(), bounded_search_request()).unwrap();
+        assert!(!response.truncated);
+        assert_eq!(response.scanned_files, 2);
+        assert_eq!(response.matches.len(), 1);
+        assert_eq!(response.matches[0].relative_path, "exact.md");
+        assert_eq!(response.matches[0].line, 2);
+        assert_eq!(response.matches[0].column, 3);
+        assert_eq!(response.matches[0].line_text, "é needle");
+    }
+
+    #[test]
+    fn search_bounded_removal_after_metadata_keeps_the_io_error() {
+        let root = prepare_root();
+        fs::write(root.path().join("removed.md"), "needle").unwrap();
+        let result =
+            search_workspace_text_before_read(root.path(), bounded_search_request(), |path| {
+                fs::remove_file(path).unwrap()
+            });
+        assert!(matches!(
+            result,
+            Err(WorkspaceServiceError::Io(error)) if error.kind() == io::ErrorKind::NotFound
+        ));
+    }
+
+    #[test]
+    fn search_bounded_invalid_utf8_keeps_its_error_but_oversize_is_omitted_first() {
+        let root = prepare_root();
+        fs::write(root.path().join("invalid.md"), b"needle\xff").unwrap();
+        assert!(matches!(
+            search_workspace_text(root.path(), bounded_search_request()),
+            Err(WorkspaceServiceError::InvalidUtf8(_))
+        ));
+        let mut bytes = vec![b'x'; MAX_EDITOR_FILE_BYTES as usize];
+        bytes.push(0xff);
+        assert!(
+            read_search_content(io::Cursor::new(bytes), Path::new("oversized.md"))
+                .expect("omit before decoding an incomplete or invalid UTF-8 prefix")
+                .is_none()
+        );
     }
 
     #[test]

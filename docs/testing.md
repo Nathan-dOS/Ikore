@@ -533,6 +533,34 @@ Feature 19 cards check each such text with `assert_readable`.
 
 ## Editor revisions, check output and voice setup
 
+### Bounded workspace search (REV-0002 C007)
+
+The `workspace_service::tests::search_bounded_` tests change or replace a file
+after its metadata check, without sleeps. Search reads at most 4 MiB plus one
+sentinel byte from each file. A counted synthetic reader checks the bytes
+actually consumed, so reading the whole stream and rejecting it afterwards
+does not satisfy the test. Oversized files are omitted completely and set the
+existing `truncated` flag; they do not add matches or count as scanned files.
+Files at the exact limit, Unicode positions, empty files, invalid UTF-8 and
+removal between metadata and open have separate assertions. Invalid UTF-8 and
+I/O errors retain their existing error behavior. This limits file reads, not
+the process's total memory or concurrent filesystem authority.
+
+`work_panel::tests::partial_search_results_do_not_claim_the_match_limit_was_reached`
+checks that the UI says "partial results", including zero or one result, rather
+than claiming the first 100 matches were shown. Existing search tests retain
+substring/regex semantics, result limits and line/column positions; the work
+panel's GPUI test covers the asynchronous request and result state.
+
+```powershell
+cargo test --locked -p ikore-core --lib workspace_service::tests::search_ -- --test-threads=2
+cargo test --locked -p ikore-ui --lib work_panel::tests:: -- --test-threads=2
+```
+
+These focused selections accompany the complete workspace regression suite.
+
+### Revision conflicts, command output and voice setup
+
 The workspace revision is a SHA-256 over the resolved path and the bytes read,
 so a same-size, same-mtime external edit is a conflict. `workspace_service`
 tests cover that edit, another file or root with identical content, a change
