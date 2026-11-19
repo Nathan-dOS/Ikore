@@ -82,6 +82,32 @@ Aliases already contain `--`; use `cargo test-ui --list` without adding a second
 separator. Keep each checkout's own `target/`. Compare timings only with the
 same selection, toolchain, cache conditions and concurrency.
 
+### Settings credential-save completion (REV-0002 C013 subdelivery)
+
+The native `writes_secret_once_and_clears_input` test pauses its actual memory
+credential store after counting the target attempt and before inserting it.
+While paused it verifies the missing value, busy operation and already-cleared
+input. After release it waits for this Save's success notice, the refreshed
+connection's next version and key presence, no error and no in-flight operation.
+The attempt counter alone is not completion evidence. The wall-clock watchdog
+only detects missing progress in the external Tokio worker; there is no save
+latency requirement or virtual GPUI timer in this wait.
+
+Three fixture tests cover reference isolation, one-shot explicit release,
+failure counts, unused-guard disarming and release during unwinding. The pause
+is opt-in, local to the fixture and released by RAII, including on a RED panic;
+ordinary credential-store behavior and counting of failed attempts are kept.
+
+```powershell
+cargo test --locked -p ikore-test-support --lib doubles::tests::credential_set_pause_ -- --test-threads=2
+cargo test --locked -p ikore-ui --lib settings::tests::writes_secret_once_and_clears_input -- --test-threads=2 --exact
+cargo test --locked -p ikore-ui --lib settings::tests:: -- --test-threads=2
+```
+
+The selections accompany the complete regression gate. This subdelivery
+addresses the Settings test's completion race; it does not claim a causal fix
+for the separate preview timing failure tracked by C013.
+
 ## Compression dependency security (REV-0002 C006)
 
 The current workspace lock pins `libz-sys` 1.1.33, the patched floor for

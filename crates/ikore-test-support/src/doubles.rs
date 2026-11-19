@@ -2,7 +2,7 @@ use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 
 use chrono::{DateTime, Duration, Utc};
 use ikore_core::embedding_service::{
@@ -67,9 +67,126 @@ pub struct MemoryCredentialStore {
     values: Arc<Mutex<HashMap<String, String>>>,
     failure: Arc<Mutex<Option<String>>>,
     set_calls: Arc<AtomicUsize>,
+    pending_set_pause: PendingCredentialSetPause,
+}
+
+type PendingCredentialSetPause = Arc<Mutex<Option<ArmedCredentialSetPause>>>;
+
+struct ArmedCredentialSetPause {
+    reference: String,
+    state: Arc<CredentialSetPauseState>,
+}
+
+#[derive(Default)]
+struct CredentialSetPauseState {
+    flags: Mutex<CredentialSetPauseFlags>,
+    changed: Condvar,
+}
+
+#[derive(Default)]
+struct CredentialSetPauseFlags {
+    entered: bool,
+    released: bool,
+}
+
+/// A one-shot pause after a matching set attempt is counted, before it writes.
+/// Dropping the guard releases the worker, including during test unwinding.
+pub struct MemoryCredentialSetPause {
+    pending: PendingCredentialSetPause,
+    state: Arc<CredentialSetPauseState>,
+}
+
+impl MemoryCredentialSetPause {
+    pub fn entered(&self) -> bool {
+        self.state
+            .flags
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entered
+    }
+
+    /// Releases an entered worker, or disarms a pause that has not been entered.
+    pub fn release(&self) {
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if pending
+            .as_ref()
+            .is_some_and(|pause| Arc::ptr_eq(&pause.state, &self.state))
+        {
+            *pending = None;
+        }
+        drop(pending);
+        let mut flags = self
+            .state
+            .flags
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        flags.released = true;
+        self.state.changed.notify_all();
+    }
+}
+
+impl Drop for MemoryCredentialSetPause {
+    fn drop(&mut self) {
+        self.release();
+    }
 }
 
 impl MemoryCredentialStore {
+    /// Opt-in scheduling control for one set of this reference on this fixture.
+    /// Calls for other references, and later sets, keep their normal behavior.
+    pub fn pause_next_set(&self, reference: &str) -> MemoryCredentialSetPause {
+        let state = Arc::new(CredentialSetPauseState::default());
+        let mut pending = self
+            .pending_set_pause
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(pending.is_none(), "a credential set pause is already armed");
+        *pending = Some(ArmedCredentialSetPause {
+            reference: reference.to_owned(),
+            state: Arc::clone(&state),
+        });
+        MemoryCredentialSetPause {
+            pending: Arc::clone(&self.pending_set_pause),
+            state,
+        }
+    }
+
+    fn pause_set_if_armed(&self, reference: &str) {
+        let pause = {
+            let mut pending = self
+                .pending_set_pause
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if pending
+                .as_ref()
+                .is_some_and(|pause| pause.reference == reference)
+            {
+                pending.take()
+            } else {
+                None
+            }
+        };
+        if let Some(pause) = pause {
+            let mut flags = pause
+                .state
+                .flags
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            flags.entered = true;
+            pause.state.changed.notify_all();
+            while !flags.released {
+                flags = pause
+                    .state
+                    .changed
+                    .wait(flags)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
+        }
+    }
+
     pub fn fail_with(&self, message: impl Into<String>) {
         *self
             .failure
@@ -138,6 +255,7 @@ impl CredentialStore for MemoryCredentialStore {
 
     fn set(&self, credential_ref: &str, secret: &str) -> Result<(), LlmError> {
         self.set_calls.fetch_add(1, Ordering::SeqCst);
+        self.pause_set_if_armed(credential_ref);
         self.configured_failure()?;
         let normalized = secret.trim();
         if normalized.is_empty() {
@@ -378,5 +496,114 @@ mod tests {
         assert!(store.contains("provider-a"));
         assert!(!debug.contains("super-secret"));
         assert!(debug.contains("entry_count"));
+    }
+
+    fn wait_for_set_pause(pause: &MemoryCredentialSetPause) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !pause.entered() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(
+            pause.entered(),
+            "credential fixture worker did not reach the pause"
+        );
+    }
+
+    fn set_on_thread(
+        store: &MemoryCredentialStore,
+        reference: &'static str,
+    ) -> (
+        std::thread::JoinHandle<()>,
+        std::sync::mpsc::Receiver<Result<(), LlmError>>,
+    ) {
+        let store = store.clone();
+        let (send, receive) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let _ = send.send(store.set(reference, "fixture-secret"));
+        });
+        (worker, receive)
+    }
+
+    #[test]
+    fn credential_set_pause_is_reference_scoped_one_shot_and_released_explicitly() {
+        let store = MemoryCredentialStore::default();
+        let pause = store.pause_next_set("connection:target");
+        let (first, first_done) = set_on_thread(&store, "connection:target");
+        wait_for_set_pause(&pause);
+        assert_eq!(store.set_call_count(), 1);
+        assert!(!store.contains("connection:target"));
+
+        let (other, other_done) = set_on_thread(&store, "connection:other");
+        other_done
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap()
+            .unwrap();
+        other.join().unwrap();
+        assert!(store.contains("connection:other"));
+        let (second, second_done) = set_on_thread(&store, "connection:target");
+        second_done
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap()
+            .unwrap();
+        second.join().unwrap();
+        assert!(matches!(
+            first_done.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        pause.release();
+        first_done
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap()
+            .unwrap();
+        first.join().unwrap();
+        assert_eq!(store.set_call_count(), 3);
+        assert!(store.contains("connection:target"));
+    }
+
+    #[test]
+    fn credential_set_pause_drop_releases_a_failed_attempt_without_changing_counts() {
+        let store = MemoryCredentialStore::default();
+        store.fail_with("fixture store unavailable");
+        let pause = store.pause_next_set("connection:target");
+        let (worker, done) = set_on_thread(&store, "connection:target");
+        wait_for_set_pause(&pause);
+        assert_eq!(store.set_call_count(), 1);
+        assert!(!store.contains("connection:target"));
+        drop(pause);
+        assert_eq!(
+            done.recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap()
+                .unwrap_err()
+                .kind,
+            LlmErrorKind::Persistence
+        );
+        worker.join().unwrap();
+        store.clear_failure();
+        store.set("connection:target", "fixture-secret").unwrap();
+        assert_eq!(store.set_call_count(), 2);
+        assert!(store.contains("connection:target"));
+    }
+
+    #[test]
+    fn credential_set_pause_disarms_unused_guards_and_releases_during_unwind() {
+        let store = MemoryCredentialStore::default();
+        let unused = store.pause_next_set("connection:target");
+        unused.release();
+        let pause = store.pause_next_set("connection:target");
+        drop(unused);
+        let (worker, done) = set_on_thread(&store, "connection:target");
+        wait_for_set_pause(&pause);
+        assert!(!store.contains("connection:target"));
+        let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _pause = pause;
+            panic!("intentional fixture unwind");
+        }));
+        assert!(unwind.is_err());
+        done.recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap()
+            .unwrap();
+        worker.join().unwrap();
+        assert_eq!(store.set_call_count(), 1);
+        assert!(store.contains("connection:target"));
     }
 }
