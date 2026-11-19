@@ -686,3 +686,36 @@ It checks the delivered prompt and the stored finding. Boundary fixtures cover
 root precedence, case and separators, UTF-8 byte budgets, the aggregate budget,
 changes to the effective digest, a refused root entry and a Windows junction.
 Run `cargo test --locked -p ikore-core --lib greenfield_principles -- --test-threads=2`.
+
+## Windows process control before execution (REV-0002 C013 subdelivery)
+
+The terminal process-tree tests inspect the actual initial thread before its
+release. A temporary, balanced suspension proves that it was already suspended;
+the same hook verifies membership in the specific kill-on-close Job and absence
+of the fixture's execution marker. After release, the fixture checks Unicode
+arguments, environment, cwd and all three standard streams. Other cases cover
+immediate exit, cleanup before assignment, injected pre-resume error and panic,
+an unexpected suspend count, missing-executable classification and confirmed
+exit of both parent and descendant when the Job is dropped. Native process
+handles are retained for exit checks; sleeps and attempted-call counters are
+not completion evidence.
+
+```powershell
+cargo test --locked -p ikore-terminal --lib terminals::process_tree:: -- --test-threads=2
+cargo test --locked -p ikore-test-support --test composition_validation -- --test-threads=2
+cargo test --locked -p ikore-test-support --test composition_checks -- --test-threads=2
+```
+
+The integrations retain timeout, cancellation, inherited pipes, bounded logs,
+literal hostile/Unicode/empty argv and reduced-environment coverage. Candidate
+and baseline receipts for the immediate failing command must both preserve
+exit code 2; a process-control error must not become a compiler failure. The
+controlled native diagnostic separately compares already-exited versus live
+children with valid retained handles. These focused selections accompany the
+complete workspace gate and do not close C002's separate CLI drain work.
+
+The suspended launch preserves `Command`'s Windows quoting, environment and
+stdio handling on the pinned stable toolchain. Cleanup and Job ownership cover
+ordinary errors and unwinding. Abrupt termination of the host before Job
+assignment can still leave a suspended child; this is not atomic job-at-birth
+or an operating system access sandbox.

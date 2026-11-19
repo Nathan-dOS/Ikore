@@ -220,6 +220,15 @@ use a disposable writable candidate of a trusted project; this is not an
 operating system security sandbox. Model-authored claims do not prove that a
 check ran. Accepted execution evidence must come from host receipts.
 
+Windows launches controlled by the terminal subsystem use one shared spawn
+boundary: prepare a kill-on-close Job, create the command suspended, associate
+it, identify and validate its sole initial thread, then release that thread.
+The existing `Command` implementation retains argv, environment and stdio
+handling. Ambiguous thread identity or failed control returns an error and
+cleans up the owned child. Core keeps creation failures distinct from control
+failures in validation receipts. Cleanup covers ordinary failure and unwinding;
+an abrupt host exit before association can still leave a suspended child.
+
 Automatic Feature discovery, Notes Scribe, Documentation Reconciler and
 host-context-only work units use `Hardening::HostContextOnly`: the same native
 tool restrictions and empty temporary workspace as Companion rounds. Codex

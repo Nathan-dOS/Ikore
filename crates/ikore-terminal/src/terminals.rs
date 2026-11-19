@@ -57,141 +57,8 @@ pub use observation_report::{
 pub(crate) use plan_usage::read_codex_app_server_usage;
 pub use plan_usage::{CliConnectionStatus, CliConnectionsSnapshot};
 
-#[cfg(windows)]
-#[must_use = "keep this guard alive until the complete child process tree has exited"]
-pub struct ProcessTreeJob {
-    handle: windows_sys::Win32::Foundation::HANDLE,
-}
-
-#[cfg(windows)]
-// SAFETY: the guard exclusively owns its valid Windows job handle; ownership may move
-// between threads because the Windows job APIs impose no thread affinity.
-unsafe impl Send for ProcessTreeJob {}
-
-#[cfg(windows)]
-// SAFETY: shared methods only query or signal the thread-safe Windows job object.
-// The handle remains owned until the final guard is dropped.
-unsafe impl Sync for ProcessTreeJob {}
-
-#[cfg(windows)]
-impl ProcessTreeJob {
-    pub fn assign(child: &tokio::process::Child) -> std::io::Result<Self> {
-        use windows_sys::Win32::Foundation::CloseHandle;
-        use windows_sys::Win32::System::JobObjects::{
-            AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-            SetInformationJobObject,
-        };
-
-        let process = child
-            .raw_handle()
-            .ok_or_else(|| std::io::Error::other("CLI process handle unavailable"))?
-            as windows_sys::Win32::Foundation::HANDLE;
-        // SAFETY: all pointers are either null (unnamed job/default security) or point to a
-        // correctly sized initialized Windows structure for the duration of the calls.
-        unsafe {
-            let handle = CreateJobObjectW(std::ptr::null(), std::ptr::null());
-            if handle.is_null() {
-                return Err(std::io::Error::last_os_error());
-            }
-            let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-            if SetInformationJobObject(
-                handle,
-                JobObjectExtendedLimitInformation,
-                (&raw const limits).cast(),
-                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-            ) == 0
-            {
-                let error = std::io::Error::last_os_error();
-                CloseHandle(handle);
-                return Err(error);
-            }
-            if AssignProcessToJobObject(handle, process) == 0 {
-                let error = std::io::Error::last_os_error();
-                CloseHandle(handle);
-                return Err(error);
-            }
-            Ok(Self { handle })
-        }
-    }
-
-    pub fn terminate(&self) {
-        // SAFETY: `handle` remains owned by this guard until Drop.
-        unsafe {
-            windows_sys::Win32::System::JobObjects::TerminateJobObject(self.handle, 1);
-        }
-    }
-
-    fn observation(&self) -> std::io::Result<(u64, u64, u64, u64)> {
-        use windows_sys::Win32::System::JobObjects::{
-            JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-            JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
-            QueryInformationJobObject,
-        };
-        // SAFETY: the guard owns a live job handle. Each output pointer refers to an
-        // initialized structure of the size passed to the Windows query API.
-        unsafe {
-            let mut accounting = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
-            if QueryInformationJobObject(
-                self.handle,
-                JobObjectBasicAccountingInformation,
-                (&raw mut accounting).cast(),
-                std::mem::size_of_val(&accounting) as u32,
-                std::ptr::null_mut(),
-            ) == 0
-            {
-                return Err(std::io::Error::last_os_error());
-            }
-            let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-            if QueryInformationJobObject(
-                self.handle,
-                JobObjectExtendedLimitInformation,
-                (&raw mut limits).cast(),
-                std::mem::size_of_val(&limits) as u32,
-                std::ptr::null_mut(),
-            ) == 0
-            {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok((
-                accounting.TotalUserTime.max(0) as u64,
-                accounting.TotalKernelTime.max(0) as u64,
-                limits.PeakProcessMemoryUsed as u64,
-                limits.PeakJobMemoryUsed as u64,
-            ))
-        }
-    }
-}
-
-#[cfg(windows)]
-impl Drop for ProcessTreeJob {
-    fn drop(&mut self) {
-        // KILL_ON_JOB_CLOSE makes this a final safety net for grandchildren as well.
-        // SAFETY: this guard exclusively owns the non-null handle produced by assign;
-        // construction failures close their handles before returning without a guard.
-        unsafe {
-            windows_sys::Win32::Foundation::CloseHandle(self.handle);
-        }
-    }
-}
-
-#[cfg(not(windows))]
-#[must_use = "keep this guard alive until the child process has exited"]
-pub struct ProcessTreeJob;
-
-#[cfg(not(windows))]
-impl ProcessTreeJob {
-    pub fn assign(_child: &tokio::process::Child) -> std::io::Result<Self> {
-        Ok(Self)
-    }
-
-    pub fn terminate(&self) {}
-
-    fn observation(&self) -> std::io::Result<(u64, u64, u64, u64)> {
-        Ok((0, 0, 0, 0))
-    }
-}
+mod process_tree;
+pub use process_tree::{ProcessTreeJob, ProcessTreeSpawnError};
 
 /// Lowercase hexadecimal of a digest. sha2 0.11 digests no longer implement `LowerHex`.
 pub(crate) fn lower_hex(bytes: &[u8]) -> String {
@@ -4047,9 +3914,8 @@ async fn run_contract_probe(
     for (name, value) in &secured.spec.environment {
         command.env(name, value);
     }
-    configure_hidden(&mut command);
-    let mut child = command.spawn()?;
-    let process_tree = ProcessTreeJob::assign(&child)?;
+    let (mut child, process_tree) =
+        ProcessTreeJob::spawn(&mut command).map_err(std::io::Error::from)?;
     if let Some(mut stdin) = child.stdin.take() {
         stdin.write_all(&secured.spec.stdin_payload).await?;
         stdin.shutdown().await?;
@@ -4133,9 +3999,8 @@ async fn run_bounded_probe_in_with_limit(
     for (name, value) in &spec.environment {
         command.env(name, value);
     }
-    configure_hidden(&mut command);
-    let mut child = command.spawn()?;
-    let process_tree = ProcessTreeJob::assign(&child)?;
+    let (mut child, process_tree) =
+        ProcessTreeJob::spawn(&mut command).map_err(std::io::Error::from)?;
     let stdout = child
         .stdout
         .take()
@@ -6646,10 +6511,10 @@ impl TerminalService {
             .env_clear();
         copy_safe_environment(&mut command);
         command.envs(spec.environment.iter().map(|(key, value)| (key, value)));
-        configure_hidden(&mut command);
-        let mut child = command.spawn()?;
+        let (mut child, process_tree) =
+            ProcessTreeJob::spawn(&mut command).map_err(std::io::Error::from)?;
         let read_clock = Arc::new(TransportReadClock::new());
-        let process_tree = Arc::new(ProcessTreeJob::assign(&child)?);
+        let process_tree = Arc::new(process_tree);
         let observation_stop = CancellationToken::new();
         let observation_started = Instant::now();
         let observation_task = if run.observation_trial_id.is_some() {
@@ -9058,10 +8923,9 @@ async fn run_companion_process(
     for (name, value) in &secured.spec.environment {
         command.env(name, value);
     }
-    configure_hidden(&mut command);
-    let mut child = command.spawn()?;
+    let (mut child, process_tree) =
+        ProcessTreeJob::spawn(&mut command).map_err(std::io::Error::from)?;
     let usage = host.create_usage_recorder(&usage_path, usage_context, backend)?;
-    let process_tree = ProcessTreeJob::assign(&child)?;
     if let Some(mut stdin) = child.stdin.take() {
         stdin.write_all(&secured.spec.stdin_payload).await?;
         stdin.shutdown().await?;

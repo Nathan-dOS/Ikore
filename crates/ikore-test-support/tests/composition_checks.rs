@@ -273,6 +273,18 @@ fn a_non_attributable_failure_parks_for_a_human_with_a_baseline_classification()
         code_runs[1].2.is_some(),
         "the baseline run links the candidate receipt it explains"
     );
+    let exit_codes: Vec<Option<i32>> = db
+        .prepare("SELECT r.exit_code FROM host_validation_runs r JOIN stage_executions e ON e.id=r.execution_id WHERE e.pulsation_id=?1 AND e.stage='Code' ORDER BY r.created_at,r.invocation_ordinal")
+        .unwrap()
+        .query_map([&harness.pulse], |row| row.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        exit_codes,
+        [Some(2), Some(2)],
+        "both immediate processes must actually run; a control error is not a baseline failure"
+    );
     let status: String = db
         .query_row(
             "SELECT status FROM stage_executions WHERE pulsation_id=?1 AND stage='Code'",

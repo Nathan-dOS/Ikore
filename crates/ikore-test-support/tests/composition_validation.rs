@@ -162,12 +162,18 @@ async fn argv_is_literal_and_the_environment_is_reduced() {
         std::env::set_var("IKORE_FIXTURE_SECRET", "must-not-leak");
     }
     let hostile = "\"; rm -rf / & echo %PATH% $HOME `id` |";
-    let echoed = run(&["echo-argv", hostile, "--flag=a b"], 30, 65_536).await;
+    let unicode = "ação 日本語 🦀 \"quoted\" \\trailing\\";
+    let echoed = run(
+        &["echo-argv", hostile, "--flag=a b", unicode, ""],
+        30,
+        65_536,
+    )
+    .await;
     assert_eq!(echoed.status, ReceiptStatus::Passed);
     let lines = echoed.stdout.text.lines().collect::<Vec<_>>();
     assert_eq!(
         lines,
-        vec![hostile, "--flag=a b"],
+        vec![hostile, "--flag=a b", unicode, ""],
         "argv reaches the process byte for byte"
     );
     let env = run(&["dump-env"], 30, 65_536).await;
