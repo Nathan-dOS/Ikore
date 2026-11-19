@@ -1,5 +1,31 @@
 # Testing and validation
 
+## MCP diagnostic confidentiality (REV-0002 C004)
+
+The MCP regression tests send JSON-RPC failures through anonymous pipes and the
+gateway's real SQLite persistence. Initialize, tool listing and granted tool-call
+errors contain both an opaque declared environment value and a recognizable
+synthetic token. The checks cover returned errors, stored connection/use errors,
+the server projection Settings reloads, credential-store failures and error
+source chains. Debug checks cover the launch, save request and actual UI form.
+Command and argument fields also hold synthetic sentinels; the native form is
+not saved or launched. The existing legacy-reload test contains a round-trip
+matrix for all closed categories, signed RPC limits/canonicalization, invalid
+numbers and appended free text; stored historical rows remain byte-for-byte.
+Legacy free-form connection errors are omitted on read without rewriting their
+historical rows. New diagnostics retain static categories and numeric RPC/SQLite
+codes; no external message body is needed to identify the failure.
+
+```powershell
+cargo test --locked -p ikore-core --lib mcp:: -- --test-threads=2
+cargo test --locked -p ikore-ui --lib the_mcp_page_lists_servers_tools_and_the_form -- --test-threads=2
+```
+
+These selections accompany the complete workspace regression gate. They use
+temporary databases, an injected memory store and pipes, without the OS keyring,
+an MCP executable, a provider request or any paid service. They do not qualify
+the separate MCP deadline/process cleanup or credential-deletion actions.
+
 ## Guided recovery evidence (I1)
 
 `composition_recovery_context` exercises two actual failing host checks,

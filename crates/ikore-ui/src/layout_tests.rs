@@ -5208,6 +5208,21 @@ fn the_mcp_page_lists_servers_tools_and_the_form(cx: &mut TestAppContext) {
     assert!(visual.debug_bounds("mcp-add-variable").is_some());
     model.update(visual, |model, cx| model.add_mcp_variable(cx));
     visual.run_until_parked();
+    // Keep command/argument sentinels in the actual native form, without saving
+    // or launching them. They must not escape through the form or parent Debug.
+    const C004_UI_COMMAND: &str = "C004UiCommandOpaque-7nR8vTq2";
+    const C004_UI_ARGUMENT: &str = "sk-proj-syntheticc004uiabcdefghijklmnopqrstuv";
+    model.update(visual, |model, cx| {
+        let (command, args) = {
+            let form = model.settings.read(cx).mcp.form.as_ref().unwrap();
+            (form.command.clone(), form.args.clone())
+        };
+        command.update(cx, |input, cx| input.set_value(C004_UI_COMMAND, cx));
+        args.update(cx, |input, cx| {
+            input.set_value(format!("--credential={C004_UI_ARGUMENT}"), cx)
+        });
+    });
+    visual.run_until_parked();
     model.read_with(visual, |m, cx| {
         let form = m.settings.read(cx).mcp.form.as_ref().unwrap();
         assert_eq!(
@@ -5215,6 +5230,21 @@ fn the_mcp_page_lists_servers_tools_and_the_form(cx: &mut TestAppContext) {
             [("API_TOKEN".to_owned(), Some("secret-value".to_owned()))]
         );
         assert!(form.value.read(cx).value().is_empty());
+        // REV-0002 C004: the hidden value must not reappear through Debug,
+        // including the parent Settings state that contains this form.
+        assert_eq!(form.command.read(cx).value(), C004_UI_COMMAND);
+        assert!(form.args.read(cx).value().contains(C004_UI_ARGUMENT));
+        let form_debug = format!("{form:?}");
+        assert!(form_debug.contains("API_TOKEN"));
+        let settings_debug = format!("{:?}", m.settings.read(cx).mcp);
+        for debug in [form_debug, settings_debug] {
+            for secret in ["secret-value", C004_UI_COMMAND, C004_UI_ARGUMENT] {
+                assert!(
+                    !debug.contains(secret),
+                    "a fixture value reached native MCP Debug"
+                );
+            }
+        }
     });
     assert!(visual.debug_bounds("mcp-cancel").is_some());
     model.update(visual, |model, cx| model.cancel_mcp_form(cx));

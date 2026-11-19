@@ -9,6 +9,7 @@
 
 pub mod client;
 
+use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -106,18 +107,104 @@ impl Subject {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+/// Typed operational failures. Public diagnostics expose categories/codes,
+/// not credential-store strings or arbitrary payloads from another process.
 pub enum McpGatewayError {
-    #[error("{0}")]
     Validation(String),
-    #[error("{0}")]
     Refused(String),
-    #[error(transparent)]
-    Server(#[from] McpError),
-    #[error("The MCP store failed: {0}")]
-    Storage(#[from] rusqlite::Error),
-    #[error("The credential store failed: {0}")]
+    Server(McpError),
+    Storage(rusqlite::Error),
     Credentials(String),
+}
+
+impl McpGatewayError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Validation(_) => "mcp_validation_error",
+            Self::Refused(_) => "mcp_refused",
+            Self::Server(error) => error.code(),
+            Self::Storage(_) => "mcp_storage_error",
+            Self::Credentials(_) => "mcp_credentials_error",
+        }
+    }
+
+    fn credential_category(&self) -> &'static str {
+        match self {
+            Self::Credentials(code) => match code.as_str() {
+                "db_error" => "db_error",
+                "validation_error" => "validation_error",
+                "missing_api_key" => "missing_api_key",
+                "sanitization_failed" => "sanitization_failed",
+                _ => "credential_store_error",
+            },
+            _ => "credential_store_error",
+        }
+    }
+
+    fn sqlite_code(&self) -> Option<i32> {
+        match self {
+            Self::Storage(rusqlite::Error::SqliteFailure(error, _)) => Some(error.extended_code),
+            _ => None,
+        }
+    }
+}
+
+impl From<McpError> for McpGatewayError {
+    fn from(error: McpError) -> Self {
+        Self::Server(error)
+    }
+}
+
+impl From<rusqlite::Error> for McpGatewayError {
+    fn from(error: rusqlite::Error) -> Self {
+        Self::Storage(error)
+    }
+}
+
+impl fmt::Display for McpGatewayError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Validation(message) | Self::Refused(message) => {
+                f.write_str(&crate::sanitization::sanitized_observation(message))
+            }
+            Self::Server(error) => fmt::Display::fmt(error, f),
+            Self::Storage(_) => match self.sqlite_code() {
+                Some(code) => write!(f, "The MCP store failed ({}, SQLite {code}).", self.code()),
+                None => write!(f, "The MCP store failed ({}).", self.code()),
+            },
+            Self::Credentials(_) => write!(
+                f,
+                "The credential store failed ({}, {}).",
+                self.code(),
+                self.credential_category()
+            ),
+        }
+    }
+}
+
+impl fmt::Debug for McpGatewayError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let rpc_code = match self {
+            Self::Server(error) => error.rpc_code(),
+            _ => None,
+        };
+        f.debug_struct("McpGatewayError")
+            .field("code", &self.code())
+            .field("rpc_code", &rpc_code)
+            .field("sqlite_code", &self.sqlite_code())
+            .finish()
+    }
+}
+
+impl std::error::Error for McpGatewayError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Server(error) => Some(error),
+            // A raw SQLite error can contain runtime values in its message.
+            // Typed Storage remains available locally; diagnostic chains stop here.
+            _ => None,
+        }
+    }
 }
 
 /// One server as the settings show it.
@@ -152,7 +239,7 @@ pub struct McpToolView {
 }
 
 /// What the developer saves for a server.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct SaveMcpServerRequest {
     /// `None` to create.
     pub id: Option<String>,
@@ -165,6 +252,21 @@ pub struct SaveMcpServerRequest {
     pub env: Vec<(String, Option<String>)>,
     pub enabled: bool,
     pub expected_version: Option<u64>,
+}
+
+impl fmt::Debug for SaveMcpServerRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let names: Vec<_> = self.env.iter().map(|(name, _)| name).collect();
+        f.debug_struct("SaveMcpServerRequest")
+            .field("id", &self.id)
+            .field("project_id", &self.project_id)
+            .field("name", &self.name)
+            .field("argument_count", &self.args.len())
+            .field("environment_names", &names)
+            .field("enabled", &self.enabled)
+            .field("expected_version", &self.expected_version)
+            .finish()
+    }
 }
 
 /// A tool the Companion may call, as its round lists it.
@@ -263,7 +365,8 @@ impl McpGateway {
                         .unwrap_or_default(),
                     enabled: row.get(6)?,
                     connected_at: row.get(7)?,
-                    last_error: row.get(8)?,
+                    last_error: row.get::<_, Option<String>>(8)?
+                        .map(|text| McpError::stored_message(&text)),
                     version: row.get(9)?,
                     tools: Vec::new(),
                     overridden: false,
@@ -381,7 +484,7 @@ impl McpGateway {
             if let Some(value) = value {
                 self.credentials
                     .set(&credential_ref(&id, name), value)
-                    .map_err(|error| McpGatewayError::Credentials(error.to_string()))?;
+                    .map_err(|error| McpGatewayError::Credentials(error.kind.code().to_owned()))?;
             }
         }
         tx.commit()?;
@@ -426,7 +529,7 @@ impl McpGateway {
             let value = self
                 .credentials
                 .get(&credential_ref(server_id, &variable))
-                .map_err(|error| McpGatewayError::Credentials(error.to_string()))?
+                .map_err(|error| McpGatewayError::Credentials(error.kind.code().to_owned()))?
                 .unwrap_or_default();
             env.push((variable, value));
         }
