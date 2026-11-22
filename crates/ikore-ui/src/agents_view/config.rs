@@ -183,6 +183,15 @@ pub(super) fn stage_configuration(
                     !busy && !running && thinking_available,
                     cx,
                 ))
+                .child(crate::select_menu::control(
+                    format!("agent-cli-silence:{}", role.as_str()),
+                    "CLI SILENCE LIMIT",
+                    agent.config.cli_silence_timeout_ms
+                        .map(|ms| format!("{} seconds", ms / 1000))
+                        .unwrap_or_else(|| format!("Default ({} seconds)", ikore_core::AgentTimeoutPolicy::for_role(role).inactivity_window_ms / 1000)),
+                    !busy && !running && agent.config.execution_mode == ikore_core::terminals::AgentExecutionMode::CliProcess,
+                    cx,
+                ))
                 .when(!thinking_available, |row| {
                     row.child(crate::widgets::info_tip(
                         format!("agent-thinking:{}", role.as_str()),
@@ -190,6 +199,7 @@ pub(super) fn stage_configuration(
                     ))
                 }),
         )
+        .child(div().text_xs().text_color(theme::text_muted()).child("CLI silence limit applies to this project's agent. The overall execution limit still applies; API routes use their own timeouts."))
         .when(agent.config.backend != CliBackend::Custom, |card| {
             let model_value =
                 cli_model_label(agent.config.model_source, agent.config.model.as_deref());

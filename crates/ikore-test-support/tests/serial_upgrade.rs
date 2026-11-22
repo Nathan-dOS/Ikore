@@ -27,11 +27,18 @@ fn latest_migration_version() -> i64 {
 /// (no rebuild, no row rewritten), but SQLite writes it into the table's
 /// stored definition: a test of an earlier migration compares the table as
 /// that migration left it.
-const LATER_COLUMNS: [(&str, &str); 1] = [(
-    "CREATE TABLE terminal_events (",
-    // V67, ADR-040 M1.
-    ", detail_json TEXT\n  CHECK(detail_json IS NULL OR json_valid(detail_json)), observed_at TEXT",
-)];
+const LATER_COLUMNS: [(&str, &str); 2] = [
+    (
+        "CREATE TABLE terminal_events (",
+        // V67, ADR-040 M1.
+        ", detail_json TEXT\n  CHECK(detail_json IS NULL OR json_valid(detail_json)), observed_at TEXT",
+    ),
+    (
+        "CREATE TABLE \"cli_agent_configs\" (",
+        // V74, configurable CLI silence timeout.
+        ", cli_silence_timeout_ms INTEGER\n  CHECK(cli_silence_timeout_ms IS NULL OR cli_silence_timeout_ms BETWEEN 30000 AND 900000)",
+    ),
+];
 
 fn without_later_columns(sql: &str) -> String {
     LATER_COLUMNS
@@ -3554,7 +3561,9 @@ fn v64_and_v65_to_v67_add_event_details_without_touching_old_events() {
             name != "terminal_events" && !REBUILT_BY_V70.contains(&name.as_str())
         }) {
             assert!(
-                after.contains(table),
+                after
+                    .iter()
+                    .any(|(name, sql)| name == &table.0 && without_later_columns(sql) == table.1),
                 "V67 from V{from} rebuilds nothing: {table:?}"
             );
         }

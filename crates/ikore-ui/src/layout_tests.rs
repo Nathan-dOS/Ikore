@@ -43,6 +43,7 @@ pub(crate) fn fixture(cx: &mut Context<AppModel>) -> AppModel {
                                 custom_executable: None,
                                 custom_args: vec![],
                                 custom_risk_ack: false,
+                                cli_silence_timeout_ms: None,
                                 version: 1,
                                 created_at: "now".into(),
                                 updated_at: "now".into(),

@@ -81,6 +81,7 @@ pub(crate) fn agent(role: AgentRole) -> AgentTerminalSnapshot {
             custom_executable: None,
             custom_args: vec![],
             custom_risk_ack: false,
+            cli_silence_timeout_ms: None,
             version: 1,
             created_at: "2026-11-16T00:00:00Z".into(),
             updated_at: "2026-11-16T00:00:00Z".into(),

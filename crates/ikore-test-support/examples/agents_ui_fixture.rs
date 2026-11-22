@@ -120,6 +120,7 @@ fn seed_profile(root: &Path) {
                 }),
                 custom_args: Vec::new(),
                 custom_risk_ack: false,
+                cli_silence_timeout_ms: None,
                 expected_version: current.version,
             })
             .unwrap();

@@ -104,43 +104,43 @@ impl AgentTimeoutPolicy {
         match role {
             AgentRole::FeatureAgent => Self::new(
                 300_000, // 5 min base for dense planning, schemas and reasoning
-                90_000,  // 90s silence window
+                120_000, // 2 min silence window
                 900_000, // 15 min ceiling
                 30_000,  // +30s per frame or delta
             ),
             AgentRole::BackendAgent => Self::new(
                 360_000,   // 6 min base for code generation
-                90_000,    // 90s silence
+                120_000,   // 2 min silence
                 1_200_000, // 20 min ceiling
                 30_000,
             ),
             AgentRole::TestAgent => Self::new(
                 360_000,   // 6 min base for test generation
-                90_000,    // 90s silence
+                120_000,   // 2 min silence
                 1_200_000, // 20 min ceiling
                 30_000,
             ),
             AgentRole::TaskSpecifier => Self::new(
                 240_000, // 4 min base for batch specification
-                90_000,  // 90s silence
+                120_000, // 2 min silence
                 900_000, // 15 min ceiling
                 30_000,
             ),
             AgentRole::ContractAgent => Self::new(
                 240_000, // 4 min base for contracts and interfaces
-                90_000,  // 90s silence
+                120_000, // 2 min silence
                 900_000, // 15 min ceiling
                 30_000,
             ),
             AgentRole::Integrator => Self::new(
                 240_000, // 4 min base for reconciliation and publication
-                90_000,  // 90s silence
+                120_000, // 2 min silence
                 900_000, // 15 min ceiling
                 30_000,
             ),
             AgentRole::LearningAgent => Self::new(
                 240_000, // 4 min base for knowledge graph synthesis
-                90_000,  // 90s silence
+                120_000, // 2 min silence
                 900_000, // 15 min ceiling
                 30_000,
             ),
@@ -174,9 +174,9 @@ impl AgentTimeoutPolicy {
     /// Limits for Companion chat interactions.
     pub fn companion() -> Self {
         Self::new(
-            120_000, // 2 min base
-            60_000,  // 60s silence
-            600_000, // 10 min ceiling
+            300_000, // 5 min base
+            120_000, // 2 min silence
+            300_000, // 5 min per-call ceiling
             30_000,
         )
     }
