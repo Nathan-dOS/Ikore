@@ -140,6 +140,10 @@ Review uses complete persisted documents. The derived Brief reads validated
 typed payloads under the same checkpoint identity and state version. It does
 not replace the persisted documents or the host's approval checks. Confirm and
 Flag help compose revision feedback; the Visualizer's note is consultative.
+Its prompt prioritizes the decision-relevant point and explains practical
+implications only when supported by cited brief content. The host keeps layout,
+and the agent cannot invent or reclassify findings. This is a native Review
+Brief aid, not a Markdown-to-HTML plan converter.
 See [ADR-027](adr/README.md#adr-027-review-brief-and-report).
 
 Supported stage failures can park at a checkpoint for the actions offered by

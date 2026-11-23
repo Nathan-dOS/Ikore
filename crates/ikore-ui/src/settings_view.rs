@@ -460,7 +460,13 @@ fn connection_test_body(
                     |model, cx| model.test_settings_connection(cx),
                 ))
                 .when_some(result, |line, result| {
-                    let color = tone_color(result.outcome.tone());
+                    let tone = result.outcome.tone();
+                    let color = tone_color(tone);
+                    let glyph = match tone {
+                        StatusTone::Saved => crate::animated_icon::StatusGlyph::Success,
+                        StatusTone::Working => crate::animated_icon::StatusGlyph::Attention,
+                        StatusTone::Failed => crate::animated_icon::StatusGlyph::Error,
+                    };
                     let mut facts = Vec::new();
                     if let Some(latency) = result.latency_ms {
                         facts.push(format!("{latency} ms"));
@@ -475,7 +481,12 @@ fn connection_test_body(
                             .flex()
                             .items_center()
                             .gap_2()
-                            .child(crate::widgets::status_dot(color))
+                            .child(crate::animated_icon::status_glyph(
+                                "connection-test-glyph",
+                                glyph,
+                                px(13.0),
+                                color,
+                            ))
                             .child(
                                 div()
                                     .text_sm()

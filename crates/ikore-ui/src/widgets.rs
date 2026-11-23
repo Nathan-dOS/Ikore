@@ -673,7 +673,16 @@ pub(crate) fn info_tip(id: impl Into<SharedString>, text: impl Into<SharedString
                 .border_color(theme::accent())
                 .bg(theme::surface_hover())
         })
-        .child(icon(Icon::Info, px(14.0), theme::text_subtle()))
+        .child(
+            crate::animated_icon::AnimatedIcon::clip(
+                format!("info-anim:{id}"),
+                crate::animated_icon::AnimClip::InfoTip,
+                crate::animated_icon::PlayMode::HoverOneshot,
+                px(14.0),
+                theme::text_subtle(),
+            )
+            .hover_pad(px(2.0)),
+        )
         .tooltip(move |_, cx| cx.new(|_| Tooltip::new(text.clone())).into())
         .into_any_element()
 }
@@ -705,6 +714,34 @@ pub(crate) fn icon_button(
     .into_any_element()
 }
 
+/// [`icon_button`] with an explicit baked [`AnimClip`] override (used when two controls share a
+/// static fallback `Icon`, such as `AppView::Workspace` vs `rail-projects`).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn icon_button_clip(
+    id: impl Into<SharedString>,
+    glyph: Icon,
+    clip: crate::animated_icon::AnimClip,
+    tooltip: impl Into<Tooltip>,
+    selected: bool,
+    badge_count: Option<usize>,
+    enabled: bool,
+    cx: &mut Context<AppModel>,
+    handler: impl Fn(&mut AppModel, &mut gpui::Window, &mut Context<AppModel>) + 'static,
+) -> AnyElement {
+    icon_button_div_with_spec(
+        id,
+        glyph,
+        Some(crate::animated_icon::IconHoverSpec::Clip(clip)),
+        tooltip,
+        selected,
+        badge_count,
+        enabled,
+        cx,
+        handler,
+    )
+    .into_any_element()
+}
+
 /// [`icon_button`] before it is erased, for the caller that tracks the button's focus itself.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn icon_button_div(
@@ -717,13 +754,51 @@ pub(crate) fn icon_button_div(
     cx: &mut Context<AppModel>,
     handler: impl Fn(&mut AppModel, &mut gpui::Window, &mut Context<AppModel>) + 'static,
 ) -> gpui::Stateful<gpui::Div> {
+    icon_button_div_with_spec(
+        id,
+        glyph,
+        crate::animated_icon::hover_spec(glyph),
+        tooltip,
+        selected,
+        badge_count,
+        enabled,
+        cx,
+        handler,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn icon_button_div_with_spec(
+    id: impl Into<SharedString>,
+    glyph: Icon,
+    hover: Option<crate::animated_icon::IconHoverSpec>,
+    tooltip: impl Into<Tooltip>,
+    selected: bool,
+    badge_count: Option<usize>,
+    enabled: bool,
+    cx: &mut Context<AppModel>,
+    handler: impl Fn(&mut AppModel, &mut gpui::Window, &mut Context<AppModel>) + 'static,
+) -> gpui::Stateful<gpui::Div> {
     let id = id.into();
     let debug_id = id.clone();
+    let anim_id = format!("icon-anim:{debug_id}");
     let tooltip = tooltip.into();
     let ink = if selected {
         theme::accent()
     } else {
         theme::text_muted()
+    };
+    let glyph_el = match hover.filter(|_| enabled) {
+        Some(spec) => crate::animated_icon::AnimatedIcon::from_spec(
+            anim_id,
+            spec,
+            crate::animated_icon::PlayMode::HoverOneshot,
+            ICON_SIZE,
+            ink,
+        )
+        .hover_pad(px(9.0))
+        .into_any_element(),
+        None => icon(glyph, ICON_SIZE, ink).into_any_element(),
     };
 
     div()
@@ -751,7 +826,7 @@ pub(crate) fn icon_button_div(
                     handler(model, window, cx);
                 }))
         })
-        .child(icon(glyph, ICON_SIZE, ink))
+        .child(glyph_el)
         .when_some(badge_count.filter(|count| *count > 0), |button, count| {
             button.child(div().absolute().top_0().right_0().child(badge(
                 count,

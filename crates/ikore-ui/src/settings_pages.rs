@@ -1,7 +1,7 @@
 //! Settings pages that do not edit the provider configuration: General, Usage, Keyboard
 //! shortcuts and About, plus `page_content`, which picks the renderer for the current page.
 
-use gpui::{AnyElement, ClipboardItem, Context, SharedString, div, prelude::*};
+use gpui::{AnyElement, ClipboardItem, Context, SharedString, div, prelude::*, px};
 
 use crate::app_model::AppModel;
 use crate::settings::SettingsPage;
@@ -397,18 +397,31 @@ fn about_page(model: &AppModel, hl: Option<&str>, cx: &mut Context<AppModel>) ->
     let diagnostics_copied = copied("about-diagnostics");
     let health: Vec<AnyElement> = crate::context_rail::health_lines(model, cx)
         .into_iter()
-        .map(|(_, color, text)| {
-            // The rail paints healthy lines in plain text colour; here the dot says "fine".
+        .enumerate()
+        .map(|(idx, (_, color, text))| {
+            // The rail paints healthy lines in plain text colour; here the icon says "fine".
             let dot = if color == theme::text() {
                 theme::success()
             } else {
                 color
             };
+            let glyph = if dot == theme::danger() {
+                crate::animated_icon::StatusGlyph::Error
+            } else if dot == theme::warning() {
+                crate::animated_icon::StatusGlyph::Attention
+            } else {
+                crate::animated_icon::StatusGlyph::Success
+            };
             div()
                 .flex()
                 .items_center()
                 .gap_2()
-                .child(crate::widgets::status_dot(dot))
+                .child(crate::animated_icon::status_glyph(
+                    format!("about-health-glyph-{idx}"),
+                    glyph,
+                    px(13.0),
+                    dot,
+                ))
                 .child(readout(text))
                 .into_any_element()
         })
@@ -460,6 +473,14 @@ fn about_page(model: &AppModel, hl: Option<&str>, cx: &mut Context<AppModel>) ->
                             .font_family(theme::FONT_MONO)
                             .text_sm()
                             .child(SharedString::from(database)),
+                    ),
+                    row_with(
+                        "about-icons",
+                        "Icons".into(),
+                        None,
+                        None,
+                        false,
+                        readout("Animated icons by Lordicon.com (https://lordicon.com/)"),
                     ),
                 ],
             ),

@@ -26,6 +26,21 @@ semantic recovery routes. Actual results are in the
 Run commands from the workspace root. `rust-toolchain.toml` pins Rust 1.98.0.
 The desktop application and GPUI validation target Windows x64.
 
+## Review Brief Visualizer clarity
+
+The Visualizer prompt test checks that its optional checkpoint note leads with
+the most decision-relevant point, explains practical relevance only when the
+brief supports it, uses plain language and remains within its advisory role.
+Reference validation tests continue to ensure that every note points to known
+brief content. This agent summarizes an existing native Review Brief; it does
+not turn Markdown plans into HTML, choose the layout, or invent counts, status,
+priority or consequences.
+
+```powershell
+cargo test --locked -p ikore-core --lib orchestration::review_brief::tests::the_visualizer_prompt_explains_relevance_without_exceeding_its_advisory_role -- --test-threads=2
+cargo test --locked -p ikore-core --lib orchestration::review_brief::tests::a_valid_visualization_resolves_its_references_to_brief_labels -- --test-threads=2
+```
+
 ## Forge assumption reviews
 
 The discovery tests exercise the three-question allowance across replies, an
