@@ -315,6 +315,8 @@ pub struct AppModel {
     pub(crate) forge: crate::forge::ForgeUi,
     pub(crate) notes: crate::notes::NotesUi,
     pub(crate) canvas: crate::canvas::CanvasUi,
+    /// The Agents canvas: layout, physics, pan and zoom (feature 25, M1).
+    pub(crate) agents_canvas: crate::agents_canvas::AgentsCanvas,
     pub(crate) canvas_authoring: crate::canvas_authoring_ui::CanvasAuthoringUi,
     pending_canvas_workspace: Option<String>,
     pub(crate) canvas_close_requested: bool,
@@ -796,8 +798,13 @@ impl AppModel {
                 )
             })
             .collect::<HashMap<_, _>>();
-        let agents_split =
-            cx.new(|_| crate::split_pane::SplitPaneState::new(220.0, 180.0, 400.0, 420.0));
+        let agents_split = cx.new(|_| {
+            crate::split_pane::SplitPaneState::proportional(
+                0.66,
+                240.0,
+                crate::agents_canvas::SYNTHESIS_MIN_WIDTH,
+            )
+        });
         let pulsations_split =
             cx.new(|_| crate::split_pane::SplitPaneState::new(292.0, 220.0, 480.0, 420.0));
         let workspace_tree_split =
@@ -907,6 +914,7 @@ impl AppModel {
             forge: crate::forge::ForgeUi::new(cx),
             notes: crate::notes::NotesUi::new(cx),
             canvas: crate::canvas::CanvasUi::new(cx),
+            agents_canvas: crate::agents_canvas::AgentsCanvas::new(cx.focus_handle()),
             canvas_authoring: crate::canvas_authoring_ui::CanvasAuthoringUi::default(),
             pending_canvas_workspace: None,
             canvas_close_requested: false,
@@ -1112,6 +1120,14 @@ impl AppModel {
         self.active_view
     }
 
+    /// The UI latency probe's workloads show a view with their own data:
+    /// nothing is loaded, so nothing replaces it.
+    pub(crate) fn show_view_for_benchmark(&mut self, view: AppView, cx: &mut Context<Self>) {
+        self.active_view = view;
+        self.navigation
+            .update(cx, |navigation, _| navigation.active = view);
+    }
+
     pub(crate) fn footer_clock(&self) -> &SharedString {
         &self.footer_clock
     }
@@ -1222,7 +1238,13 @@ impl AppModel {
                 .performance_probe
                 .as_ref()
                 .is_some_and(crate::performance::FrameLatencyProbe::drives_agent_dock);
-            let updates = if agent_dock {
+            let agents_canvas = self
+                .performance_probe
+                .as_ref()
+                .is_some_and(crate::performance::FrameLatencyProbe::drives_agents_canvas);
+            let updates = if agents_canvas {
+                crate::performance_agents_canvas::apply(self, frame, cx)
+            } else if agent_dock {
                 crate::performance_agent_dock::apply(self, frame, cx)
             } else {
                 crate::performance::apply_streaming_fixture(self, frame, cx)
@@ -5193,14 +5215,6 @@ impl AppModel {
         cx.notify();
     }
 
-    pub(crate) fn toggle_agents_terminal_expanded(&mut self, cx: &mut Context<Self>) {
-        self.agents.update(cx, |agents, _| {
-            agents.terminal_expanded = !agents.terminal_expanded;
-            agents.active_model_picker = None;
-        });
-        cx.notify();
-    }
-
     pub(crate) fn cycle_agent_api_filter(&mut self, key: String, cx: &mut Context<Self>) {
         self.agents.update(cx, |agents, _| {
             let filter = agents
@@ -6944,10 +6958,11 @@ impl AppModel {
         run_id: String,
         cx: &mut Context<Self>,
     ) {
-        use crate::agents::{AgentDetailTab, AgentIdentifier};
-        // The run shows at once; its events follow when the buffer lacks them.
+        use crate::agents::AgentIdentifier;
+        // The dock shows the run at once, pinned on it (feature 25, R13); its
+        // events follow when the buffer lacks them.
+        self.focus_agent_in_dock(agent.clone(), Some(run_id.clone()), cx);
         let buffered = self.agents.update(cx, |agents, _| {
-            agents.detail_tab = AgentDetailTab::Activity;
             match &agent {
                 AgentIdentifier::Canonical(role) => {
                     agents.selected_run_by_role.insert(*role, run_id.clone());

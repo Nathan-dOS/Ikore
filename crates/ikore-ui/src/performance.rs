@@ -15,6 +15,9 @@ enum BenchmarkScenario {
     ThreeStreams,
     /// ADR-040 M8: three CLI runs streaming, the agent dock expanded.
     AgentDock,
+    /// Feature 25 M1: the Agents canvas with twenty nodes, one dragged by
+    /// script, and three runs streaming.
+    AgentsCanvas,
 }
 impl BenchmarkScenario {
     fn parse(value: &str) -> Option<Self> {
@@ -23,6 +26,7 @@ impl BenchmarkScenario {
             "dock-closed" => Some(Self::Closed),
             "dock-three-streams" => Some(Self::ThreeStreams),
             "agent-dock-streams" => Some(Self::AgentDock),
+            "agents-canvas-physics" => Some(Self::AgentsCanvas),
             _ => None,
         }
     }
@@ -32,12 +36,16 @@ impl BenchmarkScenario {
             Self::Closed => "dock-closed",
             Self::ThreeStreams => "dock-three-streams",
             Self::AgentDock => "agent-dock-streams",
+            Self::AgentsCanvas => "agents-canvas-physics",
         }
     }
 
     /// A workload updates three streams on every frame.
     fn streams(self) -> bool {
-        matches!(self, Self::ThreeStreams | Self::AgentDock)
+        matches!(
+            self,
+            Self::ThreeStreams | Self::AgentDock | Self::AgentsCanvas
+        )
     }
 }
 
@@ -147,6 +155,11 @@ impl FrameLatencyProbe {
     /// The workload drives the agent dock rather than the Companion.
     pub(crate) fn drives_agent_dock(&self) -> bool {
         self.scenario == BenchmarkScenario::AgentDock
+    }
+
+    /// The workload drives the Agents canvas (feature 25, M1).
+    pub(crate) fn drives_agents_canvas(&self) -> bool {
+        self.scenario == BenchmarkScenario::AgentsCanvas
     }
 
     pub(crate) fn fixture_frame(&mut self) -> Option<u64> {
@@ -298,6 +311,11 @@ mod tests {
             Some(BenchmarkScenario::AgentDock)
         );
         assert!(BenchmarkScenario::AgentDock.streams());
+        assert_eq!(
+            BenchmarkScenario::parse("agents-canvas-physics"),
+            Some(BenchmarkScenario::AgentsCanvas)
+        );
+        assert!(BenchmarkScenario::AgentsCanvas.streams());
         assert!(!BenchmarkScenario::Closed.streams());
         assert_eq!(BenchmarkScenario::parse("arbitrary"), None);
     }
@@ -319,6 +337,25 @@ mod tests {
                 let run = format!("benchmark-run-{role}");
                 assert_eq!(agents.events_by_run.get(&run).map(Vec::len), Some(2));
                 assert!(agents.live.get(&run).is_some());
+            }
+        });
+    }
+
+    /// Feature 25 M1: the canvas workload shows twenty nodes on the Agents
+    /// page, streams three runs and keeps a node moving.
+    #[gpui::test]
+    fn agents_canvas_fixture_streams_three_runs_and_drags_a_node(cx: &mut gpui::TestAppContext) {
+        let model = cx.new(crate::AppModel::new_for_test);
+        model.update(cx, |model, cx| {
+            assert_eq!(crate::performance_agents_canvas::apply(model, 0, cx), 3);
+            assert_eq!(crate::performance_agents_canvas::apply(model, 1, cx), 3);
+            assert_eq!(model.active_view(), crate::app_model::AppView::Agents);
+            let agents = model.agents.read(cx);
+            let snapshot = agents.snapshot.as_ref().unwrap();
+            assert_eq!(snapshot.agents.len() + snapshot.free_form_slots.len(), 20);
+            for role in ["backend_agent", "test_agent", "task_specifier"] {
+                let run = format!("benchmark-run-{role}");
+                assert_eq!(agents.events_by_run.get(&run).map(Vec::len), Some(2));
             }
         });
     }

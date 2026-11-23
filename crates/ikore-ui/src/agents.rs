@@ -631,33 +631,40 @@ pub(crate) struct CliModelPickerState {
     pub(crate) backend: CliBackend,
 }
 
-/// The tabs of an agent's detail (ADR-040 M7, specification 12.2).
+/// What an agent's synthesis shows under its header (feature 25, M1; before,
+/// the tabs of ADR-040 M7, specification 12.2): the summary, or one drawer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum AgentDetailTab {
-    /// The console and the prompt.
+    /// State, numbers and units; no drawer open.
     #[default]
-    Activity,
+    Summary,
+    /// `Configure`: transport, backend, model, effort, session, API Mode.
     Configuration,
-    /// The runs as a table; a row opens its run in Activity.
+    /// The runs as a table; a row pins the dock on its run.
     History,
+    /// `Run…`: the prompt for a manual run.
+    Run,
 }
 
 impl AgentDetailTab {
-    pub(crate) const ALL: [Self; 3] = [Self::Activity, Self::Configuration, Self::History];
+    pub(crate) const ALL: [Self; 4] =
+        [Self::Summary, Self::Configuration, Self::History, Self::Run];
 
     pub(crate) const fn id(self) -> &'static str {
         match self {
-            Self::Activity => "activity",
+            Self::Summary => "summary",
             Self::Configuration => "configuration",
             Self::History => "history",
+            Self::Run => "run",
         }
     }
 
     pub(crate) const fn label(self) -> &'static str {
         match self {
-            Self::Activity => "Activity",
-            Self::Configuration => "Configuration",
+            Self::Summary => "Summary",
+            Self::Configuration => "Configure",
             Self::History => "History",
+            Self::Run => "Run…",
         }
     }
 }
@@ -755,9 +762,9 @@ pub(crate) struct AgentsModel {
     pub(crate) consoles: crate::agent_console::model::Consoles,
     /// What each live run does now, from its pulses (ADR-040 M5).
     pub(crate) live: crate::agent_console::live::LiveActivity,
-    /// The tab the agent's detail shows (ADR-040 M7).
+    /// The drawer the agent's synthesis shows (feature 25, M1).
     pub(crate) detail_tab: AgentDetailTab,
-    /// Whether the archived free-form slots are unfolded in the list.
+    /// Whether the synthesis column lists the archived free-form agents.
     pub(crate) show_archived: bool,
     /// What each finished stage run published, by run id (PI-Desktop PD6).
     pub(crate) run_changes: HashMap<String, crate::run_changes::RunChanges>,
@@ -774,7 +781,6 @@ pub(crate) struct AgentsModel {
     pub(crate) catalogs_refreshing: bool,
     pub(crate) viewer_enabled: bool,
     pub(crate) selected_api_target: Option<AgentIdentifier>,
-    pub(crate) terminal_expanded: bool,
     api_sequences: HashMap<String, u64>,
     /// A chrome-only snapshot is in flight. It must participate in the same admission gate as
     /// visible panel work so terminal bursts cannot start overlapping SQLite snapshots.
@@ -819,7 +825,6 @@ impl Default for AgentsModel {
             catalogs_refreshing: false,
             viewer_enabled: true,
             selected_api_target: None,
-            terminal_expanded: false,
             api_sequences: HashMap::new(),
             quiet_snapshot_in_flight: false,
             loading: false,
@@ -1014,6 +1019,10 @@ impl AgentsModel {
         true
     }
 
+    /// The synthesis stays on its agent while the agent is on the canvas.
+    /// Nothing is chosen for the developer (feature 25, M1): with no node
+    /// clicked, the canvas takes the whole page. An archived free-form agent
+    /// leaves the canvas, and its synthesis closes.
     fn reconcile_selection(&mut self, snapshot: &TerminalsSnapshot) {
         let valid = match self.selected_agent.as_ref() {
             Some(AgentIdentifier::Canonical(role)) => snapshot
@@ -1023,24 +1032,13 @@ impl AgentsModel {
             Some(AgentIdentifier::FreeForm(id)) => snapshot
                 .free_form_slots
                 .iter()
-                .chain(&snapshot.archived_free_form_slots)
                 .any(|slot| slot.slot.id == *id),
-            None => false,
+            None => true,
         };
         if !valid {
             self.active_model_picker = None;
-            self.selected_agent = snapshot
-                .agents
-                .first()
-                .map(|agent| AgentIdentifier::Canonical(agent.config.agent_role))
-                .or_else(|| {
-                    snapshot
-                        .free_form_slots
-                        .iter()
-                        .chain(&snapshot.archived_free_form_slots)
-                        .next()
-                        .map(|slot| AgentIdentifier::FreeForm(slot.slot.id.clone()))
-                });
+            self.selected_agent = None;
+            self.detail_tab = AgentDetailTab::default();
         }
     }
 
@@ -1582,16 +1580,20 @@ mod tests {
         model
     }
 
+    /// Feature 25, M1: nothing is chosen for the developer; a chosen agent
+    /// survives a refresh, and one that left the canvas closes the synthesis.
     #[test]
-    fn selection_survives_refresh_and_recovers_when_an_agent_disappears() {
+    fn selection_survives_refresh_and_closes_when_an_agent_disappears() {
         let mut model = model();
         let snapshot = model.snapshot.clone().unwrap();
         model.reconcile_selection(&snapshot);
-        assert_eq!(
-            model.selected_agent,
-            Some(AgentIdentifier::Canonical(AgentRole::BackendAgent))
-        );
+        assert_eq!(model.selected_agent, None);
         model.selected_agent = Some(AgentIdentifier::FreeForm("deleted-slot".into()));
+        model.detail_tab = AgentDetailTab::History;
+        model.reconcile_selection(&snapshot);
+        assert_eq!(model.selected_agent, None);
+        assert_eq!(model.detail_tab, AgentDetailTab::Summary);
+        model.selected_agent = Some(AgentIdentifier::Canonical(AgentRole::BackendAgent));
         model.reconcile_selection(&snapshot);
         assert_eq!(
             model.selected_agent,

@@ -36,7 +36,8 @@ pub(crate) struct ConsoleSurface<'a> {
 /// Where the run header puts its controls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HeaderFit {
-    /// A card of fixed height: the controls, then the button that expands it.
+    /// A card of fixed height. No surface uses one since the Agents page's
+    /// console moved to the dock (feature 25, M1); kept for a compact host.
     Card,
     /// A panel that fills its column: the controls beside the summary.
     Panel,
@@ -606,18 +607,6 @@ fn run_header(
         .children(display)
         .children(tools)
         .child(follow)
-        .when(fit == HeaderFit::Card, |header| {
-            header.child(crate::widgets::icon_button(
-                SharedString::from(format!("agent-expand:{key}")),
-                Icon::ChevronUp,
-                "Expand terminal",
-                false,
-                None,
-                true,
-                cx,
-                |model, _, cx| model.toggle_agents_terminal_expanded(cx),
-            ))
-        })
         .into_any_element()
 }
 

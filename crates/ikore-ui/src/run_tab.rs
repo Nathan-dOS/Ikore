@@ -58,6 +58,8 @@ pub(crate) fn run_tab(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElemen
             .into_any_element();
     };
     let summary = summarize(model, &agent, cx);
+    // The run the dock shows, chosen or the latest (feature 25, R13).
+    let (shown, _) = crate::agent_dock_view::shown_run(model, &summary, cx);
     let following = !model.agent_dock.follow.pinned();
     let chip = model
         .agent_dock
@@ -125,7 +127,7 @@ pub(crate) fn run_tab(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElemen
             ConsoleSurface {
                 key: RUN_TAB_SURFACE.to_owned(),
                 agent_label: &summary.label,
-                run: summary.run.as_ref(),
+                run: shown.as_ref(),
                 filter,
                 expanded: true,
                 narrow: true,

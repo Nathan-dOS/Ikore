@@ -134,6 +134,10 @@ pub(crate) struct AgentDock {
     closed: HashSet<AgentIdentifier>,
     /// The run each agent last started, to tell a new one.
     runs: HashMap<AgentIdentifier, String>,
+    /// The run a History row or a unit chose for its agent (feature 25,
+    /// R13). It holds while the dock is pinned on that agent; the session
+    /// does not keep it.
+    pub(crate) chosen_run: Option<(AgentIdentifier, String)>,
     /// The sash drag: where it started and the height then.
     pub(crate) drag: Option<(Pixels, f32)>,
     /// The height the dock took on the last frame, sash included.
@@ -151,6 +155,7 @@ impl Default for AgentDock {
             tabs: Vec::new(),
             closed: HashSet::new(),
             runs: HashMap::new(),
+            chosen_run: None,
             drag: None,
             rendered: px(0.0),
             tick: None,
@@ -249,6 +254,34 @@ impl AgentDock {
 
     pub(crate) fn close_tab(&mut self, agent: &AgentIdentifier) {
         self.closed.insert(agent.clone());
+        if self
+            .chosen_run
+            .as_ref()
+            .is_some_and(|(chosen, _)| chosen == agent)
+        {
+            self.chosen_run = None;
+        }
+    }
+
+    /// An agent the developer asked for gets a tab, run or not.
+    pub(crate) fn reveal(&mut self, agent: &AgentIdentifier) {
+        if !self.tabs.contains(agent) {
+            self.tabs.push(agent.clone());
+        }
+        self.closed.remove(agent);
+    }
+
+    /// The run the dock shows for `agent`: the one chosen, while the dock
+    /// is pinned on the agent; otherwise none, and the latest shows.
+    pub(crate) fn chosen_run_of(&self, agent: &AgentIdentifier) -> Option<&str> {
+        let pinned = matches!(
+            &self.follow.mode,
+            crate::agent_console::follow::FollowMode::Pinned(pinned) if pinned == agent
+        );
+        self.chosen_run
+            .as_ref()
+            .filter(|(chosen, _)| pinned && chosen == agent)
+            .map(|(_, run)| run.as_str())
     }
 
     pub(crate) fn session(&self) -> AgentDockSession {
@@ -287,10 +320,10 @@ impl AppModel {
             - crate::sizing::STATUS_BAR_HEIGHT
     }
 
-    /// Whether the dock shows under the current view (never on Agents, N4).
+    /// Whether the dock shows: under every view, the Agents canvas too
+    /// (feature 25, M1; it replaces the N4 rule of ADR-040).
     pub(crate) fn agent_dock_visible(&self, body: Pixels) -> bool {
-        self.active_view() != AppView::Agents
-            && self.agent_dock.effective_mode(body) != DockMode::Hidden
+        self.agent_dock.effective_mode(body) != DockMode::Hidden
     }
 
     /// What the Companion keeps clear above the status bar (9.6).
@@ -328,13 +361,45 @@ impl AppModel {
     }
 
     /// A tab click: the dock stays on that agent until `Resume following`.
+    /// On the Agents page the agent's node is selected too (feature 25, M1).
     pub(crate) fn pin_agent_dock(&mut self, agent: AgentIdentifier, cx: &mut Context<Self>) {
+        if self.active_view() == AppView::Agents {
+            self.select_canvas_agent(agent, cx);
+            return;
+        }
+        self.agent_dock.chosen_run = None;
         self.agent_dock.follow.apply(FollowInput::Pin(agent));
         self.schedule_session_persistence(cx);
         cx.notify();
     }
 
+    /// A node clicked, a History row or a unit (feature 25, M1): the dock
+    /// pins on the agent and, with `run`, on that run (R13). A hidden dock
+    /// opens in its last visible mode, or the project default (R14).
+    pub(crate) fn focus_agent_in_dock(
+        &mut self,
+        agent: AgentIdentifier,
+        run: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.agent_dock.reveal(&agent);
+        self.agent_dock.chosen_run = run.map(|run| (agent.clone(), run));
+        self.agent_dock.follow.apply(FollowInput::Pin(agent));
+        if self.agent_dock.mode == Some(DockMode::Hidden) {
+            self.agent_dock.mode = self.agent_dock.last_visible;
+        }
+        self.schedule_session_persistence(cx);
+        cx.notify();
+    }
+
+    /// The chip's `Latest`: back to the agent's latest run.
+    pub(crate) fn show_latest_agent_run(&mut self, cx: &mut Context<Self>) {
+        self.agent_dock.chosen_run = None;
+        cx.notify();
+    }
+
     pub(crate) fn resume_agent_dock_following(&mut self, cx: &mut Context<Self>) {
+        self.agent_dock.chosen_run = None;
         if self.agent_dock.follow.apply(FollowInput::ResumeFollowing) {
             self.schedule_session_persistence(cx);
         }

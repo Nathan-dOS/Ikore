@@ -520,6 +520,15 @@ mod tests {
         for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
             visual.simulate_resize(size(px(width), px(height)));
             model.update(visual, |m, cx| m.select_view(crate::AppView::Agents, cx));
+            // Feature 25, M1: the synthesis opens on a node; nothing opens by itself.
+            model.update(visual, |m, cx| {
+                m.select_canvas_agent(
+                    crate::agents::AgentIdentifier::Canonical(
+                        ikore_core::llm::AgentRole::TaskSpecifier,
+                    ),
+                    cx,
+                )
+            });
             visual.run_until_parked();
             let controls = visual.debug_bounds("agents-cli-scroll").unwrap();
             let nav = visual.debug_bounds("rail-settings").unwrap();

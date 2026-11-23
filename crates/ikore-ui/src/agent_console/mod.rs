@@ -276,11 +276,13 @@ impl AppModel {
     /// panel or the status bar item; or the agent open on the Agents page.
     pub(crate) fn shows_run(&self, run_id: &str, cx: &gpui::App) -> bool {
         use crate::agents::AgentIdentifier;
-        let docked = self
-            .agent_dock
-            .shown()
-            .and_then(|agent| crate::agent_dock_view::summarize(self, &agent, cx).run)
-            .is_some_and(|run| run.id == run_id);
+        let docked = self.agent_dock.shown().is_some_and(|agent| {
+            let summary = crate::agent_dock_view::summarize(self, &agent, cx);
+            summary.run.as_ref().is_some_and(|run| run.id == run_id)
+                || crate::agent_dock_view::shown_run(self, &summary, cx)
+                    .0
+                    .is_some_and(|run| run.id == run_id)
+        });
         if docked {
             return true;
         }

@@ -1,17 +1,24 @@
-//! The free-form slots' cards (ADR-040 M7, 12.4).
+//! The free-form agents' synthesis on the Agents canvas (feature 25, M1;
+//! before, the cards of ADR-040 M7, 12.4), and the archived ones' rows.
 
 use gpui::{AnyElement, Context, FontWeight, IntoElement, SharedString, div, prelude::*, px};
-use ikore_core::terminals::{AgentExecutionMode, CliAvailabilityState, CliBackend};
+use ikore_core::terminals::{
+    AgentExecutionMode, CliAvailabilityState, CliBackend, TerminalRunStatus,
+};
 
-use crate::agent_console::view::{ConsoleSurface, console};
-use crate::agents::AgentIdentifier;
+use crate::agents::{AgentDetailTab, AgentIdentifier};
 use crate::app_model::AppModel;
 use crate::icons::Icon;
 use crate::theme;
 
 use super::config::{config_button, field};
-use super::detail::{DetailHeader, detail_header, detail_tabs};
+use super::detail::{DetailHeader, detail_header};
 use super::history::history_tab;
+use super::model::transport;
+use super::synthesis::{
+    SynthesisFacts, drawer, now_line, run_numbers, run_quota, summary, synthesis_actions,
+    transport_line,
+};
 use super::{
     action_button, availability_status, cli_model_label, icon_action, resume_label, run_metadata,
     run_status, session_continuation, status_color,
@@ -32,17 +39,18 @@ pub(super) fn archived_free_form_card(
             "free-form-archived:{}",
             slot.id
         )))
-        .min_w(px(320.0))
-        .flex_1()
+        .w_full()
         .p_3()
         .rounded_lg()
         .bg(theme::surface_raised())
         .flex()
+        .flex_wrap()
         .items_center()
         .gap_3()
         .child(
             div()
                 .flex_1()
+                .min_w(px(160.0))
                 .child(
                     div()
                         .font_weight(FontWeight::SEMIBOLD)
@@ -122,11 +130,6 @@ pub(super) fn free_form_card(
         .get(&slot.id)
         .and_then(|run_id| free_form.recent_runs.iter().find(|run| &run.id == run_id))
         .or(active_run);
-    let event_filter = agents
-        .event_filters
-        .get(&format!("free-form:{}", slot.id))
-        .copied()
-        .unwrap_or_default();
     let history_clear_armed =
         agents.pending_free_form_history_clear.as_deref() == Some(slot.id.as_str());
     let executable_ready = if slot.backend == ikore_core::terminals::CliBackend::Custom {
@@ -179,19 +182,29 @@ pub(super) fn free_form_card(
                 availability_status(availability)
             }
         });
-    let run_console = console(
-        model,
-        ConsoleSurface {
-            key: format!("free-form:{}", slot.id),
-            agent_label: &slot.label,
-            run: selected_run,
-            filter: event_filter,
-            expanded: false,
-            narrow: false,
-        },
-        cx,
-    );
-    // ADR-040 M7: the same tabs as a stage's card, under a fixed header.
+    let facts = SynthesisFacts {
+        key: format!("free-form:{}", slot.id),
+        agent: AgentIdentifier::FreeForm(slot.id.clone()),
+        transport: transport_line(
+            &transport(slot.execution_mode, slot.backend, None),
+            slot.execution_mode,
+            slot.model.as_deref(),
+            slot.thinking_level,
+        ),
+        now: active_run.and_then(|run| now_line(model, run, cx)),
+        numbers: selected_run.and_then(|run| run_numbers(model, run, cx)),
+        quota: selected_run.and_then(|run| run_quota(model, run, cx)),
+        failure: active_run
+            .filter(|run| run.status == TerminalRunStatus::Failed)
+            .map(|run| {
+                run.error_message
+                    .clone()
+                    .unwrap_or_else(|| "The run failed.".to_owned())
+            }),
+        units: Vec::new(),
+        review: None,
+    };
+    // Feature 25, M1: the same synthesis and drawers as a stage's agent.
     let tab = model.agents.read(cx).detail_tab;
     let history = history_tab(
         model,
@@ -215,7 +228,7 @@ pub(super) fn free_form_card(
         .gap_2()
         .child(action_button(
             SharedString::from(format!("free-form-up:{}", slot.id)),
-            "↑".into(),
+            "Move earlier".into(),
             !busy && !running && slot_index > 0,
             false,
             cx,
@@ -226,7 +239,7 @@ pub(super) fn free_form_card(
         ))
         .child(action_button(
             SharedString::from(format!("free-form-down:{}", slot.id)),
-            "↓".into(),
+            "Move later".into(),
             !busy && !running && slot_index + 1 < snapshot.free_form_slots.len(),
             false,
             cx,
@@ -378,7 +391,7 @@ pub(super) fn free_form_card(
                 move |model, cx| model.save_free_form_text_config(slot_id.clone(), cx)
             },
         ));
-    let activity = div()
+    let runs = div()
         .flex()
         .flex_col()
         .gap_3()
@@ -470,11 +483,25 @@ pub(super) fn free_form_card(
                     )),
             )
         })
-        .child(run_console)
+        .child(history);
+    let composer = div()
+        .flex()
+        .flex_col()
+        .gap_2()
         .when_some(input, |card, input| {
-            card.child(crate::sizing::text_area(input))
+            card.child(crate::sizing::text_area(input)).child(
+                div()
+                    .text_xs()
+                    .text_color(theme::text_muted())
+                    .child(if running {
+                        "Input blocked during execution."
+                    } else {
+                        "Prompt will be sent via stdin; this is not a PTY terminal."
+                    }),
+            )
         });
-    // Stop, New session and Resume stay in the header whatever the tab (12.2).
+    // Stop, New session and Resume stay in the header whatever the drawer (12.2;
+    // feature 25, R12).
     let selected_run_id = selected_run.map(|run| run.id.clone());
     let actions = div()
         .flex()
@@ -536,10 +563,12 @@ pub(super) fn free_form_card(
         .unwrap_or_else(|| "CLI default".into());
     let session = selected_run.and_then(|run| run.native_session_id.clone());
     let key = format!("free-form:{}", slot.id);
-    let content = match tab {
-        crate::agents::AgentDetailTab::Activity => activity.into_any_element(),
-        crate::agents::AgentDetailTab::Configuration => config.into_any_element(),
-        crate::agents::AgentDetailTab::History => history,
+    let composer_available = slot.execution_mode == AgentExecutionMode::CliProcess;
+    let body = match tab {
+        AgentDetailTab::Summary => summary(facts, cx),
+        AgentDetailTab::Configuration => drawer(tab, config.into_any_element(), cx),
+        AgentDetailTab::History => drawer(tab, runs.into_any_element(), cx),
+        AgentDetailTab::Run => drawer(tab, composer.into_any_element(), cx),
     };
     div()
         .id(SharedString::from(format!("free-form-card:{}", slot.id)))
@@ -568,7 +597,7 @@ pub(super) fn free_form_card(
             },
             cx,
         ))
-        .child(detail_tabs(&key, tab, cx))
-        .child(content)
+        .child(synthesis_actions(&key, tab, None, composer_available, cx))
+        .child(body)
         .into_any_element()
 }

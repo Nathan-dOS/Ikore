@@ -37,3 +37,13 @@ pub(crate) fn pulse() -> Animation {
         .repeat()
         .with_easing(gpui::pulsating_between(0.45, 1.0))
 }
+
+/// The agents canvas's pulse of a running node (feature 25, M1; D7): slower
+/// and fainter than `pulse()`, for the border's opacity and its halo. Only
+/// running nodes carry it, so a canvas with nothing running asks for no
+/// frames.
+pub(crate) fn soft_pulse() -> Animation {
+    Animation::new(Duration::from_millis(2_400))
+        .repeat()
+        .with_easing(gpui::pulsating_between(0.35, 0.9))
+}

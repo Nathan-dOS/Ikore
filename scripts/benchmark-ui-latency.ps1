@@ -2,7 +2,7 @@
 param(
     [string]$BinaryPath = '',
     [string]$OutputPath = '',
-    [ValidateSet('idle', 'dock-closed', 'dock-three-streams', 'agent-dock-streams')]
+    [ValidateSet('idle', 'dock-closed', 'dock-three-streams', 'agent-dock-streams', 'agents-canvas-physics')]
     [string]$Scenario = 'idle',
     [ValidatePattern('^\d{3,4}x\d{3,4}$')]
     [string]$WindowSize = '1440x900',
