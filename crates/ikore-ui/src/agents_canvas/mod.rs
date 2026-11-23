@@ -896,6 +896,7 @@ impl AppModel {
             agents.selected_agent = Some(agent.clone());
             agents.selected_pipeline = None;
             agents.show_archived_pipelines = false;
+            agents.show_global_pipelines = false;
             agents.selected_api_target = None;
             agents.active_model_picker = None;
             agents.show_archived = false;
@@ -950,6 +951,7 @@ impl AppModel {
             agents.active_model_picker = None;
             agents.show_archived = false;
             agents.show_archived_pipelines = false;
+            agents.show_global_pipelines = false;
             agents.pending_pipeline_delete = None;
             agents.detail_tab = crate::agents::AgentDetailTab::default();
         });
@@ -965,6 +967,7 @@ impl AppModel {
             agents.selected_pipeline = None;
             agents.selected_pipeline_run = None;
             agents.show_archived_pipelines = false;
+            agents.show_global_pipelines = false;
             agents.pending_pipeline_delete = None;
             agents.selected_api_target = None;
             agents.active_model_picker = None;
@@ -985,6 +988,7 @@ impl AppModel {
                     || agents.show_archived
                     || agents.selected_pipeline.is_some()
                     || agents.show_archived_pipelines
+                    || agents.show_global_pipelines
                     || self.pipeline_editor.is_some(),
             )
         };
@@ -1022,6 +1026,7 @@ impl AppModel {
             agents.selected_agent = None;
             agents.selected_pipeline = None;
             agents.show_archived_pipelines = false;
+            agents.show_global_pipelines = false;
             agents.show_archived = true;
         });
         cx.notify();

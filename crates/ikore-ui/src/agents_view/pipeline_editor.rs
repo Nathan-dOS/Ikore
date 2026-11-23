@@ -7,7 +7,7 @@
 
 use gpui::{AnyElement, Context, Entity, FontWeight, IntoElement, SharedString, div, prelude::*};
 use ikore_core::custom_pipelines::{
-    AgentStep, CUSTOM_PIPELINE_SCHEMA_VERSION, CustomPipelineDefinitionV1,
+    AgentStep, CUSTOM_PIPELINE_SCHEMA_VERSION, CustomPipelineDefinitionV1, CustomPipelineView,
     DecidePipelineGateRequest, GateStep, MAX_STEPS, PipelineStep, PipelineTrigger,
     PipelineValidationError, SaveCustomPipelineOutcome, SaveCustomPipelineRequest, StepAgent,
     StepOutput, StepTransport,
@@ -65,11 +65,36 @@ pub(crate) struct StepDraft {
 pub(crate) struct PipelineEditor {
     pub(crate) pipeline_id: Option<String>,
     pub(crate) expected_version: Option<u32>,
+    /// `Scope: Project | Global` on a new pipeline; fixed once it exists.
+    pub(crate) scope: EditorScope,
+    /// A child's parent (P1): the form then saves the changes over it.
+    pub(crate) parent_pipeline_id: Option<String>,
+    pub(crate) parent_label: Option<String>,
     pub(crate) name: Entity<NativeTextInput>,
     pub(crate) description: Entity<NativeTextInput>,
     pub(crate) steps: Vec<StepDraft>,
     pub(crate) errors: Vec<PipelineValidationError>,
     pub(crate) saving: bool,
+}
+
+/// Where the form's pipeline lives (feature 25, M2b).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EditorScope {
+    /// A new pipeline: the developer picks.
+    Choose { global: bool },
+    /// A new child of a project's pipeline: it stays in the project (P3).
+    ProjectOnly,
+    /// An existing pipeline keeps its scope.
+    Fixed { global: bool },
+}
+
+impl EditorScope {
+    pub(crate) fn global(self) -> bool {
+        match self {
+            Self::Choose { global } | Self::Fixed { global } => global,
+            Self::ProjectOnly => false,
+        }
+    }
 }
 
 fn input(
@@ -476,6 +501,75 @@ fn step_card(
     card.into_any_element()
 }
 
+/// `Based on {parent} v{n}`: the parent's version this project's box resolves over.
+pub(crate) fn parent_label(pipeline: &CustomPipelineView) -> Option<String> {
+    pipeline
+        .parent_name
+        .as_ref()
+        .map(|name| match pipeline.adopted_parent_version {
+            Some(version) => format!("{name} v{version}"),
+            None => name.clone(),
+        })
+}
+
+/// `Project | Global`: a choice on a new pipeline, a line otherwise.
+fn scope_row(scope: EditorScope, cx: &mut Context<AppModel>) -> AnyElement {
+    let note = |text: &'static str| {
+        div()
+            .debug_selector(|| "pipeline-editor-scope".into())
+            .text_xs()
+            .text_color(theme::text_muted())
+            .child(text)
+            .into_any_element()
+    };
+    match scope {
+        EditorScope::Choose { global } => div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(
+                div()
+                    .debug_selector(|| "pipeline-editor-scope".into())
+                    .flex()
+                    .gap_2()
+                    .child(choice(
+                        "pipeline-editor-scope-project".into(),
+                        "Project",
+                        !global,
+                        true,
+                        cx,
+                        |model, cx| model.set_pipeline_editor_scope(false, cx),
+                    ))
+                    .child(choice(
+                        "pipeline-editor-scope-global".into(),
+                        "Global",
+                        global,
+                        true,
+                        cx,
+                        |model, cx| model.set_pipeline_editor_scope(true, cx),
+                    )),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme::text_muted())
+                    .child(if global {
+                        "Any project can add it. A project takes a new version when it opens."
+                    } else {
+                        "Only this project shows it."
+                    }),
+            )
+            .into_any_element(),
+        EditorScope::ProjectOnly => {
+            note("Project \u{b7} a child of a project's pipeline stays in its project")
+        }
+        EditorScope::Fixed { global: true } => {
+            note("Global \u{b7} other projects take this version when they open")
+        }
+        EditorScope::Fixed { global: false } => note("Project"),
+    }
+}
+
 /// The form in the synthesis column.
 pub(super) fn pipeline_editor_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
     let Some(editor) = model.pipeline_editor.as_ref() else {
@@ -487,10 +581,21 @@ pub(super) fn pipeline_editor_panel(model: &AppModel, cx: &mut Context<AppModel>
         .filter(|error| error.step_id.is_none())
         .map(|error| error.message.clone())
         .collect::<Vec<_>>();
-    let title = match &editor.pipeline_id {
-        Some(_) => "Edit pipeline",
-        None => "New pipeline",
-    };
+    let title = format!(
+        "{}{}",
+        match (&editor.pipeline_id, &editor.parent_pipeline_id) {
+            (Some(_), _) => "Edit pipeline",
+            (None, Some(_)) => "New child pipeline",
+            (None, None) => "New pipeline",
+        },
+        if editor.scope.global() {
+            " \u{b7} Global"
+        } else {
+            ""
+        }
+    );
+    let scope = editor.scope;
+    let parent = editor.parent_label.clone();
     let full = editor.steps.len() >= MAX_STEPS;
     let saving = editor.saving;
     let cards = (0..editor.steps.len())
@@ -537,6 +642,19 @@ pub(super) fn pipeline_editor_panel(model: &AppModel, cx: &mut Context<AppModel>
             editor.description.clone(),
             crate::sizing::INPUT_LONG,
         ))
+        .child(label("SCOPE"))
+        .child(scope_row(scope, cx))
+        .when_some(parent, |panel, parent| {
+            panel.child(
+                div()
+                    .debug_selector(|| "pipeline-editor-parent".into())
+                    .text_xs()
+                    .text_color(theme::text_muted())
+                    .child(format!(
+                        "Based on {parent} \u{b7} what you change here stays over its new versions"
+                    )),
+            )
+        })
         .child(label("TRIGGER"))
         .child(
             div()
@@ -736,6 +854,7 @@ impl AppModel {
             agents.selected_pipeline = None;
             agents.show_archived = false;
             agents.show_archived_pipelines = false;
+            agents.show_global_pipelines = false;
             agents.active_model_picker = None;
         });
     }
@@ -747,6 +866,9 @@ impl AppModel {
         self.pipeline_editor = Some(PipelineEditor {
             pipeline_id: None,
             expected_version: None,
+            scope: EditorScope::Choose { global: false },
+            parent_pipeline_id: None,
+            parent_label: None,
             name: input("Pipeline name", "", false, cx),
             description: input("What the pipeline is for (optional)", "", false, cx),
             steps: vec![first],
@@ -756,13 +878,13 @@ impl AppModel {
         cx.notify();
     }
 
-    /// `Edit`: the form on the pipeline's current version.
-    pub(crate) fn edit_pipeline(&mut self, pipeline_id: String, cx: &mut Context<Self>) {
-        let Some(pipeline) = self.agents.read(cx).pipeline(&pipeline_id).cloned() else {
-            return;
-        };
-        self.open_editor_column(cx);
-        let steps = pipeline
+    /// The form's steps for a pipeline's definition.
+    fn drafts_of(
+        &mut self,
+        pipeline: &CustomPipelineView,
+        cx: &mut Context<Self>,
+    ) -> Vec<StepDraft> {
+        pipeline
             .definition
             .steps
             .iter()
@@ -802,10 +924,24 @@ impl AppModel {
                 // Not offered until M5.
                 PipelineStep::HostTool(_) => None,
             })
-            .collect();
+            .collect()
+    }
+
+    /// `Edit`: the form on what the project's box resolves to.
+    pub(crate) fn edit_pipeline(&mut self, pipeline_id: String, cx: &mut Context<Self>) {
+        let Some(pipeline) = self.agents.read(cx).pipeline(&pipeline_id).cloned() else {
+            return;
+        };
+        self.open_editor_column(cx);
+        let steps = self.drafts_of(&pipeline, cx);
         self.pipeline_editor = Some(PipelineEditor {
             pipeline_id: Some(pipeline.id.clone()),
             expected_version: Some(pipeline.current_version),
+            scope: EditorScope::Fixed {
+                global: pipeline.is_global(),
+            },
+            parent_pipeline_id: pipeline.parent_pipeline_id.clone(),
+            parent_label: parent_label(&pipeline),
             name: input("Pipeline name", &pipeline.name, false, cx),
             description: input(
                 "What the pipeline is for (optional)",
@@ -817,6 +953,42 @@ impl AppModel {
             errors: Vec::new(),
             saving: false,
         });
+        cx.notify();
+    }
+
+    /// `Create child`: a new pipeline based on this one (P1), with its steps.
+    pub(crate) fn create_child_pipeline(&mut self, parent_id: String, cx: &mut Context<Self>) {
+        let Some(parent) = self.agents.read(cx).pipeline(&parent_id).cloned() else {
+            return;
+        };
+        self.open_editor_column(cx);
+        let steps = self.drafts_of(&parent, cx);
+        self.pipeline_editor = Some(PipelineEditor {
+            pipeline_id: None,
+            expected_version: None,
+            scope: if parent.is_global() {
+                EditorScope::Choose { global: false }
+            } else {
+                EditorScope::ProjectOnly
+            },
+            parent_pipeline_id: Some(parent.id.clone()),
+            parent_label: Some(format!("{} v{}", parent.name, parent.adopted_version)),
+            name: input("Pipeline name", "", false, cx),
+            description: input("What the pipeline is for (optional)", "", false, cx),
+            steps,
+            errors: Vec::new(),
+            saving: false,
+        });
+        cx.notify();
+    }
+
+    /// `Scope: Project | Global` on a new pipeline.
+    pub(crate) fn set_pipeline_editor_scope(&mut self, global: bool, cx: &mut Context<Self>) {
+        if let Some(editor) = self.pipeline_editor.as_mut()
+            && matches!(editor.scope, EditorScope::Choose { .. })
+        {
+            editor.scope = EditorScope::Choose { global };
+        }
         cx.notify();
     }
 
@@ -982,6 +1154,18 @@ impl AppModel {
             project_id,
             pipeline_id: editor.pipeline_id.clone(),
             expected_version: editor.expected_version,
+            scope: editor.pipeline_id.is_none().then(|| {
+                if editor.scope.global() {
+                    "global".to_owned()
+                } else {
+                    "project".to_owned()
+                }
+            }),
+            parent_pipeline_id: editor
+                .pipeline_id
+                .is_none()
+                .then(|| editor.parent_pipeline_id.clone())
+                .flatten(),
             name: editor.name.read(cx).value().to_owned(),
             description: editor.description.read(cx).value().to_owned(),
             definition: editor.definition(cx),
@@ -1168,9 +1352,70 @@ impl AppModel {
             agents.selected_agent = None;
             agents.selected_pipeline = None;
             agents.show_archived = false;
+            agents.show_global_pipelines = false;
             agents.show_archived_pipelines = true;
         });
         cx.notify();
+    }
+
+    /// `Add global pipeline…` in the header: the global pipelines this
+    /// project does not show yet.
+    pub(crate) fn open_global_pipelines(&mut self, cx: &mut Context<Self>) {
+        self.pipeline_editor = None;
+        self.agents.update(cx, |agents, _| {
+            agents.selected_agent = None;
+            agents.selected_pipeline = None;
+            agents.show_archived = false;
+            agents.show_archived_pipelines = false;
+            agents.show_global_pipelines = true;
+        });
+        cx.notify();
+    }
+
+    /// `Add`, `Remove from this project`, `Make global`, `Detach`; a refusal
+    /// goes to the header with the host's words.
+    pub(crate) fn change_pipeline_scope(
+        &mut self,
+        pipeline_id: String,
+        action: crate::agents::PipelineScopeAction,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::agents::PipelineScopeAction;
+        match action {
+            PipelineScopeAction::Remove => self.agents.update(cx, |agents, _| {
+                if agents.selected_pipeline.as_ref() == Some(&pipeline_id) {
+                    agents.selected_pipeline = None;
+                    agents.selected_pipeline_run = None;
+                }
+            }),
+            PipelineScopeAction::Add => self.agents.update(cx, |agents, _| {
+                agents.show_global_pipelines = false;
+                agents.selected_pipeline = Some(pipeline_id.clone());
+            }),
+            _ => {}
+        }
+        self.pipeline_command(
+            move |backend, project| {
+                Box::pin(async move {
+                    let errors = backend
+                        .change_pipeline_scope(project, pipeline_id, action)
+                        .await?;
+                    if errors.is_empty() {
+                        Ok(())
+                    } else {
+                        Err(crate::errors::UiCommandError::from_chat_parts(
+                            "pipeline_refused",
+                            errors
+                                .into_iter()
+                                .map(|error| error.message)
+                                .collect::<Vec<_>>()
+                                .join(" "),
+                        ))
+                    }
+                })
+            },
+            cx,
+        );
     }
 
     /// While a pipeline run is queued or running, the snapshot is read again

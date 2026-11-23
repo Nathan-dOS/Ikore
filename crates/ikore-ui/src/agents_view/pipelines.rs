@@ -158,8 +158,19 @@ pub(super) fn canvas_pipelines(model: &AppModel, cx: &gpui::App) -> Vec<CanvasPi
             CanvasPipeline {
                 id: pipeline.id.clone(),
                 title: format!(
-                    "{} · v{} · {status}",
-                    pipeline.name, pipeline.adopted_version
+                    "{}{} · v{} · {}",
+                    pipeline.name,
+                    if pipeline.is_global() {
+                        " · Global"
+                    } else {
+                        ""
+                    },
+                    pipeline.adopted_version,
+                    if pipeline.ready {
+                        status
+                    } else {
+                        "Needs edit".into()
+                    }
                 ),
                 state,
                 steps,
@@ -574,6 +585,64 @@ pub(super) fn pipeline_synthesis(
         .map_or((NodeState::Idle, String::new()), run_state);
     let id = pipeline.id.clone();
     let (run_id, edit_id, archive_id, delete_id) = (id.clone(), id.clone(), id.clone(), id.clone());
+    let (child_id, scope_id) = (id.clone(), id.clone());
+    let can_create = can_create_pipeline(agents);
+    // `Make global` stays off for a child of a project's pipeline (P3).
+    let parent_in_project = pipeline.parent_pipeline_id.as_ref().is_some_and(|parent| {
+        agents
+            .pipeline(parent)
+            .is_some_and(|parent| !parent.is_global())
+    });
+    let scope_actions = if pipeline.is_global() {
+        vec![
+            (
+                "pipeline-move-to-project",
+                "Move to this project",
+                crate::agents::PipelineScopeAction::MoveToProject,
+                pipeline.projects <= 1,
+            ),
+            (
+                "pipeline-remove",
+                "Remove from this project",
+                crate::agents::PipelineScopeAction::Remove,
+                !active,
+            ),
+        ]
+    } else if !parent_in_project {
+        vec![(
+            "pipeline-make-global",
+            "Make global",
+            crate::agents::PipelineScopeAction::MakeGlobal,
+            true,
+        )]
+    } else {
+        Vec::new()
+    };
+    let mut badges = Vec::new();
+    if pipeline.is_global() {
+        badges.push(match pipeline.projects {
+            0 | 1 => "Global".to_owned(),
+            count => format!("Global \u{b7} {count} projects"),
+        });
+    }
+    if let Some(parent) = super::pipeline_editor::parent_label(pipeline) {
+        badges.push(format!("Based on {parent}"));
+    }
+    let mut scope_buttons = Vec::new();
+    for (selector, text, action, enabled) in scope_actions {
+        let id = scope_id.clone();
+        scope_buttons.push(
+            action_button(
+                selector.into(),
+                text.into(),
+                !busy && enabled,
+                false,
+                cx,
+                move |model, cx| model.change_pipeline_scope(id.clone(), action, cx),
+            )
+            .into_any_element(),
+        );
+    }
     let mut content = panel("agents-pipeline-synthesis")
         .child(panel_header(
             "agents-pipeline-synthesis-header",
@@ -584,9 +653,29 @@ pub(super) fn pipeline_synthesis(
                 NodeState::Idle | NodeState::Done => theme::accent(),
             },
             pipeline.name.clone(),
-            Some(format!("v{}", pipeline.adopted_version)),
+            Some(format!("v{} \u{b7} adopted", pipeline.adopted_version)),
             cx,
         ))
+        .when(!badges.is_empty(), |panel| {
+            panel.child(
+                div()
+                    .debug_selector(|| "agents-pipeline-badges".into())
+                    .flex()
+                    .flex_wrap()
+                    .gap_1()
+                    .children(
+                        badges
+                            .into_iter()
+                            .map(|badge| crate::widgets::chip(badge, theme::accent())),
+                    ),
+            )
+        })
+        .when(pipeline.behind(), |panel| {
+            panel.child(div().debug_selector(|| "agents-pipeline-behind".into()).child(muted(format!(
+                "v{} was saved in another project \u{b7} this project takes it when it opens again",
+                pipeline.current_version
+            ))))
+        })
         .when(!pipeline.description.trim().is_empty(), |panel| {
             panel.child(muted(pipeline.description.clone()))
         })
@@ -632,6 +721,34 @@ pub(super) fn pipeline_synthesis(
                     cx,
                     move |model, cx| model.set_pipeline_archived(archive_id.clone(), true, cx),
                 ))
+                .children(scope_buttons)
+                .child(match pipeline.parent_pipeline_id {
+                    // One level only (P1): a child is detached, not parented.
+                    Some(_) => action_button(
+                        "pipeline-detach".into(),
+                        "Detach".into(),
+                        !busy,
+                        false,
+                        cx,
+                        move |model, cx| {
+                            model.change_pipeline_scope(
+                                child_id.clone(),
+                                crate::agents::PipelineScopeAction::Detach,
+                                cx,
+                            )
+                        },
+                    )
+                    .into_any_element(),
+                    None => action_button(
+                        "pipeline-create-child".into(),
+                        "Create child".into(),
+                        !busy && can_create,
+                        false,
+                        cx,
+                        move |model, cx| model.create_child_pipeline(child_id.clone(), cx),
+                    )
+                    .into_any_element(),
+                })
                 .when(pipeline.run_count == 0, |row| {
                     row.child(action_button(
                         "pipeline-delete".into(),
@@ -783,6 +900,85 @@ pub(super) fn step_synthesis(
             Some(run) => run_step(model, &run, index, step, busy, cx),
             None => muted("Not run yet."),
         })
+        .into_any_element()
+}
+
+/// `Add global pipeline…`: the global pipelines this project does not show,
+/// each with `Add`.
+pub(super) fn global_pipelines(
+    model: &AppModel,
+    busy: bool,
+    cx: &mut Context<AppModel>,
+) -> AnyElement {
+    let globals = model.agents.read(cx).pipelines.available_globals.clone();
+    let count = globals.len();
+    panel("agents-drawer:global-pipelines")
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .flex_1()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(format!("Global pipelines \u{b7} {count}")),
+                )
+                .child(icon_action(
+                    "agents-drawer-close".into(),
+                    Icon::X,
+                    "Close",
+                    true,
+                    cx,
+                    |model, cx| model.close_agents_synthesis(cx),
+                )),
+        )
+        .child(muted(
+            "A global pipeline added here gets a box in this project. Edits made in any project reach this one when it opens.",
+        ))
+        .when(count == 0, |panel| {
+            panel.child(empty_state("Every global pipeline is already here."))
+        })
+        .children(globals.into_iter().map(|global| {
+            let add = global.id.clone();
+            let selector = format!("global-pipeline:{}", global.id);
+            div()
+                .debug_selector(move || selector.clone())
+                .flex()
+                .flex_col()
+                .gap_2()
+                .p_3()
+                .rounded_lg()
+                .border_1()
+                .border_color(theme::border())
+                .child(
+                    div()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(global.name.clone()),
+                )
+                .child(muted(match &global.parent_name {
+                    Some(parent) => format!("v{} \u{b7} Based on {parent}", global.current_version),
+                    None => format!("v{}", global.current_version),
+                }))
+                .when(!global.description.trim().is_empty(), |card| {
+                    card.child(muted(global.description.clone()))
+                })
+                .child(div().flex().child(action_button(
+                    "pipeline-add-global".into(),
+                    "Add".into(),
+                    !busy,
+                    false,
+                    cx,
+                    move |model, cx| {
+                        model.change_pipeline_scope(
+                            add.clone(),
+                            crate::agents::PipelineScopeAction::Add,
+                            cx,
+                        )
+                    },
+                )))
+                .into_any_element()
+        }))
         .into_any_element()
 }
 

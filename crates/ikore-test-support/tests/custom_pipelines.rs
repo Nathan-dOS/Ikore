@@ -193,6 +193,8 @@ impl Harness {
                 project_id: self.project.clone(),
                 pipeline_id: None,
                 expected_version: None,
+                scope: None,
+                parent_pipeline_id: None,
                 name: name.into(),
                 description: String::new(),
                 definition: CustomPipelineDefinitionV1 {
@@ -564,6 +566,8 @@ fn the_main_lane_admits_the_ikore_pipeline_while_a_step_runs() {
                     project_id: harness.project.clone(),
                     pipeline_id: None,
                     expected_version: None,
+                    scope: None,
+                    parent_pipeline_id: None,
                     name: "Busy lane".into(),
                     description: String::new(),
                     definition: CustomPipelineDefinitionV1 {

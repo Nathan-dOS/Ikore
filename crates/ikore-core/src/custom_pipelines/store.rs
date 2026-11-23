@@ -1,5 +1,7 @@
-//! Feature 25 (M2a): a project's pipelines, their versions and boxes, and the
-//! commands on their runs. A module of `persistence_service`.
+//! Feature 25 (M2a, M2b): a project's pipelines and the global ones, their
+//! versions and boxes, and the commands on their runs. A module of
+//! `persistence_service`; scope changes, children and adoption are in
+//! `scope.rs`.
 
 use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
 use uuid::Uuid;
@@ -12,14 +14,16 @@ use crate::custom_pipelines::{
     MAX_DESCRIPTION_CHARS, MAX_GATE_NOTE_BYTES, MAX_PROJECT_PIPELINES, PipelineRunStatus,
     PipelineRunView, PipelineStep, PipelineStepRunView, PipelineTrigger, PipelineValidationError,
     RECENT_RUNS_PER_PIPELINE, SaveCustomPipelineOutcome, SaveCustomPipelineRequest, StepRunStatus,
-    StepTransport, parse_definition, validate_definition, validate_name,
+    StepTransport, child_changes, parse_child, parse_definition, resolve_child,
+    validate_definition, validate_name,
 };
+use crate::custom_pipelines::{GlobalPipelineSummary, MAX_GLOBAL_PIPELINES};
 
 fn invalid(message: impl Into<String>) -> PersistenceServiceError {
     PersistenceServiceError::Validation(message.into())
 }
 
-fn required<'a>(value: &'a str, name: &str) -> Result<&'a str, PersistenceServiceError> {
+pub(super) fn required<'a>(value: &'a str, name: &str) -> Result<&'a str, PersistenceServiceError> {
     let value = value.trim();
     if value.is_empty() {
         return Err(invalid(format!("{name} is required.")));
@@ -27,7 +31,7 @@ fn required<'a>(value: &'a str, name: &str) -> Result<&'a str, PersistenceServic
     Ok(value)
 }
 
-fn now() -> String {
+pub(super) fn now() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
@@ -37,7 +41,9 @@ fn definition_json(
     serde_json::to_string(definition).map_err(|error| invalid(error.to_string()))
 }
 
-fn stored_definition(json: &str) -> Result<CustomPipelineDefinitionV1, PersistenceServiceError> {
+pub(super) fn stored_definition(
+    json: &str,
+) -> Result<CustomPipelineDefinitionV1, PersistenceServiceError> {
     parse_definition(json).map_err(|error| PersistenceServiceError::Runtime(error.to_string()))
 }
 
@@ -52,7 +58,12 @@ fn bad_column(index: usize, value: &str) -> rusqlite::Error {
 const VIEW_SQL: &str = "SELECT p.id,p.scope,p.project_id,p.name,p.description,p.current_version,
         a.adopted_version,a.position,a.state,a.needs_edit_reason,p.archived,v.definition_json,
         p.updated_at,
-        (SELECT count(*) FROM custom_pipeline_runs r WHERE r.pipeline_id=p.id)
+        (SELECT count(*) FROM custom_pipeline_runs r WHERE r.pipeline_id=p.id),
+        p.parent_pipeline_id,a.adopted_parent_version,
+        (SELECT name FROM custom_pipelines m WHERE m.id=p.parent_pipeline_id),
+        (SELECT count(*) FROM custom_pipelines c WHERE c.parent_pipeline_id=p.id),
+        (SELECT count(*) FROM custom_pipeline_activations o WHERE o.pipeline_id=p.id),
+        (SELECT current_version FROM custom_pipelines m WHERE m.id=p.parent_pipeline_id)
    FROM custom_pipeline_activations a
    JOIN custom_pipelines p ON p.id=a.pipeline_id
    JOIN custom_pipeline_versions v ON v.pipeline_id=p.id AND v.version=a.adopted_version
@@ -80,9 +91,44 @@ fn map_view(row: &rusqlite::Row<'_>) -> rusqlite::Result<(CustomPipelineView, St
             },
             run_count: row.get(13)?,
             updated_at: row.get(12)?,
+            parent_pipeline_id: row.get(14)?,
+            adopted_parent_version: row.get::<_, Option<u32>>(15)?.or(row.get(19)?),
+            parent_name: row.get(16)?,
+            children: row.get(17)?,
+            projects: row.get(18)?,
         },
         row.get(11)?,
     ))
+}
+
+/// What a pipeline's version resolves to: its definition, or a child's
+/// changes over its parent's version (P1), with what no longer fits.
+pub(super) fn resolved_for(
+    db: &Connection,
+    pipeline_id: &str,
+    version: u32,
+    parent: Option<(&str, u32)>,
+) -> Result<(CustomPipelineDefinitionV1, Vec<String>), PersistenceServiceError> {
+    let version_json = |pipeline: &str, version: u32| -> Result<String, PersistenceServiceError> {
+        db.query_row(
+            "SELECT definition_json FROM custom_pipeline_versions WHERE pipeline_id=?1 AND version=?2",
+            params![pipeline, version],
+            |row| row.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| PersistenceServiceError::NotFound("pipeline version".into()))
+    };
+    let json = version_json(pipeline_id, version)?;
+    match parent {
+        None => Ok((stored_definition(&json)?, Vec::new())),
+        Some((parent, parent_version)) => {
+            let changes = parse_child(&json)
+                .map_err(|error| PersistenceServiceError::Runtime(error.to_string()))?;
+            let parent = stored_definition(&version_json(parent, parent_version)?)?;
+            let resolved = resolve_child(&parent, &changes);
+            Ok((resolved.definition, resolved.conflicts))
+        }
+    }
 }
 
 fn load_views(
@@ -99,13 +145,24 @@ fn load_views(
         .collect::<Result<Vec<_>, _>>()?;
     rows.into_iter()
         .map(|(mut view, json)| {
-            view.definition = stored_definition(&json)?;
+            view.definition = match (&view.parent_pipeline_id, view.adopted_parent_version) {
+                (Some(parent), Some(parent_version)) => {
+                    resolved_for(
+                        db,
+                        &view.id,
+                        view.adopted_version,
+                        Some((parent, parent_version)),
+                    )?
+                    .0
+                }
+                _ => stored_definition(&json)?,
+            };
             Ok(view)
         })
         .collect()
 }
 
-fn load_view(
+pub(super) fn load_view(
     db: &Connection,
     project_id: &str,
     pipeline_id: &str,
@@ -221,18 +278,36 @@ pub(super) fn max_concurrent(db: &Connection) -> Result<u32, PersistenceServiceE
         .unwrap_or(AUTOMATION_MAX_CONCURRENT_DEFAULT))
 }
 
-/// A pipeline of this project: its scope, archived flag and current version.
+/// A pipeline this project shows (its own or a global one): archived flag,
+/// current version, name, scope and parent.
+pub(super) struct Shown {
+    archived: bool,
+    current: u32,
+    name: String,
+    scope: String,
+    parent: Option<String>,
+}
+
 fn own_pipeline(
     tx: &Transaction<'_>,
     project_id: &str,
     pipeline_id: &str,
-) -> Result<(bool, u32, String), PersistenceServiceError> {
+) -> Result<Shown, PersistenceServiceError> {
     tx.query_row(
-        "SELECT p.archived,p.current_version,p.name FROM custom_pipelines p
+        "SELECT p.archived,p.current_version,p.name,p.scope,p.parent_pipeline_id
+           FROM custom_pipelines p
            JOIN custom_pipeline_activations a ON a.pipeline_id=p.id AND a.project_id=?1
-          WHERE p.id=?2 AND p.scope='project' AND p.project_id=?1",
+          WHERE p.id=?2",
         params![project_id, pipeline_id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        |row| {
+            Ok(Shown {
+                archived: row.get(0)?,
+                current: row.get(1)?,
+                name: row.get(2)?,
+                scope: row.get(3)?,
+                parent: row.get(4)?,
+            })
+        },
     )
     .optional()?
     .ok_or_else(|| PersistenceServiceError::NotFound("pipeline".into()))
@@ -240,18 +315,35 @@ fn own_pipeline(
 
 /// The limits a box that becomes visible must respect (R4, T9). Archived
 /// pipelines do not count, so one being restored is not counted twice.
-fn limit_errors(
+pub(super) fn limit_errors(
     tx: &Transaction<'_>,
     project_id: &str,
+    scope: &str,
 ) -> Result<Vec<PipelineValidationError>, PersistenceServiceError> {
     let mut errors = Vec::new();
+    if scope == "global" {
+        let globals: u32 = tx.query_row(
+            "SELECT count(*) FROM custom_pipelines WHERE scope='global' AND archived=0",
+            [],
+            |row| row.get(0),
+        )?;
+        if globals as usize >= MAX_GLOBAL_PIPELINES {
+            errors.push(PipelineValidationError::new(
+                "global_limit",
+                None,
+                format!(
+                    "The app has at most {MAX_GLOBAL_PIPELINES} global pipelines. Archive one first."
+                ),
+            ));
+        }
+    }
     let own: u32 = tx.query_row(
         "SELECT count(*) FROM custom_pipelines
           WHERE scope='project' AND project_id=?1 AND archived=0",
         [project_id],
         |row| row.get(0),
     )?;
-    if own as usize >= MAX_PROJECT_PIPELINES {
+    if scope == "project" && own as usize >= MAX_PROJECT_PIPELINES {
         errors.push(PipelineValidationError::new(
             "project_limit",
             None,
@@ -278,7 +370,7 @@ fn limit_errors(
 }
 
 /// Names are unique among the boxes the project shows (T8).
-fn name_taken(
+pub(super) fn name_taken(
     tx: &Transaction<'_>,
     project_id: &str,
     name: &str,
@@ -294,7 +386,24 @@ fn name_taken(
     )?)
 }
 
-fn name_taken_error() -> PipelineValidationError {
+/// Another pipeline with this name in a project that shows `pipeline_id`.
+fn name_taken_where_shown(
+    tx: &Transaction<'_>,
+    pipeline_id: &str,
+    name: &str,
+) -> Result<bool, PersistenceServiceError> {
+    Ok(tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM custom_pipeline_activations mine
+           JOIN custom_pipeline_activations a ON a.project_id=mine.project_id
+           JOIN custom_pipelines p ON p.id=a.pipeline_id
+          WHERE mine.pipeline_id=?1 AND p.id<>?1 AND p.archived=0
+            AND lower(trim(p.name))=lower(trim(?2)))",
+        params![pipeline_id, name],
+        |row| row.get(0),
+    )?)
+}
+
+pub(super) fn name_taken_error() -> PipelineValidationError {
     PipelineValidationError::new(
         "name_taken",
         None,
@@ -303,7 +412,7 @@ fn name_taken_error() -> PipelineValidationError {
 }
 
 /// Everything a definition must satisfy to be saved or run in M2a.
-fn definition_errors(
+pub(super) fn definition_errors(
     tx: &Transaction<'_>,
     definition: &CustomPipelineDefinitionV1,
 ) -> Result<Vec<PipelineValidationError>, PersistenceServiceError> {
@@ -347,7 +456,10 @@ fn definition_errors(
     Ok(errors)
 }
 
-fn ensure_project(tx: &Transaction<'_>, project_id: &str) -> Result<(), PersistenceServiceError> {
+pub(super) fn ensure_project(
+    tx: &Transaction<'_>,
+    project_id: &str,
+) -> Result<(), PersistenceServiceError> {
     let exists: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM projects WHERE id=?1 AND is_archived=0)",
         [project_id],
@@ -360,14 +472,17 @@ fn ensure_project(tx: &Transaction<'_>, project_id: &str) -> Result<(), Persiste
     }
 }
 
-fn has_active_run(
+/// A run in progress of the pipeline, in one project or in any.
+pub(super) fn has_active_run_in(
     tx: &Transaction<'_>,
     pipeline_id: &str,
+    project_id: Option<&str>,
 ) -> Result<bool, PersistenceServiceError> {
     Ok(tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM custom_pipeline_runs
-          WHERE pipeline_id=?1 AND status IN ('queued','running','waiting_gate'))",
-        [pipeline_id],
+          WHERE pipeline_id=?1 AND (?2 IS NULL OR project_id=?2)
+            AND status IN ('queued','running','waiting_gate'))",
+        params![pipeline_id, project_id],
         |row| row.get(0),
     )?)
 }
@@ -464,12 +579,33 @@ impl PersistenceService {
             )?
             .collect::<Result<Vec<_>, _>>()?;
         let runs = complete_runs(&db, rows)?;
+        let available_globals = db
+            .prepare(
+                "SELECT p.id,p.name,p.description,p.current_version,
+                        (SELECT name FROM custom_pipelines m WHERE m.id=p.parent_pipeline_id)
+                   FROM custom_pipelines p
+                  WHERE p.scope='global' AND p.archived=0
+                    AND NOT EXISTS(SELECT 1 FROM custom_pipeline_activations a
+                                    WHERE a.pipeline_id=p.id AND a.project_id=?1)
+                  ORDER BY lower(p.name),p.id",
+            )?
+            .query_map([project_id], |row| {
+                Ok(GlobalPipelineSummary {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    description: row.get(2)?,
+                    current_version: row.get(3)?,
+                    parent_name: row.get(4)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(CustomPipelinesSnapshot {
             project_id: project_id.to_owned(),
             pipelines,
             archived,
             runs,
             max_concurrent: max_concurrent(&db)?,
+            available_globals,
         })
     }
 
@@ -514,22 +650,98 @@ impl PersistenceService {
         errors.extend(definition_errors(&tx, &request.definition)?);
         if !name.is_empty() && name_taken(&tx, project_id, &name, pipeline_id)? {
             errors.push(name_taken_error());
+        } else if let Some(id) = pipeline_id
+            && !name.is_empty()
+            && name_taken_where_shown(&tx, id, &name)?
+        {
+            errors.push(PipelineValidationError::new(
+                "name_taken",
+                None,
+                "A project that uses this pipeline has another pipeline with this name.",
+            ));
         }
-        let json = definition_json(&request.definition)?;
-        let sha = crate::exchange::render::sha256_hex(&json);
         let now = now();
+        // A child stores its changes over its parent's current version (P1).
+        let parent_id = match pipeline_id {
+            Some(id) => own_pipeline(&tx, project_id, id)?.parent,
+            None => request
+                .parent_pipeline_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned),
+        };
+        let mut parent_version = None;
+        let json = match &parent_id {
+            None => definition_json(&request.definition)?,
+            Some(parent) => {
+                let (parent_scope, parent_project, parent_current, parent_parent): (
+                    String,
+                    Option<String>,
+                    u32,
+                    Option<String>,
+                ) = tx
+                    .query_row(
+                        "SELECT scope,project_id,current_version,parent_pipeline_id
+                           FROM custom_pipelines WHERE id=?1",
+                        [parent],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                    )
+                    .optional()?
+                    .ok_or_else(|| PersistenceServiceError::NotFound("parent pipeline".into()))?;
+                if pipeline_id.is_none() {
+                    if parent_parent.is_some() {
+                        errors.push(PipelineValidationError::new(
+                            "child_of_child",
+                            None,
+                            "A pipeline based on another cannot have children of its own.",
+                        ));
+                    }
+                    // P3: a project's pipeline has children only in its project.
+                    let scope = request.scope.as_deref().unwrap_or("project");
+                    if parent_scope == "project"
+                        && (scope != "project" || parent_project.as_deref() != Some(project_id))
+                    {
+                        errors.push(PipelineValidationError::new(
+                            "parent_in_project",
+                            None,
+                            "A child of a project's pipeline stays in that project.",
+                        ));
+                    }
+                }
+                parent_version = Some(parent_current);
+                if parent_parent.is_some() {
+                    // Its versions hold changes, not a definition to diff against.
+                    return Ok(SaveCustomPipelineOutcome::Invalid { errors });
+                }
+                let parent_definition = resolved_for(&tx, parent, parent_current, None)?.0;
+                match child_changes(&parent_definition, &request.definition) {
+                    Ok(changes) => serde_json::to_string(&changes)
+                        .map_err(|error| invalid(error.to_string()))?,
+                    Err(error) => {
+                        errors.push(error);
+                        String::new()
+                    }
+                }
+            }
+        };
+        let sha = crate::exchange::render::sha256_hex(&json);
         let id = match pipeline_id {
             None => {
-                errors.extend(limit_errors(&tx, project_id)?);
+                let scope = match request.scope.as_deref().unwrap_or("project") {
+                    "global" => "global",
+                    _ => "project",
+                };
+                errors.extend(limit_errors(&tx, project_id, scope)?);
                 if !errors.is_empty() {
                     return Ok(SaveCustomPipelineOutcome::Invalid { errors });
                 }
                 let id = Uuid::new_v4().to_string();
                 tx.execute(
                     "INSERT INTO custom_pipelines(id,scope,project_id,name,description,current_version,
-                       archived,created_at,updated_at)
-                     VALUES(?1,'project',?2,?3,?4,1,0,?5,?5)",
-                    params![id, project_id, name, description, now],
+                       archived,created_at,updated_at,parent_pipeline_id)
+                     VALUES(?1,?6,CASE WHEN ?6='global' THEN NULL ELSE ?2 END,?3,?4,1,0,?5,?5,?7)",
+                    params![id, project_id, name, description, now, scope, parent_id],
                 )?;
                 tx.execute(
                     "INSERT INTO custom_pipeline_versions(pipeline_id,version,definition_json,
@@ -538,16 +750,17 @@ impl PersistenceService {
                 )?;
                 tx.execute(
                     "INSERT INTO custom_pipeline_activations(project_id,pipeline_id,position,
-                       adopted_version,state,created_at,updated_at)
+                       adopted_version,adopted_parent_version,state,created_at,updated_at)
                      VALUES(?1,?2,(SELECT COALESCE(max(position)+1,0)
                                      FROM custom_pipeline_activations WHERE project_id=?1),
-                            1,'ready',?3,?3)",
-                    params![project_id, id, now],
+                            1,?4,'ready',?3,?3)",
+                    params![project_id, id, now, parent_version],
                 )?;
                 id
             }
             Some(id) => {
-                let (archived, current, _) = own_pipeline(&tx, project_id, id)?;
+                let shown = own_pipeline(&tx, project_id, id)?;
+                let (archived, current) = (shown.archived, shown.current);
                 if archived {
                     errors.push(PipelineValidationError::new(
                         "pipeline_archived",
@@ -588,16 +801,12 @@ impl PersistenceService {
                       WHERE id=?1",
                     params![id, name, description, version, now],
                 )?;
-                // A project's own pipeline is adopted by its project at once.
-                tx.execute(
-                    "UPDATE custom_pipeline_activations
-                        SET adopted_version=?3,state='ready',needs_edit_reason=NULL,updated_at=?4
-                      WHERE project_id=?1 AND pipeline_id=?2",
-                    params![project_id, id, version, now],
-                )?;
                 id.to_owned()
             }
         };
+        // The project where the edit was made adopts it at once, with the
+        // children it shows (P2); the others adopt it when they open.
+        super::custom_pipeline_scope::adopt_with_children(&tx, project_id, &id, &now)?;
         tx.commit()?;
         Ok(SaveCustomPipelineOutcome::Saved {
             pipeline: Box::new(load_view(&self.connection()?, project_id, &id)?),
@@ -616,9 +825,11 @@ impl PersistenceService {
         let pipeline_id = required(pipeline_id, "Pipeline")?;
         let mut db = self.connection()?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let (was_archived, _, name) = own_pipeline(&tx, project_id, pipeline_id)?;
+        let shown = own_pipeline(&tx, project_id, pipeline_id)?;
+        let (was_archived, name) = (shown.archived, shown.name.clone());
         if was_archived != archived {
-            if archived && has_active_run(&tx, pipeline_id)? {
+            // A global pipeline is archived for every project.
+            if archived && has_active_run_in(&tx, pipeline_id, None)? {
                 return Ok(SaveCustomPipelineOutcome::Invalid {
                     errors: vec![PipelineValidationError::new(
                         "run_in_progress",
@@ -628,7 +839,7 @@ impl PersistenceService {
                 });
             }
             if !archived {
-                let mut errors = limit_errors(&tx, project_id)?;
+                let mut errors = limit_errors(&tx, project_id, &shown.scope)?;
                 if name_taken(&tx, project_id, &name, Some(pipeline_id))? {
                     errors.push(name_taken_error());
                 }
@@ -657,7 +868,28 @@ impl PersistenceService {
         let pipeline_id = required(pipeline_id, "Pipeline")?;
         let mut db = self.connection()?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        own_pipeline(&tx, project_id, pipeline_id)?;
+        if own_pipeline(&tx, project_id, pipeline_id)?.scope == "global" {
+            let elsewhere: u32 = tx.query_row(
+                "SELECT count(*) FROM custom_pipeline_activations WHERE pipeline_id=?1 AND project_id<>?2",
+                params![pipeline_id, project_id],
+                |row| row.get(0),
+            )?;
+            if elsewhere > 0 {
+                return Err(invalid(
+                    "Other projects use this pipeline. Remove it from them first.",
+                ));
+            }
+        }
+        let children: u32 = tx.query_row(
+            "SELECT count(*) FROM custom_pipelines WHERE parent_pipeline_id=?1",
+            [pipeline_id],
+            |row| row.get(0),
+        )?;
+        if children > 0 {
+            return Err(invalid(
+                "Other pipelines are based on this one. Detach or delete them first.",
+            ));
+        }
         let runs: u32 = tx.query_row(
             "SELECT count(*) FROM custom_pipeline_runs WHERE pipeline_id=?1",
             [pipeline_id],
@@ -684,13 +916,18 @@ impl PersistenceService {
         let mut db = self.connection()?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         ensure_project(&tx, project_id)?;
-        let (archived, version, state, json, sha): (bool, u32, String, String, String) = tx
+        let (archived, version, state, parent, parent_version): (
+            bool,
+            u32,
+            String,
+            Option<String>,
+            Option<u32>,
+        ) = tx
             .query_row(
-                "SELECT p.archived,a.adopted_version,a.state,v.definition_json,v.definition_sha256
+                "SELECT p.archived,a.adopted_version,a.state,p.parent_pipeline_id,
+                        a.adopted_parent_version
                    FROM custom_pipeline_activations a
                    JOIN custom_pipelines p ON p.id=a.pipeline_id
-                   JOIN custom_pipeline_versions v
-                     ON v.pipeline_id=a.pipeline_id AND v.version=a.adopted_version
                   WHERE a.project_id=?1 AND a.pipeline_id=?2",
                 params![project_id, pipeline_id],
                 |row| {
@@ -711,11 +948,22 @@ impl PersistenceService {
         if state != "ready" {
             return Err(invalid("Edit the pipeline before running it."));
         }
-        let definition = stored_definition(&json)?;
+        // The run follows what the project's box resolves to now (T4).
+        let (definition, conflicts) = resolved_for(
+            &tx,
+            pipeline_id,
+            version,
+            parent.as_deref().zip(parent_version),
+        )?;
+        if !conflicts.is_empty() {
+            return Err(invalid("Edit the pipeline before running it."));
+        }
         let errors = definition_errors(&tx, &definition)?;
         if let Some(error) = errors.first() {
             return Err(invalid(error.message.clone()));
         }
+        let json = definition_json(&definition)?;
+        let sha = crate::exchange::render::sha256_hex(&json);
         let id = Uuid::new_v4().to_string();
         let now = now();
         let payload = serde_json::json!({"kind": "manual", "requestedAt": now}).to_string();

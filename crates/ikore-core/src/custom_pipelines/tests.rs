@@ -1,4 +1,4 @@
-//! Feature 25 (M2a): the store, the gates and the automation lane's
+//! Feature 25 (M2a, M2b): the store, global pipelines and children, the gates and the automation lane's
 //! admission, without a CLI (the CLI and API paths are exercised with the
 //! test-support fixture in `ikore-test-support/tests/custom_pipelines.rs`).
 
@@ -7,9 +7,9 @@ use rusqlite::{Connection, params};
 use super::{CreateProjectRequest, PersistenceService, embedded};
 use crate::custom_pipelines::{
     AgentStep, CustomPipelineDefinitionV1, CustomPipelineView, DecidePipelineGateRequest, GateStep,
-    HostTool, HostToolStep, MAX_PROJECT_PIPELINES, PipelineRunStatus, PipelineStep,
-    PipelineTrigger, SaveCustomPipelineOutcome, SaveCustomPipelineRequest, StepAgent, StepOutput,
-    StepRunStatus, StepTransport,
+    HostTool, HostToolStep, MAX_ACTIVE_PIPELINES, MAX_GLOBAL_PIPELINES, MAX_PROJECT_PIPELINES,
+    PipelineRunStatus, PipelineStep, PipelineTrigger, SaveCustomPipelineOutcome,
+    SaveCustomPipelineRequest, StepAgent, StepOutput, StepRunStatus, StepTransport,
 };
 
 struct Fixture {
@@ -84,6 +84,8 @@ impl Fixture {
                 project_id: self.project.clone(),
                 pipeline_id: id.map(|view| view.id.clone()),
                 expected_version: id.map(|view| view.current_version),
+                scope: None,
+                parent_pipeline_id: None,
                 name: name.into(),
                 description: String::new(),
                 definition: definition(steps),
@@ -266,6 +268,8 @@ fn refused_definitions_report_every_problem() {
             project_id: f.project.clone(),
             pipeline_id: None,
             expected_version: None,
+            scope: None,
+            parent_pipeline_id: None,
             name: "Refused".into(),
             description: "d".repeat(501),
             definition: refused,
@@ -428,6 +432,8 @@ fn the_lane_admits_one_step_per_project_within_the_ceiling() {
             project_id: other.clone(),
             pipeline_id: None,
             expected_version: None,
+            scope: None,
+            parent_pipeline_id: None,
             name: "Foreign".into(),
             description: String::new(),
             definition: definition(vec![agent("a")]),
@@ -647,4 +653,461 @@ fn v69_databases_keep_their_slots_runs_and_executions() {
         })
         .unwrap();
     assert_eq!(violations, 0);
+}
+
+// --- M2b: global pipelines, children and adoption -------------------------
+
+fn second_project(f: &Fixture, name: &str) -> (tempfile::TempDir, String) {
+    let workspace = tempfile::tempdir().unwrap();
+    let id = f
+        .service
+        .create_project(CreateProjectRequest {
+            workspace_path: workspace.path().to_string_lossy().into_owned(),
+            name: Some(name.into()),
+        })
+        .unwrap()
+        .project
+        .id;
+    (workspace, id)
+}
+
+fn agent_with(id: &str, instructions: &str) -> PipelineStep {
+    let PipelineStep::Agent(mut step) = agent(id) else {
+        unreachable!()
+    };
+    step.instructions = instructions.into();
+    PipelineStep::Agent(step)
+}
+
+fn instructions_of(view: &CustomPipelineView, id: &str) -> String {
+    view.definition
+        .steps
+        .iter()
+        .find_map(|step| match step {
+            PipelineStep::Agent(agent) if agent.id == id => Some(agent.instructions.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no step {id}"))
+}
+
+impl Fixture {
+    fn create_in(
+        &self,
+        project: &str,
+        name: &str,
+        scope: &str,
+        parent: Option<&str>,
+        steps: Vec<PipelineStep>,
+    ) -> SaveCustomPipelineOutcome {
+        self.service
+            .save_custom_pipeline(SaveCustomPipelineRequest {
+                project_id: project.into(),
+                pipeline_id: None,
+                expected_version: None,
+                scope: Some(scope.into()),
+                parent_pipeline_id: parent.map(str::to_owned),
+                name: name.into(),
+                description: String::new(),
+                definition: definition(steps),
+            })
+            .unwrap()
+    }
+
+    fn edit_in(
+        &self,
+        project: &str,
+        view: &CustomPipelineView,
+        steps: Vec<PipelineStep>,
+    ) -> CustomPipelineView {
+        saved(
+            self.service
+                .save_custom_pipeline(SaveCustomPipelineRequest {
+                    project_id: project.into(),
+                    pipeline_id: Some(view.id.clone()),
+                    expected_version: Some(view.current_version),
+                    scope: None,
+                    parent_pipeline_id: None,
+                    name: view.name.clone(),
+                    description: view.description.clone(),
+                    definition: definition(steps),
+                })
+                .unwrap(),
+        )
+    }
+
+    fn shown(&self, project: &str, id: &str) -> CustomPipelineView {
+        let snapshot = self.service.custom_pipelines_snapshot(project).unwrap();
+        snapshot
+            .pipelines
+            .into_iter()
+            .chain(snapshot.archived)
+            .find(|view| view.id == id)
+            .unwrap_or_else(|| panic!("{id} not shown"))
+    }
+
+    fn open(&self, project: &str) {
+        self.service
+            .open_project(super::OpenProjectRequest {
+                project_id: project.into(),
+            })
+            .unwrap();
+    }
+}
+
+fn saved(outcome: SaveCustomPipelineOutcome) -> CustomPipelineView {
+    match outcome {
+        SaveCustomPipelineOutcome::Saved { pipeline } => *pipeline,
+        SaveCustomPipelineOutcome::Invalid { errors } => panic!("{errors:?}"),
+    }
+}
+
+#[test]
+fn a_global_pipeline_serves_each_project_that_adds_it_and_is_adopted_when_it_opens() {
+    let f = fixture();
+    let (_other_workspace, other) = second_project(&f, "Other");
+    let global = saved(f.create_in(
+        &f.project,
+        "Shared review",
+        "global",
+        None,
+        vec![agent_with("review", "First wording.")],
+    ));
+    assert_eq!(
+        (global.scope.as_str(), global.project_id.as_deref()),
+        ("global", None)
+    );
+    let offered = f.service.custom_pipelines_snapshot(&other).unwrap();
+    assert!(offered.pipelines.is_empty());
+    assert_eq!(offered.available_globals.len(), 1);
+    assert_eq!(offered.available_globals[0].id, global.id);
+    let added = saved(
+        f.service
+            .activate_custom_pipeline(&other, &global.id)
+            .unwrap(),
+    );
+    assert_eq!((added.adopted_version, added.projects), (1, 2));
+    assert!(
+        f.service
+            .custom_pipelines_snapshot(&other)
+            .unwrap()
+            .available_globals
+            .is_empty()
+    );
+    // A run in the other project before it adopts the edit follows v1 (T4).
+    let run = f
+        .service
+        .start_custom_pipeline_run(&other, &global.id)
+        .unwrap();
+
+    // Edited where it is open: adopted there at once (P2) ...
+    let edited = f.edit_in(
+        &f.project,
+        &global,
+        vec![agent_with("review", "Second wording.")],
+    );
+    assert_eq!((edited.current_version, edited.adopted_version), (2, 2));
+    // ... and by the other project only when it opens.
+    let waiting = f.shown(&other, &global.id);
+    assert_eq!((waiting.adopted_version, waiting.current_version), (1, 2));
+    assert!(waiting.behind());
+    assert_eq!(instructions_of(&waiting, "review"), "First wording.");
+    f.open(&other);
+    let adopted = f.shown(&other, &global.id);
+    assert_eq!(adopted.adopted_version, 2);
+    assert_eq!(instructions_of(&adopted, "review"), "Second wording.");
+    let run = f.service.custom_pipeline_run(&other, &run).unwrap();
+    assert_eq!(run.version, 1);
+
+    // Removing it from a project keeps the pipeline and the other box; a
+    // global pipeline used elsewhere is not deleted from one project.
+    f.service
+        .cancel_custom_pipeline_run(&other, &run.id)
+        .unwrap();
+    f.service
+        .deactivate_custom_pipeline(&other, &global.id)
+        .unwrap();
+    assert!(
+        f.service
+            .custom_pipelines_snapshot(&other)
+            .unwrap()
+            .pipelines
+            .is_empty()
+    );
+    assert_eq!(f.shown(&f.project, &global.id).projects, 1);
+    saved(
+        f.service
+            .activate_custom_pipeline(&other, &global.id)
+            .unwrap(),
+    );
+    assert!(
+        f.service
+            .delete_custom_pipeline(&f.project, &global.id)
+            .is_err()
+    );
+    assert!(
+        f.service
+            .deactivate_custom_pipeline(&f.project, &f.create("Own", vec![agent("a")]).id)
+            .is_err()
+    );
+}
+
+#[test]
+fn a_child_inherits_its_parent_and_needs_edit_when_its_changes_no_longer_fit() {
+    let f = fixture();
+    let parent = saved(f.create_in(
+        &f.project,
+        "Base",
+        "global",
+        None,
+        vec![agent_with("a", "Parent a."), agent_with("b", "Parent b.")],
+    ));
+    // The child changes `b` and adds `c` after it.
+    let child = saved(f.create_in(
+        &f.project,
+        "Base plus",
+        "project",
+        Some(&parent.id),
+        vec![
+            agent_with("a", "Parent a."),
+            agent_with("b", "Child b."),
+            agent_with("c", "Child c."),
+        ],
+    ));
+    assert_eq!(
+        child.parent_pipeline_id.as_deref(),
+        Some(parent.id.as_str())
+    );
+    assert_eq!(child.parent_name.as_deref(), Some("Base"));
+    assert_eq!(child.adopted_parent_version, Some(1));
+    assert_eq!(f.shown(&f.project, &parent.id).children, 1);
+
+    // A change of the parent the child does not touch is inherited.
+    let parent = f.edit_in(
+        &f.project,
+        &parent,
+        vec![
+            agent_with("a", "Parent a, v2."),
+            agent_with("b", "Parent b."),
+        ],
+    );
+    let inherited = f.shown(&f.project, &child.id);
+    assert!(inherited.ready, "{:?}", inherited.needs_edit_reason);
+    assert_eq!(inherited.adopted_parent_version, Some(2));
+    assert_eq!(instructions_of(&inherited, "a"), "Parent a, v2.");
+    assert_eq!(instructions_of(&inherited, "b"), "Child b.");
+    assert_eq!(instructions_of(&inherited, "c"), "Child c.");
+
+    // The parent drops `b`, which the child changes and follows: needs edit.
+    let parent = f.edit_in(&f.project, &parent, vec![agent_with("a", "Parent a, v2.")]);
+    let broken = f.shown(&f.project, &child.id);
+    assert!(!broken.ready);
+    assert!(
+        broken
+            .needs_edit_reason
+            .as_deref()
+            .unwrap()
+            .contains("\"b\"")
+    );
+    assert!(
+        f.service
+            .start_custom_pipeline_run(&f.project, &child.id)
+            .is_err()
+    );
+
+    // Saving the child against the new parent fixes it.
+    let fixed = f.edit_in(
+        &f.project,
+        &broken,
+        vec![
+            agent_with("a", "Parent a, v2."),
+            agent_with("c", "Child c."),
+        ],
+    );
+    assert!(fixed.ready);
+    f.service
+        .start_custom_pipeline_run(&f.project, &child.id)
+        .unwrap();
+
+    // A parent with children is not deleted; a detached child keeps what it
+    // resolved to.
+    assert!(
+        f.service
+            .delete_custom_pipeline(&f.project, &parent.id)
+            .is_err()
+    );
+    let detached = saved(
+        f.service
+            .detach_custom_pipeline(&f.project, &child.id)
+            .unwrap(),
+    );
+    assert_eq!(detached.parent_pipeline_id, None);
+    assert_eq!(detached.definition.steps.len(), 2);
+    assert_eq!(instructions_of(&detached, "c"), "Child c.");
+    assert_eq!(f.shown(&f.project, &parent.id).children, 0);
+}
+
+#[test]
+fn global_limits_scope_moves_and_project_parents_are_enforced() {
+    let f = fixture();
+    let (_other_workspace, other) = second_project(&f, "Other");
+    // P3: a child of a project's pipeline stays in that project.
+    let own = f.create("Own", vec![agent("a")]);
+    assert_eq!(
+        codes(f.create_in(
+            &f.project,
+            "Global child",
+            "global",
+            Some(&own.id),
+            vec![agent("a")]
+        )),
+        ["parent_in_project"]
+    );
+    assert_eq!(
+        codes(f.create_in(
+            &other,
+            "Foreign child",
+            "project",
+            Some(&own.id),
+            vec![agent("a")]
+        )),
+        ["parent_in_project"]
+    );
+    let child = saved(f.create_in(
+        &f.project,
+        "Own child",
+        "project",
+        Some(&own.id),
+        vec![agent("a")],
+    ));
+    assert_eq!(
+        codes(
+            f.service
+                .make_custom_pipeline_global(&f.project, &child.id)
+                .unwrap()
+        ),
+        ["parent_in_project"]
+    );
+    // No grandchildren.
+    assert_eq!(
+        codes(f.create_in(
+            &f.project,
+            "Grandchild",
+            "project",
+            Some(&child.id),
+            vec![agent("a")]
+        )),
+        ["child_of_child"]
+    );
+
+    // Make global, then move back while only this project shows it.
+    let made = saved(
+        f.service
+            .make_custom_pipeline_global(&f.project, &own.id)
+            .unwrap(),
+    );
+    assert_eq!(
+        (made.scope.as_str(), made.project_id.as_deref()),
+        ("global", None)
+    );
+    saved(f.service.activate_custom_pipeline(&other, &own.id).unwrap());
+    assert_eq!(
+        codes(
+            f.service
+                .move_custom_pipeline_to_project(&f.project, &own.id)
+                .unwrap()
+        ),
+        ["active_elsewhere"]
+    );
+    f.service
+        .deactivate_custom_pipeline(&other, &own.id)
+        .unwrap();
+    let moved = saved(
+        f.service
+            .move_custom_pipeline_to_project(&f.project, &own.id)
+            .unwrap(),
+    );
+    assert_eq!(moved.project_id.as_deref(), Some(f.project.as_str()));
+    let made = saved(
+        f.service
+            .make_custom_pipeline_global(&f.project, &own.id)
+            .unwrap(),
+    );
+    assert!(made.is_global());
+
+    // At most five global pipelines: `Own` and four more.
+    for index in 1..MAX_GLOBAL_PIPELINES {
+        saved(f.create_in(
+            &other,
+            &format!("Global {index}"),
+            "global",
+            None,
+            vec![agent("a")],
+        ));
+    }
+    assert_eq!(
+        codes(f.create_in(&other, "One more", "global", None, vec![agent("a")])),
+        ["global_limit"]
+    );
+    // At most seven boxes in a project: three of its own and four globals
+    // besides `Own`.
+    f.create("Extra", vec![agent("a")]);
+    let globals = f
+        .service
+        .custom_pipelines_snapshot(&f.project)
+        .unwrap()
+        .available_globals;
+    assert_eq!(globals.len(), MAX_GLOBAL_PIPELINES - 1);
+    for global in &globals {
+        saved(
+            f.service
+                .activate_custom_pipeline(&f.project, &global.id)
+                .unwrap(),
+        );
+    }
+    assert_eq!(
+        f.service
+            .custom_pipelines_snapshot(&f.project)
+            .unwrap()
+            .pipelines
+            .len(),
+        MAX_ACTIVE_PIPELINES
+    );
+    assert_eq!(
+        codes(f.save(None, "Eighth", vec![agent("a")])),
+        ["active_limit"]
+    );
+}
+
+#[test]
+fn deleting_a_project_keeps_the_global_pipelines_it_used() {
+    let f = fixture();
+    let (_other_workspace, other) = second_project(&f, "Doomed");
+    let global = saved(f.create_in(&other, "Kept", "global", None, vec![agent("a")]));
+    saved(f.create_in(&other, "Gone", "project", None, vec![agent("a")]));
+    let child = saved(f.create_in(
+        &other,
+        "Gone child",
+        "project",
+        Some(&global.id),
+        vec![agent("a")],
+    ));
+    saved(
+        f.service
+            .activate_custom_pipeline(&f.project, &global.id)
+            .unwrap(),
+    );
+    f.service
+        .delete_project_permanently(&other, "Doomed")
+        .unwrap();
+    let kept = f.shown(&f.project, &global.id);
+    assert_eq!((kept.projects, kept.children), (1, 0));
+    let remaining: u32 = f
+        .db()
+        .query_row(
+            "SELECT count(*) FROM custom_pipelines WHERE id=?1",
+            params![child.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(remaining, 0);
 }

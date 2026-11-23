@@ -22,6 +22,8 @@ pub use ikore_contracts::custom_pipeline::*;
 
 /// A project's own pipelines that are not archived (R4).
 pub const MAX_PROJECT_PIPELINES: usize = 5;
+/// Global pipelines that are not archived (R4a).
+pub const MAX_GLOBAL_PIPELINES: usize = 5;
 /// Boxes a project shows besides the Ikore pipeline's (R4, T9).
 pub const MAX_ACTIVE_PIPELINES: usize = 7;
 /// `runtime_settings` key of the automation lane's global ceiling.
@@ -138,7 +140,7 @@ impl StepRunStatus {
 #[serde(rename_all = "camelCase")]
 pub struct CustomPipelineView {
     pub id: String,
-    /// `project` until M2b brings the global ones.
+    /// `project` or `global`.
     pub scope: String,
     pub project_id: Option<String>,
     pub name: String,
@@ -146,7 +148,8 @@ pub struct CustomPipelineView {
     pub current_version: u32,
     pub adopted_version: u32,
     pub position: u32,
-    /// `false` when the box is `Needs edit` (M2b).
+    /// `false` when the box is `Needs edit`: what it adopted no longer fits
+    /// (P4) or its trigger needs this project's choice.
     pub ready: bool,
     pub needs_edit_reason: Option<String>,
     pub archived: bool,
@@ -154,6 +157,43 @@ pub struct CustomPipelineView {
     /// Runs of this pipeline in the project; one is enough to keep it.
     pub run_count: u32,
     pub updated_at: String,
+    /// The pipeline this one is based on (P1).
+    #[serde(default)]
+    pub parent_pipeline_id: Option<String>,
+    #[serde(default)]
+    pub parent_name: Option<String>,
+    /// The parent's version this project's box resolves against.
+    #[serde(default)]
+    pub adopted_parent_version: Option<u32>,
+    /// Pipelines based on this one, in any project.
+    #[serde(default)]
+    pub children: u32,
+    /// Projects that show this pipeline.
+    #[serde(default)]
+    pub projects: u32,
+}
+
+impl CustomPipelineView {
+    pub fn is_global(&self) -> bool {
+        self.scope == "global"
+    }
+
+    /// A newer version of the pipeline or of its parent waits for this
+    /// project to open again (P2).
+    pub fn behind(&self) -> bool {
+        self.adopted_version < self.current_version
+    }
+}
+
+/// A global pipeline this project does not show yet: `Add global pipeline…`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GlobalPipelineSummary {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub current_version: u32,
+    pub parent_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -216,6 +256,9 @@ pub struct CustomPipelinesSnapshot {
     pub runs: Vec<PipelineRunView>,
     /// The automation lane's global ceiling.
     pub max_concurrent: u32,
+    /// Global pipelines without a box here.
+    #[serde(default)]
+    pub available_globals: Vec<GlobalPipelineSummary>,
 }
 
 impl CustomPipelinesSnapshot {
@@ -240,6 +283,13 @@ pub struct SaveCustomPipelineRequest {
     pub name: String,
     pub description: String,
     pub definition: CustomPipelineDefinitionV1,
+    /// On create: `project` (default) or `global`.
+    #[serde(default)]
+    pub scope: Option<String>,
+    /// On create: the pipeline the new one is based on; the definition is
+    /// then stored as its changes over the parent (P1).
+    #[serde(default)]
+    pub parent_pipeline_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

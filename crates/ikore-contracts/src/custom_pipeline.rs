@@ -3,7 +3,7 @@
 //! (`stage-verdict-v1`). Their agents only read: they return text or a
 //! verdict, and the host owns state, identifiers, publication and decisions.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -581,9 +581,483 @@ pub fn stage_verdict_json_schema() -> Value {
     })
 }
 
+/// A child pipeline (feature 25, M2b, plan P1): what it changes in its
+/// parent, step by step. Its parent's edits reach it by the same adoption
+/// as any version; one level only.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CustomPipelineChildV1 {
+    pub schema_version: u32,
+    /// The child's own trigger; the parent's when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<PipelineTrigger>,
+    /// Parent steps the child leaves out.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub remove: Vec<String>,
+    /// Fields of parent steps the child changes, by step id.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub change: BTreeMap<String, StepChange>,
+    /// The child's own steps, each after a step (or first), in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub insert: Vec<StepInsert>,
+}
+
+/// The fields of a parent step a child changes.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StepChange {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// An agent step's transport, CLI, model and effort, together.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<StepAgent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<StepOutput>,
+    /// A gate's text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+}
+
+impl StepChange {
+    fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StepInsert {
+    /// The step it follows; the first place when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
+    pub step: PipelineStep,
+}
+
+/// What a child resolves to over its parent: the definition, with every
+/// change that still fits applied, and what no longer fits. A child with a
+/// conflict is `Needs edit` (P1); editing it from this definition and saving
+/// derives its changes again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedChild {
+    pub definition: CustomPipelineDefinitionV1,
+    pub conflicts: Vec<String>,
+}
+
+pub fn parse_child(json: &str) -> Result<CustomPipelineChildV1, PipelineValidationError> {
+    serde_json::from_str(json).map_err(|error| {
+        PipelineValidationError::new(
+            "definition_invalid",
+            None,
+            format!("The child pipeline is not valid: {error}"),
+        )
+    })
+}
+
+/// Applies a change to a step; `false` when the change does not fit its kind.
+fn apply_change(step: &mut PipelineStep, change: &StepChange) -> bool {
+    match step {
+        PipelineStep::Agent(agent) => {
+            if change.prompt.is_some() {
+                return false;
+            }
+            if let Some(label) = &change.label {
+                agent.label.clone_from(label);
+            }
+            if let Some(config) = &change.agent {
+                agent.agent = config.clone();
+            }
+            if let Some(instructions) = &change.instructions {
+                agent.instructions.clone_from(instructions);
+            }
+            if let Some(output) = change.output {
+                agent.output = output;
+            }
+            true
+        }
+        PipelineStep::Gate(gate) => {
+            if change.agent.is_some() || change.instructions.is_some() || change.output.is_some() {
+                return false;
+            }
+            if let Some(label) = &change.label {
+                gate.label.clone_from(label);
+            }
+            if let Some(prompt) = &change.prompt {
+                gate.prompt.clone_from(prompt);
+            }
+            true
+        }
+        PipelineStep::HostTool(tool) => {
+            if change.agent.is_some()
+                || change.instructions.is_some()
+                || change.output.is_some()
+                || change.prompt.is_some()
+            {
+                return false;
+            }
+            if let Some(label) = &change.label {
+                tool.label.clone_from(label);
+            }
+            true
+        }
+    }
+}
+
+/// The child over its parent: removals, then changes, then its own steps.
+pub fn resolve_child(
+    parent: &CustomPipelineDefinitionV1,
+    child: &CustomPipelineChildV1,
+) -> ResolvedChild {
+    let mut conflicts = Vec::new();
+    let mut steps = parent.steps.clone();
+    for id in &child.remove {
+        match steps.iter().position(|step| step.id() == id) {
+            Some(index) => {
+                steps.remove(index);
+            }
+            None => conflicts.push(format!(
+                "The parent no longer has the step \"{id}\" this pipeline leaves out."
+            )),
+        }
+    }
+    for (id, change) in &child.change {
+        match steps.iter_mut().find(|step| step.id() == id) {
+            Some(step) => {
+                if !apply_change(step, change) {
+                    conflicts.push(format!("The step \"{id}\" changed kind in the parent."));
+                }
+            }
+            None => conflicts.push(format!(
+                "The parent no longer has the step \"{id}\" this pipeline changes."
+            )),
+        }
+    }
+    for insert in &child.insert {
+        let id = insert.step.id();
+        if steps.iter().any(|step| step.id() == id) {
+            conflicts.push(format!("The parent now has a step \"{id}\" too."));
+            continue;
+        }
+        let at = match &insert.after {
+            None => 0,
+            Some(after) => match steps.iter().position(|step| step.id() == after) {
+                Some(index) => index + 1,
+                None => {
+                    conflicts.push(format!(
+                        "The parent no longer has the step \"{after}\" that \"{id}\" follows."
+                    ));
+                    steps.len()
+                }
+            },
+        };
+        steps.insert(at, insert.step.clone());
+    }
+    ResolvedChild {
+        definition: CustomPipelineDefinitionV1 {
+            schema_version: CUSTOM_PIPELINE_SCHEMA_VERSION,
+            trigger: child
+                .trigger
+                .clone()
+                .unwrap_or_else(|| parent.trigger.clone()),
+            steps,
+        },
+        conflicts,
+    }
+}
+
+fn step_change(parent: &PipelineStep, edited: &PipelineStep) -> Option<StepChange> {
+    let mut change = StepChange::default();
+    if parent.label() != edited.label() {
+        change.label = Some(edited.label().to_owned());
+    }
+    match (parent, edited) {
+        (PipelineStep::Agent(before), PipelineStep::Agent(after)) => {
+            if before.agent != after.agent {
+                change.agent = Some(after.agent.clone());
+            }
+            if before.instructions != after.instructions {
+                change.instructions = Some(after.instructions.clone());
+            }
+            if before.output != after.output {
+                change.output = Some(after.output);
+            }
+        }
+        (PipelineStep::Gate(before), PipelineStep::Gate(after)) => {
+            if before.prompt != after.prompt {
+                change.prompt = Some(after.prompt.clone());
+            }
+        }
+        (PipelineStep::HostTool(before), PipelineStep::HostTool(after))
+            if before.tool == after.tool => {}
+        // Another kind under the same id is not a change: the caller
+        // removes the parent's step and inserts the child's.
+        _ => return None,
+    }
+    Some(change)
+}
+
+/// The changes that make `edited` out of `parent`. The parent's steps keep
+/// their order: a child cannot move them, only leave them out or put its
+/// own steps between them.
+pub fn child_changes(
+    parent: &CustomPipelineDefinitionV1,
+    edited: &CustomPipelineDefinitionV1,
+) -> Result<CustomPipelineChildV1, PipelineValidationError> {
+    let mut child = CustomPipelineChildV1 {
+        schema_version: CUSTOM_PIPELINE_SCHEMA_VERSION,
+        trigger: (edited.trigger != parent.trigger).then(|| edited.trigger.clone()),
+        ..CustomPipelineChildV1::default()
+    };
+    // Parent steps the child keeps, as the same kind.
+    let mut kept = Vec::new();
+    for step in &parent.steps {
+        let same = edited
+            .steps
+            .iter()
+            .find(|candidate| candidate.id() == step.id())
+            .and_then(|candidate| step_change(step, candidate).map(|change| (candidate, change)));
+        match same {
+            Some((_, change)) => {
+                if !change.is_empty() {
+                    child.change.insert(step.id().to_owned(), change);
+                }
+                kept.push(step.id().to_owned());
+            }
+            None => child.remove.push(step.id().to_owned()),
+        }
+    }
+    let order = edited
+        .steps
+        .iter()
+        .map(PipelineStep::id)
+        .filter(|id| kept.iter().any(|kept| kept == id))
+        .collect::<Vec<_>>();
+    if order != kept.iter().map(String::as_str).collect::<Vec<_>>() {
+        return Err(PipelineValidationError::new(
+            "child_order",
+            None,
+            "A child keeps its parent's steps in their order. Remove a step and add your own where you want it.",
+        ));
+    }
+    let mut previous: Option<String> = None;
+    for step in &edited.steps {
+        if !kept.iter().any(|id| id == step.id()) {
+            child.insert.push(StepInsert {
+                after: previous.clone(),
+                step: step.clone(),
+            });
+        }
+        previous = Some(step.id().to_owned());
+    }
+    Ok(child)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn agent_step(id: &str, label: &str) -> PipelineStep {
+        PipelineStep::Agent(AgentStep {
+            id: id.into(),
+            label: label.into(),
+            agent: StepAgent {
+                transport: StepTransport::Cli,
+                backend: Some("claude".into()),
+                model: Some("haiku".into()),
+                model_profile: None,
+                thinking_level: "default".into(),
+                api_route_id: None,
+            },
+            instructions: format!("Do {id}."),
+            output: StepOutput::Text,
+        })
+    }
+
+    fn gate_step(id: &str) -> PipelineStep {
+        PipelineStep::Gate(GateStep {
+            id: id.into(),
+            label: format!("Gate {id}"),
+            prompt: "Check.".into(),
+        })
+    }
+
+    fn manual(steps: Vec<PipelineStep>) -> CustomPipelineDefinitionV1 {
+        CustomPipelineDefinitionV1 {
+            schema_version: CUSTOM_PIPELINE_SCHEMA_VERSION,
+            trigger: PipelineTrigger::Manual,
+            steps,
+        }
+    }
+
+    /// A small deterministic generator: no new dependency for the property.
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn next(&mut self, below: usize) -> usize {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            ((self.0 >> 33) as usize) % below.max(1)
+        }
+    }
+
+    /// Plan P1: whatever a child makes of its parent (leaving steps out,
+    /// changing their fields, putting its own steps between them, another
+    /// trigger), its changes resolve back to exactly what it made.
+    #[test]
+    fn a_childs_changes_resolve_back_to_what_it_made() {
+        let mut random = Lcg(0x5eed);
+        for case in 0..600 {
+            let parent_len = 1 + random.next(6);
+            let parent = manual(
+                (0..parent_len)
+                    .map(|index| {
+                        if random.next(3) == 0 {
+                            gate_step(&format!("p{index}"))
+                        } else {
+                            agent_step(&format!("p{index}"), &format!("Parent {index}"))
+                        }
+                    })
+                    .collect(),
+            );
+            let mut edited = parent.clone();
+            edited.steps.retain(|_| random.next(4) != 0);
+            for step in &mut edited.steps {
+                match step {
+                    PipelineStep::Agent(agent) if random.next(2) == 0 => {
+                        agent.label = format!("{} (child {case})", agent.label);
+                        if random.next(2) == 0 {
+                            agent.agent.backend = Some("codex".into());
+                            agent.agent.model = Some("gpt-5.6-luna".into());
+                        }
+                        if random.next(2) == 0 {
+                            agent.output = StepOutput::Verdict;
+                        }
+                    }
+                    PipelineStep::Gate(gate) if random.next(2) == 0 => {
+                        gate.prompt = format!("Child {case} checks.");
+                    }
+                    _ => {}
+                }
+            }
+            for extra in 0..random.next(3) {
+                let at = random.next(edited.steps.len() + 1);
+                edited.steps.insert(
+                    at,
+                    agent_step(&format!("c{extra}"), &format!("Child {extra}")),
+                );
+            }
+            if random.next(4) == 0 {
+                edited.trigger = PipelineTrigger::DefaultEvent {
+                    event: DefaultEvent::PulsationDone,
+                    stage: None,
+                };
+            }
+            let changes = child_changes(&parent, &edited).unwrap();
+            let json = serde_json::to_string(&changes).unwrap();
+            assert_eq!(parse_child(&json).unwrap(), changes, "case {case}");
+            let resolved = resolve_child(&parent, &changes);
+            assert!(
+                resolved.conflicts.is_empty(),
+                "case {case}: {:?}",
+                resolved.conflicts
+            );
+            assert_eq!(resolved.definition, edited, "case {case}");
+        }
+    }
+
+    #[test]
+    fn an_untouched_child_holds_no_change_and_follows_its_parent() {
+        let parent = manual(vec![agent_step("a", "A"), gate_step("b")]);
+        let changes = child_changes(&parent, &parent).unwrap();
+        assert_eq!(
+            serde_json::to_value(&changes).unwrap(),
+            json!({"schemaVersion": 1})
+        );
+        // The parent's next version reaches the child as it is.
+        let next = manual(vec![
+            agent_step("a", "A2"),
+            gate_step("b"),
+            agent_step("z", "Z"),
+        ]);
+        assert_eq!(resolve_child(&next, &changes).definition, next);
+    }
+
+    #[test]
+    fn a_child_keeps_its_parents_order() {
+        let parent = manual(vec![agent_step("a", "A"), agent_step("b", "B")]);
+        let swapped = manual(vec![agent_step("b", "B"), agent_step("a", "A")]);
+        assert_eq!(
+            child_changes(&parent, &swapped).unwrap_err().code,
+            "child_order"
+        );
+    }
+
+    /// A parent edit that breaks a change puts the child in `Needs edit`, with
+    /// the reason; what still fits is applied.
+    #[test]
+    fn parent_edits_that_break_a_change_are_conflicts() {
+        let parent = manual(vec![
+            agent_step("a", "A"),
+            gate_step("b"),
+            agent_step("c", "C"),
+        ]);
+        let mut edited = parent.clone();
+        edited.steps.remove(1);
+        if let PipelineStep::Agent(agent) = &mut edited.steps[1] {
+            agent.label = "Changed C".into();
+            agent.instructions = "The child's way.".into();
+        }
+        edited.steps.insert(1, agent_step("mine", "Mine"));
+        let changes = child_changes(&parent, &edited).unwrap();
+        assert_eq!(changes.remove, ["b"]);
+        assert_eq!(changes.insert[0].after.as_deref(), Some("a"));
+        // The parent drops `a` and `c`, and has a step `mine` of its own.
+        let next = manual(vec![gate_step("b"), agent_step("mine", "Theirs")]);
+        let resolved = resolve_child(&next, &changes);
+        let conflicts = resolved.conflicts.join(" ");
+        assert!(
+            conflicts.contains("\"c\" this pipeline changes"),
+            "{conflicts}"
+        );
+        assert!(conflicts.contains("now has a step \"mine\""), "{conflicts}");
+        assert!(
+            resolved
+                .definition
+                .steps
+                .iter()
+                .all(|step| step.id() != "b")
+        );
+        // A step whose kind changed under the child's change.
+        let kind = manual(vec![agent_step("a", "A"), gate_step("b"), gate_step("c")]);
+        let resolved = resolve_child(&kind, &changes);
+        assert!(
+            resolved
+                .conflicts
+                .iter()
+                .any(|conflict| conflict.contains("changed kind"))
+        );
+        // The step an own step follows is gone: it goes last.
+        let gone = manual(vec![gate_step("b"), agent_step("c", "C")]);
+        let resolved = resolve_child(&gone, &changes);
+        assert!(
+            resolved
+                .conflicts
+                .iter()
+                .any(|conflict| conflict.contains("that \"mine\" follows"))
+        );
+        assert_eq!(resolved.definition.steps.last().unwrap().id(), "mine");
+    }
+
+    #[test]
+    fn unknown_fields_are_refused_in_a_child() {
+        let refused = r#"{"schemaVersion":1,"remove":["a"],"extra":true}"#;
+        assert_eq!(parse_child(refused).unwrap_err().code, "definition_invalid");
+        let refused = r#"{"schemaVersion":1,"change":{"a":{"label":"x","model":"y"}}}"#;
+        assert!(parse_child(refused).is_err());
+    }
 
     /// The feature's example definition.
     const EXAMPLE: &str = r#"{

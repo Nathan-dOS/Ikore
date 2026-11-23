@@ -144,6 +144,8 @@ mod supervisor;
 // Feature 25: the developer's pipelines and the automation lane.
 #[path = "custom_pipelines/engine.rs"]
 mod custom_pipeline_engine;
+#[path = "custom_pipelines/scope.rs"]
+mod custom_pipeline_scope;
 #[path = "custom_pipelines/store.rs"]
 mod custom_pipeline_store;
 #[cfg(test)]
@@ -2759,6 +2761,9 @@ impl PersistenceService {
         if let Ok(path) = std::fs::canonicalize(&project.workspace_path) {
             crate::companion_drawings::workspace_sync::migrate_project_drawings(&path);
         }
+        // Feature 25 (P2): the boxes adopt the pipelines' new versions.
+        drop(connection);
+        self.adopt_custom_pipelines(&project.id)?;
 
         Ok(OpenProjectResponse { project })
     }
@@ -2825,6 +2830,9 @@ impl PersistenceService {
                         "The existing project was not found.".to_string(),
                     )
                 })?;
+            // Feature 25 (P2): the boxes adopt the pipelines' new versions.
+            drop(connection);
+            self.adopt_custom_pipelines(&project.id)?;
 
             return Ok(EnsureProjectForWorkspaceResponse { project });
         }

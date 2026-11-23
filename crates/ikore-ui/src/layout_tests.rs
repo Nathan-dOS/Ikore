@@ -10263,3 +10263,94 @@ fn granting_without_a_core_reports_why_and_keeps_the_checkpoint(cx: &mut TestApp
         );
     });
 }
+
+/// Feature 25, M2b: a global child's synthesis carries the `Global` and
+/// `Based on` badges, `Remove from this project` and `Detach`; a box waiting
+/// for a newer version says so; the header offers the global pipelines the
+/// project does not show, and `Add` lists them.
+#[gpui::test]
+fn global_and_child_pipelines_show_their_badges_and_actions(cx: &mut TestAppContext) {
+    use ikore_core::custom_pipelines::{
+        AgentStep, CustomPipelineDefinitionV1, CustomPipelineView, GlobalPipelineSummary,
+        PipelineStep, PipelineTrigger, StepAgent, StepOutput, StepTransport,
+    };
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    select(&model, visual, AppView::Agents);
+    let view = CustomPipelineView {
+        id: "child".into(),
+        scope: "global".into(),
+        project_id: None,
+        name: "Shared review plus".into(),
+        description: String::new(),
+        current_version: 3,
+        adopted_version: 2,
+        position: 0,
+        ready: true,
+        needs_edit_reason: None,
+        archived: false,
+        definition: CustomPipelineDefinitionV1 {
+            schema_version: 1,
+            trigger: PipelineTrigger::Manual,
+            steps: vec![PipelineStep::Agent(AgentStep {
+                id: "review".into(),
+                label: "Review".into(),
+                agent: StepAgent {
+                    transport: StepTransport::Cli,
+                    backend: Some("codex".into()),
+                    model: Some("gpt-5".into()),
+                    model_profile: None,
+                    thinking_level: "default".into(),
+                    api_route_id: None,
+                },
+                instructions: "Review.".into(),
+                output: StepOutput::Text,
+            })],
+        },
+        run_count: 0,
+        updated_at: "now".into(),
+        parent_pipeline_id: Some("parent".into()),
+        parent_name: Some("Shared review".into()),
+        adopted_parent_version: Some(4),
+        children: 0,
+        projects: 2,
+    };
+    model.update(visual, |model, cx| {
+        model.agents.update(cx, |agents, _| {
+            agents.pipelines.project_id = "layout-project".into();
+            agents.pipelines.pipelines = vec![view.clone()];
+            agents.pipelines.available_globals = vec![GlobalPipelineSummary {
+                id: "other".into(),
+                name: "Release notes".into(),
+                description: "Drafts the notes.".into(),
+                current_version: 1,
+                parent_name: None,
+            }];
+        });
+        model.select_canvas_pipeline("child".into(), cx);
+    });
+    visual.run_until_parked();
+    for selector in [
+        "agents-pipeline-badges",
+        "pipeline-remove",
+        "pipeline-detach",
+        "pipeline-move-to-project",
+        "agents-pipeline-behind",
+        "agents-add-global-pipeline",
+    ] {
+        assert!(visual.debug_bounds(selector).is_some(), "{selector}");
+    }
+    for selector in ["pipeline-make-global", "pipeline-create-child"] {
+        assert!(visual.debug_bounds(selector).is_none(), "{selector}");
+    }
+    click(visual, "agents-add-global-pipeline");
+    assert!(visual.debug_bounds("global-pipeline:other").is_some());
+    assert!(model.read_with(visual, |model, cx| {
+        let agents = model.agents.read(cx);
+        agents.show_global_pipelines && agents.selected_pipeline.is_none()
+    }));
+    assert_eq!(
+        crate::agents_view::pipeline_editor::parent_label(&view).as_deref(),
+        Some("Shared review v4")
+    );
+}

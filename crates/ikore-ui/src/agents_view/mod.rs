@@ -31,7 +31,7 @@ mod detail;
 mod free_form;
 mod history;
 mod model;
-mod pipeline_editor;
+pub(crate) mod pipeline_editor;
 mod pipelines;
 mod synthesis;
 
@@ -200,10 +200,13 @@ fn synthesis_panel(
         .and_then(|id| agents.pipeline(id))
         .cloned();
     let show_archived_pipelines = agents.show_archived_pipelines;
+    let show_global_pipelines = agents.show_global_pipelines;
     let content = if model.pipeline_editor.is_some() {
         pipeline_editor::pipeline_editor_panel(model, cx)
     } else if show_archived_pipelines {
         pipelines::archived_pipelines(model, busy, cx)
+    } else if show_global_pipelines {
+        pipelines::global_pipelines(model, busy, cx)
     } else if let Some(pipeline) = pipeline {
         pipelines::pipeline_synthesis(model, &pipeline, busy, cx)
     } else if let Some((pipeline, step_id)) = step {
@@ -292,9 +295,11 @@ pub(crate) fn agents_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
         || agents.show_archived
         || agents.selected_pipeline.is_some()
         || agents.show_archived_pipelines
+        || agents.show_global_pipelines
         || model.pipeline_editor.is_some();
     let can_create = pipelines::can_create_pipeline(agents);
     let archived_pipelines = agents.pipelines.archived.len();
+    let available_globals = agents.pipelines.available_globals.len();
 
     div()
         .id("agents-panel")
@@ -337,6 +342,16 @@ pub(crate) fn agents_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
                         .text_ellipsis()
                         .child("Project-isolated configuration"),
                 )
+                .when(available_globals > 0, |header| {
+                    header.child(action_button(
+                        "agents-add-global-pipeline".into(),
+                        "Add global pipeline\u{2026}".into(),
+                        snapshot.is_some() && !busy,
+                        false,
+                        cx,
+                        |model, cx| model.open_global_pipelines(cx),
+                    ))
+                })
                 .when(archived_pipelines > 0, |header| {
                     header.child(action_button(
                         "agents-archived-pipelines".into(),

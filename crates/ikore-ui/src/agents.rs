@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use ikore_core::AppCore;
 use ikore_core::custom_pipelines::{
-    CustomPipelinesSnapshot, DecidePipelineGateRequest, SaveCustomPipelineOutcome,
-    SaveCustomPipelineRequest,
+    CustomPipelinesSnapshot, DecidePipelineGateRequest, PipelineValidationError,
+    SaveCustomPipelineOutcome, SaveCustomPipelineRequest,
 };
 use ikore_core::llm::{
     AgentExecutionTarget, AgentRole, FreeFormProviderRouteBinding, LlmEventEnvelope,
@@ -52,6 +52,20 @@ fn unsupported<T: Send + 'static>() -> AgentsFuture<T> {
     })
 }
 
+/// What a pipeline's scope menu does (feature 25, M2b).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PipelineScopeAction {
+    /// `Add global pipeline…`: a box for a global pipeline here.
+    Add,
+    /// `Remove from this project`: the box goes, the global pipeline stays.
+    Remove,
+    MakeGlobal,
+    /// A global pipeline only this project shows becomes the project's own.
+    MoveToProject,
+    /// A child becomes independent with what it resolves to now.
+    Detach,
+}
+
 pub(crate) trait AgentsBackend: Send + Sync {
     /// Creates a pipeline or saves its new version (feature 25).
     fn save_pipeline(
@@ -89,6 +103,16 @@ pub(crate) trait AgentsBackend: Send + Sync {
     }
     /// Settings › Composition: the automation lane's ceiling.
     fn set_automation_max_concurrent(&self, _value: u32) -> AgentsFuture<()> {
+        unsupported()
+    }
+    /// Where a pipeline lives and which projects show it; refusals come back
+    /// for the panel, an empty list means done.
+    fn change_pipeline_scope(
+        &self,
+        _project_id: String,
+        _pipeline_id: String,
+        _action: PipelineScopeAction,
+    ) -> AgentsFuture<Vec<PipelineValidationError>> {
         unsupported()
     }
     fn snapshot(&self, project_id: String) -> AgentsFuture<AgentsDashboardSnapshot>;
@@ -345,6 +369,36 @@ impl AgentsBackend for CoreAgentsBackend {
     fn set_automation_max_concurrent(&self, value: u32) -> AgentsFuture<()> {
         blocking(&self.core, move |core| {
             core.persistence().set_automation_max_concurrent(value)
+        })
+    }
+
+    fn change_pipeline_scope(
+        &self,
+        project_id: String,
+        pipeline_id: String,
+        action: PipelineScopeAction,
+    ) -> AgentsFuture<Vec<PipelineValidationError>> {
+        blocking(&self.core, move |core| {
+            let store = core.persistence();
+            let (project, pipeline) = (project_id.as_str(), pipeline_id.as_str());
+            let outcome = match action {
+                PipelineScopeAction::Add => store.activate_custom_pipeline(project, pipeline)?,
+                PipelineScopeAction::Remove => {
+                    store.deactivate_custom_pipeline(project, pipeline)?;
+                    return Ok(Vec::new());
+                }
+                PipelineScopeAction::MakeGlobal => {
+                    store.make_custom_pipeline_global(project, pipeline)?
+                }
+                PipelineScopeAction::MoveToProject => {
+                    store.move_custom_pipeline_to_project(project, pipeline)?
+                }
+                PipelineScopeAction::Detach => store.detach_custom_pipeline(project, pipeline)?,
+            };
+            Ok(match outcome {
+                SaveCustomPipelineOutcome::Saved { .. } => Vec::new(),
+                SaveCustomPipelineOutcome::Invalid { errors } => errors,
+            })
         })
     }
 
@@ -984,6 +1038,8 @@ pub(crate) struct AgentsModel {
     pub(crate) selected_pipeline: Option<String>,
     /// The synthesis column lists the archived pipelines.
     pub(crate) show_archived_pipelines: bool,
+    /// The synthesis column lists the global pipelines this project can add.
+    pub(crate) show_global_pipelines: bool,
     /// The run the pipeline's synthesis shows; the newest when `None`.
     pub(crate) selected_pipeline_run: Option<String>,
     /// A pipeline `Delete` waits for its confirmation.
@@ -1033,6 +1089,7 @@ impl Default for AgentsModel {
             pipelines: CustomPipelinesSnapshot::default(),
             selected_pipeline: None,
             show_archived_pipelines: false,
+            show_global_pipelines: false,
             selected_pipeline_run: None,
             pending_pipeline_delete: None,
             generation: 0,
