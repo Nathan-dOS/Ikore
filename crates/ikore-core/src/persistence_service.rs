@@ -141,6 +141,14 @@ mod preimages;
 pub use preimages::{PublishedBefore, PublishedChange};
 #[path = "orchestration/supervisor.rs"]
 mod supervisor;
+// Feature 25: the developer's pipelines and the automation lane.
+#[path = "custom_pipelines/engine.rs"]
+mod custom_pipeline_engine;
+#[path = "custom_pipelines/store.rs"]
+mod custom_pipeline_store;
+#[cfg(test)]
+#[path = "custom_pipelines/tests.rs"]
+mod custom_pipeline_tests;
 #[path = "orchestration/visualizer.rs"]
 mod visualizer;
 // ADR-037 baseline: ignored measurements, rerun at each milestone.
@@ -574,16 +582,25 @@ impl AgentDockSession {
             return Err("agentDock.height must be between 100 and 4000.".to_string());
         }
         if let Some(agent) = self.agent.as_deref() {
-            let known = match (agent.strip_prefix("role:"), agent.strip_prefix("slot:")) {
-                (Some(role), _) => crate::llm::AgentRole::parse(role).is_some(),
-                (_, Some(slot)) => {
-                    (1..=200).contains(&slot.chars().count()) && !slot.chars().any(char::is_control)
-                }
-                _ => false,
+            let plain = |id: &str| {
+                (1..=200).contains(&id.chars().count()) && !id.chars().any(char::is_control)
+            };
+            let known = if let Some(role) = agent.strip_prefix("role:") {
+                crate::llm::AgentRole::parse(role).is_some()
+            } else if let Some(slot) = agent.strip_prefix("slot:") {
+                plain(slot)
+            } else if let Some(step) = agent.strip_prefix("pipeline:") {
+                // A step of the developer's own pipelines (feature 25).
+                step.split_once('/').is_some_and(|(pipeline, step)| {
+                    plain(pipeline) && plain(step) && !step.contains('/')
+                })
+            } else {
+                false
             };
             if !known {
                 return Err(
-                    "agentDock.agent must be `role:<agent role>` or `slot:<id>`.".to_string(),
+                    "agentDock.agent must be `role:<agent role>`, `slot:<id>` or `pipeline:<pipeline>/<step>`."
+                        .to_string(),
                 );
             }
         }
@@ -7969,6 +7986,12 @@ mod tests {
         };
         let strip = dock("strip", 300.0, false, "role:backend_agent");
         let expanded = dock("expanded", 420.0, true, "slot:slot-a");
+        // Feature 25: a step of the developer's own pipelines.
+        let step = dock("expanded", 420.0, true, "pipeline:pipeline-1/review");
+        service
+            .save_ui_session(request(&first, Some(step.clone())))
+            .expect("a pipeline step's tab should save");
+        assert_eq!(stored(&first), Some(step));
         service
             .save_ui_session(request(&first, Some(strip.clone())))
             .expect("the dock should save");
@@ -7989,6 +8012,9 @@ mod tests {
             dock("strip", 300.0, true, "role:nobody"),
             dock("strip", 300.0, true, "slot:"),
             dock("strip", 300.0, true, "backend_agent"),
+            dock("strip", 300.0, true, "pipeline:pipeline-1"),
+            dock("strip", 300.0, true, "pipeline:/review"),
+            dock("strip", 300.0, true, "pipeline:pipeline-1/a/b"),
         ] {
             assert!(matches!(
                 service.save_ui_session(request(&first, Some(refused))),

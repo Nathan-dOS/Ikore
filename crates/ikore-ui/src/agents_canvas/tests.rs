@@ -38,7 +38,78 @@ fn input(free_forms: usize, archived: usize) -> LayoutInput {
         loose,
         ghost: free_forms < FREE_FORM_LIMIT,
         archived,
+        pipelines: Vec::new(),
     }
+}
+
+/// Feature 25, M2: each pipeline is a box of its own below the default one,
+/// its steps on a row linked left to right, and the arrows reach them.
+#[test]
+fn pipelines_get_a_box_each_below_the_default_one() {
+    use super::layout::PipelineBoxInput;
+    let mut with_pipelines = input(2, 0);
+    with_pipelines.pipelines = vec![
+        PipelineBoxInput {
+            id: "p1".into(),
+            steps: vec![
+                "pipeline:p1/a".into(),
+                "pipeline:p1/b".into(),
+                "pipeline:p1/c".into(),
+            ],
+        },
+        PipelineBoxInput {
+            id: "p2".into(),
+            steps: vec!["pipeline:p2/only".into()],
+        },
+    ];
+    let canvas = layout(&with_pipelines);
+    assert_eq!(canvas.boxes.len(), 3);
+    let (default, first, second) = (&canvas.boxes[0], &canvas.boxes[1], &canvas.boxes[2]);
+    assert!(!default.pipeline && first.pipeline && second.pipeline);
+    assert_eq!((first.id.as_str(), second.id.as_str()), ("p1", "p2"));
+    assert!(first.rect.y > default.rect.bottom());
+    assert!(second.rect.y > first.rect.bottom());
+    let steps = canvas
+        .nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, node)| node.kind == NodeKind::Step)
+        .collect::<Vec<_>>();
+    assert_eq!(steps.len(), 4);
+    for (_, node) in &steps {
+        let frame = &canvas.boxes[node.box_index];
+        assert!(
+            frame.rect.contains(node.home),
+            "{} inside its box",
+            node.key
+        );
+    }
+    // Links stay inside a box: a -> b -> c, and none to the second box.
+    let index = |key: &str| canvas.index_of(key).unwrap();
+    let links = canvas
+        .edges
+        .iter()
+        .map(|edge| (edge.from, edge.to))
+        .collect::<Vec<_>>();
+    assert!(links.contains(&(index("pipeline:p1/a"), index("pipeline:p1/b"))));
+    assert!(links.contains(&(index("pipeline:p1/b"), index("pipeline:p1/c"))));
+    assert!(
+        !links
+            .iter()
+            .any(|(from, to)| *from == index("pipeline:p1/c") || *to == index("pipeline:p2/only"))
+    );
+    // The arrows walk from the last row of the default box into the boxes.
+    let a = index("pipeline:p1/a");
+    assert_eq!(
+        canvas.neighbour(a, Direction::Right),
+        Some(index("pipeline:p1/b"))
+    );
+    assert_eq!(
+        canvas.neighbour(a, Direction::Down),
+        Some(index("pipeline:p2/only"))
+    );
+    assert!(canvas.neighbour(a, Direction::Up).is_some());
+    assert!(canvas.bounds().unwrap().contains(second.rect));
 }
 
 #[test]

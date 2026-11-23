@@ -1058,9 +1058,9 @@ impl SqliteLlmRepository {
         decision: &RouteDecision,
     ) -> Result<(), LlmError> {
         self.connection()?.execute(
-            "INSERT INTO llm_route_executions (id,generation_id,project_id,pulsation_id,job_id,route_id,agent_role,free_form_slot_id,stage,strategy,mode,status,decision_json,started_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'running',?12,?13)",
-            params![execution_id,generation_id,project_id,pulsation_id,job_id,route.id,target.agent_role().map(AgentRole::as_str),target.free_form_slot_id(),stage,route.strategy,mode,serde_json::to_string(decision).unwrap_or_else(|_|"{}".to_string()),Utc::now().to_rfc3339()]
+            "INSERT INTO llm_route_executions (id,generation_id,project_id,pulsation_id,job_id,route_id,agent_role,free_form_slot_id,stage,strategy,mode,status,decision_json,started_at,automation_slot_id)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'running',?12,?13,?14)",
+            params![execution_id,generation_id,project_id,pulsation_id,job_id,route.id,target.agent_role().map(AgentRole::as_str),target.free_form_slot_id(),stage,route.strategy,mode,serde_json::to_string(decision).unwrap_or_else(|_|"{}".to_string()),Utc::now().to_rfc3339(),target.automation_slot_id()]
         ).map_err(db_error)?;
         Ok(())
     }
@@ -1670,6 +1670,18 @@ impl SqliteLlmRepository {
                         )
                     })
             }
+            // A pipeline step names its route (routes are global, like the
+            // bindings' targets); it never falls back to another one.
+            AgentExecutionTarget::Automation { route_id, .. } => self
+                .list_routes()?
+                .into_iter()
+                .find(|route| &route.id == route_id && route.enabled)
+                .ok_or_else(|| {
+                    LlmError::new(
+                        LlmErrorKind::InvalidRequest,
+                        "The pipeline step's API route is missing or disabled.",
+                    )
+                }),
         }
     }
 
@@ -1694,10 +1706,15 @@ impl SqliteLlmRepository {
                 "agent_role IS NULL AND free_form_slot_id=?2",
                 slot_id.as_str(),
             ),
+            AgentExecutionTarget::Automation { slot_id, .. } => (
+                "agent_role IS NULL AND automation_slot_id=?2",
+                slot_id.as_str(),
+            ),
         };
         let sql = format!(
             "SELECT id,generation_id,agent_role,free_form_slot_id,route_id,stage,status,
-                    visible_output,visible_output_complete,started_at,finished_at
+                    visible_output,visible_output_complete,started_at,finished_at,
+                    automation_slot_id
              FROM llm_route_executions
              WHERE project_id=?1 AND {predicate}
              ORDER BY started_at DESC LIMIT ?3"
@@ -1707,9 +1724,17 @@ impl SqliteLlmRepository {
             .query_map(params![project_id, target_value, limit], |row| {
                 let role: Option<String> = row.get(2)?;
                 let slot_id: Option<String> = row.get(3)?;
-                let target = match (role.as_deref().and_then(AgentRole::parse), slot_id) {
-                    (Some(agent_role), None) => AgentExecutionTarget::canonical(agent_role),
-                    (None, Some(slot_id)) => AgentExecutionTarget::free_form(slot_id),
+                let automation_slot_id: Option<String> = row.get(11)?;
+                let target = match (
+                    role.as_deref().and_then(AgentRole::parse),
+                    slot_id,
+                    automation_slot_id,
+                ) {
+                    (Some(agent_role), None, None) => AgentExecutionTarget::canonical(agent_role),
+                    (None, Some(slot_id), None) => AgentExecutionTarget::free_form(slot_id),
+                    (None, None, Some(slot_id)) => {
+                        AgentExecutionTarget::automation(slot_id, row.get::<_, String>(4)?)
+                    }
                     _ => return Err(rusqlite::Error::InvalidQuery),
                 };
                 Ok(LlmExecutionListItem {
@@ -1762,6 +1787,13 @@ impl SqliteLlmRepository {
                 "SELECT EXISTS(SELECT 1 FROM llm_route_executions
                  WHERE id=?1 AND project_id=?2 AND agent_role IS NULL
                    AND free_form_slot_id=?3)",
+                params![execution_id, project_id, slot_id],
+                |row| row.get(0),
+            ),
+            AgentExecutionTarget::Automation { slot_id, .. } => connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM llm_route_executions
+                 WHERE id=?1 AND project_id=?2 AND agent_role IS NULL
+                   AND automation_slot_id=?3)",
                 params![execution_id, project_id, slot_id],
                 |row| row.get(0),
             ),

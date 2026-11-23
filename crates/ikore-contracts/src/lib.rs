@@ -2,6 +2,7 @@
 //!
 //! This crate contains no persistence, process execution or authorization logic.
 
+pub mod custom_pipeline;
 pub mod env;
 pub mod exchange;
 pub mod external_changes;

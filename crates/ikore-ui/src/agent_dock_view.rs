@@ -93,6 +93,21 @@ pub(crate) fn summarize(model: &AppModel, agent: &AgentIdentifier, cx: &App) -> 
                     .is_some_and(|slot| slot.slot.execution_mode == AgentExecutionMode::ApiDirect),
             }
         }
+        // `{pipeline} · {step}` (feature 25, section 6).
+        AgentIdentifier::PipelineStep {
+            pipeline_id,
+            step_id,
+        } => {
+            let slot = agents.automation_slot(pipeline_id, step_id);
+            AgentSummary {
+                agent: agent.clone(),
+                label: agents.pipeline_step_label(pipeline_id, step_id),
+                color: theme::accent(),
+                run: slot.and_then(|slot| slot.recent_runs.first().cloned()),
+                api: slot
+                    .is_some_and(|slot| slot.slot.execution_mode == AgentExecutionMode::ApiDirect),
+            }
+        }
     }
 }
 
@@ -113,6 +128,12 @@ fn agent_runs(model: &AppModel, agent: &AgentIdentifier, cx: &App) -> Vec<Termin
             .iter()
             .chain(&snapshot.archived_free_form_slots)
             .find(|candidate| candidate.slot.id == *slot_id)
+            .map(|candidate| candidate.recent_runs.clone()),
+        AgentIdentifier::PipelineStep {
+            pipeline_id,
+            step_id,
+        } => agents
+            .automation_slot(pipeline_id, step_id)
             .map(|candidate| candidate.recent_runs.clone()),
     }
     .unwrap_or_default()
@@ -172,7 +193,7 @@ pub(crate) fn run_time(run: &TerminalRun) -> Option<String> {
     )
 }
 
-fn time_label(
+pub(crate) fn time_label(
     active: bool,
     started: &str,
     ended: &str,

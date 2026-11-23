@@ -304,6 +304,23 @@ fn main() {
             } else {
                 emit_companion_success(backend);
             }
+        } else if let Some(reply) = pipeline_step_reply(&stdin) {
+            // Feature 25: a pipeline step. The prompt and argv are kept for
+            // the test; the reply follows the marker in its instructions.
+            if let Ok(path) = env::current_exe()
+                && let Ok(mut log) = OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path.with_file_name(format!("{executable_name}.pipeline-log")))
+            {
+                let _ = writeln!(log, "ARGV {}\n{stdin}\n=====", args.join(" "));
+            }
+            if reply == "hang" {
+                loop {
+                    thread::sleep(Duration::from_secs(1));
+                }
+            }
+            emit_official_text(backend, &args, &reply);
         } else {
             emit_official_success(backend, &args);
         }
@@ -462,6 +479,74 @@ fn emit_companion_envelope(backend: &str, response: serde_json::Value) {
         println!(
             r#"{{"type":"turn.completed","usage":{{"input_tokens":20,"output_tokens":5,"cached_input_tokens":12}}}}"#
         );
+    }
+}
+
+/// The reply a pipeline step's instructions ask for with
+/// `pipeline-step-fixture:<kind>` (feature 25).
+fn pipeline_step_reply(stdin: &str) -> Option<String> {
+    let marker = "pipeline-step-fixture:";
+    let start = stdin.find(marker)? + marker.len();
+    let kind = stdin[start..]
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+        .next()
+        .unwrap_or_default();
+    let pass = r#"{"verdict":"pass","summary":"Looks fine.","findings":[{"id":"n1","severity":"note","message":"A note on the library.","file":"src/lib.rs","line":1,"suggestion":null}]}"#;
+    Some(match kind {
+        "text" => "Step text from the fixture.".to_owned(),
+        "pass" => pass.to_owned(),
+        "reject" => r#"{"verdict":"reject","summary":"Found a problem.","findings":[{"id":"b1","severity":"blocking","message":"A blocking problem.","file":"missing.rs","line":3,"suggestion":"Fix it."}]}"#.to_owned(),
+        "invalid" => "This is not a verdict.".to_owned(),
+        "invalid-then-pass" if stdin.contains("## Your previous answer") => pass.to_owned(),
+        "invalid-then-pass" => "This is not a verdict either.".to_owned(),
+        "hang" => "hang".to_owned(),
+        // Hangs the first time, answers the next (a step resumed after the
+        // app closed).
+        "hang-once" => {
+            let marker = env::current_exe().ok()?.with_file_name("pipeline.hung-once");
+            if marker.exists() {
+                "Step text from the fixture.".to_owned()
+            } else {
+                let _ = std::fs::write(marker, b"hung");
+                "hang".to_owned()
+            }
+        }
+        _ => return None,
+    })
+}
+
+/// An official CLI's success stream, with `text` as the final answer.
+fn emit_official_text(backend: &str, args: &[String], text: &str) {
+    let requested_model = value_after(args, "--model").unwrap_or("fixture-model");
+    match backend {
+        "codex" => {
+            println!(r#"{{"type":"thread.started","thread_id":"fixture-native-session"}}"#);
+            println!(
+                "{}",
+                serde_json::json!({"type":"item.completed","model":requested_model,"item":{"id":"codex-message-1","type":"agent_message","text":text}})
+            );
+            println!(
+                r#"{{"type":"turn.completed","usage":{{"input_tokens":20,"output_tokens":5,"cached_input_tokens":12}}}}"#
+            );
+        }
+        "claude" => {
+            let observed_model = "claude-haiku-4-5-20251001";
+            println!(
+                r#"{{"type":"system","subtype":"init","session_id":"fixture-native-session","model":"{requested_model}"}}"#
+            );
+            println!(
+                r#"{{"type":"stream_event","event":{{"type":"message_start","message":{{"id":"claude-message-1","model":"{observed_model}"}}}}}}"#
+            );
+            println!(
+                "{}",
+                serde_json::json!({"type":"assistant","message":{"id":"claude-message-1","model":observed_model,"content":[{"type":"text","text":text}]}})
+            );
+            println!(
+                "{}",
+                serde_json::json!({"type":"result","result":text,"session_id":"fixture-native-session","model":observed_model,"modelUsage":{"claude-fixture":{"inputTokens":8,"outputTokens":5,"cacheReadInputTokens":12}}})
+            );
+        }
+        other => panic!("pipeline steps in the fixture run on codex or claude, not {other}"),
     }
 }
 

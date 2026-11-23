@@ -203,6 +203,7 @@ pub(crate) fn apply(
                         agents: ROLES.into_iter().map(agent).collect(),
                         free_form_slots: vec![],
                         archived_free_form_slots: vec![],
+                        automation_slots: Vec::new(),
                         discovery: vec![],
                     },
                     fallbacks: vec![],
@@ -210,6 +211,7 @@ pub(crate) fn apply(
                     api_executions: Default::default(),
                     quota_deltas: Default::default(),
                     live_activity: Vec::new(),
+                    pipelines: Default::default(),
                 },
             );
         });

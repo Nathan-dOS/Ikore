@@ -31,7 +31,11 @@ mod detail;
 mod free_form;
 mod history;
 mod model;
+mod pipeline_editor;
+mod pipelines;
 mod synthesis;
+
+pub(crate) use pipeline_editor::PipelineEditor;
 
 use api::api_detail_panel;
 use config::field;
@@ -128,7 +132,7 @@ fn canvas_agents(
     let node = |item: &AgentItem| {
         let role = match &item.id {
             AgentIdentifier::Canonical(role) => Some(*role),
-            AgentIdentifier::FreeForm(_) => None,
+            AgentIdentifier::FreeForm(_) | AgentIdentifier::PipelineStep { .. } => None,
         };
         let checkpoint = role
             .and_then(|role| {
@@ -150,6 +154,8 @@ fn canvas_agents(
             .collect(),
         ghost: (items.free_form.len() < FREE_FORM_LIMIT).then_some(!busy),
         archived: items.archived.len(),
+        pipelines: pipelines::canvas_pipelines(model, cx),
+        selected_pipeline: model.agents.read(cx).selected_pipeline.clone(),
     }
 }
 
@@ -174,9 +180,35 @@ fn synthesis_panel(
             .iter()
             .find(|slot| slot.slot.id == *slot_id)
             .is_some_and(|slot| slot.slot.execution_mode == AgentExecutionMode::ApiDirect),
-        None => false,
+        Some(AgentIdentifier::PipelineStep { .. }) | None => false,
     };
-    let content = if show_archived {
+    // Feature 25: the editor, the archived pipelines, a pipeline's synthesis
+    // or a step's come before the agents' panels.
+    let step = match agents.selected_agent.as_ref() {
+        Some(AgentIdentifier::PipelineStep {
+            pipeline_id,
+            step_id,
+        }) => agents
+            .pipeline(pipeline_id)
+            .cloned()
+            .map(|pipeline| (pipeline, step_id.clone())),
+        _ => None,
+    };
+    let pipeline = agents
+        .selected_pipeline
+        .as_ref()
+        .and_then(|id| agents.pipeline(id))
+        .cloned();
+    let show_archived_pipelines = agents.show_archived_pipelines;
+    let content = if model.pipeline_editor.is_some() {
+        pipeline_editor::pipeline_editor_panel(model, cx)
+    } else if show_archived_pipelines {
+        pipelines::archived_pipelines(model, busy, cx)
+    } else if let Some(pipeline) = pipeline {
+        pipelines::pipeline_synthesis(model, &pipeline, busy, cx)
+    } else if let Some((pipeline, step_id)) = step {
+        pipelines::step_synthesis(model, &pipeline, &step_id, busy, cx)
+    } else if show_archived {
         archived_panel(model, snapshot, busy, cx)
     } else if api_mode {
         api_detail_panel(model, snapshot, cx)
@@ -256,7 +288,13 @@ pub(crate) fn agents_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
     let snapshot = agents.snapshot.clone();
     let active_model_picker = agents.active_model_picker.clone();
     let selected = agents.selected_agent.clone();
-    let synthesis_open = selected.is_some() || agents.show_archived;
+    let synthesis_open = selected.is_some()
+        || agents.show_archived
+        || agents.selected_pipeline.is_some()
+        || agents.show_archived_pipelines
+        || model.pipeline_editor.is_some();
+    let can_create = pipelines::can_create_pipeline(agents);
+    let archived_pipelines = agents.pipelines.archived.len();
 
     div()
         .id("agents-panel")
@@ -298,6 +336,38 @@ pub(crate) fn agents_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
                         .text_color(theme::text_muted())
                         .text_ellipsis()
                         .child("Project-isolated configuration"),
+                )
+                .when(archived_pipelines > 0, |header| {
+                    header.child(action_button(
+                        "agents-archived-pipelines".into(),
+                        format!("Archived pipelines · {archived_pipelines}").into(),
+                        snapshot.is_some(),
+                        false,
+                        cx,
+                        |model, cx| model.open_archived_pipelines(cx),
+                    ))
+                })
+                .child(
+                    div()
+                        .id("agents-new-pipeline-frame")
+                        .when(!can_create, |frame| {
+                            frame.tooltip(|_, cx| {
+                                cx.new(|_| {
+                                    crate::widgets::Tooltip::new(
+                                        "A project has at most 5 pipelines of its own. Archive one first.",
+                                    )
+                                })
+                                .into()
+                            })
+                        })
+                        .child(action_button(
+                            "agents-new-pipeline".into(),
+                            "New pipeline".into(),
+                            snapshot.is_some() && can_create && !busy,
+                            false,
+                            cx,
+                            |model, cx| model.open_new_pipeline(cx),
+                        )),
                 )
                 .child(action_button(
                     "agents-fit".into(),
@@ -402,6 +472,12 @@ pub(crate) fn cli_model_picker_panel(
         ),
         CliModelPickerTarget::FreeForm(_) => {
             format!("Choose {} model for FreeForm agent", picker.backend.label())
+        }
+        CliModelPickerTarget::PipelineStep(_) => {
+            format!(
+                "Choose {} model for the pipeline step",
+                picker.backend.label()
+            )
         }
         CliModelPickerTarget::Companion => "Choose the Companion's model".into(),
     };
@@ -1115,6 +1191,7 @@ fn origin_label(origin: ikore_core::terminals::ExecutionOrigin) -> &'static str 
         ExecutionOrigin::Review => "review",
         ExecutionOrigin::Notes => "notes",
         ExecutionOrigin::Reconciliation => "reconciliation",
+        ExecutionOrigin::Automation => "pipeline step",
     }
 }
 
@@ -1339,6 +1416,8 @@ mod tests {
             ("history.rs", include_str!("history.rs")),
             ("model.rs", include_str!("model.rs")),
             ("synthesis.rs", include_str!("synthesis.rs")),
+            ("pipelines.rs", include_str!("pipelines.rs")),
+            ("pipeline_editor.rs", include_str!("pipeline_editor.rs")),
             ("canvas", include_str!("../agents_canvas/mod.rs")),
             ("canvas paint", include_str!("../agents_canvas/paint.rs")),
             ("canvas layout", include_str!("../agents_canvas/layout.rs")),

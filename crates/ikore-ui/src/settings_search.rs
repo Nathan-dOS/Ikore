@@ -647,6 +647,14 @@ pub(crate) static ENTRIES: &[SettingsEntry] = &[
         "threshold revision rounds convergence replan",
     ),
     entry(
+        "automation-max-concurrent",
+        P::Composition,
+        "Pipelines",
+        "Steps at once",
+        "How many steps of your own pipelines run at the same time in the whole app, from 1 to 3. A project runs one step at a time, and the Ikore pipeline never waits for them.",
+        "automation lane pipelines steps concurrency ceiling parallel",
+    ),
+    entry(
         "composition-checks",
         P::Composition,
         "Host validation",

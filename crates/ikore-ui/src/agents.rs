@@ -4,6 +4,10 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use ikore_core::AppCore;
+use ikore_core::custom_pipelines::{
+    CustomPipelinesSnapshot, DecidePipelineGateRequest, SaveCustomPipelineOutcome,
+    SaveCustomPipelineRequest,
+};
 use ikore_core::llm::{
     AgentExecutionTarget, AgentRole, FreeFormProviderRouteBinding, LlmEventEnvelope,
     LlmExecutionListItem, LlmStreamEvent, UpsertFreeFormProviderRouteBindingRequest,
@@ -35,9 +39,58 @@ pub(crate) struct AgentsDashboardSnapshot {
     pub(crate) quota_deltas: HashMap<String, Vec<ikore_core::quota::RunQuotaDelta>>,
     /// What each live run did last, for a UI that opens mid-run (ADR-040 M5).
     pub(crate) live_activity: Vec<ikore_core::terminals::AgentActivitySnapshotV1>,
+    /// The developer's pipelines, their boxes and recent runs (feature 25).
+    pub(crate) pipelines: CustomPipelinesSnapshot,
+}
+
+fn unsupported<T: Send + 'static>() -> AgentsFuture<T> {
+    Box::pin(async {
+        Err(UiCommandError::from_chat_parts(
+            "agents_error",
+            "Pipelines are not available here.",
+        ))
+    })
 }
 
 pub(crate) trait AgentsBackend: Send + Sync {
+    /// Creates a pipeline or saves its new version (feature 25).
+    fn save_pipeline(
+        &self,
+        _request: SaveCustomPipelineRequest,
+    ) -> AgentsFuture<SaveCustomPipelineOutcome> {
+        unsupported()
+    }
+    fn set_pipeline_archived(
+        &self,
+        _project_id: String,
+        _pipeline_id: String,
+        _archived: bool,
+    ) -> AgentsFuture<SaveCustomPipelineOutcome> {
+        unsupported()
+    }
+    fn delete_pipeline(&self, _project_id: String, _pipeline_id: String) -> AgentsFuture<()> {
+        unsupported()
+    }
+    fn start_pipeline_run(
+        &self,
+        _project_id: String,
+        _pipeline_id: String,
+    ) -> AgentsFuture<String> {
+        unsupported()
+    }
+    fn cancel_pipeline_run(&self, _project_id: String, _run_id: String) -> AgentsFuture<()> {
+        unsupported()
+    }
+    fn resume_pipeline_run(&self, _project_id: String, _run_id: String) -> AgentsFuture<()> {
+        unsupported()
+    }
+    fn decide_pipeline_gate(&self, _request: DecidePipelineGateRequest) -> AgentsFuture<()> {
+        unsupported()
+    }
+    /// Settings › Composition: the automation lane's ceiling.
+    fn set_automation_max_concurrent(&self, _value: u32) -> AgentsFuture<()> {
+        unsupported()
+    }
     fn snapshot(&self, project_id: String) -> AgentsFuture<AgentsDashboardSnapshot>;
     fn refresh_snapshot(&self, project_id: String) -> AgentsFuture<AgentsDashboardSnapshot>;
     fn model_catalog(
@@ -188,9 +241,18 @@ fn complete_dashboard_snapshot(
             .agents
             .iter()
             .flat_map(|agent| &agent.recent_runs)
+            .chain(
+                terminals
+                    .automation_slots
+                    .iter()
+                    .flat_map(|slot| &slot.recent_runs),
+            )
             .map(|run| run.id.as_str()),
     );
     let live_activity = core.terminals().live_activity(&terminals.project_id);
+    let pipelines = persistence
+        .custom_pipelines_snapshot(&terminals.project_id)
+        .map_err(persistence_error)?;
     Ok(AgentsDashboardSnapshot {
         terminals,
         fallbacks,
@@ -198,10 +260,94 @@ fn complete_dashboard_snapshot(
         api_executions,
         quota_deltas,
         live_activity,
+        pipelines,
+    })
+}
+
+/// A persistence command on the blocking pool.
+fn blocking<T: Send + 'static>(
+    core: &Arc<AppCore>,
+    command: impl FnOnce(
+        &AppCore,
+    ) -> Result<T, ikore_core::persistence_service::PersistenceServiceError>
+    + Send
+    + 'static,
+) -> AgentsFuture<T> {
+    let core = Arc::clone(core);
+    let runtime = core.runtime_handle().clone();
+    Box::pin(async move {
+        runtime
+            .spawn_blocking(move || command(&core))
+            .await
+            .map_err(|error| {
+                UiCommandError::worker(format!("pipeline worker interrupted: {error}"))
+            })?
+            .map_err(persistence_error)
     })
 }
 
 impl AgentsBackend for CoreAgentsBackend {
+    fn save_pipeline(
+        &self,
+        request: SaveCustomPipelineRequest,
+    ) -> AgentsFuture<SaveCustomPipelineOutcome> {
+        blocking(&self.core, move |core| {
+            core.persistence().save_custom_pipeline(request)
+        })
+    }
+
+    fn set_pipeline_archived(
+        &self,
+        project_id: String,
+        pipeline_id: String,
+        archived: bool,
+    ) -> AgentsFuture<SaveCustomPipelineOutcome> {
+        blocking(&self.core, move |core| {
+            core.persistence()
+                .set_custom_pipeline_archived(&project_id, &pipeline_id, archived)
+        })
+    }
+
+    fn delete_pipeline(&self, project_id: String, pipeline_id: String) -> AgentsFuture<()> {
+        blocking(&self.core, move |core| {
+            core.persistence()
+                .delete_custom_pipeline(&project_id, &pipeline_id)
+        })
+    }
+
+    fn start_pipeline_run(&self, project_id: String, pipeline_id: String) -> AgentsFuture<String> {
+        blocking(&self.core, move |core| {
+            core.persistence()
+                .start_custom_pipeline_run(&project_id, &pipeline_id)
+        })
+    }
+
+    fn cancel_pipeline_run(&self, project_id: String, run_id: String) -> AgentsFuture<()> {
+        blocking(&self.core, move |core| {
+            core.persistence()
+                .cancel_custom_pipeline_run(&project_id, &run_id)
+        })
+    }
+
+    fn resume_pipeline_run(&self, project_id: String, run_id: String) -> AgentsFuture<()> {
+        blocking(&self.core, move |core| {
+            core.persistence()
+                .resume_custom_pipeline_run(&project_id, &run_id)
+        })
+    }
+
+    fn decide_pipeline_gate(&self, request: DecidePipelineGateRequest) -> AgentsFuture<()> {
+        blocking(&self.core, move |core| {
+            core.persistence().decide_custom_pipeline_gate(request)
+        })
+    }
+
+    fn set_automation_max_concurrent(&self, value: u32) -> AgentsFuture<()> {
+        blocking(&self.core, move |core| {
+            core.persistence().set_automation_max_concurrent(value)
+        })
+    }
+
     fn snapshot(&self, project_id: String) -> AgentsFuture<AgentsDashboardSnapshot> {
         let terminals = self.core.terminals();
         let core = Arc::clone(&self.core);
@@ -623,6 +769,8 @@ pub(crate) enum CliModelPickerTarget {
     Canonical(AgentRole),
     FreeForm(String),
     Companion,
+    /// A step of the pipeline being edited, by its place in the form.
+    PipelineStep(usize),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -715,18 +863,29 @@ impl ApiActivityFilter {
 pub(crate) enum AgentIdentifier {
     Canonical(AgentRole),
     FreeForm(String),
+    /// A step of one of the developer's pipelines (feature 25).
+    PipelineStep {
+        pipeline_id: String,
+        step_id: String,
+    },
 }
 
 impl AgentIdentifier {
-    pub(crate) fn target(&self) -> AgentExecutionTarget {
+    /// The routing target of an agent the developer configures here; a
+    /// pipeline step routes by its own step.
+    pub(crate) fn target(&self) -> Option<AgentExecutionTarget> {
         match self {
-            Self::Canonical(role) => AgentExecutionTarget::canonical(*role),
-            Self::FreeForm(slot_id) => AgentExecutionTarget::free_form(slot_id.clone()),
+            Self::Canonical(role) => Some(AgentExecutionTarget::canonical(*role)),
+            Self::FreeForm(slot_id) => Some(AgentExecutionTarget::free_form(slot_id.clone())),
+            Self::PipelineStep { .. } => None,
         }
     }
 
     pub(crate) fn stable_key(&self) -> String {
-        self.target().stable_key()
+        match self.target() {
+            Some(target) => target.stable_key(),
+            None => crate::agent_dock::agent_key(self),
+        }
     }
 
     pub(crate) fn from_target(target: &AgentExecutionTarget) -> Self {
@@ -734,6 +893,31 @@ impl AgentIdentifier {
             AgentExecutionTarget::Canonical { agent_role } => Self::Canonical(*agent_role),
             AgentExecutionTarget::Ephemeral { agent_role, .. } => Self::Canonical(*agent_role),
             AgentExecutionTarget::FreeForm { slot_id } => Self::FreeForm(slot_id.clone()),
+            AgentExecutionTarget::Automation { slot_id, .. } => Self::from_automation_slot(slot_id)
+                .unwrap_or_else(|| Self::FreeForm(slot_id.clone())),
+        }
+    }
+
+    /// The step behind an automation slot, `automation:{project}:{pipeline}:{step}`.
+    pub(crate) fn from_automation_slot(slot_id: &str) -> Option<Self> {
+        let mut parts = slot_id.strip_prefix("automation:")?.split(':');
+        let (_project, pipeline, step) = (parts.next()?, parts.next()?, parts.next()?);
+        (parts.next().is_none() && !pipeline.is_empty() && !step.is_empty()).then(|| {
+            Self::PipelineStep {
+                pipeline_id: pipeline.to_owned(),
+                step_id: step.to_owned(),
+            }
+        })
+    }
+
+    /// The agent a terminal run belongs to.
+    pub(crate) fn of_run(run: &TerminalRun) -> Self {
+        match (run.agent_role, &run.slot) {
+            (Some(role), _) => Self::Canonical(role),
+            (None, ikore_core::terminals::SessionSlot::Automation { id }) => {
+                Self::from_automation_slot(id).unwrap_or_else(|| Self::FreeForm(id.clone()))
+            }
+            (None, _) => Self::FreeForm(run.slot_id.clone()),
         }
     }
 }
@@ -794,6 +978,16 @@ pub(crate) struct AgentsModel {
     pub(crate) pending_history_clear: Option<AgentRole>,
     pub(crate) pending_free_form_history_clear: Option<String>,
     pub(crate) pending_free_form_delete: Option<String>,
+    /// The developer's pipelines (feature 25).
+    pub(crate) pipelines: CustomPipelinesSnapshot,
+    /// The pipeline whose synthesis is open (its box's title was clicked).
+    pub(crate) selected_pipeline: Option<String>,
+    /// The synthesis column lists the archived pipelines.
+    pub(crate) show_archived_pipelines: bool,
+    /// The run the pipeline's synthesis shows; the newest when `None`.
+    pub(crate) selected_pipeline_run: Option<String>,
+    /// A pipeline `Delete` waits for its confirmation.
+    pub(crate) pending_pipeline_delete: Option<String>,
     pub(crate) generation: u64,
 }
 
@@ -836,6 +1030,11 @@ impl Default for AgentsModel {
             pending_history_clear: None,
             pending_free_form_history_clear: None,
             pending_free_form_delete: None,
+            pipelines: CustomPipelinesSnapshot::default(),
+            selected_pipeline: None,
+            show_archived_pipelines: false,
+            selected_pipeline_run: None,
+            pending_pipeline_delete: None,
             generation: 0,
         }
     }
@@ -950,7 +1149,12 @@ impl AgentsModel {
                 self.selected_run_by_slot.remove(&free_form.slot.id);
             }
         }
-        for free_form in &snapshot.terminals.archived_free_form_slots {
+        for free_form in snapshot
+            .terminals
+            .archived_free_form_slots
+            .iter()
+            .chain(&snapshot.terminals.automation_slots)
+        {
             if let Some(run) = free_form.recent_runs.first() {
                 self.merge_events(&run.id, free_form.recent_events.clone());
             }
@@ -967,6 +1171,7 @@ impl AgentsModel {
                     .free_form_slots
                     .iter()
                     .chain(&snapshot.terminals.archived_free_form_slots)
+                    .chain(&snapshot.terminals.automation_slots)
                     .flat_map(|slot| &slot.recent_runs),
             )
             .map(|run| run.id.as_str())
@@ -1014,9 +1219,62 @@ impl AgentsModel {
         {
             self.pending_pipeline_cancel = None;
         }
+        self.pipelines = snapshot.pipelines;
         self.reconcile_selection(&snapshot.terminals);
         self.snapshot = Some(snapshot.terminals);
         true
+    }
+
+    /// A pipeline the project shows, by id.
+    pub(crate) fn pipeline(
+        &self,
+        id: &str,
+    ) -> Option<&ikore_core::custom_pipelines::CustomPipelineView> {
+        self.pipelines
+            .pipelines
+            .iter()
+            .chain(&self.pipelines.archived)
+            .find(|pipeline| pipeline.id == id)
+    }
+
+    /// The terminal slot of a pipeline step, when it ran.
+    pub(crate) fn automation_slot(
+        &self,
+        pipeline_id: &str,
+        step_id: &str,
+    ) -> Option<&ikore_core::terminals::FreeFormTerminalSnapshot> {
+        self.snapshot
+            .as_ref()?
+            .automation_slots
+            .iter()
+            .find(|slot| {
+                AgentIdentifier::from_automation_slot(&slot.slot.id).is_some_and(|agent| {
+                    agent
+                        == AgentIdentifier::PipelineStep {
+                            pipeline_id: pipeline_id.to_owned(),
+                            step_id: step_id.to_owned(),
+                        }
+                })
+            })
+    }
+
+    /// `{pipeline} · {step}`, from the current pipeline, else the slot.
+    pub(crate) fn pipeline_step_label(&self, pipeline_id: &str, step_id: &str) -> String {
+        match self.pipeline(pipeline_id) {
+            Some(pipeline) => {
+                let step = pipeline
+                    .definition
+                    .steps
+                    .iter()
+                    .find(|step| step.id() == step_id)
+                    .map_or(step_id, |step| step.label());
+                ikore_core::custom_pipelines::automation_slot_label(&pipeline.name, step)
+            }
+            None => self.automation_slot(pipeline_id, step_id).map_or_else(
+                || "Pipeline step".to_owned(),
+                |slot| slot.slot.label.clone(),
+            ),
+        }
     }
 
     /// The synthesis stays on its agent while the agent is on the canvas.
@@ -1033,8 +1291,29 @@ impl AgentsModel {
                 .free_form_slots
                 .iter()
                 .any(|slot| slot.slot.id == *id),
+            Some(AgentIdentifier::PipelineStep {
+                pipeline_id,
+                step_id,
+            }) => self.pipelines.pipelines.iter().any(|pipeline| {
+                pipeline.id == *pipeline_id
+                    && pipeline
+                        .definition
+                        .steps
+                        .iter()
+                        .any(|step| step.id() == step_id)
+            }),
             None => true,
         };
+        if self.selected_pipeline.as_ref().is_some_and(|id| {
+            !self
+                .pipelines
+                .pipelines
+                .iter()
+                .any(|pipeline| &pipeline.id == id)
+        }) {
+            self.selected_pipeline = None;
+            self.selected_pipeline_run = None;
+        }
         if !valid {
             self.active_model_picker = None;
             self.selected_agent = None;
@@ -1575,6 +1854,7 @@ mod tests {
             }],
             free_form_slots: Vec::new(),
             archived_free_form_slots: Vec::new(),
+            automation_slots: Vec::new(),
             discovery: Vec::new(),
         });
         model
@@ -1609,6 +1889,7 @@ mod tests {
                 api_executions: HashMap::new(),
                 quota_deltas: Default::default(),
                 live_activity: Vec::new(),
+                pipelines: Default::default(),
             }
         ));
         assert_eq!(
@@ -1636,6 +1917,7 @@ mod tests {
                 api_executions: HashMap::new(),
                 quota_deltas: Default::default(),
                 live_activity: Vec::new(),
+                pipelines: Default::default(),
             }
         ));
         assert!(!model.in_flight());
@@ -1700,6 +1982,7 @@ mod tests {
                 api_executions: HashMap::new(),
                 quota_deltas: Default::default(),
                 live_activity: Vec::new(),
+                pipelines: Default::default(),
             }
         ));
         let sequences = model.events_by_run["run-1"]
@@ -1733,6 +2016,7 @@ mod tests {
                 api_executions: HashMap::new(),
                 quota_deltas: Default::default(),
                 live_activity: Vec::new(),
+                pipelines: Default::default(),
             }
         ));
         assert!(!model.events_by_run.contains_key("run-gone"));

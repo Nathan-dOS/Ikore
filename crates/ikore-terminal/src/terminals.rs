@@ -110,6 +110,10 @@ pub fn cli_output_ceiling(max_output_tokens: u32) -> u64 {
         .max(CLI_OUTPUT_CEILING_FLOOR)
 }
 
+/// The output a pipeline step may produce (feature 25), as the stages'
+/// reservation: a CLI has no flag for it, so the host enforces the ceiling.
+pub const AUTOMATION_OUTPUT_TOKENS: u32 = 16_000;
+
 const PROCESS_EVENT_CHANNEL_CAPACITY: usize = 256;
 const DEFAULT_MANUAL_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const MAX_SAFE_SNAPSHOT_FILES: usize = 10_000;
@@ -368,6 +372,8 @@ pub enum ExecutionOrigin {
     Notes,
     /// The Documentation Reconciler proposing a note update (ADR-034 M5).
     Reconciliation,
+    /// A step of a developer's pipeline (feature 25).
+    Automation,
 }
 
 impl ExecutionOrigin {
@@ -380,6 +386,7 @@ impl ExecutionOrigin {
             Self::Review => "review",
             Self::Notes => "notes",
             Self::Reconciliation => "reconciliation",
+            Self::Automation => "automation",
         }
     }
 
@@ -392,6 +399,7 @@ impl ExecutionOrigin {
             "review" => Some(Self::Review),
             "notes" => Some(Self::Notes),
             "reconciliation" => Some(Self::Reconciliation),
+            "automation" => Some(Self::Automation),
             _ => None,
         }
     }
@@ -632,6 +640,11 @@ pub enum SessionSlot {
     FreeForm {
         id: String,
     },
+    /// A step of a developer's pipeline (feature 25): no role, configured by
+    /// the step, read-only. The id is `automation:{project}:{pipeline}:{step}`.
+    Automation {
+        id: String,
+    },
 }
 
 impl SessionSlot {
@@ -639,7 +652,7 @@ impl SessionSlot {
         match self {
             Self::Canonical { agent_role } => canonical_slot_id(project_id, *agent_role),
             Self::Ephemeral { id, .. } => id.clone(),
-            Self::FreeForm { id } => id.clone(),
+            Self::FreeForm { id } | Self::Automation { id } => id.clone(),
         }
     }
 
@@ -647,7 +660,7 @@ impl SessionSlot {
         match self {
             Self::Canonical { agent_role } => Some(*agent_role),
             Self::Ephemeral { agent_role, .. } => Some(*agent_role),
-            Self::FreeForm { .. } => None,
+            Self::FreeForm { .. } | Self::Automation { .. } => None,
         }
     }
 }
@@ -1349,6 +1362,76 @@ impl TerminalRepository {
         Ok(())
     }
 
+    /// The slot of a pipeline step (feature 25), created on its first run
+    /// and kept in step with the step's transport, CLI, model and effort.
+    #[allow(clippy::too_many_arguments)]
+    pub fn ensure_automation_slot(
+        &self,
+        project_id: &str,
+        id: &str,
+        label: &str,
+        execution_mode: AgentExecutionMode,
+        backend: CliBackend,
+        model: Option<&str>,
+        model_profile: Option<&str>,
+        thinking_level: ThinkingLevel,
+    ) -> Result<(), TerminalError> {
+        let project_id = required(project_id, "projectId")?;
+        let id = required(id, "slotId")?;
+        let now = Utc::now().to_rfc3339();
+        self.connection()?.execute(
+            "INSERT INTO terminal_slots(
+               id,project_id,kind,agent_role,label,execution_mode,backend,model,
+               thinking_level,session_policy,custom_executable,custom_args_json,
+               custom_risk_ack,position,archived,version,created_at,updated_at,
+               model_profile,model_source
+             ) VALUES(?1,?2,'automation',NULL,?3,?4,?5,?6,?7,'fresh_per_run',NULL,'[]',
+                      0,0,0,1,?8,?8,?9,?10)
+             ON CONFLICT(id) DO UPDATE SET
+               label=excluded.label,execution_mode=excluded.execution_mode,
+               backend=excluded.backend,model=excluded.model,
+               thinking_level=excluded.thinking_level,model_profile=excluded.model_profile,
+               model_source=excluded.model_source,updated_at=excluded.updated_at
+             WHERE terminal_slots.project_id=excluded.project_id
+               AND terminal_slots.kind='automation'",
+            params![
+                id,
+                project_id,
+                label,
+                execution_mode.as_str(),
+                backend.as_str(),
+                model,
+                thinking_level.as_str(),
+                now,
+                model_profile,
+                if model.is_some() { "manual" } else { "default" },
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_automation_slots(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<TerminalSlot>, TerminalError> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT id,project_id,kind,agent_role,label,execution_mode,backend,model,
+                    thinking_level,session_policy,custom_executable,custom_args_json,
+                    custom_risk_ack,position,archived,version,created_at,updated_at,
+                    model_profile,model_source
+             FROM terminal_slots
+             WHERE project_id=?1 AND kind='automation'
+             ORDER BY created_at,id",
+        )?;
+        let rows = statement.query_map(
+            params![required(project_id, "projectId")?],
+            map_terminal_slot,
+        )?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(TerminalError::from)
+    }
+
     pub fn list_free_form_slots(
         &self,
         project_id: &str,
@@ -1705,6 +1788,11 @@ impl TerminalRepository {
                 "internal run slots do not accept manual actions".into(),
             ));
         }
+        if (slot.kind == "automation") != (request.origin == ExecutionOrigin::Automation) {
+            return Err(TerminalError::Validation(
+                "pipeline steps run only on their own slots".into(),
+            ));
+        }
         let continuation_reason = request
             .continuation_reason
             .as_deref()
@@ -1730,6 +1818,7 @@ impl TerminalRepository {
             SessionSlot::FreeForm { id } => {
                 ("free_form", Some(id.as_str()), Some(slot.label.as_str()))
             }
+            SessionSlot::Automation { .. } => ("automation", None, Some(slot.label.as_str())),
         };
         let mut connection = self.connection()?;
         let transaction =
@@ -3118,7 +3207,10 @@ fn map_terminal_slot(row: &rusqlite::Row<'_>) -> rusqlite::Result<TerminalSlot> 
         .map(|value| AgentRole::parse(&value).ok_or_else(|| invalid_column(3, value)))
         .transpose()?;
     if (matches!(kind.as_str(), "canonical" | "ephemeral")) != role.is_some()
-        || !matches!(kind.as_str(), "canonical" | "free_form" | "ephemeral")
+        || !matches!(
+            kind.as_str(),
+            "canonical" | "free_form" | "ephemeral" | "automation"
+        )
     {
         return Err(invalid_column(2, kind));
     }
@@ -3177,6 +3269,11 @@ fn map_run(host: &dyn TerminalHost, row: &rusqlite::Row<'_>) -> rusqlite::Result
             agent_role,
         },
         ("free_form", None, Some(id)) => SessionSlot::FreeForm { id },
+        ("automation", None, None) => SessionSlot::Automation {
+            id: slot_id
+                .clone()
+                .ok_or_else(|| invalid_column(30, "missing automation slot id".into()))?,
+        },
         _ => return Err(invalid_column(28, slot_kind)),
     };
     Ok(TerminalRun {
@@ -4411,7 +4508,38 @@ pub struct TerminalsSnapshot {
     pub agents: Vec<AgentTerminalSnapshot>,
     pub free_form_slots: Vec<FreeFormTerminalSnapshot>,
     pub archived_free_form_slots: Vec<FreeFormTerminalSnapshot>,
+    /// The slots of the pipeline steps that ran (feature 25), with their
+    /// runs: the same shape as a free-form agent's.
+    #[serde(default)]
+    pub automation_slots: Vec<FreeFormTerminalSnapshot>,
     pub discovery: Vec<CliAvailability>,
+}
+
+/// A step of a developer's pipeline run by a CLI (feature 25), with the
+/// pipeline stages' read-only hardening.
+#[derive(Debug, Clone)]
+pub struct AutomationStepRequest {
+    pub project_id: String,
+    /// `automation:{project}:{pipeline}:{step}`.
+    pub slot_id: String,
+    /// `{pipeline} · {step}`.
+    pub label: String,
+    pub backend: CliBackend,
+    pub model: Option<String>,
+    pub model_profile: Option<String>,
+    pub thinking_level: ThinkingLevel,
+    pub system_prompt: String,
+    pub user_prompt: String,
+    /// A verdict step's schema.
+    pub schema: Option<Value>,
+    pub deadline: Instant,
+}
+
+#[derive(Debug, Clone)]
+pub struct AutomationStepCompletion {
+    pub terminal_run_id: String,
+    pub raw_output: String,
+    pub observed_model: String,
 }
 
 #[derive(Debug, Clone)]
@@ -5341,11 +5469,33 @@ impl TerminalService {
                 free_form_slots.push(snapshot);
             }
         }
+        let mut automation_slots = Vec::new();
+        for slot in self.repository.list_automation_slots(project_id)? {
+            let recent_runs = self.repository.list_slot_runs(
+                project_id,
+                &SessionSlot::Automation {
+                    id: slot.id.clone(),
+                },
+                10,
+            )?;
+            let recent_events = match recent_runs.first() {
+                Some(run) => self
+                    .repository
+                    .list_events_tail(&run.id, SNAPSHOT_TAIL_EVENTS)?,
+                None => Vec::new(),
+            };
+            automation_slots.push(FreeFormTerminalSnapshot {
+                slot,
+                recent_runs,
+                recent_events,
+            });
+        }
         Ok(TerminalsSnapshot {
             project_id: project_id.to_string(),
             agents,
             free_form_slots,
             archived_free_form_slots,
+            automation_slots,
             discovery,
         })
     }
@@ -5866,6 +6016,228 @@ impl TerminalService {
         Ok(run)
     }
 
+    /// Runs one step of a developer's pipeline (feature 25) on its own slot,
+    /// with the stages' read-only hardening: adapters, action ledger, pulse,
+    /// deadline and history work as for any CLI run. Official adapters only
+    /// (E1); the answer is the step's text or verdict.
+    pub async fn execute_automation_step(
+        self: &Arc<Self>,
+        request: AutomationStepRequest,
+        cancellation: &CancellationToken,
+    ) -> Result<AutomationStepCompletion, TerminalError> {
+        let host = self.host.as_ref();
+        if request.backend == CliBackend::Custom {
+            return Err(TerminalError::Validation(
+                "A pipeline step requires an official read-only CLI adapter or API transport"
+                    .into(),
+            ));
+        }
+        // Automatic runs bind a fixed model the host verifies afterwards.
+        require_verifiable_cli_selection(request.backend, request.model.as_deref())?;
+        if cli_mode_disabled() {
+            return Err(TerminalError::Validation(
+                "CLI Mode is disabled by the local kill switch".into(),
+            ));
+        }
+        validate_catalog_effort(
+            &self.repository.connection()?,
+            &request.project_id,
+            request.backend,
+            request.model.as_deref(),
+            request.model_profile.as_deref(),
+            request.thinking_level,
+        )?;
+        let availability = self
+            .discovery_for_launch(request.backend)
+            .await
+            .into_iter()
+            .find(|item| item.backend == request.backend)
+            .ok_or_else(|| TerminalError::NotFound(format!("{} CLI", request.backend.label())))?;
+        if availability.state != CliAvailabilityState::Available {
+            return Err(TerminalError::Process(
+                availability
+                    .diagnostic
+                    .unwrap_or_else(|| format!("{} is not ready", request.backend.label())),
+            ));
+        }
+        let executable = availability
+            .executable_path
+            .ok_or_else(|| TerminalError::NotFound(format!("{} CLI", request.backend.label())))?;
+        let mut schema_guard = None;
+        let schema_file = match (&request.schema, request.backend) {
+            (Some(schema), CliBackend::Codex) => {
+                let mut file = tempfile::NamedTempFile::new()?;
+                serde_json::to_writer(file.as_file_mut(), schema)?;
+                let path = file.path().to_path_buf();
+                schema_guard = Some(file);
+                Some(path)
+            }
+            _ => None,
+        };
+        let prepared =
+            verified_cli_input(host, &request.system_prompt, &request.user_prompt, None)?;
+        let mut prompt = format!(
+            "<system>\n{}\n</system>\n<user>\n{}\n</user>",
+            prepared.system_prompt(),
+            prepared.user_prompt()
+        );
+        let native_schema = matches!(request.backend, CliBackend::Codex | CliBackend::Claude);
+        if let Some(schema) = request.schema.as_ref().filter(|_| !native_schema) {
+            prompt.push_str(
+                "\n\nReturn only one JSON object that satisfies this schema. Do not wrap it in Markdown:\n",
+            );
+            prompt.push_str(
+                &host
+                    .redact_context(&serde_json::to_string(schema)?)
+                    .map_err(TerminalError::Redaction)?
+                    .text,
+            );
+        }
+        let workspace = self.repository.project_workspace(&request.project_id)?;
+        let mut spec = adapters::build_process_spec(CliInvocationRequest {
+            executable,
+            backend: request.backend,
+            model: request.model.clone(),
+            model_profile: request.model_profile.clone(),
+            thinking_level: request.thinking_level,
+            prompt,
+            schema_file,
+            schema: request.schema.clone().filter(|_| native_schema),
+            custom_args: Vec::new(),
+            resume_session_id: None,
+        })?;
+        // A step reads the workspace and writes nothing (E2): the stages'
+        // hardening, so no inherited MCP server or rule hands it write tools.
+        let hardening_guard = harden_spec(request.backend, Hardening::Pipeline, &mut spec)?;
+        self.repository.ensure_automation_slot(
+            &request.project_id,
+            &request.slot_id,
+            &request.label,
+            AgentExecutionMode::CliProcess,
+            request.backend,
+            request.model.as_deref(),
+            request.model_profile.as_deref(),
+            request.thinking_level,
+        )?;
+        let run = self
+            .repository
+            .create_session_run(CreateSessionRunRequest {
+                project_id: request.project_id.clone(),
+                slot: SessionSlot::Automation {
+                    id: request.slot_id.clone(),
+                },
+                origin: ExecutionOrigin::Automation,
+                execution_mode: AgentExecutionMode::CliProcess,
+                backend: Some(request.backend),
+                model: request.model.clone(),
+                pulsation_id: None,
+                job_id: None,
+                agent_run_id: None,
+                llm_execution_id: None,
+                parent_run_id: None,
+                continuation_reason: None,
+                observation_trial_id: None,
+            })?;
+        let run = self
+            .repository
+            .set_run_deadline(&run.id, &deadline_timestamp(request.deadline))?;
+        let run = self
+            .repository
+            .set_adapter_metadata(&run.id, availability.version.as_deref())?;
+        self.record_prepared_cli_input(&run.project_id, None, &run.id, &prepared)?;
+        let local_cancellation = CancellationToken::new();
+        self.active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(run.id.clone(), local_cancellation.clone());
+        let combined = CancellationToken::new();
+        let combined_child = combined.clone();
+        let parent = cancellation.clone();
+        let local = local_cancellation.clone();
+        let cancellation_bridge = tokio::spawn(async move {
+            tokio::select! {_=parent.cancelled()=>{},_=local.cancelled()=>{}}
+            combined_child.cancel();
+        });
+        let outcome = self
+            .run_process_inner(
+                &run,
+                spec,
+                workspace,
+                &combined,
+                Some(request.deadline),
+                None,
+                Some(cli_output_ceiling(AUTOMATION_OUTPUT_TOKENS)),
+            )
+            .await;
+        cancellation_bridge.abort();
+        self.active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&run.id);
+        self.active_changed.notify_waiters();
+        drop(schema_guard);
+        drop(hardening_guard);
+        if let Err(error) = &outcome {
+            self.record_process_failure(&run, error);
+        }
+        let outcome = outcome?;
+        match outcome.termination {
+            ProcessTermination::Cancelled => return Err(TerminalError::Cancelled),
+            ProcessTermination::TimedOut(TimeoutReason::Inactivity) => {
+                return Err(TerminalError::InactivityTimeout);
+            }
+            ProcessTermination::TimedOut(TimeoutReason::MaxCeiling) => {
+                return Err(TerminalError::Timeout);
+            }
+            ProcessTermination::Exited => {}
+        }
+        if !outcome.success {
+            let label = request.backend.label();
+            return Err(
+                match self.repository.get_run(&run.id)?.error_code.as_deref() {
+                    Some("cli_auth_required") => TerminalError::AuthRequired(label.into()),
+                    Some("cli_version_unsupported") => {
+                        TerminalError::VersionUnsupported(label.into())
+                    }
+                    Some("cli_rate_limited") => TerminalError::RateLimited(label.into()),
+                    _ => TerminalError::Process(format!(
+                        "{label} exited with code {:?}",
+                        outcome.exit_code
+                    )),
+                },
+            );
+        }
+        if let Some(reason) = outcome
+            .finish_reason
+            .as_deref()
+            .filter(|reason| adapters::is_output_truncation(reason))
+        {
+            return Err(TerminalError::OutputTruncated {
+                backend: request.backend.label().into(),
+                reason: reason.to_string(),
+                produced_chars: outcome.raw_output.chars().count(),
+            });
+        }
+        if outcome.raw_output.trim().is_empty() {
+            return Err(TerminalError::Process(format!(
+                "{} produced no final content",
+                request.backend.label()
+            )));
+        }
+        let observed_model = self
+            .repository
+            .get_run(&run.id)?
+            .observed_model
+            .ok_or_else(|| TerminalError::ModelUnverified {
+                detail: "completed CLI run has no persisted generation model".into(),
+            })?;
+        Ok(AutomationStepCompletion {
+            terminal_run_id: run.id,
+            raw_output: outcome.raw_output,
+            observed_model,
+        })
+    }
+
     pub async fn execute_llm_request(
         self: &Arc<Self>,
         request: &LlmRequest,
@@ -6203,7 +6575,8 @@ impl TerminalService {
                     agent_role: *agent_role,
                 }
             }
-            ikore_contracts::AgentExecutionTarget::FreeForm { .. } => return Ok(None),
+            ikore_contracts::AgentExecutionTarget::FreeForm { .. }
+            | ikore_contracts::AgentExecutionTarget::Automation { .. } => return Ok(None),
         };
         let observation_trial = self.repository.reserve_cli_observation_for_pulsation(
             &request.project_id,
@@ -6598,6 +6971,7 @@ impl TerminalService {
             deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
         let mut timeout_policy = policy_override.unwrap_or_else(|| match run.slot {
             SessionSlot::FreeForm { .. } => AgentTimeoutPolicy::manual(),
+            SessionSlot::Automation { .. } => AgentTimeoutPolicy::automation(),
             SessionSlot::Canonical { agent_role } | SessionSlot::Ephemeral { agent_role, .. } => {
                 AgentTimeoutPolicy::for_role(agent_role)
             }

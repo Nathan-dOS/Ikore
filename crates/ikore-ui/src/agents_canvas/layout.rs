@@ -3,8 +3,9 @@
 //! same positions, in canvas pixels at zoom 1.
 
 use super::constants::{
-    BOX_PADDING, BOX_TITLE_HEIGHT, DEFAULT_BOX, FOOTER_GAP, FOOTER_HEIGHT, FOOTER_WIDTH,
-    LOOSE_COLUMNS, LOOSE_GAP, LOOSE_TOP_GAP, NODE_HEIGHT, NODE_WIDTH, STAGE_GAP,
+    BOX_GAP, BOX_PADDING, BOX_TITLE_HEIGHT, DEFAULT_BOX, FOOTER_GAP, FOOTER_HEIGHT, FOOTER_WIDTH,
+    LOOSE_COLUMNS, LOOSE_GAP, LOOSE_TOP_GAP, NODE_HEIGHT, NODE_WIDTH, PIPELINE_BOX_MIN_WIDTH,
+    STAGE_GAP,
 };
 use super::physics::Vec2;
 
@@ -69,6 +70,9 @@ pub(crate) enum NodeKind {
     Loose,
     /// `New freeform agent`.
     Ghost,
+    /// A step of one of the developer's pipelines, linked to its neighbours
+    /// in its own box (feature 25, M2).
+    Step,
 }
 
 /// How a link is drawn. Only `Line` is drawn for now; the animated wave
@@ -92,6 +96,15 @@ pub(crate) struct LayoutInput {
     pub(crate) ghost: bool,
     /// Archived free-form agents: the footer shows them as a count.
     pub(crate) archived: usize,
+    /// The developer's pipelines, one box each below the default one.
+    pub(crate) pipelines: Vec<PipelineBoxInput>,
+}
+
+/// A pipeline's box: its id and its steps, by agent key, in order.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct PipelineBoxInput {
+    pub(crate) id: String,
+    pub(crate) steps: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -116,7 +129,10 @@ pub(crate) struct EdgeLayout {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct BoxLayout {
-    pub(crate) id: &'static str,
+    /// `default`, or the pipeline's id.
+    pub(crate) id: String,
+    /// One of the developer's pipelines.
+    pub(crate) pipeline: bool,
     pub(crate) rect: Rect,
     /// The title bar's band.
     pub(crate) title: Rect,
@@ -218,14 +234,61 @@ pub(crate) fn layout(input: &LayoutInput) -> CanvasLayout {
             to,
             style: EdgeStyle::Line,
         })
-        .collect();
+        .collect::<Vec<_>>();
+    let mut edges = edges;
+    let mut boxes = vec![BoxLayout {
+        id: DEFAULT_BOX.to_owned(),
+        pipeline: false,
+        rect,
+        title: Rect::new(0.0, 0.0, width, BOX_TITLE_HEIGHT),
+        footer,
+    }];
+    // The developer's pipelines, each in a box of its own below the default
+    // one, its steps linked left to right (D5, D6).
+    let mut top = rect.bottom() + BOX_GAP;
+    // Each box is one row for the arrows, after the default box's rows.
+    let first_row = nodes.iter().map(|node| node.row + 1).max().unwrap_or(0);
+    for (offset, pipeline) in input.pipelines.iter().enumerate() {
+        let box_index = offset + 1;
+        let row = first_row + offset;
+        let step_y = top + BOX_TITLE_HEIGHT + BOX_PADDING;
+        let first = nodes.len();
+        for (column, key) in pipeline.steps.iter().enumerate() {
+            nodes.push(NodeLayout {
+                key: key.clone(),
+                kind: NodeKind::Step,
+                home: Rect::new(
+                    BOX_PADDING + column as f32 * (NODE_WIDTH + STAGE_GAP),
+                    step_y,
+                    NODE_WIDTH,
+                    NODE_HEIGHT,
+                ),
+                box_index,
+                row,
+                column,
+            });
+        }
+        edges.extend((first + 1..nodes.len()).map(|to| EdgeLayout {
+            from: to - 1,
+            to,
+            style: EdgeStyle::Line,
+        }));
+        let widest = nodes[first..]
+            .iter()
+            .map(|node| node.home.right() + BOX_PADDING)
+            .fold(PIPELINE_BOX_MIN_WIDTH, f32::max);
+        let height = BOX_TITLE_HEIGHT + 2.0 * BOX_PADDING + NODE_HEIGHT;
+        boxes.push(BoxLayout {
+            id: pipeline.id.clone(),
+            pipeline: true,
+            rect: Rect::new(0.0, top, widest, height),
+            title: Rect::new(0.0, top, widest, BOX_TITLE_HEIGHT),
+            footer: None,
+        });
+        top += height + BOX_GAP;
+    }
     CanvasLayout {
-        boxes: vec![BoxLayout {
-            id: DEFAULT_BOX,
-            rect,
-            title: Rect::new(0.0, 0.0, width, BOX_TITLE_HEIGHT),
-            footer,
-        }],
+        boxes,
         nodes,
         edges,
     }

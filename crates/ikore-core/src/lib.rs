@@ -13,6 +13,7 @@ pub mod chat_service;
 pub mod companion_dock;
 pub mod companion_drawings;
 pub mod companion_notes;
+pub mod custom_pipelines;
 pub mod doc_reconciliation;
 pub mod document_cache;
 pub mod embedding_service;

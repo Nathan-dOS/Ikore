@@ -32,7 +32,7 @@ use constants::{
     NODE_RADIUS, NODE_WIDTH, ZOOM_MAX, ZOOM_MIN,
 };
 pub(crate) use constants::{FREE_FORM_LIMIT, SYNTHESIS_MIN_WIDTH};
-use layout::{CanvasLayout, Direction, LayoutInput, NodeKind, layout};
+use layout::{CanvasLayout, Direction, LayoutInput, NodeKind, PipelineBoxInput, layout};
 use physics::{BodySpec, Physics, Vec2};
 
 /// How a node looks (the feature's table of states).
@@ -74,6 +74,20 @@ pub(crate) struct CanvasAgents {
     /// `New freeform agent`: shown below the limit, usable when not busy.
     pub(crate) ghost: Option<bool>,
     pub(crate) archived: usize,
+    /// The developer's pipelines, a box each (feature 25, M2).
+    pub(crate) pipelines: Vec<CanvasPipeline>,
+    /// The pipeline whose synthesis is open.
+    pub(crate) selected_pipeline: Option<String>,
+}
+
+/// A pipeline's box: its title and its steps, in order.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct CanvasPipeline {
+    pub(crate) id: String,
+    /// `{name} · v{n} · {status}`.
+    pub(crate) title: String,
+    pub(crate) state: NodeState,
+    pub(crate) steps: Vec<CanvasNode>,
 }
 
 /// A press on the canvas, until the button goes up.
@@ -295,6 +309,18 @@ pub(crate) fn agents_canvas(
             .collect(),
         ghost: agents.ghost.is_some(),
         archived: agents.archived,
+        pipelines: agents
+            .pipelines
+            .iter()
+            .map(|pipeline| PipelineBoxInput {
+                id: pipeline.id.clone(),
+                steps: pipeline
+                    .steps
+                    .iter()
+                    .map(|node| node_key(&node.agent))
+                    .collect(),
+            })
+            .collect(),
     };
     let scene_rc = model.agents_canvas.scene.clone();
     let (layout, zoom, pan, moving, positions, cursor) = {
@@ -326,6 +352,7 @@ pub(crate) fn agents_canvas(
         .stages
         .iter()
         .chain(&agents.loose)
+        .chain(agents.pipelines.iter().flat_map(|pipeline| &pipeline.steps))
         .map(|node| (node_key(&node.agent), node.clone()))
         .collect::<std::collections::HashMap<_, _>>();
     let selected_key = selected.map(node_key);
@@ -373,11 +400,25 @@ pub(crate) fn agents_canvas(
     for frame in &layout.boxes {
         let left = frame.rect.x * zoom + pan.x;
         let top = frame.rect.y * zoom + pan.y;
-        let box_id = frame.id;
+        if frame.pipeline {
+            let Some(pipeline) = agents.pipelines.iter().find(|item| item.id == frame.id) else {
+                continue;
+            };
+            surface = surface.child(pipeline_box(
+                frame,
+                pipeline,
+                (left, top, zoom),
+                agents.selected_pipeline.as_deref() == Some(frame.id.as_str()),
+                cx,
+            ));
+            continue;
+        }
+        let box_id = frame.id.clone();
+        let selector = format!("agents-box:{box_id}");
         surface = surface.child(
             div()
-                .id(SharedString::from(format!("agents-box:{box_id}")))
-                .debug_selector(move || format!("agents-box:{box_id}"))
+                .id(SharedString::from(selector.clone()))
+                .debug_selector(move || selector.clone())
                 .absolute()
                 .left(px(left))
                 .top(px(top))
@@ -569,6 +610,72 @@ pub(crate) fn agents_canvas(
         ));
     }
     surface.into_any_element()
+}
+
+/// A pipeline's box: its title opens the pipeline's synthesis (feature 25,
+/// section 4); its steps are nodes like any agent.
+fn pipeline_box(
+    frame: &layout::BoxLayout,
+    pipeline: &CanvasPipeline,
+    (left, top, zoom): (f32, f32, f32),
+    selected: bool,
+    cx: &mut Context<AppModel>,
+) -> AnyElement {
+    let id = pipeline.id.clone();
+    let selector = format!("agents-box:{id}");
+    let title_selector = format!("agents-box-title:{id}");
+    div()
+        .id(SharedString::from(selector.clone()))
+        .debug_selector(move || selector.clone())
+        .absolute()
+        .left(px(left))
+        .top(px(top))
+        .w(px(frame.rect.width * zoom))
+        .h(px(frame.rect.height * zoom))
+        .rounded(px(12.0 * zoom))
+        .border_1()
+        .border_color(if selected {
+            theme::accent()
+        } else {
+            theme::border()
+        })
+        .bg(theme::surface())
+        .child(
+            div()
+                .id(SharedString::from(title_selector.clone()))
+                .debug_selector(move || title_selector.clone())
+                .h(px(BOX_TITLE_HEIGHT * zoom))
+                .px(px(12.0 * zoom))
+                .flex()
+                .items_center()
+                .gap(px(6.0 * zoom))
+                .border_b_1()
+                .border_color(theme::border())
+                .cursor_pointer()
+                .hover(|style| style.bg(theme::hover_bg()))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(cx.listener(move |model, _, window, cx| {
+                    window.focus(&model.agents_canvas.focus);
+                    model.select_canvas_pipeline(id.clone(), cx);
+                }))
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .size(px(8.0 * zoom))
+                        .rounded_full()
+                        .bg(state_color(pipeline.state)),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(px(12.0 * zoom))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme::text())
+                        .child(pipeline.title.clone()),
+                ),
+        )
+        .into_any_element()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -784,8 +891,11 @@ impl AppModel {
     /// dock pins on it, opening if it was hidden.
     pub(crate) fn select_canvas_agent(&mut self, agent: AgentIdentifier, cx: &mut Context<Self>) {
         let same = self.agents.read(cx).selected_agent.as_ref() == Some(&agent);
+        self.pipeline_editor = None;
         self.agents.update(cx, |agents, _| {
             agents.selected_agent = Some(agent.clone());
+            agents.selected_pipeline = None;
+            agents.show_archived_pipelines = false;
             agents.selected_api_target = None;
             agents.active_model_picker = None;
             agents.show_archived = false;
@@ -797,19 +907,65 @@ impl AppModel {
         if self.settings.read(cx).snapshot.is_none() {
             self.refresh_settings(cx);
         }
-        match &agent {
-            AgentIdentifier::Canonical(role) => self.configure_agent_api(*role, cx),
-            AgentIdentifier::FreeForm(slot_id) => self.configure_free_form_api(slot_id.clone(), cx),
+        // A gate never runs a process: the dock has nothing to show for it.
+        let console = match &agent {
+            AgentIdentifier::Canonical(role) => {
+                self.configure_agent_api(*role, cx);
+                true
+            }
+            AgentIdentifier::FreeForm(slot_id) => {
+                self.configure_free_form_api(slot_id.clone(), cx);
+                true
+            }
+            AgentIdentifier::PipelineStep {
+                pipeline_id,
+                step_id,
+            } => self
+                .agents
+                .read(cx)
+                .pipeline(pipeline_id)
+                .is_some_and(|pipeline| {
+                    pipeline.definition.steps.iter().any(|step| {
+                        step.id() == step_id
+                            && matches!(step, ikore_core::custom_pipelines::PipelineStep::Agent(_))
+                    })
+                }),
+        };
+        if console {
+            self.focus_agent_in_dock(agent, None, cx);
         }
-        self.focus_agent_in_dock(agent, None, cx);
+        cx.notify();
+    }
+
+    /// A pipeline box's title: the pipeline's synthesis opens.
+    pub(crate) fn select_canvas_pipeline(&mut self, id: String, cx: &mut Context<Self>) {
+        self.pipeline_editor = None;
+        self.agents.update(cx, |agents, _| {
+            if agents.selected_pipeline.as_ref() != Some(&id) {
+                agents.selected_pipeline_run = None;
+            }
+            agents.selected_pipeline = Some(id);
+            agents.selected_agent = None;
+            agents.selected_api_target = None;
+            agents.active_model_picker = None;
+            agents.show_archived = false;
+            agents.show_archived_pipelines = false;
+            agents.pending_pipeline_delete = None;
+            agents.detail_tab = crate::agents::AgentDetailTab::default();
+        });
         cx.notify();
     }
 
     /// A click on the background, or `Esc`: the synthesis closes and the
     /// canvas takes the whole width.
     pub(crate) fn close_agents_synthesis(&mut self, cx: &mut Context<Self>) {
+        self.pipeline_editor = None;
         self.agents.update(cx, |agents, _| {
             agents.selected_agent = None;
+            agents.selected_pipeline = None;
+            agents.selected_pipeline_run = None;
+            agents.show_archived_pipelines = false;
+            agents.pending_pipeline_delete = None;
             agents.selected_api_target = None;
             agents.active_model_picker = None;
             agents.show_archived = false;
@@ -825,7 +981,11 @@ impl AppModel {
             let agents = self.agents.read(cx);
             (
                 agents.detail_tab != crate::agents::AgentDetailTab::default(),
-                agents.selected_agent.is_some() || agents.show_archived,
+                agents.selected_agent.is_some()
+                    || agents.show_archived
+                    || agents.selected_pipeline.is_some()
+                    || agents.show_archived_pipelines
+                    || self.pipeline_editor.is_some(),
             )
         };
         if drawer && open {
@@ -857,8 +1017,11 @@ impl AppModel {
 
     /// `Archived · N`: the archived free-form agents, with restore and delete.
     pub(crate) fn open_archived_agents(&mut self, cx: &mut Context<Self>) {
+        self.pipeline_editor = None;
         self.agents.update(cx, |agents, _| {
             agents.selected_agent = None;
+            agents.selected_pipeline = None;
+            agents.show_archived_pipelines = false;
             agents.show_archived = true;
         });
         cx.notify();

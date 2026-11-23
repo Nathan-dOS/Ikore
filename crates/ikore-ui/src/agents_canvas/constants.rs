@@ -18,6 +18,9 @@ pub(crate) const LOOSE_COLUMNS: usize = 6;
 /// A box's inner margin and title bar.
 pub(crate) const BOX_PADDING: f32 = 20.0;
 pub(crate) const BOX_TITLE_HEIGHT: f32 = 30.0;
+/// The gap between two boxes, and the narrowest a pipeline's box gets.
+pub(crate) const BOX_GAP: f32 = 28.0;
+pub(crate) const PIPELINE_BOX_MIN_WIDTH: f32 = 360.0;
 /// The `Archived · N` footer.
 pub(crate) const FOOTER_GAP: f32 = 12.0;
 pub(crate) const FOOTER_HEIGHT: f32 = 20.0;

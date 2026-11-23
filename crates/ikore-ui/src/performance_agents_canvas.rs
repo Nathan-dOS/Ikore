@@ -41,6 +41,7 @@ fn snapshot() -> TerminalsSnapshot {
             .map(free_form)
             .collect::<Vec<FreeFormTerminalSnapshot>>(),
         archived_free_form_slots: vec![],
+        automation_slots: Vec::new(),
         discovery: vec![],
     }
 }
@@ -65,6 +66,7 @@ pub(crate) fn apply(
                     api_executions: Default::default(),
                     quota_deltas: Default::default(),
                     live_activity: Vec::new(),
+                    pipelines: Default::default(),
                 },
             );
         });

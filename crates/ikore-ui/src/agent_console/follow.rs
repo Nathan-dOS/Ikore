@@ -22,6 +22,10 @@ pub(crate) const TICK: Duration = Duration::from_millis(250);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum Priority {
     Background,
+    /// A step of the developer's own pipelines (feature 25, E7): it never
+    /// takes the dock from the Ikore pipeline or from a run the developer
+    /// started, and shows when they are idle.
+    Automation,
     Interactive,
     Pipeline,
 }
@@ -35,6 +39,7 @@ impl Priority {
                 Self::Pipeline
             }
             ExecutionOrigin::Manual => Self::Interactive,
+            ExecutionOrigin::Automation => Self::Automation,
             ExecutionOrigin::Learning
             | ExecutionOrigin::Notes
             | ExecutionOrigin::Reconciliation => Self::Background,
@@ -600,6 +605,103 @@ mod tests {
         });
         tick(&mut state, &clock, 10_000, 10_500);
         assert_eq!(state.current.as_ref(), Some(&backend));
+    }
+
+    /// Feature 25, E7: a step of the developer's own pipelines sits between
+    /// interactive runs and background work.
+    #[test]
+    fn automation_vectors() {
+        let backend = agent(AgentRole::BackendAgent);
+        let manual = agent(AgentRole::TaskSpecifier);
+        let learning = free("learning");
+        let step = AgentIdentifier::PipelineStep {
+            pipeline_id: "p1".into(),
+            step_id: "review".into(),
+        };
+        assert!(Priority::Background < Priority::Automation);
+        assert!(Priority::Automation < Priority::Interactive);
+        assert_eq!(
+            Priority::of(ikore_core::terminals::ExecutionOrigin::Automation),
+            Priority::Automation
+        );
+
+        // A step never takes the dock from a running stage.
+        let clock = Clock(Instant::now());
+        let mut state = FollowState::default();
+        start(&mut state, &backend, "b1", Priority::Pipeline, clock.at(0));
+        tick(&mut state, &clock, 0, 500);
+        start(
+            &mut state,
+            &step,
+            "s1",
+            Priority::Automation,
+            clock.at(1_000),
+        );
+        tick(&mut state, &clock, 1_000, 5_000);
+        assert_eq!(state.current.as_ref(), Some(&backend), "the stage stays");
+        assert!(state.is_marked(&step));
+        // Once the stage ended, the step shows after 0.3 s.
+        end(&mut state, &backend, "b1", clock.at(6_000));
+        tick(&mut state, &clock, 6_000, 6_250);
+        assert_eq!(state.current.as_ref(), Some(&backend));
+        tick(&mut state, &clock, 6_300, 6_300);
+        assert_eq!(
+            state.current.as_ref(),
+            Some(&step),
+            "the idle default gives way"
+        );
+
+        // A step takes the dock from background work after 1.5 s.
+        let clock = Clock(Instant::now());
+        let mut state = FollowState::default();
+        start(
+            &mut state,
+            &learning,
+            "l1",
+            Priority::Background,
+            clock.at(0),
+        );
+        tick(&mut state, &clock, 0, 500);
+        start(
+            &mut state,
+            &step,
+            "s1",
+            Priority::Automation,
+            clock.at(1_000),
+        );
+        tick(&mut state, &clock, 1_000, 2_250);
+        assert_eq!(state.current.as_ref(), Some(&learning));
+        tick(&mut state, &clock, 2_500, 2_500);
+        assert_eq!(state.current.as_ref(), Some(&step), "over background work");
+
+        // A run the developer started takes the dock from a step, and a step
+        // never takes it from such a run.
+        start(
+            &mut state,
+            &manual,
+            "m1",
+            Priority::Interactive,
+            clock.at(3_000),
+        );
+        tick(&mut state, &clock, 3_000, 4_500);
+        assert_eq!(
+            state.current.as_ref(),
+            Some(&manual),
+            "an interactive run wins"
+        );
+        start(
+            &mut state,
+            &step,
+            "s2",
+            Priority::Automation,
+            clock.at(5_000),
+        );
+        tick(&mut state, &clock, 5_000, 9_000);
+        assert_eq!(
+            state.current.as_ref(),
+            Some(&manual),
+            "the developer's run stays"
+        );
     }
 
     #[test]

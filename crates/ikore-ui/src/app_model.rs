@@ -420,6 +420,10 @@ pub struct AppModel {
     pub(crate) chat_question_layout:
         std::rc::Rc<std::cell::RefCell<crate::chat_questions::QuestionLayout>>,
     pub(crate) cli_model_search_input: Entity<NativeTextInput>,
+    /// The note under a pipeline gate's `Approve` and `Reject` (feature 25).
+    pub(crate) pipeline_gate_note_input: Entity<NativeTextInput>,
+    /// The pipeline editor, while it is open (feature 25, M2a).
+    pub(crate) pipeline_editor: Option<crate::agents_view::PipelineEditor>,
     /// The agent console whose search is open, and its current match (ADR-040, M2).
     pub(crate) agent_console_search: Option<(String, usize)>,
     pub(crate) agent_console_search_input: Entity<NativeTextInput>,
@@ -550,6 +554,10 @@ pub struct AppModel {
     agents_refresh_pending: Option<(bool, bool)>,
     agents_notice_timer: Option<Task<()>>,
     model_catalog_task: Option<Task<()>>,
+    /// The pipeline command in flight (feature 25).
+    pub(crate) pipelines_task: Option<Task<()>>,
+    /// The next read of the pipelines while a run is queued or running.
+    pub(crate) pipelines_poll: Option<Task<()>>,
     /// Reads every CLI catalog in turn; separate from the picker's single load.
     cli_catalogs_task: Option<Task<()>>,
     logs_task: Option<Task<()>>,
@@ -756,6 +764,8 @@ impl AppModel {
         });
         let cli_model_search_input =
             cx.new(|cx| NativeTextInput::new("Search model ID, name, provider or capability", cx));
+        let pipeline_gate_note_input =
+            cx.new(|cx| NativeTextInput::new("What the next step should know", cx));
         let agent_console_search_input =
             cx.new(|cx| NativeTextInput::new("Search the console", cx));
         let settings_modal = crate::settings_modal::SettingsModalState::new(cx);
@@ -993,6 +1003,8 @@ impl AppModel {
             chat_scroll: gpui::ScrollHandle::new(),
             chat_question_layout: Default::default(),
             cli_model_search_input,
+            pipeline_gate_note_input,
+            pipeline_editor: None,
             agent_console_search: None,
             agent_console_search_input,
             agent_prompt_inputs,
@@ -1094,6 +1106,8 @@ impl AppModel {
             agents_refresh_pending: None,
             agents_notice_timer: None,
             model_catalog_task: None,
+            pipelines_task: None,
+            pipelines_poll: None,
             cli_catalogs_task: None,
             logs_task: None,
             logs_resync_tasks: HashMap::new(),
@@ -5251,11 +5265,15 @@ impl AppModel {
         let Some(project_id) = self.workspace.read(cx).project_id.clone() else {
             return;
         };
+        // A pipeline step's executions belong to its step, not to this export.
+        let Some(target) = target.target() else {
+            return;
+        };
         let generation = self.agents.update(cx, |agents, _| agents.begin(false));
         cx.notify();
         self.agents_task = Some(cx.spawn(async move |this, cx| {
             let result = backend
-                .export_api_execution(project_id.to_string(), target.target(), execution_id)
+                .export_api_execution(project_id.to_string(), target, execution_id)
                 .await;
             let _ = this.update(cx, |model, cx| {
                 match result {
@@ -5642,6 +5660,25 @@ impl AppModel {
                             .update(cx, |agents, _| agents.apply_snapshot(generation, snapshot));
                         if applied {
                             model.finish_agents_resync();
+                            // The dock orders the steps as the canvas does
+                            // (feature 25, section 6).
+                            let steps = model
+                                .agents
+                                .read(cx)
+                                .pipelines
+                                .pipelines
+                                .iter()
+                                .flat_map(|pipeline| {
+                                    pipeline.definition.steps.iter().map(|step| {
+                                        crate::agents::AgentIdentifier::PipelineStep {
+                                            pipeline_id: pipeline.id.clone(),
+                                            step_id: step.id().to_owned(),
+                                        }
+                                    })
+                                })
+                                .collect::<Vec<_>>();
+                            model.agent_dock.set_step_order(steps);
+                            model.follow_pipeline_runs(cx);
                         }
                         if applied {
                             for (code, diagnostic, role) in arrived {
@@ -5816,7 +5853,7 @@ impl AppModel {
         }));
     }
 
-    fn load_cli_model_catalog(
+    pub(crate) fn load_cli_model_catalog(
         &mut self,
         backend_kind: CliBackend,
         refresh: bool,
@@ -5854,12 +5891,13 @@ impl AppModel {
                         agents.catalog_error = Some(error.presentable());
                     }
                 });
+                model.fill_pipeline_step_models(cx);
                 cx.notify();
             });
         }));
     }
 
-    fn open_cli_model_picker(
+    pub(crate) fn open_cli_model_picker(
         &mut self,
         target: CliModelPickerTarget,
         backend: CliBackend,
@@ -5961,6 +5999,9 @@ impl AppModel {
                 self.save_free_form_slot(slot, cx);
             }
             CliModelPickerTarget::Companion => self.set_chat_cli_model(model_id, source, cx),
+            CliModelPickerTarget::PipelineStep(index) => {
+                self.set_pipeline_step_model(index, model_id, cx)
+            }
         }
         self.close_cli_model_picker(cx);
     }
@@ -6972,6 +7013,17 @@ impl AppModel {
                         .selected_run_by_slot
                         .insert(slot.clone(), run_id.clone());
                 }
+                AgentIdentifier::PipelineStep {
+                    pipeline_id,
+                    step_id,
+                } => {
+                    if let Some(slot) = agents
+                        .automation_slot(pipeline_id, step_id)
+                        .map(|slot| slot.slot.id.clone())
+                    {
+                        agents.selected_run_by_slot.insert(slot, run_id.clone());
+                    }
+                }
             }
             agents.events_by_run.contains_key(&run_id)
         });
@@ -6991,6 +7043,16 @@ impl AppModel {
                         model.agents.update(cx, |agents, _| match agent {
                             AgentIdentifier::Canonical(role) => {
                                 agents.apply_run_events(generation, role, run_id, events);
+                            }
+                            AgentIdentifier::PipelineStep {
+                                pipeline_id,
+                                step_id,
+                            } => {
+                                let slot = agents
+                                    .automation_slot(&pipeline_id, &step_id)
+                                    .map(|slot| slot.slot.id.clone())
+                                    .unwrap_or_default();
+                                agents.apply_slot_run_events(generation, slot, run_id, events);
                             }
                             AgentIdentifier::FreeForm(slot) => {
                                 agents.apply_slot_run_events(generation, slot, run_id, events);
@@ -9442,11 +9504,13 @@ impl AppModel {
                 let terminal = envelope.run.status.is_terminal()
                     || envelope.run.status == TerminalRunStatus::AwaitingFallback;
                 if terminal {
-                    let agent = envelope
-                        .run
-                        .agent_role
-                        .map(|role| ikore_core::terminals::canonical_agent(role).name)
-                        .unwrap_or("Free-form agent");
+                    let agent = match (envelope.run.agent_role, &envelope.run.slot) {
+                        (Some(role), _) => ikore_core::terminals::canonical_agent(role).name,
+                        (None, ikore_core::terminals::SessionSlot::Automation { .. }) => {
+                            "Pipeline step"
+                        }
+                        (None, _) => "Free-form agent",
+                    };
                     let status = envelope.run.status;
                     self.record_activity(
                         ActivityKind::Agent,

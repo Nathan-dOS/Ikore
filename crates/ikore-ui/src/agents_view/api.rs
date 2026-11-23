@@ -233,7 +233,7 @@ pub(super) fn api_detail_panel(
                     .into_any_element(),
             }
         }
-        None => panel
+        Some(AgentIdentifier::PipelineStep { .. }) | None => panel
             .child(empty_state("Select an agent."))
             .into_any_element(),
     }

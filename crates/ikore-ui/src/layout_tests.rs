@@ -78,6 +78,7 @@ pub(crate) fn fixture(cx: &mut Context<AppModel>) -> AppModel {
                         recent_events: vec![],
                     }],
                     archived_free_form_slots: vec![],
+                    automation_slots: Vec::new(),
                     discovery: vec![],
                 },
                 fallbacks: vec![],
@@ -85,6 +86,7 @@ pub(crate) fn fixture(cx: &mut Context<AppModel>) -> AppModel {
                 api_executions: Default::default(),
                 quota_deltas: Default::default(),
                 live_activity: Vec::new(),
+                pipelines: Default::default(),
             },
         );
     });
@@ -6419,6 +6421,7 @@ fn controls_size_to_content_instead_of_the_panel(cx: &mut TestAppContext) {
                     api_executions: Default::default(),
                     quota_deltas: Default::default(),
                     live_activity: Vec::new(),
+                    pipelines: Default::default(),
                 },
             );
         });
