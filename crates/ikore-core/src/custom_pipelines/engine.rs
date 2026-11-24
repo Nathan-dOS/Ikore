@@ -158,6 +158,13 @@ impl PersistenceService {
             if shutdown.is_cancelled() {
                 break;
             }
+            // M3: events of the Ikore pipeline become runs before admission.
+            let service = self.clone();
+            match tokio::task::spawn_blocking(move || service.dispatch_pipeline_triggers()).await {
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) => eprintln!("pipeline triggers: {error}"),
+                Err(error) => eprintln!("pipeline triggers: {error}"),
+            }
             loop {
                 let service = self.clone();
                 match tokio::task::spawn_blocking(move || service.claim_next_automation_step())
@@ -491,14 +498,19 @@ impl PersistenceService {
             }
         }
         notes.reverse();
+        let (trigger_kind, payload): (String, String) = db.query_row(
+            "SELECT trigger_kind,trigger_payload_json FROM custom_pipeline_runs WHERE id=?1",
+            [&claim.run_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let trigger = if trigger_kind == "default_event" {
+            prompt::event_trigger(&payload)
+        } else {
+            prompt::manual_trigger()
+        };
         Ok(StepContext {
             system: prompt::system_prompt(&claim.pipeline_name, &claim.step),
-            user: prompt::user_prompt(
-                &claim.step,
-                &prompt::manual_trigger(),
-                previous.as_ref(),
-                &notes,
-            ),
+            user: prompt::user_prompt(&claim.step, &trigger, previous.as_ref(), &notes),
             workspace: PathBuf::from(workspace),
         })
     }

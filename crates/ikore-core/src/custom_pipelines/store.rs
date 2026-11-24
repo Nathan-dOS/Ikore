@@ -17,7 +17,9 @@ use crate::custom_pipelines::{
     StepTransport, child_changes, parse_child, parse_definition, resolve_child,
     validate_definition, validate_name,
 };
-use crate::custom_pipelines::{GlobalPipelineSummary, MAX_GLOBAL_PIPELINES};
+use crate::custom_pipelines::{
+    GlobalPipelineSummary, MAX_GLOBAL_PIPELINES, SetPipelineTriggerRequest, validate_trigger,
+};
 
 fn invalid(message: impl Into<String>) -> PersistenceServiceError {
     PersistenceServiceError::Validation(message.into())
@@ -63,7 +65,8 @@ const VIEW_SQL: &str = "SELECT p.id,p.scope,p.project_id,p.name,p.description,p.
         (SELECT name FROM custom_pipelines m WHERE m.id=p.parent_pipeline_id),
         (SELECT count(*) FROM custom_pipelines c WHERE c.parent_pipeline_id=p.id),
         (SELECT count(*) FROM custom_pipeline_activations o WHERE o.pipeline_id=p.id),
-        (SELECT current_version FROM custom_pipelines m WHERE m.id=p.parent_pipeline_id)
+        (SELECT current_version FROM custom_pipelines m WHERE m.id=p.parent_pipeline_id),
+        a.trigger_override_json
    FROM custom_pipeline_activations a
    JOIN custom_pipelines p ON p.id=a.pipeline_id
    JOIN custom_pipeline_versions v ON v.pipeline_id=p.id AND v.version=a.adopted_version
@@ -96,6 +99,9 @@ fn map_view(row: &rusqlite::Row<'_>) -> rusqlite::Result<(CustomPipelineView, St
             parent_name: row.get(16)?,
             children: row.get(17)?,
             projects: row.get(18)?,
+            trigger_override: row
+                .get::<_, Option<String>>(20)?
+                .and_then(|json| serde_json::from_str(&json).ok()),
         },
         row.get(11)?,
     ))
@@ -207,8 +213,28 @@ pub(super) fn load_step_runs(
 }
 
 const RUN_SQL: &str = "SELECT id,pipeline_id,version,trigger_kind,status,current_step,error,
-        created_at,updated_at,finished_at,resolved_definition_json
+        created_at,updated_at,finished_at,resolved_definition_json,source_pulsation_id,
+        (SELECT u.feature_name FROM pulsations u WHERE u.id=source_pulsation_id) AS source_title,
+        (SELECT u.status FROM pulsations u WHERE u.id=source_pulsation_id) AS source_status,
+        trigger_payload_json
    FROM custom_pipeline_runs";
+
+/// `Stage passed · Code` or `Pulsation done`, from a run's payload (M3).
+fn payload_trigger_label(payload: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(payload).ok()?;
+    let trigger = PipelineTrigger::DefaultEvent {
+        event: match value.get("event")?.as_str()? {
+            "stage_passed" => crate::custom_pipelines::DefaultEvent::StagePassed,
+            "pulsation_done" => crate::custom_pipelines::DefaultEvent::PulsationDone,
+            _ => return None,
+        },
+        stage: value
+            .get("stage")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+    };
+    Some(crate::custom_pipelines::trigger_label(&trigger))
+}
 
 fn map_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<(PipelineRunView, String)> {
     let status: String = row.get(4)?;
@@ -230,6 +256,13 @@ fn map_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<(PipelineRunView, String
                 steps: Vec::new(),
             },
             steps: Vec::new(),
+            source_pulsation_id: row.get(11)?,
+            source_pulsation_title: row.get(12)?,
+            trigger_label: (row.get::<_, String>(3)? == "default_event")
+                .then(|| row.get::<_, String>(14))
+                .transpose()?
+                .and_then(|payload| payload_trigger_label(&payload)),
+            source_pulsation_failed: row.get::<_, Option<String>>(13)?.as_deref() == Some("failed"),
         },
         row.get(10)?,
     ))
@@ -411,19 +444,13 @@ pub(super) fn name_taken_error() -> PipelineValidationError {
     )
 }
 
-/// Everything a definition must satisfy to be saved or run in M2a.
+/// Everything a definition must satisfy to be saved or run. Its trigger is
+/// `Manual` or an event of the Ikore pipeline (M3); host tools wait for M5.
 pub(super) fn definition_errors(
     tx: &Transaction<'_>,
     definition: &CustomPipelineDefinitionV1,
 ) -> Result<Vec<PipelineValidationError>, PersistenceServiceError> {
     let mut errors = validate_definition(definition, false);
-    if !matches!(definition.trigger, PipelineTrigger::Manual) {
-        errors.push(PipelineValidationError::new(
-            "trigger_unavailable",
-            None,
-            "Available after the Ikore pipeline's triggers ship.",
-        ));
-    }
     for step in &definition.steps {
         let PipelineStep::Agent(agent) = step else {
             continue;
@@ -550,6 +577,111 @@ pub(super) fn open_next_step(
         params![run_id, next, run_status.map(PipelineRunStatus::as_str), now],
     )?;
     Ok(())
+}
+
+/// What starts a run: `Run` on the box, or an event of the Ikore pipeline
+/// (feature 25, M3).
+pub(super) enum RunTrigger {
+    Manual {
+        payload: String,
+    },
+    DefaultEvent {
+        payload: String,
+        pulsation_id: String,
+        outbox_id: String,
+    },
+}
+
+/// A new run of the version the project's box adopted, with the definition
+/// it resolves to now (T4). `Ok(Err(message))` when the box cannot run.
+pub(super) fn insert_run(
+    tx: &Transaction<'_>,
+    project_id: &str,
+    pipeline_id: &str,
+    trigger: &RunTrigger,
+    now: &str,
+) -> Result<Result<String, String>, PersistenceServiceError> {
+    let (archived, version, state, parent, parent_version): (
+        bool,
+        u32,
+        String,
+        Option<String>,
+        Option<u32>,
+    ) = tx
+        .query_row(
+            "SELECT p.archived,a.adopted_version,a.state,p.parent_pipeline_id,
+                    a.adopted_parent_version
+               FROM custom_pipeline_activations a
+               JOIN custom_pipelines p ON p.id=a.pipeline_id
+              WHERE a.project_id=?1 AND a.pipeline_id=?2",
+            params![project_id, pipeline_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()?
+        .ok_or_else(|| PersistenceServiceError::NotFound("pipeline".into()))?;
+    if archived {
+        return Ok(Err("Restore the pipeline before running it.".into()));
+    }
+    if state != "ready" {
+        return Ok(Err("Edit the pipeline before running it.".into()));
+    }
+    let (definition, conflicts) = resolved_for(
+        tx,
+        pipeline_id,
+        version,
+        parent.as_deref().zip(parent_version),
+    )?;
+    if !conflicts.is_empty() {
+        return Ok(Err("Edit the pipeline before running it.".into()));
+    }
+    if let Some(error) = definition_errors(tx, &definition)?.first() {
+        return Ok(Err(error.message.clone()));
+    }
+    let json = definition_json(&definition)?;
+    let sha = crate::exchange::render::sha256_hex(&json);
+    let id = Uuid::new_v4().to_string();
+    let (kind, payload, pulsation, outbox) = match trigger {
+        RunTrigger::Manual { payload } => ("manual", payload.as_str(), None, None),
+        RunTrigger::DefaultEvent {
+            payload,
+            pulsation_id,
+            outbox_id,
+        } => (
+            "default_event",
+            payload.as_str(),
+            Some(pulsation_id.as_str()),
+            Some(outbox_id.as_str()),
+        ),
+    };
+    tx.execute(
+        "INSERT INTO custom_pipeline_runs(id,pipeline_id,version,project_id,trigger_kind,
+           trigger_payload_json,source_pulsation_id,resolved_definition_json,resolved_sha256,
+           status,current_step,created_at,updated_at,trigger_outbox_id)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'queued',0,?10,?10,?11)",
+        params![
+            id,
+            pipeline_id,
+            version,
+            project_id,
+            kind,
+            payload,
+            pulsation,
+            json,
+            sha,
+            now,
+            outbox
+        ],
+    )?;
+    open_next_step(tx, &id, &definition, None, now)?;
+    Ok(Ok(id))
 }
 
 impl PersistenceService {
@@ -916,74 +1048,16 @@ impl PersistenceService {
         let mut db = self.connection()?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         ensure_project(&tx, project_id)?;
-        let (archived, version, state, parent, parent_version): (
-            bool,
-            u32,
-            String,
-            Option<String>,
-            Option<u32>,
-        ) = tx
-            .query_row(
-                "SELECT p.archived,a.adopted_version,a.state,p.parent_pipeline_id,
-                        a.adopted_parent_version
-                   FROM custom_pipeline_activations a
-                   JOIN custom_pipelines p ON p.id=a.pipeline_id
-                  WHERE a.project_id=?1 AND a.pipeline_id=?2",
-                params![project_id, pipeline_id],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                    ))
-                },
-            )
-            .optional()?
-            .ok_or_else(|| PersistenceServiceError::NotFound("pipeline".into()))?;
-        if archived {
-            return Err(invalid("Restore the pipeline before running it."));
-        }
-        if state != "ready" {
-            return Err(invalid("Edit the pipeline before running it."));
-        }
-        // The run follows what the project's box resolves to now (T4).
-        let (definition, conflicts) = resolved_for(
-            &tx,
-            pipeline_id,
-            version,
-            parent.as_deref().zip(parent_version),
-        )?;
-        if !conflicts.is_empty() {
-            return Err(invalid("Edit the pipeline before running it."));
-        }
-        let errors = definition_errors(&tx, &definition)?;
-        if let Some(error) = errors.first() {
-            return Err(invalid(error.message.clone()));
-        }
-        let json = definition_json(&definition)?;
-        let sha = crate::exchange::render::sha256_hex(&json);
-        let id = Uuid::new_v4().to_string();
         let now = now();
         let payload = serde_json::json!({"kind": "manual", "requestedAt": now}).to_string();
-        tx.execute(
-            "INSERT INTO custom_pipeline_runs(id,pipeline_id,version,project_id,trigger_kind,
-               trigger_payload_json,source_pulsation_id,resolved_definition_json,resolved_sha256,
-               status,current_step,created_at,updated_at)
-             VALUES(?1,?2,?3,?4,'manual',?5,NULL,?6,?7,'queued',0,?8,?8)",
-            params![
-                id,
-                pipeline_id,
-                version,
-                project_id,
-                payload,
-                json,
-                sha,
-                now
-            ],
-        )?;
-        open_next_step(&tx, &id, &definition, None, &now)?;
+        let id = insert_run(
+            &tx,
+            project_id,
+            pipeline_id,
+            &RunTrigger::Manual { payload },
+            &now,
+        )?
+        .map_err(invalid)?;
         tx.commit()?;
         self.runtime_control.wakeup.notify_waiters();
         Ok(id)
@@ -1139,6 +1213,58 @@ impl PersistenceService {
         tx.commit()?;
         self.runtime_control.wakeup.notify_waiters();
         Ok(())
+    }
+
+    /// This project's own trigger for a global pipeline (R4b, M3), or back to
+    /// the pipeline's own. It is not a new version, and a run in progress
+    /// keeps what started it.
+    pub fn set_custom_pipeline_trigger(
+        &self,
+        request: SetPipelineTriggerRequest,
+    ) -> Result<SaveCustomPipelineOutcome, PersistenceServiceError> {
+        let project_id = required(&request.project_id, "Project")?;
+        let pipeline_id = required(&request.pipeline_id, "Pipeline")?;
+        let mut db = self.connection()?;
+        let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let shown = own_pipeline(&tx, project_id, pipeline_id)?;
+        let refuse = |code: &str, message: &str| {
+            Ok(SaveCustomPipelineOutcome::Invalid {
+                errors: vec![PipelineValidationError::new(code, None, message)],
+            })
+        };
+        if let Some(trigger) = &request.trigger {
+            if shown.scope != "global" {
+                return refuse(
+                    "trigger_not_global",
+                    "Only a global pipeline has a trigger of this project. Edit the pipeline instead.",
+                );
+            }
+            let errors = validate_trigger(trigger);
+            if !errors.is_empty() {
+                return Ok(SaveCustomPipelineOutcome::Invalid { errors });
+            }
+        }
+        if shown.archived {
+            return refuse(
+                "pipeline_archived",
+                "Restore the pipeline before changing its trigger.",
+            );
+        }
+        let json = request
+            .trigger
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|error| invalid(error.to_string()))?;
+        tx.execute(
+            "UPDATE custom_pipeline_activations SET trigger_override_json=?3,updated_at=?4
+              WHERE project_id=?1 AND pipeline_id=?2",
+            params![project_id, pipeline_id, json, now()],
+        )?;
+        tx.commit()?;
+        Ok(SaveCustomPipelineOutcome::Saved {
+            pipeline: Box::new(load_view(&self.connection()?, project_id, pipeline_id)?),
+        })
     }
 
     /// Settings › Composition: how many steps and verifiers the automation

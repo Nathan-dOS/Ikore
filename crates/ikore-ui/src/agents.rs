@@ -115,6 +115,16 @@ pub(crate) trait AgentsBackend: Send + Sync {
     ) -> AgentsFuture<Vec<PipelineValidationError>> {
         unsupported()
     }
+    /// This project's own trigger for a global pipeline, or back to the
+    /// pipeline's (`None`) (feature 25, M3, R4b).
+    fn set_pipeline_trigger(
+        &self,
+        _project_id: String,
+        _pipeline_id: String,
+        _trigger: Option<ikore_core::custom_pipelines::PipelineTrigger>,
+    ) -> AgentsFuture<Vec<PipelineValidationError>> {
+        unsupported()
+    }
     fn snapshot(&self, project_id: String) -> AgentsFuture<AgentsDashboardSnapshot>;
     fn refresh_snapshot(&self, project_id: String) -> AgentsFuture<AgentsDashboardSnapshot>;
     fn model_catalog(
@@ -395,6 +405,27 @@ impl AgentsBackend for CoreAgentsBackend {
                 }
                 PipelineScopeAction::Detach => store.detach_custom_pipeline(project, pipeline)?,
             };
+            Ok(match outcome {
+                SaveCustomPipelineOutcome::Saved { .. } => Vec::new(),
+                SaveCustomPipelineOutcome::Invalid { errors } => errors,
+            })
+        })
+    }
+
+    fn set_pipeline_trigger(
+        &self,
+        project_id: String,
+        pipeline_id: String,
+        trigger: Option<ikore_core::custom_pipelines::PipelineTrigger>,
+    ) -> AgentsFuture<Vec<PipelineValidationError>> {
+        blocking(&self.core, move |core| {
+            let outcome = core.persistence().set_custom_pipeline_trigger(
+                ikore_core::custom_pipelines::SetPipelineTriggerRequest {
+                    project_id,
+                    pipeline_id,
+                    trigger,
+                },
+            )?;
             Ok(match outcome {
                 SaveCustomPipelineOutcome::Saved { .. } => Vec::new(),
                 SaveCustomPipelineOutcome::Invalid { errors } => errors,
@@ -1040,6 +1071,8 @@ pub(crate) struct AgentsModel {
     pub(crate) show_archived_pipelines: bool,
     /// The synthesis column lists the global pipelines this project can add.
     pub(crate) show_global_pipelines: bool,
+    /// The global pipeline whose `Trigger here` choices are open (M3).
+    pub(crate) editing_pipeline_trigger: Option<String>,
     /// The run the pipeline's synthesis shows; the newest when `None`.
     pub(crate) selected_pipeline_run: Option<String>,
     /// A pipeline `Delete` waits for its confirmation.
@@ -1090,6 +1123,7 @@ impl Default for AgentsModel {
             selected_pipeline: None,
             show_archived_pipelines: false,
             show_global_pipelines: false,
+            editing_pipeline_trigger: None,
             selected_pipeline_run: None,
             pending_pipeline_delete: None,
             generation: 0,

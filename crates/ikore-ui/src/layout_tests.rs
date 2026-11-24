@@ -10314,6 +10314,7 @@ fn global_and_child_pipelines_show_their_badges_and_actions(cx: &mut TestAppCont
         adopted_parent_version: Some(4),
         children: 0,
         projects: 2,
+        trigger_override: None,
     };
     model.update(visual, |model, cx| {
         model.agents.update(cx, |agents, _| {
@@ -10352,5 +10353,182 @@ fn global_and_child_pipelines_show_their_badges_and_actions(cx: &mut TestAppCont
     assert_eq!(
         crate::agents_view::pipeline_editor::parent_label(&view).as_deref(),
         Some("Shared review v4")
+    );
+}
+
+/// Feature 25, M3: the editor offers `Manual`, `Stage passed` with its stage
+/// and `Pulsation done`, and keeps the pipeline's own trigger when editing; a
+/// global pipeline's synthesis shows this project's trigger with `Change`; a
+/// run an event started says so, with "Source pulsation failed".
+#[gpui::test]
+fn pipeline_triggers_show_in_the_editor_the_synthesis_and_the_runs(cx: &mut TestAppContext) {
+    use ikore_core::custom_pipelines::{
+        CustomPipelineDefinitionV1, CustomPipelineView, DefaultEvent, GateStep, PipelineRunStatus,
+        PipelineRunView, PipelineStep, PipelineTrigger,
+    };
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    select(&model, visual, AppView::Agents);
+    let after_code = PipelineTrigger::DefaultEvent {
+        event: DefaultEvent::StagePassed,
+        stage: Some("Code".into()),
+    };
+    let done = PipelineTrigger::DefaultEvent {
+        event: DefaultEvent::PulsationDone,
+        stage: None,
+    };
+    let definition = CustomPipelineDefinitionV1 {
+        schema_version: 1,
+        trigger: after_code.clone(),
+        steps: vec![PipelineStep::Gate(GateStep {
+            id: "look".into(),
+            label: "Look".into(),
+            prompt: "Read it.".into(),
+        })],
+    };
+    let view = CustomPipelineView {
+        id: "shared".into(),
+        scope: "global".into(),
+        project_id: None,
+        name: "Shared checks".into(),
+        description: String::new(),
+        current_version: 1,
+        adopted_version: 1,
+        position: 0,
+        ready: true,
+        needs_edit_reason: None,
+        archived: false,
+        definition: definition.clone(),
+        run_count: 1,
+        updated_at: "now".into(),
+        parent_pipeline_id: None,
+        parent_name: None,
+        adopted_parent_version: None,
+        children: 0,
+        projects: 2,
+        trigger_override: Some(done.clone()),
+    };
+    let run = PipelineRunView {
+        id: "run-1".into(),
+        pipeline_id: "shared".into(),
+        version: 1,
+        trigger_kind: "default_event".into(),
+        status: PipelineRunStatus::WaitingGate,
+        current_step: 0,
+        error: None,
+        created_at: "2026-11-23T10:00:00Z".into(),
+        updated_at: "2026-11-23T10:00:00Z".into(),
+        finished_at: None,
+        definition,
+        steps: Vec::new(),
+        source_pulsation_id: Some("pulse".into()),
+        source_pulsation_title: Some("Review tab navigation and artifact layout".into()),
+        trigger_label: Some("Stage passed \u{b7} Code".into()),
+        source_pulsation_failed: true,
+    };
+    model.update(visual, |model, cx| {
+        model.agents.update(cx, |agents, _| {
+            agents.pipelines.project_id = "layout-project".into();
+            agents.pipelines.pipelines = vec![view.clone()];
+            agents.pipelines.runs = vec![run];
+        });
+        model.select_canvas_pipeline("shared".into(), cx);
+    });
+    visual.run_until_parked();
+    for selector in [
+        "agents-pipeline-trigger",
+        "pipeline-trigger-change",
+        "pipeline-run-row:1",
+        "pipeline-run-trigger",
+        "pipeline-run-source-failed",
+    ] {
+        assert!(visual.debug_bounds(selector).is_some(), "{selector}");
+    }
+    assert!(visual.debug_bounds("pipeline-trigger-here").is_none());
+    // A long pulsation title wraps; the badge stays inside the run's card.
+    let card = visual.debug_bounds("pipeline-run-detail").unwrap();
+    for selector in ["pipeline-run-trigger", "pipeline-run-source-failed"] {
+        let bounds = visual.debug_bounds(selector).unwrap();
+        assert!(
+            bounds.right() <= card.right(),
+            "{selector} {bounds:?} {card:?}"
+        );
+    }
+    // The button stays inside the synthesis, next to a text that wraps.
+    let panel = visual.debug_bounds("agents-pipeline-synthesis").unwrap();
+    let change = visual.debug_bounds("pipeline-trigger-change").unwrap();
+    assert!(change.right() <= panel.right(), "{change:?} {panel:?}");
+    click(visual, "pipeline-trigger-change");
+    assert!(
+        model.read_with(visual, |model, cx| {
+            model.agents.read(cx).editing_pipeline_trigger.is_some()
+        }),
+        "Change opens the choices"
+    );
+    for selector in [
+        "pipeline-trigger-here",
+        "pipeline-trigger-here-manual",
+        "pipeline-trigger-here-stage-passed",
+        "pipeline-trigger-here-pulsation-done",
+        "pipeline-trigger-reset",
+    ] {
+        assert!(visual.debug_bounds(selector).is_some(), "{selector}");
+    }
+    // `Pulsation done` takes no stage.
+    assert!(
+        visual
+            .debug_bounds("pipeline-trigger-here-stage:Code")
+            .is_none()
+    );
+    assert!(model.read_with(visual, |model, cx| {
+        model.agents.read(cx).editing_pipeline_trigger.as_deref() == Some("shared")
+    }));
+
+    // The editor starts from the pipeline's own trigger, not this project's.
+    model.update(visual, |model, cx| model.edit_pipeline("shared".into(), cx));
+    visual.run_until_parked();
+    assert!(
+        model.read_with(visual, |model, _| {
+            model
+                .pipeline_editor
+                .as_ref()
+                .map(|editor| editor.trigger.clone())
+        }) == Some(after_code)
+    );
+    for selector in [
+        "pipeline-editor-trigger-manual",
+        "pipeline-editor-trigger-stage-passed",
+        "pipeline-editor-trigger-pulsation-done",
+        "pipeline-editor-trigger-stage:Intake",
+        "pipeline-editor-trigger-stage:SPECIFICATION",
+        "pipeline-editor-trigger-stage:Test",
+    ] {
+        assert!(visual.debug_bounds(selector).is_some(), "{selector}");
+    }
+    assert!(
+        visual
+            .debug_bounds("pipeline-editor-trigger-stage:Integrator")
+            .is_none()
+    );
+    click(visual, "pipeline-editor-trigger-stage:Intake");
+    assert!(
+        model.read_with(visual, |model, _| {
+            model
+                .pipeline_editor
+                .as_ref()
+                .map(|editor| editor.trigger.clone())
+        }) == Some(PipelineTrigger::DefaultEvent {
+            event: DefaultEvent::StagePassed,
+            stage: Some("Intake".into()),
+        })
+    );
+    click(visual, "pipeline-editor-trigger-pulsation-done");
+    assert!(
+        model.read_with(visual, |model, _| {
+            model
+                .pipeline_editor
+                .as_ref()
+                .map(|editor| editor.trigger.clone())
+        }) == Some(done)
     );
 }

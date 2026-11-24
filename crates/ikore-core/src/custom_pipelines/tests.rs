@@ -12,14 +12,14 @@ use crate::custom_pipelines::{
     SaveCustomPipelineRequest, StepAgent, StepOutput, StepRunStatus, StepTransport,
 };
 
-struct Fixture {
+pub(super) struct Fixture {
     _data: tempfile::TempDir,
     _workspace: tempfile::TempDir,
-    service: PersistenceService,
-    project: String,
+    pub(super) service: PersistenceService,
+    pub(super) project: String,
 }
 
-fn fixture() -> Fixture {
+pub(super) fn fixture() -> Fixture {
     let data = tempfile::tempdir().unwrap();
     let workspace = tempfile::tempdir().unwrap();
     let service = PersistenceService::initialize(data.path()).unwrap();
@@ -39,7 +39,7 @@ fn fixture() -> Fixture {
     }
 }
 
-fn agent(id: &str) -> PipelineStep {
+pub(super) fn agent(id: &str) -> PipelineStep {
     PipelineStep::Agent(AgentStep {
         id: id.into(),
         label: format!("Agent {id}"),
@@ -56,7 +56,7 @@ fn agent(id: &str) -> PipelineStep {
     })
 }
 
-fn gate(id: &str) -> PipelineStep {
+pub(super) fn gate(id: &str) -> PipelineStep {
     PipelineStep::Gate(GateStep {
         id: id.into(),
         label: format!("Gate {id}"),
@@ -100,7 +100,7 @@ impl Fixture {
         }
     }
 
-    fn db(&self) -> Connection {
+    pub(super) fn db(&self) -> Connection {
         Connection::open(self.service.database_path()).unwrap()
     }
 }
@@ -260,7 +260,7 @@ fn refused_definitions_report_every_problem() {
     ]);
     refused.trigger = PipelineTrigger::DefaultEvent {
         event: crate::custom_pipelines::DefaultEvent::StagePassed,
-        stage: Some("Code".into()),
+        stage: Some("Integrator".into()),
     };
     let outcome = f
         .service
@@ -285,7 +285,7 @@ fn refused_definitions_report_every_problem() {
             "description_too_long",
             "host_tool_unavailable",
             "model_required",
-            "trigger_unavailable"
+            "stage_unknown"
         ]
     );
 }
@@ -657,7 +657,7 @@ fn v69_databases_keep_their_slots_runs_and_executions() {
 
 // --- M2b: global pipelines, children and adoption -------------------------
 
-fn second_project(f: &Fixture, name: &str) -> (tempfile::TempDir, String) {
+pub(super) fn second_project(f: &Fixture, name: &str) -> (tempfile::TempDir, String) {
     let workspace = tempfile::tempdir().unwrap();
     let id = f
         .service
@@ -691,7 +691,7 @@ fn instructions_of(view: &CustomPipelineView, id: &str) -> String {
 }
 
 impl Fixture {
-    fn create_in(
+    pub(super) fn create_in(
         &self,
         project: &str,
         name: &str,
@@ -735,7 +735,7 @@ impl Fixture {
         )
     }
 
-    fn shown(&self, project: &str, id: &str) -> CustomPipelineView {
+    pub(super) fn shown(&self, project: &str, id: &str) -> CustomPipelineView {
         let snapshot = self.service.custom_pipelines_snapshot(project).unwrap();
         snapshot
             .pipelines
@@ -745,7 +745,7 @@ impl Fixture {
             .unwrap_or_else(|| panic!("{id} not shown"))
     }
 
-    fn open(&self, project: &str) {
+    pub(super) fn open(&self, project: &str) {
         self.service
             .open_project(super::OpenProjectRequest {
                 project_id: project.into(),
@@ -754,7 +754,7 @@ impl Fixture {
     }
 }
 
-fn saved(outcome: SaveCustomPipelineOutcome) -> CustomPipelineView {
+pub(super) fn saved(outcome: SaveCustomPipelineOutcome) -> CustomPipelineView {
     match outcome {
         SaveCustomPipelineOutcome::Saved { pipeline } => *pipeline,
         SaveCustomPipelineOutcome::Invalid { errors } => panic!("{errors:?}"),

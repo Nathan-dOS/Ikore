@@ -124,7 +124,15 @@ pub(super) fn canvas_pipelines(model: &AppModel, cx: &gpui::App) -> Vec<CanvasPi
         .iter()
         .map(|pipeline| {
             let newest = agents.pipelines.runs_of(&pipeline.id).next();
-            let (state, status) = newest.map_or((NodeState::Idle, "Manual".into()), run_state);
+            let (state, status) = newest.map_or_else(
+                || {
+                    (
+                        NodeState::Idle,
+                        ikore_core::custom_pipelines::trigger_label(pipeline.effective_trigger()),
+                    )
+                },
+                run_state,
+            );
             let steps = pipeline
                 .definition
                 .steps
@@ -538,6 +546,33 @@ fn run_detail(
                     ))
                 }),
         )
+        .when_some(run.trigger_label.clone(), |detail, trigger| {
+            detail.child(
+                div()
+                    .debug_selector(|| "pipeline-run-trigger".into())
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .items_start()
+                    .gap_1()
+                    .child(div().w_full().min_w_0().child(muted(
+                        match &run.source_pulsation_title {
+                            Some(title) => format!("Started by {trigger} \u{b7} {title}"),
+                            None => format!("Started by {trigger}"),
+                        },
+                    )))
+                    .when(run.source_pulsation_failed, |line| {
+                        line.child(
+                            div()
+                                .debug_selector(|| "pipeline-run-source-failed".into())
+                                .child(crate::widgets::chip(
+                                    "Source pulsation failed",
+                                    theme::warning(),
+                                )),
+                        )
+                    }),
+            )
+        })
         .when_some(run.error.clone(), |detail, error| {
             detail.child(
                 div()
@@ -555,6 +590,89 @@ fn run_detail(
                 .map(|(index, step)| run_step(model, run, index, step, busy, cx))
                 .collect::<Vec<_>>(),
         )
+        .into_any_element()
+}
+
+/// What starts the pipeline. A global pipeline's box follows this project's
+/// own trigger when it chose one (R4b, M3): `Trigger here` with `Change`,
+/// whose choices save at once, and `Use the pipeline's trigger`.
+fn trigger_line(
+    pipeline: &CustomPipelineView,
+    editing: bool,
+    busy: bool,
+    cx: &mut Context<AppModel>,
+) -> AnyElement {
+    use ikore_core::custom_pipelines::trigger_label;
+    if !pipeline.is_global() && pipeline.trigger_override.is_none() {
+        return div()
+            .debug_selector(|| "agents-pipeline-trigger".into())
+            .child(muted(format!(
+                "Trigger \u{b7} {}",
+                trigger_label(&pipeline.definition.trigger)
+            )))
+            .into_any_element();
+    }
+    let effective = pipeline.effective_trigger().clone();
+    let own = pipeline.trigger_override.is_some();
+    let (toggle, choose, reset) = (
+        pipeline.id.clone(),
+        pipeline.id.clone(),
+        pipeline.id.clone(),
+    );
+    let text = if own {
+        format!(
+            "Trigger here \u{b7} {} \u{b7} the pipeline's is {}",
+            trigger_label(&effective),
+            trigger_label(&pipeline.definition.trigger)
+        )
+    } else {
+        format!(
+            "Trigger here \u{b7} {} \u{b7} the pipeline's",
+            trigger_label(&effective)
+        )
+    };
+    div()
+        .debug_selector(|| "agents-pipeline-trigger".into())
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(div().flex_1().min_w_0().child(muted(text)))
+                .child(div().flex_none().child(action_button(
+                    "pipeline-trigger-change".into(),
+                    if editing { "Done" } else { "Change" }.into(),
+                    !busy,
+                    false,
+                    cx,
+                    move |model, cx| model.toggle_pipeline_trigger_choices(toggle.clone(), cx),
+                ))),
+        )
+        .when(editing, |line| {
+            line.child(super::pipeline_editor::trigger_rows(
+                "pipeline-trigger-here",
+                &effective,
+                false,
+                cx,
+                move |model, trigger, cx| {
+                    model.set_pipeline_trigger(choose.clone(), Some(trigger), cx)
+                },
+            ))
+            .child(muted(
+                "Only this project. Other projects keep their own trigger, and editing the pipeline changes it for every project that did not choose one.",
+            ))
+            .child(action_button(
+                "pipeline-trigger-reset".into(),
+                "Use the pipeline's trigger".into(),
+                !busy && own,
+                false,
+                cx,
+                move |model, cx| model.set_pipeline_trigger(reset.clone(), None, cx),
+            ))
+        })
         .into_any_element()
 }
 
@@ -579,6 +697,7 @@ pub(super) fn pipeline_synthesis(
         .or_else(|| runs.first())
         .cloned();
     let confirming_delete = agents.pending_pipeline_delete.as_ref() == Some(&pipeline.id);
+    let editing_trigger = agents.editing_pipeline_trigger.as_ref() == Some(&pipeline.id);
     let active = runs.iter().any(|run| run.status.is_active());
     let (state, _) = runs
         .first()
@@ -679,10 +798,8 @@ pub(super) fn pipeline_synthesis(
         .when(!pipeline.description.trim().is_empty(), |panel| {
             panel.child(muted(pipeline.description.clone()))
         })
-        .child(muted(format!(
-            "Trigger · Manual · {}",
-            plural(pipeline.definition.steps.len(), "step")
-        )))
+        .child(trigger_line(pipeline, editing_trigger, busy, cx))
+        .child(muted(plural(pipeline.definition.steps.len(), "step")))
         .when_some(pipeline.needs_edit_reason.clone(), |panel, reason| {
             panel.child(
                 div()
@@ -793,7 +910,10 @@ pub(super) fn pipeline_synthesis(
                         });
                         cx.notify();
                     }))
-                    .child(format!("{status} · {started}"))
+                    .child(match &run.trigger_label {
+                        Some(trigger) => format!("{status} \u{b7} {started} \u{b7} {trigger}"),
+                        None => format!("{status} \u{b7} {started}"),
+                    })
             }),
         ));
         if let Some(run) = shown {

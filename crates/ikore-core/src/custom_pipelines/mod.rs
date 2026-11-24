@@ -9,7 +9,8 @@
 //! owns state, identifiers and decisions.
 //!
 //! The commands live on `PersistenceService` (`store.rs`), the lane next to
-//! the supervisor's other two (`engine.rs`), and the model input here
+//! the supervisor's other two (`engine.rs`), the events of the Ikore pipeline
+//! that start pipelines in `triggers.rs` (M3), and the model input here
 //! (`prompt.rs`).
 
 pub(crate) mod prompt;
@@ -171,6 +172,10 @@ pub struct CustomPipelineView {
     /// Projects that show this pipeline.
     #[serde(default)]
     pub projects: u32,
+    /// This project's own trigger for the pipeline (R4b, M3); the
+    /// definition's when `None`.
+    #[serde(default)]
+    pub trigger_override: Option<PipelineTrigger>,
 }
 
 impl CustomPipelineView {
@@ -182,6 +187,13 @@ impl CustomPipelineView {
     /// project to open again (P2).
     pub fn behind(&self) -> bool {
         self.adopted_version < self.current_version
+    }
+
+    /// The trigger this project's box follows.
+    pub fn effective_trigger(&self) -> &PipelineTrigger {
+        self.trigger_override
+            .as_ref()
+            .unwrap_or(&self.definition.trigger)
     }
 }
 
@@ -213,6 +225,18 @@ pub struct PipelineRunView {
     pub definition: CustomPipelineDefinitionV1,
     /// Every attempt of every step that started, in order.
     pub steps: Vec<PipelineStepRunView>,
+    /// The pulsation whose event started the run (M3).
+    #[serde(default)]
+    pub source_pulsation_id: Option<String>,
+    #[serde(default)]
+    pub source_pulsation_title: Option<String>,
+    /// The event that started the run, as [`trigger_label`] reads it.
+    #[serde(default)]
+    pub trigger_label: Option<String>,
+    /// The source pulsation failed after the event ("Source pulsation
+    /// failed").
+    #[serde(default)]
+    pub source_pulsation_failed: bool,
 }
 
 impl PipelineRunView {
@@ -270,6 +294,43 @@ impl CustomPipelinesSnapshot {
             .iter()
             .filter(move |run| run.pipeline_id == pipeline_id)
     }
+}
+
+/// A stage's name in a trigger (the database spells Specification in
+/// capitals).
+pub fn trigger_stage_label(stage: &str) -> &str {
+    match stage {
+        "SPECIFICATION" => "Specification",
+        other => other,
+    }
+}
+
+/// How a trigger reads on a box, a run and the editor.
+pub fn trigger_label(trigger: &PipelineTrigger) -> String {
+    match trigger {
+        PipelineTrigger::Manual => "Manual".into(),
+        PipelineTrigger::DefaultEvent {
+            event: DefaultEvent::PulsationDone,
+            ..
+        } => "Pulsation done".into(),
+        PipelineTrigger::DefaultEvent {
+            event: DefaultEvent::StagePassed,
+            stage,
+        } => format!(
+            "Stage passed \u{b7} {}",
+            trigger_stage_label(stage.as_deref().unwrap_or_default())
+        ),
+    }
+}
+
+/// Changes or clears this project's own trigger for a pipeline (R4b, M3).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetPipelineTriggerRequest {
+    pub project_id: String,
+    pub pipeline_id: String,
+    /// `None` goes back to the pipeline's own trigger.
+    pub trigger: Option<PipelineTrigger>,
 }
 
 /// Creates a pipeline (`pipeline_id` empty) or saves a new version of one.

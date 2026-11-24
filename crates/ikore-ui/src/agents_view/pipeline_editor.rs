@@ -1,5 +1,6 @@
 //! The pipeline editor (feature 25, M2a, section 4): name, description,
-//! trigger and up to eight steps, each an agent or a gate. Saving creates the
+//! trigger (`Manual`, or an event of the Ikore pipeline from M3) and up to
+//! eight steps, each an agent or a gate. Saving creates the
 //! pipeline or a new version of it; a run in progress keeps its own (T4). The
 //! host validates, and its errors show here, in English, by step.
 //! Also the commands of a pipeline's synthesis: `Run`, `Cancel`, `Resume`,
@@ -8,7 +9,7 @@
 use gpui::{AnyElement, Context, Entity, FontWeight, IntoElement, SharedString, div, prelude::*};
 use ikore_core::custom_pipelines::{
     AgentStep, CUSTOM_PIPELINE_SCHEMA_VERSION, CustomPipelineDefinitionV1, CustomPipelineView,
-    DecidePipelineGateRequest, GateStep, MAX_STEPS, PipelineStep, PipelineTrigger,
+    DecidePipelineGateRequest, DefaultEvent, GateStep, MAX_STEPS, PipelineStep, PipelineTrigger,
     PipelineValidationError, SaveCustomPipelineOutcome, SaveCustomPipelineRequest, StepAgent,
     StepOutput, StepTransport,
 };
@@ -70,6 +71,9 @@ pub(crate) struct PipelineEditor {
     /// A child's parent (P1): the form then saves the changes over it.
     pub(crate) parent_pipeline_id: Option<String>,
     pub(crate) parent_label: Option<String>,
+    /// What starts the pipeline (M3). A global pipeline's trigger is every
+    /// project's, unless a project chose its own in the synthesis.
+    pub(crate) trigger: PipelineTrigger,
     pub(crate) name: Entity<NativeTextInput>,
     pub(crate) description: Entity<NativeTextInput>,
     pub(crate) steps: Vec<StepDraft>,
@@ -129,7 +133,7 @@ impl PipelineEditor {
     fn definition(&self, cx: &gpui::App) -> CustomPipelineDefinitionV1 {
         CustomPipelineDefinitionV1 {
             schema_version: CUSTOM_PIPELINE_SCHEMA_VERSION,
-            trigger: PipelineTrigger::Manual,
+            trigger: self.trigger.clone(),
             steps: self
                 .steps
                 .iter()
@@ -570,6 +574,124 @@ fn scope_row(scope: EditorScope, cx: &mut Context<AppModel>) -> AnyElement {
     }
 }
 
+/// The stages a pipeline can follow; an approved Integrator is `Pulsation
+/// done`, never a passed stage.
+pub(crate) const TRIGGER_STAGES: [&str; 5] =
+    ["Intake", "SPECIFICATION", "Contract", "Code", "Test"];
+
+pub(crate) fn stage_passed(stage: &str) -> PipelineTrigger {
+    PipelineTrigger::DefaultEvent {
+        event: DefaultEvent::StagePassed,
+        stage: Some(stage.to_owned()),
+    }
+}
+
+pub(crate) fn pulsation_done() -> PipelineTrigger {
+    PipelineTrigger::DefaultEvent {
+        event: DefaultEvent::PulsationDone,
+        stage: None,
+    }
+}
+
+/// What a trigger does, for the line under its choices.
+pub(crate) fn trigger_help(trigger: &PipelineTrigger) -> String {
+    match trigger {
+        PipelineTrigger::Manual => "Run on the pipeline's box starts it.".into(),
+        PipelineTrigger::DefaultEvent {
+            event: DefaultEvent::PulsationDone,
+            ..
+        } => "Starts once when a pulsation is done, after the Integrator's approval.".into(),
+        PipelineTrigger::DefaultEvent { stage, .. } => format!(
+            "Starts each time a pulsation passes {}, once its files are written. The Ikore pipeline does not wait for it.",
+            ikore_core::custom_pipelines::trigger_stage_label(stage.as_deref().unwrap_or_default())
+        ),
+    }
+}
+
+/// `Manual | Stage passed | Pulsation done`, and the stage when one passes.
+/// The editor's trigger, and a project's own one in the synthesis (R4b).
+pub(crate) fn trigger_rows(
+    prefix: &'static str,
+    trigger: &PipelineTrigger,
+    global: bool,
+    cx: &mut Context<AppModel>,
+    set: impl Fn(&mut AppModel, PipelineTrigger, &mut Context<AppModel>) + Clone + 'static,
+) -> AnyElement {
+    let stage = match trigger {
+        PipelineTrigger::DefaultEvent {
+            event: DefaultEvent::StagePassed,
+            stage,
+        } => Some(stage.clone().unwrap_or_default()),
+        _ => None,
+    };
+    let done = matches!(
+        trigger,
+        PipelineTrigger::DefaultEvent {
+            event: DefaultEvent::PulsationDone,
+            ..
+        }
+    );
+    let mut kinds = div().flex().flex_wrap().gap_2();
+    for (id, text, active, next) in [
+        (
+            "manual",
+            "Manual",
+            matches!(trigger, PipelineTrigger::Manual),
+            PipelineTrigger::Manual,
+        ),
+        (
+            "stage-passed",
+            "Stage passed",
+            stage.is_some(),
+            stage_passed(stage.as_deref().unwrap_or("Code")),
+        ),
+        ("pulsation-done", "Pulsation done", done, pulsation_done()),
+    ] {
+        let set = set.clone();
+        kinds = kinds.child(choice(
+            format!("{prefix}-{id}"),
+            text,
+            active,
+            true,
+            cx,
+            move |model, cx| set(model, next.clone(), cx),
+        ));
+    }
+    let stages = stage.as_ref().map(|current| {
+        let mut row = div().flex().flex_wrap().gap_2();
+        for value in TRIGGER_STAGES {
+            let set = set.clone();
+            row = row.child(choice(
+                format!("{prefix}-stage:{value}"),
+                ikore_core::custom_pipelines::trigger_stage_label(value).to_owned(),
+                current == value,
+                true,
+                cx,
+                move |model, cx| set(model, stage_passed(value), cx),
+            ));
+        }
+        row
+    });
+    let help = format!(
+        "{}{}",
+        trigger_help(trigger),
+        if global && !matches!(trigger, PipelineTrigger::Manual) {
+            " Each project that uses it follows this trigger unless it chose its own."
+        } else {
+            ""
+        }
+    );
+    div()
+        .debug_selector(move || prefix.into())
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(kinds)
+        .children(stages)
+        .child(div().text_xs().text_color(theme::text_muted()).child(help))
+        .into_any_element()
+}
+
 /// The form in the synthesis column.
 pub(super) fn pipeline_editor_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
     let Some(editor) = model.pipeline_editor.as_ref() else {
@@ -656,13 +778,13 @@ pub(super) fn pipeline_editor_panel(model: &AppModel, cx: &mut Context<AppModel>
             )
         })
         .child(label("TRIGGER"))
-        .child(
-            div()
-                .debug_selector(|| "pipeline-editor-trigger".into())
-                .text_xs()
-                .text_color(theme::text_muted())
-                .child("Manual · Run on the pipeline's box starts it"),
-        )
+        .child(trigger_rows(
+            "pipeline-editor-trigger",
+            &editor.trigger,
+            scope.global(),
+            cx,
+            |model, trigger, cx| model.set_pipeline_editor_trigger(trigger, cx),
+        ))
         .child(label("STEPS"))
         .children(cards)
         .child(
@@ -869,6 +991,7 @@ impl AppModel {
             scope: EditorScope::Choose { global: false },
             parent_pipeline_id: None,
             parent_label: None,
+            trigger: PipelineTrigger::Manual,
             name: input("Pipeline name", "", false, cx),
             description: input("What the pipeline is for (optional)", "", false, cx),
             steps: vec![first],
@@ -942,6 +1065,7 @@ impl AppModel {
             },
             parent_pipeline_id: pipeline.parent_pipeline_id.clone(),
             parent_label: parent_label(&pipeline),
+            trigger: pipeline.definition.trigger.clone(),
             name: input("Pipeline name", &pipeline.name, false, cx),
             description: input(
                 "What the pipeline is for (optional)",
@@ -973,6 +1097,7 @@ impl AppModel {
             },
             parent_pipeline_id: Some(parent.id.clone()),
             parent_label: Some(format!("{} v{}", parent.name, parent.adopted_version)),
+            trigger: parent.definition.trigger.clone(),
             name: input("Pipeline name", "", false, cx),
             description: input("What the pipeline is for (optional)", "", false, cx),
             steps,
@@ -988,6 +1113,18 @@ impl AppModel {
             && matches!(editor.scope, EditorScope::Choose { .. })
         {
             editor.scope = EditorScope::Choose { global };
+        }
+        cx.notify();
+    }
+
+    /// The form's trigger (M3).
+    pub(crate) fn set_pipeline_editor_trigger(
+        &mut self,
+        trigger: PipelineTrigger,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(editor) = self.pipeline_editor.as_mut() {
+            editor.trigger = trigger;
         }
         cx.notify();
     }
@@ -1399,6 +1536,55 @@ impl AppModel {
                 Box::pin(async move {
                     let errors = backend
                         .change_pipeline_scope(project, pipeline_id, action)
+                        .await?;
+                    if errors.is_empty() {
+                        Ok(())
+                    } else {
+                        Err(crate::errors::UiCommandError::from_chat_parts(
+                            "pipeline_refused",
+                            errors
+                                .into_iter()
+                                .map(|error| error.message)
+                                .collect::<Vec<_>>()
+                                .join(" "),
+                        ))
+                    }
+                })
+            },
+            cx,
+        );
+    }
+
+    /// `Change` on `Trigger here`: opens or closes the choices.
+    pub(crate) fn toggle_pipeline_trigger_choices(
+        &mut self,
+        pipeline_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        self.agents.update(cx, |agents, _| {
+            agents.editing_pipeline_trigger =
+                if agents.editing_pipeline_trigger.as_ref() == Some(&pipeline_id) {
+                    None
+                } else {
+                    Some(pipeline_id)
+                };
+        });
+        cx.notify();
+    }
+
+    /// This project's own trigger for a global pipeline (R4b), saved at once;
+    /// `None` goes back to the pipeline's.
+    pub(crate) fn set_pipeline_trigger(
+        &mut self,
+        pipeline_id: String,
+        trigger: Option<PipelineTrigger>,
+        cx: &mut Context<Self>,
+    ) {
+        self.pipeline_command(
+            move |backend, project| {
+                Box::pin(async move {
+                    let errors = backend
+                        .set_pipeline_trigger(project, pipeline_id, trigger)
                         .await?;
                     if errors.is_empty() {
                         Ok(())

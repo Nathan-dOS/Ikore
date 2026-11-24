@@ -151,6 +151,11 @@ mod custom_pipeline_store;
 #[cfg(test)]
 #[path = "custom_pipelines/tests.rs"]
 mod custom_pipeline_tests;
+#[cfg(test)]
+#[path = "custom_pipelines/trigger_tests.rs"]
+mod custom_pipeline_trigger_tests;
+#[path = "custom_pipelines/triggers.rs"]
+mod custom_pipeline_triggers;
 #[path = "orchestration/visualizer.rs"]
 mod visualizer;
 // ADR-037 baseline: ignored measurements, rerun at each milestone.
@@ -2521,6 +2526,16 @@ impl PersistenceService {
             event_type,
             &event_id,
             state_version,
+        )?;
+        // Feature 25, M3: the event a box of the project listens to, recorded
+        // with the transition so it is never lost (the dispatch is the lane's).
+        custom_pipeline_triggers::record_pipeline_trigger(
+            transaction,
+            current,
+            next_status,
+            next_stage,
+            state_version,
+            &now,
         )?;
 
         Ok(Pulsation {

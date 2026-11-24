@@ -229,6 +229,43 @@ fn valid_step_id(id: &str) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
+/// The problems of a trigger: a passed stage names a stage of the Ikore
+/// pipeline other than the Integrator, and `Pulsation done` takes none.
+pub fn validate_trigger(trigger: &PipelineTrigger) -> Vec<PipelineValidationError> {
+    let mut errors = Vec::new();
+    match trigger {
+        PipelineTrigger::Manual => {}
+        PipelineTrigger::DefaultEvent { event, stage } => match (event, stage.as_deref()) {
+            (DefaultEvent::StagePassed, None) => errors.push(PipelineValidationError::new(
+                "stage_required",
+                None,
+                "Choose the stage whose passing starts the pipeline.",
+            )),
+            (DefaultEvent::StagePassed, Some(stage)) if !STAGE_VALUES.contains(&stage) => {
+                errors.push(PipelineValidationError::new(
+                    "stage_unknown",
+                    None,
+                    format!("\"{stage}\" is not a stage of the Ikore pipeline."),
+                ));
+            }
+            (DefaultEvent::StagePassed, Some("Integrator")) => {
+                errors.push(PipelineValidationError::new(
+                    "stage_unknown",
+                    None,
+                    "An approved Integrator is \"Pulsation done\", not a passed stage.",
+                ));
+            }
+            (DefaultEvent::PulsationDone, Some(_)) => errors.push(PipelineValidationError::new(
+                "stage_not_allowed",
+                None,
+                "\"Pulsation done\" takes no stage.",
+            )),
+            _ => {}
+        },
+    }
+    errors
+}
+
 /// Every problem of a definition at once. `host_tools` says whether the
 /// git tool of the host is available to pipelines (feature 25, M5).
 pub fn validate_definition(
@@ -243,36 +280,7 @@ pub fn validate_definition(
             format!("Only schema version {CUSTOM_PIPELINE_SCHEMA_VERSION} is supported."),
         ));
     }
-    match &definition.trigger {
-        PipelineTrigger::Manual => {}
-        PipelineTrigger::DefaultEvent { event, stage } => match (event, stage.as_deref()) {
-            (DefaultEvent::StagePassed, None) => errors.push(PipelineValidationError::new(
-                "stage_required",
-                None,
-                "Choose the stage whose passing starts the pipeline.",
-            )),
-            (DefaultEvent::StagePassed, Some(stage)) if !STAGE_VALUES.contains(&stage) => {
-                errors.push(PipelineValidationError::new(
-                    "stage_unknown",
-                    None,
-                    format!("`{stage}` is not a stage of the Ikore pipeline."),
-                ));
-            }
-            (DefaultEvent::StagePassed, Some("Integrator")) => {
-                errors.push(PipelineValidationError::new(
-                    "stage_unknown",
-                    None,
-                    "An approved Integrator is `Pulsation done`, not a passed stage.",
-                ));
-            }
-            (DefaultEvent::PulsationDone, Some(_)) => errors.push(PipelineValidationError::new(
-                "stage_not_allowed",
-                None,
-                "`Pulsation done` takes no stage.",
-            )),
-            _ => {}
-        },
-    }
+    errors.extend(validate_trigger(&definition.trigger));
     if definition.steps.is_empty() {
         errors.push(PipelineValidationError::new(
             "steps_missing",

@@ -2,7 +2,7 @@
     clippy::unwrap_used,
     reason = "Test-only integration helpers fail immediately when fixture setup is invalid"
 )]
-//! Feature 25 (M2a): the developer's pipelines on the automation lane, with
+//! Feature 25 (M2a, M3): the developer's pipelines on the automation lane, with
 //! official CLIs played by the `cli_fixture` binary on PATH and an API step
 //! answered by a scripted loopback provider.
 mod composition_support;
@@ -13,9 +13,10 @@ use std::time::{Duration, Instant};
 
 use composition_support::{SilentEvents, completed_reply, expiry_task, wait_for_checkpoint};
 use ikore_core::custom_pipelines::{
-    AgentStep, CustomPipelineDefinitionV1, CustomPipelineView, DecidePipelineGateRequest, GateStep,
-    PipelineRunStatus, PipelineRunView, PipelineStep, PipelineTrigger, SaveCustomPipelineOutcome,
-    SaveCustomPipelineRequest, StepAgent, StepOutput, StepRunStatus, StepTransport, Verdict,
+    AgentStep, CustomPipelineDefinitionV1, CustomPipelineView, DecidePipelineGateRequest,
+    DefaultEvent, GateStep, PipelineRunStatus, PipelineRunView, PipelineStep, PipelineTrigger,
+    SaveCustomPipelineOutcome, SaveCustomPipelineRequest, StepAgent, StepOutput, StepRunStatus,
+    StepTransport, Verdict,
 };
 use ikore_core::orchestration::composition::settings::CompositionSettings;
 use ikore_core::persistence_service::{CreateProjectRequest, PersistenceService};
@@ -674,4 +675,182 @@ data: [DONE]
     assert_eq!(route_id, route);
     assert!(slot.unwrap().ends_with(&format!("{}:api", pipeline.id)));
     h.shut_down();
+}
+
+/// Feature 25, M3: the Ikore pipeline, run to the end on the scripted
+/// provider, starts each pipeline that listens to one of its events once, in
+/// parallel, with paths and hashes of what it published.
+#[test]
+fn the_ikore_pipeline_starts_the_pipelines_that_listen_to_its_events() {
+    let fixtures = Fixtures::install();
+    let env = IsolatedTestEnvironment::new();
+    std::fs::create_dir_all(env.workspace_dir().join("src")).unwrap();
+    std::fs::write(
+        env.workspace_dir().join("src/auth.rs"),
+        "pub fn validate_token() {}\n",
+    )
+    .unwrap();
+    let pipelines: Arc<Mutex<Vec<String>>> = Arc::default();
+    let created = pipelines.clone();
+    let composition = composition_support::Harness::start_prepared(
+        env,
+        vec![expiry_task()],
+        CompositionSettings {
+            enabled: true,
+            ..CompositionSettings::default()
+        }
+        .with_all_recipes_qualified(),
+        |facts, _, _| completed_reply(facts),
+        move |harness| {
+            let terminals = TerminalService::new(
+                harness.service.database_path(),
+                harness.runtime_handle(),
+                Arc::new(SilentEvents),
+            )
+            .unwrap();
+            harness.service.attach_terminal_service(Arc::new(terminals));
+            for (name, trigger, steps) in [
+                (
+                    "After code",
+                    PipelineTrigger::DefaultEvent {
+                        event: DefaultEvent::StagePassed,
+                        stage: Some("Code".into()),
+                    },
+                    vec![agent("review", "claude", "text", StepOutput::Text)],
+                ),
+                (
+                    "After done",
+                    PipelineTrigger::DefaultEvent {
+                        event: DefaultEvent::PulsationDone,
+                        stage: None,
+                    },
+                    vec![gate("look")],
+                ),
+                ("By hand", PipelineTrigger::Manual, vec![gate("look")]),
+            ] {
+                let saved = match harness
+                    .service
+                    .save_custom_pipeline(SaveCustomPipelineRequest {
+                        project_id: harness.project.clone(),
+                        pipeline_id: None,
+                        expected_version: None,
+                        scope: None,
+                        parent_pipeline_id: None,
+                        name: name.into(),
+                        description: String::new(),
+                        definition: CustomPipelineDefinitionV1 {
+                            schema_version: 1,
+                            trigger,
+                            steps,
+                        },
+                    })
+                    .unwrap()
+                {
+                    SaveCustomPipelineOutcome::Saved { pipeline } => pipeline.id,
+                    SaveCustomPipelineOutcome::Invalid { errors } => panic!("{errors:?}"),
+                };
+                created.lock().unwrap().push(saved);
+            }
+        },
+    );
+    for stage in ["SPECIFICATION", "Contract", "Test", "Integrator"] {
+        composition.wait_for_checkpoint(stage);
+        composition.approve();
+    }
+    composition_support::wait_until(&composition.service, &composition.pulse, |db| {
+        db.query_row(
+            "SELECT status='done' FROM pulsations WHERE id=?1",
+            [&composition.pulse],
+            |row| row.get(0),
+        )
+        .unwrap()
+    });
+    let ids = pipelines.lock().unwrap().clone();
+    let runs_of = |pipeline: &str| {
+        composition
+            .service
+            .custom_pipelines_snapshot(&composition.project)
+            .unwrap()
+            .runs
+            .into_iter()
+            .filter(|run| run.pipeline_id == pipeline)
+            .collect::<Vec<_>>()
+    };
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let code = runs_of(&ids[0]);
+        let done = runs_of(&ids[1]);
+        if code.first().map(|run| run.status) == Some(PipelineRunStatus::Done)
+            && done.first().map(|run| run.status) == Some(PipelineRunStatus::WaitingGate)
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline, "timed out: {code:#?} {done:#?}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let code = runs_of(&ids[0]);
+    assert_eq!(code.len(), 1, "Code passed once");
+    assert_eq!(
+        code[0].trigger_label.as_deref(),
+        Some("Stage passed \u{b7} Code")
+    );
+    assert_eq!(
+        code[0].source_pulsation_id.as_deref(),
+        Some(composition.pulse.as_str())
+    );
+    assert_eq!(runs_of(&ids[1]).len(), 1, "one Pulsation done");
+    assert!(
+        runs_of(&ids[2]).is_empty(),
+        "a manual pipeline never starts"
+    );
+    let db = composition.db();
+    let events = db
+        .prepare(
+            "SELECT event,COALESCE(stage,''),state FROM pipeline_trigger_outbox ORDER BY created_at",
+        )
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+        .collect::<Result<Vec<(String, String, String)>, _>>()
+        .unwrap();
+    assert_eq!(
+        events,
+        [
+            ("stage_passed".into(), "Code".into(), "dispatched".into()),
+            ("pulsation_done".into(), String::new(), "dispatched".into()),
+        ]
+    );
+    // The run was born with the Code publications applied.
+    let payload: String = db
+        .query_row(
+            "SELECT trigger_payload_json FROM custom_pipeline_runs WHERE id=?1",
+            [&code[0].id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let unapplied: u32 = db
+        .query_row(
+            "SELECT count(*) FROM artifact_publications o JOIN artifacts a ON a.id=o.artifact_id
+              WHERE a.pulsation_id=?1 AND a.producer_stage='Code' AND o.state<>'applied'",
+            [&composition.pulse],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(unapplied, 0);
+    let payload: serde_json::Value = serde_json::from_str(&payload).unwrap();
+    assert_eq!(payload["pulsation"]["title"], "Token expiry");
+    assert!(!payload["tasks"].as_array().unwrap().is_empty());
+    for file in payload["files"].as_array().unwrap() {
+        assert_eq!(file["sha256"].as_str().unwrap().len(), 64, "{file}");
+        assert!(file.get("content").is_none());
+    }
+    let prompt = fixtures.log("claude");
+    assert!(prompt.contains("## Trigger"), "{prompt}");
+    assert!(prompt.contains("\"stage_passed\""), "{prompt}");
+    assert!(
+        prompt.contains("## Trigger\n> provenance: host \u{b7} pipeline/state\n"),
+        "{prompt}"
+    );
+    assert!(prompt.contains("\"src/auth.rs\""), "{prompt}");
+    composition.stop();
 }
