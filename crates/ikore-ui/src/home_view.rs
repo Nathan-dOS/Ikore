@@ -5,8 +5,7 @@
 //! views.
 
 use gpui::{
-    AnimationExt, AnyElement, Context, FontWeight, IntoElement, SharedString, Window, div,
-    prelude::*, px,
+    AnyElement, Context, FontWeight, IntoElement, SharedString, Window, div, prelude::*, px,
 };
 
 use crate::app_model::{AppModel, AppView};
@@ -15,7 +14,7 @@ use crate::flow::{FlowTarget, NextStep};
 use crate::icons::Icon;
 use crate::pipeline_status::PipelineStatus;
 use crate::theme;
-use crate::widgets::{ICON_SIZE, icon, pipeline_stepper, status_dot};
+use crate::widgets::{ICON_SIZE, icon, pipeline_stepper};
 
 /// Content width cap so the hero reads as a card rather than a banner on wide windows, with
 /// room for two charts side by side.
@@ -160,22 +159,9 @@ fn hero(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
     }
 }
 
-/// The hero's tone dot breathes while a stage is actually running — the one place the shell
-/// moves on its own — unless Windows asks for reduced motion.
+/// The hero's live status glyph: rotates while a stage is actually running, stays calm otherwise.
 fn hero_dot(tone: crate::pipeline_status::StatusTone) -> AnyElement {
-    let color = tone.color();
-    if tone != crate::pipeline_status::StatusTone::Active || crate::motion::reduced_motion() {
-        return status_dot(color);
-    }
-    div()
-        .flex_shrink_0()
-        .size_2()
-        .rounded_full()
-        .bg(color)
-        .with_animation("home-hero-dot", crate::motion::pulse(), |dot, delta| {
-            dot.opacity(delta)
-        })
-        .into_any_element()
+    crate::animated_icon::status_glyph_for_tone("home-hero-glyph", tone, px(14.0), tone.color())
 }
 
 /// The flow engine's suggestions: the primary step as one large control, the rest as quiet

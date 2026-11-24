@@ -1,14 +1,17 @@
 //! API Mode: the route editors and the activity viewer (ADR-040 M7, 12.4).
+//! On the Agents canvas (feature 25, M1) they are the synthesis of an agent
+//! that runs by API, and the History drawer shows the activity viewer.
 
 use gpui::{AnyElement, Context, FontWeight, IntoElement, SharedString, div, prelude::*, px};
 use ikore_core::llm::AgentRole;
 
-use crate::agents::{AgentIdentifier, ApiActivityFilter};
+use crate::agents::{AgentDetailTab, AgentIdentifier, ApiActivityFilter};
 use crate::app_model::AppModel;
 use crate::icons::Icon;
 use crate::theme;
 
 use super::config::grid_field;
+use super::synthesis::{synthesis_actions, waiting_review};
 use super::{action_button, chip, empty_state, icon_action};
 
 pub(super) fn api_detail_panel(
@@ -18,7 +21,9 @@ pub(super) fn api_detail_panel(
 ) -> AnyElement {
     let agents = model.agents.read(cx);
     let selected_agent = agents.selected_agent.clone();
-    let expanded = agents.terminal_expanded;
+    // Feature 25, M1: the History drawer shows the activity viewer.
+    let tab = agents.detail_tab;
+    let expanded = tab == AgentDetailTab::History;
     let panel = div()
         .id("agents-api-scroll")
         .debug_selector(|| "agents-api-scroll".into())
@@ -78,6 +83,8 @@ pub(super) fn api_detail_panel(
                         cx,
                     )),
             );
+            let review = waiting_review(model, &AgentIdentifier::Canonical(role), cx);
+            let panel = panel.child(synthesis_actions(role.as_str(), tab, review, false, cx));
             if expanded {
                 panel
                     .child(api_activity_viewer(
@@ -211,6 +218,13 @@ pub(super) fn api_detail_panel(
                                     cx,
                                 )),
                         )
+                        .child(synthesis_actions(
+                            &format!("free-form:{inner_slot_id}"),
+                            tab,
+                            None,
+                            false,
+                            cx,
+                        ))
                         .child(free_form_api_inline_editor(model, snapshot, slot, cx))
                         .into_any_element()
                 }
@@ -219,7 +233,7 @@ pub(super) fn api_detail_panel(
                     .into_any_element(),
             }
         }
-        None => panel
+        Some(AgentIdentifier::PipelineStep { .. }) | None => panel
             .child(empty_state("Select an agent."))
             .into_any_element(),
     }
@@ -422,7 +436,7 @@ pub(super) fn free_form_api_inline_editor(
         .cloned()
         .unwrap_or_default();
     let running = agents.active_api_execution_by_slot.contains_key(&slot_id);
-    let expanded = agents.terminal_expanded;
+    let expanded = agents.detail_tab == AgentDetailTab::History;
     let settings = model.settings.read(cx);
     let selected_route = settings.route().cloned();
     let bound_route = binding.as_ref().and_then(|binding| {
@@ -616,7 +630,7 @@ pub(super) fn api_activity_viewer(
     cx: &mut Context<AppModel>,
 ) -> AnyElement {
     let agents = model.agents.read(cx);
-    let expanded = agents.terminal_expanded;
+    let expanded = agents.detail_tab == AgentDetailTab::History;
     let viewer_enabled = agents.viewer_enabled;
     let filter_key = format!("api:{key}");
     let filter = agents
@@ -772,7 +786,7 @@ pub(super) fn api_activity_viewer(
                     },
                     true,
                     cx,
-                    |model, cx| model.toggle_agents_terminal_expanded(cx),
+                    |model, cx| model.toggle_agents_history(cx),
                 )),
         )
         .child({

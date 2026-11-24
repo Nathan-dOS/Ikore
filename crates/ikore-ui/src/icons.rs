@@ -25,7 +25,8 @@ pub(crate) enum Icon {
     Settings,
     /// Notifications.
     Bell,
-    /// System health readout in the header.
+    /// System health readout in the header (kept for `Icon::ALL` asset integrity).
+    #[allow(dead_code)]
     HeartPulse,
     /// Collapse the context rail.
     PanelRightClose,

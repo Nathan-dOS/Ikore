@@ -138,7 +138,7 @@ fn server_requests_and_errors() {
         session.call_tool("broken", json!({})),
         Err(McpError::Server {
             code: -32602,
-            message: "bad arguments".into()
+            message: "Server error details omitted.".into()
         })
     );
     let answers: Vec<Value> = received

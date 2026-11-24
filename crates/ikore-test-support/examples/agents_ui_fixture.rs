@@ -223,6 +223,17 @@ fn seed_profile(root: &Path) {
         })
         .unwrap();
 
+    // Feature 25, M1: enough free-form agents for the canvas's loose area to
+    // wrap onto a second row, and the `New freeform agent` ghost after them.
+    for index in 1..=4 {
+        repository
+            .create_free_form_slot(CreateFreeFormSlotRequest {
+                project_id: project.id.clone(),
+                label: format!("Canvas agent {index}"),
+            })
+            .unwrap();
+    }
+
     // A completed, pathless artifact exercises the native detail tabs without scheduling work.
     let connection = rusqlite::Connection::open(service.database_path()).unwrap();
     connection.execute(

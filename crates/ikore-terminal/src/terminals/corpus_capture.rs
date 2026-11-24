@@ -43,8 +43,8 @@ use tokio::sync::mpsc;
 use super::tests::test_service;
 use super::{
     CliBackend, CliInvocationRequest, Hardening, ProcessTreeJob, TerminalEventEnvelope,
-    TerminalEventKind, TerminalEventSink, ThinkingLevel, adapters, configure_hidden,
-    copy_safe_environment, harden_spec, secure_launch_spec,
+    TerminalEventKind, TerminalEventSink, ThinkingLevel, adapters, copy_safe_environment,
+    harden_spec, secure_launch_spec,
 };
 use crate::test_support::TestDatabase;
 
@@ -219,10 +219,8 @@ async fn capture(
         .env_clear();
     copy_safe_environment(&mut command);
     command.envs(spec.environment.iter().map(|(key, value)| (key, value)));
-    configure_hidden(&mut command);
     let started = Instant::now();
-    let mut child = command.spawn().unwrap();
-    let tree = ProcessTreeJob::assign(&child).unwrap();
+    let (mut child, tree) = ProcessTreeJob::spawn(&mut command).unwrap();
     // A CLI that dies at start-up closes stdin first; what it printed still counts.
     let mut stdin = child.stdin.take().unwrap();
     let _ = stdin.write_all(&spec.stdin_payload).await;

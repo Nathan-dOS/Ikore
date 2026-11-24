@@ -313,9 +313,13 @@ impl ProviderRouter {
             .map_err(|_| super::adapter::sanitization_error())?;
         prepared_request.dispatch.prepared_input = Some(prepared);
         let request = &prepared_request;
-        let mode = if matches!(&request.target, AgentExecutionTarget::FreeForm { .. }) {
-            // FreeForm API execution is explicitly bound per slot. It must never
-            // fall through to the global legacy provider/model configuration.
+        let mode = if matches!(
+            &request.target,
+            AgentExecutionTarget::FreeForm { .. } | AgentExecutionTarget::Automation { .. }
+        ) {
+            // FreeForm API execution is explicitly bound per slot, and a pipeline
+            // step names its route. Neither may fall through to the global legacy
+            // provider/model configuration.
             RoutingMode::On
         } else {
             RoutingMode::parse(&self.repository.routing_mode()?)

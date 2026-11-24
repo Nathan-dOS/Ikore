@@ -436,6 +436,7 @@ fn header(
     window: &Window,
     cx: &mut Context<AppModel>,
 ) -> impl IntoElement {
+    let now_busy = !model.pulsations.read(cx).active_jobs.is_empty();
     let project = model
         .workspace
         .read(cx)
@@ -471,7 +472,12 @@ fn header(
                         .flex()
                         .items_center()
                         .gap_2()
-                        .child(crate::widgets::status_dot(theme::accent()))
+                        .child(crate::animated_icon::status_glyph(
+                            "brand-sphere",
+                            crate::animated_icon::StatusGlyph::Brand { busy: now_busy },
+                            px(14.0),
+                            theme::accent(),
+                        ))
                         .child(
                             div()
                                 .font_family(theme::FONT_MONO)
@@ -586,7 +592,16 @@ fn header_context(model: &AppModel, window: &Window, cx: &mut Context<AppModel>)
             cx.new(|_| crate::widgets::Tooltip::new(tooltip.clone()))
                 .into()
         })
-        .child(crate::widgets::status_dot(now.dot))
+        .child(crate::animated_icon::status_glyph_for_tone(
+            "header-context-glyph",
+            if now.busy {
+                crate::pipeline_status::StatusTone::Active
+            } else {
+                now.tone
+            },
+            px(13.0),
+            now.dot,
+        ))
         .child(
             div()
                 .min_w_0()
@@ -676,11 +691,20 @@ fn header_health(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
             cx.new(|_| crate::widgets::Tooltip::new(tooltip.clone()))
                 .into()
         })
-        .child(crate::widgets::icon(
-            Icon::HeartPulse,
-            crate::widgets::ICON_SIZE,
-            color,
-        ))
+        .child(
+            crate::animated_icon::AnimatedIcon::clip(
+                "header-health-glyph",
+                if needs_resync {
+                    crate::animated_icon::AnimClip::StatusError
+                } else {
+                    crate::animated_icon::AnimClip::HeaderHealth
+                },
+                crate::animated_icon::PlayMode::HoverOneshot,
+                crate::widgets::ICON_SIZE,
+                color,
+            )
+            .hover_pad(px(9.0)),
+        )
         .into_any_element()
 }
 
@@ -770,8 +794,22 @@ fn rail_item(
         Some(shortcut) => crate::widgets::Tooltip::new(view.short_label()).with_shortcut(shortcut),
         None => crate::widgets::Tooltip::new(view.short_label()),
     };
+    let id = SharedString::from(format!("rail-nav-{}", view.id()));
+    if view == AppView::Workspace {
+        return crate::widgets::icon_button_clip(
+            id,
+            view.icon(),
+            crate::animated_icon::AnimClip::NavWorkspace,
+            tooltip,
+            active == view,
+            badge,
+            true,
+            cx,
+            move |model, _, cx| model.select_view(view, cx),
+        );
+    }
     crate::widgets::icon_button(
-        SharedString::from(format!("rail-nav-{}", view.id())),
+        id,
         view.icon(),
         tooltip,
         active == view,
@@ -899,6 +937,8 @@ fn status_bar(model: &AppModel, badges: TabBadges, cx: &mut Context<AppModel>) -
         .and_then(|summary| summary.totals.total_tokens)
         .map(|tokens| tokens.max(0) as u64);
     let clock = model.footer_clock().clone();
+    let (status_glyph, status_dot_color) =
+        crate::animated_icon::status_bar_glyph(&status, needs_resync);
     div()
         .id("status-bar")
         .debug_selector(|| "status-bar".into())
@@ -917,11 +957,12 @@ fn status_bar(model: &AppModel, badges: TabBadges, cx: &mut Context<AppModel>) -
                 .flex()
                 .items_center()
                 .gap_2()
-                .child(crate::widgets::status_dot(if needs_resync {
-                    theme::danger()
-                } else {
-                    theme::success()
-                }))
+                .child(crate::animated_icon::status_glyph(
+                    "status-bar-glyph",
+                    status_glyph,
+                    px(13.0),
+                    status_dot_color,
+                ))
                 .child(
                     div()
                         .min_w_0()

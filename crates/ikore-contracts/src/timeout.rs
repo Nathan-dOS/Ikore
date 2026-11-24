@@ -181,6 +181,17 @@ impl AgentTimeoutPolicy {
         )
     }
 
+    /// Limits for a step of the developer's own pipeline (feature 25): a
+    /// read-only review of the workspace, timed as the Integrator's.
+    pub fn automation() -> Self {
+        Self::new(
+            240_000, // 4 min base
+            90_000,  // 90s silence
+            900_000, // 15 min ceiling
+            30_000,
+        )
+    }
+
     /// Limits for manual or free-form runs.
     pub fn manual() -> Self {
         Self::new(

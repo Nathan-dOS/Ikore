@@ -140,6 +140,10 @@ Review uses complete persisted documents. The derived Brief reads validated
 typed payloads under the same checkpoint identity and state version. It does
 not replace the persisted documents or the host's approval checks. Confirm and
 Flag help compose revision feedback; the Visualizer's note is consultative.
+Its prompt prioritizes the decision-relevant point and explains practical
+implications only when supported by cited brief content. The host keeps layout,
+and the agent cannot invent or reclassify findings. This is a native Review
+Brief aid, not a Markdown-to-HTML plan converter.
 See [ADR-027](adr/README.md#adr-027-review-brief-and-report).
 
 Supported stage failures can park at a checkpoint for the actions offered by
@@ -219,6 +223,15 @@ deadlines, cancellation and secret redaction. Host-controlled project checks
 use a disposable writable candidate of a trusted project; this is not an
 operating system security sandbox. Model-authored claims do not prove that a
 check ran. Accepted execution evidence must come from host receipts.
+
+Windows launches controlled by the terminal subsystem use one shared spawn
+boundary: prepare a kill-on-close Job, create the command suspended, associate
+it, identify and validate its sole initial thread, then release that thread.
+The existing `Command` implementation retains argv, environment and stdio
+handling. Ambiguous thread identity or failed control returns an error and
+cleans up the owned child. Core keeps creation failures distinct from control
+failures in validation receipts. Cleanup covers ordinary failure and unwinding;
+an abrupt host exit before association can still leave a suspended child.
 
 Automatic Feature discovery, Notes Scribe, Documentation Reconciler and
 host-context-only work units use `Hardening::HostContextOnly`: the same native

@@ -196,6 +196,91 @@ impl DraftInputs {
         }
     }
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum BacklogKindFilter {
+    #[default]
+    All,
+    Bug,
+    Feature,
+    Tweaks,
+    Foundation,
+}
+
+impl BacklogKindFilter {
+    pub(crate) fn matches(self, kind: TaskKind) -> bool {
+        match self {
+            Self::All => true,
+            Self::Bug => kind == TaskKind::Bug,
+            Self::Feature => kind == TaskKind::Feature,
+            Self::Tweaks => matches!(
+                kind,
+                TaskKind::Adjustment | TaskKind::Improvement | TaskKind::Refactor
+            ),
+            Self::Foundation => kind == TaskKind::Foundation,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum BacklogStateFilter {
+    #[default]
+    All,
+    Ready,
+    Queued,
+    Done,
+}
+
+impl BacklogStateFilter {
+    pub(crate) fn matches(self, state: &str) -> bool {
+        match self {
+            Self::All => true,
+            Self::Ready => state == "ready",
+            Self::Queued => state == "queued" || state == "running",
+            Self::Done => state == "done",
+        }
+    }
+}
+
+/// Returns `true` if the feature dependency graph contains a directed cycle.
+pub(crate) fn has_dependency_cycle(deps: &[ikore_core::feature_forge::FeatureDependency]) -> bool {
+    let mut adjacency: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut nodes: Vec<&str> = Vec::new();
+    for edge in deps {
+        let from = edge.feature_id.as_str();
+        let to = edge.prerequisite_id.as_str();
+        adjacency.entry(from).or_default().push(to);
+        nodes.push(from);
+        nodes.push(to);
+    }
+    let mut state: HashMap<&str, u8> = HashMap::with_capacity(nodes.len());
+    for start in nodes {
+        if state.contains_key(start) {
+            continue;
+        }
+        let mut stack: Vec<(&str, usize)> = vec![(start, 0)];
+        state.insert(start, 1);
+        while let Some((node, idx)) = stack.last_mut() {
+            let neighbors = adjacency.get(*node).map(Vec::as_slice).unwrap_or(&[]);
+            if *idx < neighbors.len() {
+                let next = neighbors[*idx];
+                *idx += 1;
+                match state.get(next).copied().unwrap_or(0) {
+                    1 => return true,
+                    0 => {
+                        state.insert(next, 1);
+                        stack.push((next, 0));
+                    }
+                    _ => {}
+                }
+            } else {
+                state.insert(*node, 2);
+                stack.pop();
+            }
+        }
+    }
+    false
+}
+
 pub(crate) struct ForgeUi {
     pub snapshot: ForgeSnapshot,
     pub selected_feature: Option<String>,
@@ -215,6 +300,14 @@ pub(crate) struct ForgeUi {
     pub rationale: Entity<NativeTextInput>,
     pub wave_limit: Entity<NativeTextInput>,
     pub filters: Vec<Entity<NativeTextInput>>,
+    pub backlog_search: Entity<NativeTextInput>,
+    pub backlog_kind_filter: BacklogKindFilter,
+    pub backlog_state_filter: BacklogStateFilter,
+    pub expanded_backlog_tasks: HashSet<String>,
+    pub collapsed_spec_sections: HashSet<&'static str>,
+    pub dependencies_focus_mode: bool,
+    pub dependency_search: Entity<NativeTextInput>,
+    _search_subscriptions: Vec<Subscription>,
     pub impact: u8,
     pub confidence: u8,
     pub effort: u8,
@@ -279,6 +372,15 @@ impl ForgeUi {
                 model.forge_action(ForgeAction::Send, cx);
             }
         });
+        let backlog_search =
+            cx.new(|cx| NativeTextInput::new("Search tasks...", cx).leading_inset(gpui::px(22.0)));
+        let dependency_search = cx.new(|cx| {
+            NativeTextInput::new("Filter candidate features...", cx).leading_inset(gpui::px(22.0))
+        });
+        let search_subscriptions = vec![
+            cx.observe(&backlog_search, |_, _, cx| cx.notify()),
+            cx.observe(&dependency_search, |_, _, cx| cx.notify()),
+        ];
         Self {
             snapshot: ForgeSnapshot::default(),
             selected_feature: None,
@@ -311,6 +413,14 @@ impl ForgeUi {
             // chat composer.
             .map(|s| cx.new(|cx| NativeTextInput::new(s, cx).multiline().max_rows(14)))
             .collect(),
+            backlog_search,
+            backlog_kind_filter: BacklogKindFilter::default(),
+            backlog_state_filter: BacklogStateFilter::default(),
+            expanded_backlog_tasks: HashSet::new(),
+            collapsed_spec_sections: HashSet::from(["sources"]),
+            dependencies_focus_mode: false,
+            dependency_search,
+            _search_subscriptions: search_subscriptions,
             impact: 3,
             confidence: 3,
             effort: 3,
@@ -365,6 +475,40 @@ impl ForgeUi {
                     .active_pulsation_id
                     .as_ref()
                     .is_some_and(|id| failed_pulsations.contains(id)))
+    }
+
+    pub fn backlog_task_matches(&self, task: &WorkTask, normalized_query: &str) -> bool {
+        if normalized_query.is_empty() {
+            return true;
+        }
+        if task
+            .draft
+            .title
+            .to_ascii_lowercase()
+            .contains(normalized_query)
+            || task
+                .draft
+                .description
+                .to_ascii_lowercase()
+                .contains(normalized_query)
+            || task.state.to_ascii_lowercase().contains(normalized_query)
+            || task.draft.criteria.iter().any(|c| {
+                c.description
+                    .to_ascii_lowercase()
+                    .contains(normalized_query)
+            })
+        {
+            return true;
+        }
+        match &task.draft.feature_id {
+            Some(feature_id) => self
+                .snapshot
+                .features
+                .iter()
+                .find(|f| &f.id == feature_id)
+                .is_some_and(|f| f.title.to_ascii_lowercase().contains(normalized_query)),
+            None => "standalone task".contains(normalized_query),
+        }
     }
 
     pub fn reconcile_selected_tasks(&mut self, failed_pulsations: &HashSet<String>) {
@@ -669,7 +813,9 @@ pub(crate) enum ForgeAction {
     Dependency(String, bool),
     ConfirmSuggestion(String, String),
     SetLimit,
+    #[allow(dead_code)]
     Rating(usize),
+    #[allow(dead_code)]
     Level,
     Evaluate,
     SelectFeatureTasks(String),
@@ -688,6 +834,22 @@ pub(crate) enum ForgeAction {
     PreflightAdjust,
     PreflightProposeAdr,
     PreflightDismiss,
+    /// UI-only Backlog filters and bulk selection.
+    SetBacklogKindFilter(BacklogKindFilter),
+    SetBacklogStateFilter(BacklogStateFilter),
+    SelectAllReadyTasks,
+    ToggleBacklogTaskDetails(String),
+    /// UI-only Incubation message draft clearing and specification section toggle.
+    ClearMessageDraft,
+    ToggleSpecSection(&'static str),
+    /// Direct 1..=5 ICE rating and 0..=3 structural level selectors in Triage.
+    SetRating(usize, u8),
+    SetLevel(u8),
+    OpenTriageAside,
+    /// UI-only Dependencies focus mode toggle.
+    ToggleDependencyFocusMode,
+    /// Adjust the wave capacity input value by a delta before confirming with Update.
+    AdjustWaveLimit(i32),
 }
 enum Operation {
     EditTask(String, u64, TaskDraft),
@@ -1018,7 +1180,7 @@ impl AppModel {
                 return;
             }
             ForgeAction::SelectFeatureTasks(id) => {
-                self.forge.selected_tasks = self
+                let selected_ids: Vec<String> = self
                     .forge
                     .snapshot
                     .tasks
@@ -1026,6 +1188,20 @@ impl AppModel {
                     .filter(|t| t.draft.feature_id.as_ref() == Some(&id) && t.state == "ready")
                     .map(|t| t.id.clone())
                     .collect();
+                self.forge.selected_tasks = selected_ids.iter().cloned().collect();
+                self.forge
+                    .path_hint_inputs
+                    .retain(|task_id, _| self.forge.selected_tasks.contains(task_id));
+                for task_id in selected_ids {
+                    self.forge
+                        .path_hint_inputs
+                        .entry(task_id)
+                        .or_insert_with(|| {
+                            cx.new(|cx| {
+                                NativeTextInput::new("Optional file override, e.g. src/app.js", cx)
+                            })
+                        });
+                }
                 self.forge.section = ForgeSection::Backlog;
                 cx.notify();
                 return;
@@ -1116,6 +1292,125 @@ impl AppModel {
                 if !prerequisites.is_empty() {
                     self.run_forge(Operation::ClearAgentDependencies(f.id, prerequisites), cx);
                 }
+                return;
+            }
+            ForgeAction::SetBacklogKindFilter(filter) => {
+                self.forge.backlog_kind_filter = filter;
+                cx.notify();
+                return;
+            }
+            ForgeAction::SetBacklogStateFilter(filter) => {
+                self.forge.backlog_state_filter = filter;
+                cx.notify();
+                return;
+            }
+            ForgeAction::SelectAllReadyTasks => {
+                let failed_pulsations: HashSet<String> = self
+                    .pulsations
+                    .read(cx)
+                    .pulsations
+                    .iter()
+                    .filter(|p| {
+                        p.status == ikore_core::persistence_service::PulsationStatus::Failed
+                    })
+                    .map(|p| p.id.clone())
+                    .collect();
+                let query = self
+                    .forge
+                    .backlog_search
+                    .read(cx)
+                    .value()
+                    .trim()
+                    .to_ascii_lowercase();
+                let ids: Vec<String> = self
+                    .forge
+                    .snapshot
+                    .tasks
+                    .iter()
+                    .filter(|t| {
+                        t.state != "superseded"
+                            && self.forge.backlog_kind_filter.matches(t.draft.kind)
+                            && self.forge.backlog_state_filter.matches(&t.state)
+                            && self.forge.backlog_task_matches(t, &query)
+                            && self.forge.is_task_selectable(t, &failed_pulsations)
+                    })
+                    .map(|t| t.id.clone())
+                    .collect();
+                for id in ids {
+                    self.forge
+                        .path_hint_inputs
+                        .entry(id.clone())
+                        .or_insert_with(|| {
+                            cx.new(|cx| {
+                                NativeTextInput::new("Optional file override, e.g. src/app.js", cx)
+                            })
+                        });
+                    self.forge.selected_tasks.insert(id);
+                }
+                cx.notify();
+                return;
+            }
+            ForgeAction::ClearMessageDraft => {
+                self.forge.message.update(cx, |input, cx| input.clear(cx));
+                cx.notify();
+                return;
+            }
+            ForgeAction::ToggleSpecSection(key) => {
+                if !self.forge.collapsed_spec_sections.remove(key) {
+                    self.forge.collapsed_spec_sections.insert(key);
+                }
+                cx.notify();
+                return;
+            }
+            ForgeAction::SetRating(index, value) => {
+                let clamped = value.clamp(1, 5);
+                let target = match index {
+                    0 => &mut self.forge.impact,
+                    1 => &mut self.forge.confidence,
+                    _ => &mut self.forge.effort,
+                };
+                *target = clamped;
+                cx.notify();
+                return;
+            }
+            ForgeAction::SetLevel(level) => {
+                self.forge.level = level.min(3);
+                cx.notify();
+                return;
+            }
+            ForgeAction::OpenTriageAside => {
+                self.forge.triage_aside_open = true;
+                cx.notify();
+                return;
+            }
+            ForgeAction::ToggleDependencyFocusMode => {
+                self.forge.dependencies_focus_mode = !self.forge.dependencies_focus_mode;
+                cx.notify();
+                return;
+            }
+            ForgeAction::AdjustWaveLimit(delta) => {
+                let current = self
+                    .forge
+                    .wave_limit
+                    .read(cx)
+                    .value()
+                    .trim()
+                    .parse::<i32>()
+                    .ok()
+                    .filter(|&v| v > 0)
+                    .unwrap_or_else(|| self.forge.snapshot.current_wave_limit.max(1) as i32);
+                let next = (current + delta).clamp(1, 99);
+                self.forge
+                    .wave_limit
+                    .update(cx, |input, cx| input.set_value(next.to_string(), cx));
+                cx.notify();
+                return;
+            }
+            ForgeAction::ToggleBacklogTaskDetails(task_id) => {
+                if !self.forge.expanded_backlog_tasks.remove(&task_id) {
+                    self.forge.expanded_backlog_tasks.insert(task_id);
+                }
+                cx.notify();
                 return;
             }
             _ => {}
@@ -2550,6 +2845,108 @@ mod tests {
             let f = forge.snapshot.features[0].clone();
             assert!(forge.preflight_block(&f).unwrap().contains("earlier revision"));
             assert!(forge.preflight_operation(&ForgeAction::PreflightProposeAdr, cx).is_none());
+        });
+    }
+
+    #[test]
+    fn has_dependency_cycle_detects_direct_and_transitive_cycles() {
+        use ikore_core::feature_forge::FeatureDependency;
+        let edge = |feature_id: &str, prerequisite_id: &str| FeatureDependency {
+            feature_id: feature_id.into(),
+            prerequisite_id: prerequisite_id.into(),
+            rationale: String::new(),
+            origin: DependencyOrigin::Human,
+        };
+        assert!(!has_dependency_cycle(&[]));
+        // Acyclic diamond: a -> b, a -> c, b -> d, c -> d
+        assert!(!has_dependency_cycle(&[
+            edge("a", "b"),
+            edge("a", "c"),
+            edge("b", "d"),
+            edge("c", "d"),
+        ]));
+        // Self-cycle
+        assert!(has_dependency_cycle(&[edge("a", "a")]));
+        // Transitive cycle: a -> b -> c -> a
+        assert!(has_dependency_cycle(&[
+            edge("a", "b"),
+            edge("b", "c"),
+            edge("c", "a"),
+        ]));
+    }
+
+    #[gpui::test]
+    fn redesigned_forge_actions_update_filters_ratings_level_and_batch_selection(
+        cx: &mut TestAppContext,
+    ) {
+        let model = cx.new(AppModel::new_for_test);
+        model.update(cx, |model, cx| {
+            let mut bug = test_task("bug-1", "ready", None);
+            bug.draft.kind = TaskKind::Bug;
+            bug.draft.title = "Fix expired session".into();
+            let mut tweak = test_task("tweak-1", "ready", None);
+            tweak.draft.kind = TaskKind::Adjustment;
+            tweak.draft.feature_id = Some("feature-1".into());
+            let mut done = test_task("done-1", "done", None);
+            done.draft.kind = TaskKind::Feature;
+            done.draft.feature_id = Some("feature-1".into());
+
+            model.forge.snapshot.tasks = vec![bug, tweak, done];
+            model.forge.snapshot.current_wave_limit = 3;
+
+            // Direct ICE ratings and level clamp cleanly
+            model.forge_action(ForgeAction::SetRating(0, 9), cx);
+            model.forge_action(ForgeAction::SetRating(1, 0), cx);
+            model.forge_action(ForgeAction::SetRating(2, 4), cx);
+            model.forge_action(ForgeAction::SetLevel(7), cx);
+            assert_eq!(model.forge.impact, 5);
+            assert_eq!(model.forge.confidence, 1);
+            assert_eq!(model.forge.effort, 4);
+            assert_eq!(model.forge.level, 3);
+
+            // Section & focus toggles
+            assert!(model.forge.collapsed_spec_sections.contains("sources"));
+            model.forge_action(ForgeAction::ToggleSpecSection("overview"), cx);
+            assert!(model.forge.collapsed_spec_sections.contains("overview"));
+            model.forge_action(ForgeAction::ToggleSpecSection("overview"), cx);
+            assert!(!model.forge.collapsed_spec_sections.contains("overview"));
+
+            assert!(!model.forge.dependencies_focus_mode);
+            model.forge_action(ForgeAction::ToggleDependencyFocusMode, cx);
+            assert!(model.forge.dependencies_focus_mode);
+
+            // Wave limit stepper
+            model.forge_action(ForgeAction::AdjustWaveLimit(1), cx);
+            assert_eq!(model.forge.wave_limit.read(cx).value(), "4");
+            model.forge_action(ForgeAction::AdjustWaveLimit(-10), cx);
+            assert_eq!(model.forge.wave_limit.read(cx).value(), "1");
+
+            // Backlog filters + SelectAllReadyTasks respects active filters and creates path hints
+            model.forge_action(
+                ForgeAction::SetBacklogKindFilter(BacklogKindFilter::Bug),
+                cx,
+            );
+            model.forge_action(
+                ForgeAction::SetBacklogStateFilter(BacklogStateFilter::Ready),
+                cx,
+            );
+            model.forge_action(ForgeAction::SelectAllReadyTasks, cx);
+            assert_eq!(model.forge.selected_tasks.len(), 1);
+            assert!(model.forge.selected_tasks.contains("bug-1"));
+            assert!(model.forge.path_hint_inputs.contains_key("bug-1"));
+
+            // SelectFeatureTasks populates path_hint_inputs for ready feature tasks only
+            model.forge_action(ForgeAction::SelectFeatureTasks("feature-1".into()), cx);
+            assert_eq!(model.forge.section, ForgeSection::Backlog);
+            assert_eq!(model.forge.selected_tasks.len(), 1);
+            assert!(model.forge.selected_tasks.contains("tweak-1"));
+            assert!(model.forge.path_hint_inputs.contains_key("tweak-1"));
+
+            // Backlog task details expand/collapse toggle
+            model.forge_action(ForgeAction::ToggleBacklogTaskDetails("bug-1".into()), cx);
+            assert!(model.forge.expanded_backlog_tasks.contains("bug-1"));
+            model.forge_action(ForgeAction::ToggleBacklogTaskDetails("bug-1".into()), cx);
+            assert!(!model.forge.expanded_backlog_tasks.contains("bug-1"));
         });
     }
 }

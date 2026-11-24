@@ -1987,6 +1987,10 @@ mod tests {
             .unwrap();
         let snapshot = core.runtime_handle().block_on(backend.snapshot()).unwrap();
         let before = harness.credentials().set_call_count();
+        let pause = harness
+            .credentials()
+            .pause_next_set("connection:secret-target");
+        let expected_version = connection.version + 1;
         let app = cx.new(|cx| AppModel::new_for_test_with_settings_backend(backend.clone(), cx));
         app.update(cx, |model, cx| {
             model.settings.update(cx, |settings, _| {
@@ -2017,12 +2021,67 @@ mod tests {
                     .is_empty()
             );
         });
-        for _ in 0..100 {
+        let watchdog = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !pause.entered() && std::time::Instant::now() < watchdog {
             cx.run_until_parked();
-            if harness.credentials().set_call_count() > before {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(
+            pause.entered(),
+            "credential worker did not reach its controlled pause"
+        );
+        assert_eq!(harness.credentials().set_call_count(), before + 1);
+        assert!(!harness.credentials().contains("connection:secret-target"));
+        app.read_with(cx, |model, cx| {
+            let settings = model.settings.read(cx);
+            assert!(settings.busy && settings.in_flight());
+            assert!(settings.error.is_none() && settings.notice.is_none());
+            assert!(
+                model
+                    .settings_connection_secret_input
+                    .read(cx)
+                    .value()
+                    .is_empty()
+            );
+        });
+        pause.release();
+
+        // The counter witnesses an attempted set, not its completion. Wait for
+        // this Save's successful callback and refreshed persisted connection.
+        // Real time is only a deadlock watchdog for the external Tokio worker.
+        let watchdog = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            cx.run_until_parked();
+            let complete = app.read_with(cx, |model, cx| {
+                let settings = model.settings.read(cx);
+                assert!(settings.error.is_none(), "provider save returned an error");
+                let saved = settings
+                    .status_line
+                    .as_ref()
+                    .is_some_and(|(tone, message)| {
+                        *tone == super::StatusTone::Saved
+                            && message.as_ref() == "Connection and credential securely saved."
+                    })
+                    && settings.notice.as_ref().is_some_and(|message| {
+                        message.as_ref() == "Connection and credential securely saved."
+                    });
+                let refreshed = settings.snapshot.as_ref().is_some_and(|snapshot| {
+                    snapshot.connections.iter().any(|connection| {
+                        connection.id == "secret-target"
+                            && connection.version == expected_version
+                            && connection.has_api_key
+                    })
+                });
+                saved && refreshed && !settings.in_flight()
+            });
+            if complete {
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(2));
+            assert!(
+                std::time::Instant::now() < watchdog,
+                "provider save did not publish a completed snapshot"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
 
         assert_eq!(harness.credentials().set_call_count(), before + 1);

@@ -343,7 +343,12 @@ fn decision_card(brief: &ReviewBrief) -> AnyElement {
                 .gap_2()
                 .text_xs()
                 .text_color(theme::text_muted())
-                .child(div().size_2().rounded_full().bg(theme::warning()))
+                .child(crate::animated_icon::status_glyph(
+                    "review-brief-waiting",
+                    crate::animated_icon::StatusGlyph::Attention,
+                    px(13.0),
+                    theme::warning(),
+                ))
                 .child(format!(
                     "{} · WAITING FOR YOUR DECISION",
                     stage.to_uppercase()

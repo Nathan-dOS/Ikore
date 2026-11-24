@@ -135,6 +135,7 @@ impl PipelineStatus {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct NowRunning {
     pub dot: Rgba,
+    pub tone: StatusTone,
     pub text: String,
     /// `true` while some job holds a runtime slot; the header tints its pill only then.
     pub busy: bool,
@@ -183,6 +184,7 @@ impl NowRunning {
             }
             return Self {
                 dot: theme::running(),
+                tone: StatusTone::Active,
                 text,
                 busy: true,
                 also: jobs
@@ -197,6 +199,7 @@ impl NowRunning {
                 let settled = format!("{} · {}", step_label(status.stage), status.state);
                 Self {
                     dot: status.tone.color(),
+                    tone: status.tone,
                     text: if feature.is_empty() {
                         format!("Idle · last: {settled}")
                     } else {
@@ -208,6 +211,7 @@ impl NowRunning {
             }
             None => Self {
                 dot: theme::text_muted(),
+                tone: StatusTone::Idle,
                 text: "Idle · no pulsation yet".into(),
                 busy: false,
                 also: None,

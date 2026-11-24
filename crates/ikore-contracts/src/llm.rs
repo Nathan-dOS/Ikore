@@ -85,6 +85,12 @@ pub enum AgentExecutionTarget {
     FreeForm {
         slot_id: String,
     },
+    /// A step of a developer's pipeline (feature 25) run by API: its own
+    /// terminal slot, routed by the route the step names.
+    Automation {
+        slot_id: String,
+        route_id: String,
+    },
 }
 
 impl AgentExecutionTarget {
@@ -95,6 +101,13 @@ impl AgentExecutionTarget {
     pub fn free_form(slot_id: impl Into<String>) -> Self {
         Self::FreeForm {
             slot_id: slot_id.into(),
+        }
+    }
+
+    pub fn automation(slot_id: impl Into<String>, route_id: impl Into<String>) -> Self {
+        Self::Automation {
+            slot_id: slot_id.into(),
+            route_id: route_id.into(),
         }
     }
 
@@ -109,14 +122,22 @@ impl AgentExecutionTarget {
         match self {
             Self::Canonical { agent_role } => Some(*agent_role),
             Self::Ephemeral { agent_role, .. } => Some(*agent_role),
-            Self::FreeForm { .. } => None,
+            Self::FreeForm { .. } | Self::Automation { .. } => None,
         }
     }
 
     pub fn free_form_slot_id(&self) -> Option<&str> {
         match self {
-            Self::Canonical { .. } | Self::Ephemeral { .. } => None,
+            Self::Canonical { .. } | Self::Ephemeral { .. } | Self::Automation { .. } => None,
             Self::FreeForm { slot_id } => Some(slot_id),
+        }
+    }
+
+    /// The slot of a pipeline step run by API (feature 25).
+    pub fn automation_slot_id(&self) -> Option<&str> {
+        match self {
+            Self::Automation { slot_id, .. } => Some(slot_id),
+            _ => None,
         }
     }
 
@@ -125,6 +146,7 @@ impl AgentExecutionTarget {
             Self::Canonical { agent_role } => format!("canonical:{}", agent_role.as_str()),
             Self::Ephemeral { slot_id, .. } => format!("ephemeral:{slot_id}"),
             Self::FreeForm { slot_id } => format!("free_form:{slot_id}"),
+            Self::Automation { slot_id, .. } => format!("automation:{slot_id}"),
         }
     }
 }

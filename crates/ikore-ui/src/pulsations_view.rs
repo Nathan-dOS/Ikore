@@ -183,7 +183,10 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
                                         px(12.0),
                                         theme::text_subtle(),
                                     ))
-                                    .child(crate::widgets::status_dot(status_color(status)))
+                                    .child(pulsation_status_glyph(
+                                        format!("pulse-group:{status:?}"),
+                                        status,
+                                    ))
                                     .on_click(cx.listener(move |model, _, _, cx| {
                                         model
                                             .pulsations
@@ -615,7 +618,10 @@ fn pulsation_card(
                             },
                         )),
                 )
-                .child(status_dot(pulsation.status)),
+                .child(pulsation_status_glyph(
+                    format!("pulse-card:{}", pulsation.id),
+                    pulsation.status,
+                )),
         )
         .child(
             div()
@@ -2167,8 +2173,16 @@ fn pipeline(current_stage: PulsationStage, status: PulsationStatus) -> impl Into
         )
 }
 
-fn status_dot(status: PulsationStatus) -> impl IntoElement {
-    div().size_2().rounded_full().bg(status_color(status))
+fn pulsation_status_glyph(
+    id: impl Into<gpui::SharedString>,
+    status: PulsationStatus,
+) -> AnyElement {
+    crate::animated_icon::status_glyph_for_tone(
+        id,
+        crate::pipeline_status::StatusTone::for_pulsation(status),
+        px(13.0),
+        status_color(status),
+    )
 }
 
 fn status_pill(status: PulsationStatus, terminal_reason: Option<&str>) -> impl IntoElement {
@@ -2184,7 +2198,7 @@ fn status_pill(status: PulsationStatus, terminal_reason: Option<&str>) -> impl I
         .text_sm()
         .font_weight(gpui::FontWeight::MEDIUM)
         .text_color(color)
-        .child(crate::widgets::status_dot(color))
+        .child(pulsation_status_glyph("pulse-pill", status))
         .child(status_label(status, terminal_reason))
 }
 

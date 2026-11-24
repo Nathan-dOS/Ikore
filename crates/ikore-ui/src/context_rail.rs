@@ -196,7 +196,12 @@ fn pipeline_card(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
                     .gap_2()
                     .text_xs()
                     .text_color(theme::text_muted())
-                    .child(status_dot(status.tone.color()))
+                    .child(crate::animated_icon::status_glyph_for_tone(
+                        "context-rail-status",
+                        status.tone,
+                        px(13.0),
+                        status.tone.color(),
+                    ))
                     .child(format!("{} · {}", status.agent_name, status.state)),
             )
             .into_any_element(),

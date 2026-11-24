@@ -722,8 +722,17 @@ fn workspace_editor_surface(
                         .when(tab.saving, |item| {
                             item.child(
                                 div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_1()
                                     .text_xs()
                                     .text_color(theme::text_muted())
+                                    .child(crate::animated_icon::status_glyph(
+                                        format!("ws-tab-saving:{index}"),
+                                        crate::animated_icon::StatusGlyph::Loading,
+                                        px(12.0),
+                                        theme::running(),
+                                    ))
                                     .child("saving"),
                             )
                         })

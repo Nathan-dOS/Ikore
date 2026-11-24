@@ -78,6 +78,7 @@ pub(crate) fn fixture(cx: &mut Context<AppModel>) -> AppModel {
                         recent_events: vec![],
                     }],
                     archived_free_form_slots: vec![],
+                    automation_slots: Vec::new(),
                     discovery: vec![],
                 },
                 fallbacks: vec![],
@@ -85,6 +86,7 @@ pub(crate) fn fixture(cx: &mut Context<AppModel>) -> AppModel {
                 api_executions: Default::default(),
                 quota_deltas: Default::default(),
                 live_activity: Vec::new(),
+                pipelines: Default::default(),
             },
         );
     });
@@ -1821,6 +1823,29 @@ fn select(model: &Entity<AppModel>, visual: &mut VisualTestContext, view: AppVie
     visual.run_until_parked();
 }
 
+/// Feature 25, M1: the Spec agent's synthesis on the canvas, with `drawer`
+/// open whatever was open before.
+fn open_agent_drawer(
+    model: &Entity<AppModel>,
+    visual: &mut VisualTestContext,
+    drawer: crate::agents::AgentDetailTab,
+) {
+    use crate::agents::AgentDetailTab;
+    click(visual, "agents-node:role:task_specifier");
+    if model.read_with(visual, |m, cx| m.agents.read(cx).detail_tab) == drawer {
+        return;
+    }
+    click(
+        visual,
+        match drawer {
+            AgentDetailTab::Summary => "agents-drawer-close",
+            AgentDetailTab::Configuration => "agents-synthesis-configure",
+            AgentDetailTab::History => "agents-synthesis-history",
+            AgentDetailTab::Run => "agents-synthesis-run",
+        },
+    );
+}
+
 #[gpui::test]
 fn notification_and_direct_selector_overlays_do_not_move_controls(cx: &mut TestAppContext) {
     let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
@@ -1828,7 +1853,7 @@ fn notification_and_direct_selector_overlays_do_not_move_controls(cx: &mut TestA
         visual.simulate_resize(size(px(width), px(height)));
         select(&model, visual, AppView::Agents);
         // The backend selector lives in Configuration (ADR-040 M7).
-        click(visual, "agent-tab:task_specifier:configuration");
+        open_agent_drawer(&model, visual, crate::agents::AgentDetailTab::Configuration);
         let before = visual.debug_bounds("agents-cli-scroll").unwrap();
         let backend = visual.debug_bounds("agent-backend:task_specifier").unwrap();
         click(visual, "agent-backend:task_specifier");
@@ -1882,7 +1907,7 @@ fn changing_project_cancels_an_open_selector_and_isolates_history(cx: &mut TestA
             cx,
         )
     });
-    click(visual, "agent-tab:task_specifier:configuration");
+    open_agent_drawer(&model, visual, crate::agents::AgentDetailTab::Configuration);
     click(visual, "agent-backend:task_specifier");
     model.update(visual, |m, cx| {
         m.workspace
@@ -1910,7 +1935,7 @@ fn changing_project_cancels_an_open_selector_and_isolates_history(cx: &mut TestA
 fn closing_a_selector_does_not_activate_covered_navigation(cx: &mut TestAppContext) {
     let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
     select(&model, visual, AppView::Agents);
-    click(visual, "agent-tab:task_specifier:configuration");
+    open_agent_drawer(&model, visual, crate::agents::AgentDetailTab::Configuration);
     click(visual, "agent-backend:task_specifier");
     click(visual, "rail-settings");
     assert_eq!(
@@ -2663,7 +2688,7 @@ fn the_quota_pill_shows_the_worst_window_and_opens_every_window(cx: &mut TestApp
         // The Agents card of a Codex agent shows the same bars, tightest first,
         // under Configuration (ADR-040 M7).
         select(&model, visual, AppView::Agents);
-        click(visual, "agent-tab:task_specifier:configuration");
+        open_agent_drawer(&model, visual, crate::agents::AgentDetailTab::Configuration);
         let column = visual.debug_bounds("agents-cli-scroll").unwrap();
         let rows = visual.debug_bounds("agent-quota:task_specifier").unwrap();
         assert!(rows.left() >= column.left() && rows.right() <= column.right());
@@ -3598,61 +3623,96 @@ fn an_unvalidated_cli_fallback_offers_validate_switch_or_abort_and_a_flow_step(
     // width would re-measure them forever — see `context_rail_is_absent_on_home_...`.)
 }
 
+/// Feature 25, M1 (criterion 1): the Agents page is a canvas. The default box
+/// carries the pipeline's state in its title; its stages sit on one row, left
+/// to right, a human checkpoint marked on the stages that have one; the other
+/// agents and the `New freeform agent` ghost sit below, without links.
+/// Nothing is chosen for the developer: the synthesis waits for a click.
 #[gpui::test]
-fn agents_header_shows_the_active_pulsation_pipeline(cx: &mut TestAppContext) {
+fn agents_canvas_draws_the_pipeline_box_and_its_nodes(cx: &mut TestAppContext) {
     let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
     select(&model, visual, AppView::Agents);
     for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
         visual.simulate_resize(size(px(width), px(height)));
         visual.run_until_parked();
         let agents_header = visual.debug_bounds("agents-header").unwrap();
-        let pipeline = visual.debug_bounds("agents-pipeline").unwrap();
+        let fit = visual.debug_bounds("agents-fit").unwrap();
         let refresh = visual.debug_bounds("agents-refresh").unwrap();
-        assert!(
-            pipeline.top() >= agents_header.top() && pipeline.bottom() <= agents_header.bottom(),
-            "pipeline escaped header: {pipeline:?} vs {agents_header:?}"
-        );
-        // The stepper is centred on the window, not on whatever is left of the Refresh group.
-        assert!(
-            (pipeline.center().x - agents_header.center().x).abs() <= px(2.0),
-            "pipeline off-centre at {width}: {pipeline:?} vs {agents_header:?}"
-        );
-        assert!(pipeline.right() <= refresh.left());
-        assert!(refresh.right() <= px(width));
-        let mut previous_right = pipeline.left();
-        for selector in [
-            "agents-pipeline-stage-intake",
-            "agents-pipeline-stage-specification",
-            "agents-pipeline-stage-contract",
-            "agents-pipeline-stage-code",
-            "agents-pipeline-stage-test",
-            "agents-pipeline-stage-integrator",
-        ] {
-            let stage_bounds = visual.debug_bounds(selector).unwrap();
+        assert!(fit.top() >= agents_header.top() && fit.bottom() <= agents_header.bottom());
+        assert!(fit.right() <= refresh.left() && refresh.right() <= px(width));
+        // The stepper left the header: the box's title says where the pulsation is.
+        assert!(visual.debug_bounds("agents-pipeline").is_none());
+        let canvas = visual.debug_bounds("agents-canvas").unwrap();
+        let frame = visual.debug_bounds("agents-box:default").unwrap();
+        let title = visual.debug_bounds("agents-box-title:default").unwrap();
+        assert!(frame.left() >= canvas.left() && frame.top() >= canvas.top());
+        assert!(title.top() >= frame.top() && title.bottom() <= frame.bottom());
+        let spec = visual
+            .debug_bounds("agents-node:role:task_specifier")
+            .unwrap();
+        let code = visual
+            .debug_bounds("agents-node:role:backend_agent")
+            .unwrap();
+        assert!(spec.right() < code.left(), "{spec:?} {code:?}");
+        assert_eq!(spec.top(), code.top());
+        let free = visual.debug_bounds("agents-node:slot:slot-free").unwrap();
+        let ghost = visual
+            .debug_bounds("agents-node-ghost:new-free-form")
+            .unwrap();
+        assert!(free.top() > code.bottom() && ghost.top() == free.top());
+        assert!(free.right() <= ghost.left());
+        for node in [spec, code, free, ghost] {
             assert!(
-                stage_bounds.left() >= previous_right && stage_bounds.right() <= pipeline.right(),
-                "{selector} out of order or bounds: {stage_bounds:?} vs {pipeline:?}"
+                node.left() >= frame.left()
+                    && node.right() <= frame.right()
+                    && node.bottom() <= frame.bottom(),
+                "{node:?} outside {frame:?}"
             );
-            previous_right = stage_bounds.right();
         }
+        assert!(
+            visual
+                .debug_bounds("agents-node-gate:role:task_specifier")
+                .is_some()
+        );
+        assert!(
+            visual
+                .debug_bounds("agents-node-gate:role:backend_agent")
+                .is_none()
+        );
+        assert!(visual.debug_bounds("agents-synthesis").is_none());
     }
-    // The stage · agent · state readout lives in the header. This selector was never drawn in
-    // this window, so a direct lookup is enough (no fresh-window dance needed).
-    assert!(visual.debug_bounds("agents-pipeline-current").is_none());
     assert!(model.read_with(visual, |model, cx| {
         model.pulsations.read(cx).active_id().as_deref() == Some("pulse-a")
+            && model.agents.read(cx).selected_agent.is_none()
     }));
 }
 
+/// Feature 25, M1 (criterion 2): a node clicked opens its synthesis on the
+/// right and pins the dock on it; the model picker's scrim keeps the
+/// selection; the background closes the synthesis; an agent in API Mode shows
+/// its API panel.
 #[gpui::test]
 fn agent_selection_and_modal_preserve_detail_geometry(cx: &mut TestAppContext) {
     let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
     visual.simulate_resize(size(px(960.0), px(640.0)));
     select(&model, visual, AppView::Agents);
+    assert!(visual.debug_bounds("agent-card:task_specifier").is_none());
+    click(visual, "agents-node:role:task_specifier");
     assert!(visual.debug_bounds("agent-card:task_specifier").is_some());
-    assert!(visual.debug_bounds("agent-card:backend_agent").is_none());
-    click(visual, "agent-select:backend_agent");
+    click(visual, "agents-node:role:backend_agent");
     assert!(visual.debug_bounds("agent-card:backend_agent").is_some());
+    let synthesis = visual.debug_bounds("agents-synthesis").unwrap();
+    let canvas = visual.debug_bounds("agents-canvas").unwrap();
+    assert!(
+        canvas.right() <= synthesis.left(),
+        "{canvas:?} {synthesis:?}"
+    );
+    assert!(synthesis.size.width >= px(crate::agents_canvas::SYNTHESIS_MIN_WIDTH));
+    let backend = crate::agents::AgentIdentifier::Canonical(AgentRole::BackendAgent);
+    model.read_with(visual, |m, _| {
+        assert!(m.agent_dock.follow.pinned());
+        assert_eq!(m.agent_dock.shown(), Some(backend.clone()));
+    });
     let before = visual.debug_bounds("agents-cli-scroll").unwrap();
     model.update(visual, |model, cx| {
         model.agents.update(cx, |agents, _| {
@@ -3672,53 +3732,35 @@ fn agent_selection_and_modal_preserve_detail_geometry(cx: &mut TestAppContext) {
     assert!(close.left() >= overlay.left() && close.right() <= overlay.right());
     assert!(close.top() >= overlay.top() && close.bottom() <= overlay.bottom());
     // The scrim prevents selection changes behind the modal.
-    click(visual, "agent-select:task_specifier");
+    click(visual, "agents-node:role:task_specifier");
     assert_eq!(
         model.read_with(visual, |model, cx| model
             .agents
             .read(cx)
             .selected_agent
             .clone()),
-        Some(AgentIdentifier::Canonical(AgentRole::BackendAgent))
+        Some(backend.clone())
     );
     assert!(!model.read_with(visual, |m, cx| {
         m.agents.read(cx).active_model_picker.is_some()
     }));
-    visual.simulate_keystrokes("escape");
+    // The scrim's click closes the picker; the next frame draws the page
+    // without it.
+    model.update(visual, |_, cx| cx.notify());
     visual.run_until_parked();
     assert!(visual.debug_bounds("cli-model-picker-content").is_none());
-    model.update(visual, |model, cx| {
-        model.toggle_agents_terminal_expanded(cx)
-    });
-    visual.run_until_parked();
-    assert!(visual.debug_bounds("agents-terminal-expanded").is_some());
-    assert!(visual.debug_bounds("agents-list").is_some());
-    model.update(visual, |model, cx| {
-        model.agents.update(cx, |agents, _| {
-            agents.selected_agent = Some(AgentIdentifier::Canonical(AgentRole::TaskSpecifier));
-        });
-        cx.notify();
-    });
-    visual.run_until_parked();
-    assert!(visual.debug_bounds("agents-terminal-expanded").is_some());
-    assert_eq!(
-        model.read_with(visual, |model, cx| model
-            .agents
-            .read(cx)
-            .selected_agent
-            .clone()),
-        Some(AgentIdentifier::Canonical(AgentRole::TaskSpecifier))
+    // A click on the canvas's background closes the synthesis.
+    let frame = visual.debug_bounds("agents-canvas").unwrap();
+    visual.simulate_click(
+        point(frame.left() + px(4.0), frame.bottom() - px(4.0)),
+        Modifiers::default(),
     );
-    // The visual harness does not consistently route synthetic Escape events
-    // through a newly mounted expanded panel. The production root handler is
-    // covered by the explicit focus/keyboard behavior; keep this geometry
-    // test deterministic by exercising the same collapse action directly.
-    model.update(visual, |model, cx| {
-        model.toggle_agents_terminal_expanded(cx)
-    });
     visual.run_until_parked();
-    assert!(!model.read_with(visual, |model, cx| model.agents.read(cx).terminal_expanded));
-    click(visual, "agent-select:backend_agent");
+    assert_eq!(
+        model.read_with(visual, |m, cx| m.agents.read(cx).selected_agent.clone()),
+        None
+    );
+    click(visual, "agents-node:role:backend_agent");
     model.update(visual, |model, cx| {
         model.agents.update(cx, |agents, _| {
             let snapshot = agents.snapshot.as_mut().unwrap();
@@ -3735,8 +3777,7 @@ fn agent_selection_and_modal_preserve_detail_geometry(cx: &mut TestAppContext) {
     visual.run_until_parked();
     assert!(visual.debug_bounds("agents-api-scroll").is_some());
     assert!(visual.debug_bounds("agent-mode:backend_agent").is_some());
-    assert!(visual.debug_bounds("agent-select:slot-free").is_some());
-    // The detail has the per-target selector; global mode controls are absent by construction.
+    assert!(visual.debug_bounds("agents-node:slot:slot-free").is_some());
 }
 
 #[gpui::test]
@@ -3744,11 +3785,13 @@ fn agents_detail_accepts_vertical_wheel_scrolling(cx: &mut TestAppContext) {
     let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
     visual.simulate_resize(size(px(960.0), px(640.0)));
     select(&model, visual, AppView::Agents);
+    // The Configure drawer is taller than the column (feature 25, M1).
+    open_agent_drawer(&model, visual, crate::agents::AgentDetailTab::Configuration);
 
     let scroll = visual.debug_bounds("agents-cli-scroll").unwrap();
     let before = visual
         .debug_bounds("agent-start:task_specifier")
-        .expect("start action should be present below the agent configuration");
+        .expect("start action should be present in the synthesis header");
     visual.simulate_event(ScrollWheelEvent {
         position: point(scroll.left() + px(12.0), scroll.top() + px(24.0)),
         delta: ScrollDelta::Pixels(point(px(0.0), px(-240.0))),
@@ -3763,7 +3806,7 @@ fn agents_detail_accepts_vertical_wheel_scrolling(cx: &mut TestAppContext) {
 
     assert!(
         after.top() < before.top(),
-        "Agents detail did not move after a downward wheel event: {before:?} -> {after:?}; \
+        "Agents synthesis did not move after a downward wheel event: {before:?} -> {after:?}; \
          panel={panel:?}; header={header:?}; content={content:?}; columns={columns:?}; \
          scroll={scroll:?}"
     );
@@ -3771,7 +3814,8 @@ fn agents_detail_accepts_vertical_wheel_scrolling(cx: &mut TestAppContext) {
 
 /// ADR-040 M2: the console shows the selected run as blocks, newest at the
 /// bottom; scrolling up pauses it and counts what arrives, and the pill
-/// brings the newest block back.
+/// brings the newest block back. On the Agents page it is the dock's
+/// (feature 25, M1).
 #[gpui::test]
 fn agent_console_follows_pauses_and_resumes(cx: &mut TestAppContext) {
     use ikore_core::terminals::{
@@ -3859,17 +3903,14 @@ fn agent_console_follows_pauses_and_resumes(cx: &mut TestAppContext) {
         });
         visual.run_until_parked();
     };
-    // The page first: its own refresh settles before the run starts.
+    // The page first: its own refresh settles before the run starts. A click
+    // on the node pins the dock, whose console is the page's (feature 25, M1).
     select(&model, visual, AppView::Agents);
-    click(visual, "agent-select:task_specifier");
-    model.update(visual, |model, cx| {
-        model.toggle_agents_terminal_expanded(cx)
-    });
-    visual.run_until_parked();
+    click(visual, "agents-node:role:task_specifier");
     deliver(visual, 1..=60);
     let console = visual
-        .debug_bounds("agent-console:task_specifier")
-        .expect("the console replaces the activity panel");
+        .debug_bounds("agent-console:dock")
+        .expect("the dock shows the clicked agent's run");
     // The newest block is in view; the first is far above.
     assert!(visual.debug_bounds("agent-console-block:59").is_some());
     assert!(visual.debug_bounds("agent-console-block:0").is_none());
@@ -3893,7 +3934,7 @@ fn agent_console_follows_pauses_and_resumes(cx: &mut TestAppContext) {
     visual.run_until_parked();
     let (following, unseen) = model.update(visual, |model, cx| {
         model.agents.update(cx, |agents, _| {
-            let surface = agents.consoles.surface_mut("task_specifier");
+            let surface = agents.consoles.surface_mut(crate::agent_dock::DOCK_SURFACE);
             (surface.following(), surface.unseen)
         })
     });
@@ -3991,10 +4032,10 @@ fn deliver_run_event(
 }
 
 /// ADR-040 M3: the dock starts by the window's height, keeps the strip's
-/// height until a run appears, leaves the view above 240 px, and never shows
-/// on Agents.
+/// height until a run appears and leaves the view above 240 px. Feature 25,
+/// M1: it shows on Agents too.
 #[gpui::test]
-fn agent_dock_starts_by_window_height_and_hides_on_agents(cx: &mut TestAppContext) {
+fn agent_dock_starts_by_window_height_and_shows_on_agents(cx: &mut TestAppContext) {
     use ikore_core::terminals::{ExecutionOrigin, TerminalRunStatus};
 
     let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
@@ -4033,12 +4074,12 @@ fn agent_dock_starts_by_window_height_and_hides_on_agents(cx: &mut TestAppContex
     assert!(frame.size.height >= px(240.0), "{frame:?}");
     assert!(frame.bottom() <= dock.top(), "{frame:?} {dock:?}");
 
-    // Agents never shows it, and its state stays for the other views.
+    // Agents shows it as well, over the canvas, and its state stays.
     select(&model, visual, AppView::Agents);
-    assert_eq!(
-        model.read_with(visual, |m, _| m.agent_dock_inset()),
-        px(0.0)
-    );
+    assert!(model.read_with(visual, |m, _| m.agent_dock_inset()) > px(0.0));
+    let dock = visual.debug_bounds("agent-dock").unwrap();
+    let canvas = visual.debug_bounds("agents-canvas").unwrap();
+    assert!(canvas.bottom() <= dock.top(), "{canvas:?} {dock:?}");
     select(&model, visual, AppView::Workspace);
     assert!(model.read_with(visual, |m, _| m.agent_dock_inset()) > px(0.0));
 }
@@ -4390,16 +4431,15 @@ fn an_agent_pulse_reaches_the_status_bar_and_the_console(cx: &mut TestAppContext
         })
     }));
 
-    // On the Agents page, the console shows the provisional action after the
-    // persisted line, and the "now" line under it.
+    // On the Agents page the dock's console shows the provisional action
+    // after the persisted line, and the synthesis says what the run does now
+    // (feature 25, M1).
     select(&model, visual, AppView::Agents);
-    click(visual, "agent-select:task_specifier");
-    model.update(visual, |m, cx| m.toggle_agents_terminal_expanded(cx));
-    visual.run_until_parked();
+    click(visual, "agents-node:role:task_specifier");
     assert!(visual.debug_bounds("agent-console-block:1").is_some());
     assert!(
         visual
-            .debug_bounds("agent-console-now:task_specifier")
+            .debug_bounds("agents-synthesis-now:task_specifier")
             .is_some()
     );
 }
@@ -4454,11 +4494,13 @@ fn an_api_route_is_followed_like_a_run(cx: &mut TestAppContext) {
     assert_eq!(model.read_with(visual, |m, _| m.agent_dock.tabs().len()), 1);
 }
 
-/// ADR-040 M7 (12.1): the list shows the pipeline's stages, then the support
-/// agents, then the free-form slots with the archived ones folded; a failed
-/// run marks its agent for attention.
+/// Feature 25, M1 (layout and R3): the stages on their row in the pipeline's
+/// order; the support agents, then the free-form ones, below; archived
+/// free-form agents stay off the canvas, counted in the box's footer, which
+/// lists them with `Restore` and `Delete`. A node's state by its run is
+/// `canvas_node`'s unit test.
 #[gpui::test]
-fn agents_list_groups_the_agents_and_folds_the_archived(cx: &mut TestAppContext) {
+fn agents_canvas_orders_the_agents_and_counts_the_archived(cx: &mut TestAppContext) {
     use ikore_core::terminals::{ExecutionOrigin, TerminalRunStatus};
 
     let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
@@ -4467,7 +4509,7 @@ fn agents_list_groups_the_agents_and_folds_the_archived(cx: &mut TestAppContext)
     model.update(visual, |model, cx| {
         model.agents.update(cx, |agents, _| {
             let snapshot = agents.snapshot.as_mut().unwrap();
-            // A support agent ahead of the stages in the snapshot still lists after them.
+            // A support agent ahead of the stages in the snapshot still sits after them.
             let mut feature = snapshot.agents[0].clone();
             feature.config.agent_role = AgentRole::FeatureAgent;
             snapshot.agents.insert(0, feature);
@@ -4486,63 +4528,62 @@ fn agents_list_groups_the_agents_and_folds_the_archived(cx: &mut TestAppContext)
         cx.notify();
     });
     visual.run_until_parked();
-    let order = [
-        "agents-group:pipeline",
-        "agent-select:task_specifier",
-        "agent-select:backend_agent",
-        "agents-group:support",
-        "agent-select:feature_agent",
-        "agents-group:free-form",
-        "agent-select:slot-free",
-        "agents-archived-toggle",
-    ];
-    for pair in order.windows(2) {
-        let above = visual
-            .debug_bounds(pair[0])
-            .unwrap_or_else(|| panic!("missing {}", pair[0]));
-        let below = visual
-            .debug_bounds(pair[1])
-            .unwrap_or_else(|| panic!("missing {}", pair[1]));
-        assert!(
-            above.top() < below.top(),
-            "{} is not above {}",
-            pair[0],
-            pair[1]
-        );
-    }
+    let spec = visual
+        .debug_bounds("agents-node:role:task_specifier")
+        .unwrap();
+    let code = visual
+        .debug_bounds("agents-node:role:backend_agent")
+        .unwrap();
+    let feature = visual
+        .debug_bounds("agents-node:role:feature_agent")
+        .unwrap();
+    let free = visual.debug_bounds("agents-node:slot:slot-free").unwrap();
+    assert!(spec.right() < code.left() && spec.top() == code.top());
+    assert!(feature.top() > code.bottom());
+    assert!(feature.right() <= free.left() && feature.top() == free.top());
+    model.read_with(visual, |m, cx| {
+        let agents = m.agents.read(cx);
+        let snapshot = agents.snapshot.as_ref().unwrap();
+        assert_eq!(snapshot.archived_free_form_slots.len(), 1);
+    });
+    // The archived agent is off the canvas; the footer counts it.
     assert!(
         visual
-            .debug_bounds("agent-transport:task_specifier")
-            .is_some()
-    );
-    assert!(visual.debug_bounds("agent-transport:slot-free").is_some());
-    assert!(
-        visual
-            .debug_bounds("agent-attention:task_specifier")
-            .is_some()
-    );
-    assert!(
-        visual
-            .debug_bounds("agent-attention:backend_agent")
+            .debug_bounds("agents-node:slot:slot-archived")
             .is_none()
     );
-    // The archived slot shows once its group is unfolded.
-    assert!(visual.debug_bounds("agent-select:slot-archived").is_none());
-    click(visual, "agents-archived-toggle");
+    let footer = visual.debug_bounds("agents-box-archived").unwrap();
+    let frame = visual.debug_bounds("agents-box:default").unwrap();
+    assert!(footer.top() >= free.bottom() && footer.bottom() <= frame.bottom());
+    click(visual, "agents-box-archived");
     assert!(model.read_with(visual, |m, cx| m.agents.read(cx).show_archived));
-    assert!(visual.debug_bounds("agent-select:slot-archived").is_some());
+    assert!(visual.debug_bounds("agents-drawer:archived").is_some());
+    assert!(
+        visual
+            .debug_bounds("free-form-restore:slot-archived")
+            .is_some()
+    );
+    assert!(
+        visual
+            .debug_bounds("free-form-archived-delete:slot-archived")
+            .is_some()
+    );
+    click(visual, "agents-drawer-close");
+    assert!(!model.read_with(visual, |m, cx| m.agents.read(cx).show_archived));
 }
 
-/// ADR-040 M7 (12.2): the header keeps the agent, its model and Start over
-/// every tab; Configuration holds the transport and the backend; a History
-/// row opens its run in Activity.
+/// Feature 25, M1 (R12, R13): the synthesis's header keeps the agent, its
+/// model and Start whatever the drawer; `Configure` holds the transport and
+/// the backend; a History row pins the dock on its run, with the chip that
+/// brings the latest back.
 #[gpui::test]
-fn agent_detail_tabs_keep_the_header_and_history_opens_a_run(cx: &mut TestAppContext) {
+fn agent_drawers_keep_the_header_and_history_pins_the_dock_on_a_run(cx: &mut TestAppContext) {
     use crate::agents::AgentDetailTab;
     use ikore_core::terminals::{ExecutionOrigin, TerminalRunStatus};
 
     let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
-    visual.simulate_resize(size(px(1280.0), px(820.0)));
+    // Tall enough for the History drawer to show its rows above the dock.
+    visual.simulate_resize(size(px(1440.0), px(1400.0)));
     select(&model, visual, AppView::Agents);
     model.update(visual, |model, cx| {
         model.agents.update(cx, |agents, _| {
@@ -4565,20 +4606,25 @@ fn agent_detail_tabs_keep_the_header_and_history_opens_a_run(cx: &mut TestAppCon
         cx.notify();
     });
     visual.run_until_parked();
-    click(visual, "agent-select:task_specifier");
+    click(visual, "agents-node:role:task_specifier");
     let tab = |model: &Entity<AppModel>, visual: &mut VisualTestContext| {
         model.read_with(visual, |m, cx| m.agents.read(cx).detail_tab)
     };
-    // Activity first: the console under the header.
-    assert_eq!(tab(&model, visual), AgentDetailTab::Activity);
+    // The summary first: no console on the page, the drawers under the header.
+    assert_eq!(tab(&model, visual), AgentDetailTab::Summary);
     let header = visual.debug_bounds("agent-header:task_specifier").unwrap();
-    let console = visual
-        .debug_bounds("agent-console-filter:task_specifier")
+    let actions = visual
+        .debug_bounds("agents-synthesis-actions:task_specifier")
         .unwrap();
-    assert!(header.bottom() <= console.top());
+    assert!(header.bottom() <= actions.top());
     assert!(visual.debug_bounds("agent-start:task_specifier").is_some());
+    assert!(
+        visual
+            .debug_bounds("agent-console-filter:task_specifier")
+            .is_none()
+    );
 
-    click(visual, "agent-tab:task_specifier:configuration");
+    click(visual, "agents-synthesis-configure");
     assert_eq!(tab(&model, visual), AgentDetailTab::Configuration);
     let transport = visual.debug_bounds("agent-mode:task_specifier").unwrap();
     let backend = visual.debug_bounds("agent-backend:task_specifier").unwrap();
@@ -4588,51 +4634,79 @@ fn agent_detail_tabs_keep_the_header_and_history_opens_a_run(cx: &mut TestAppCon
         header
     );
 
-    click(visual, "agent-tab:task_specifier:history");
+    click(visual, "agents-synthesis-history");
     assert_eq!(tab(&model, visual), AgentDetailTab::History);
     let table = visual.debug_bounds("agent-history").unwrap();
     assert!(header.bottom() <= table.top());
-    // Newest first; the older run opens in Activity.
+    // Newest first; the older run opens in the dock, which stays pinned on it.
     let newer = visual.debug_bounds("agent-history-row:0").unwrap();
     let older = visual.debug_bounds("agent-history-row:1").unwrap();
     assert!(newer.top() < older.top());
-    click(visual, "agent-history-row:1");
-    assert_eq!(tab(&model, visual), AgentDetailTab::Activity);
+    // The table scrolls across in the drawer: the row's start is in view.
+    visual.simulate_click(
+        point(older.left() + px(24.0), older.center().y),
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    assert_eq!(tab(&model, visual), AgentDetailTab::History);
+    let spec = crate::agents::AgentIdentifier::Canonical(AgentRole::TaskSpecifier);
+    model.read_with(visual, |m, cx| {
+        assert_eq!(
+            m.agents
+                .read(cx)
+                .selected_run_by_role
+                .get(&AgentRole::TaskSpecifier)
+                .cloned(),
+            Some("run-old".to_owned())
+        );
+        assert_eq!(m.agent_dock.chosen_run_of(&spec), Some("run-old"));
+        assert_eq!(m.agent_dock.shown(), Some(spec.clone()));
+    });
+    assert!(visual.debug_bounds("agent-dock-run-chip").is_some());
+    click(visual, "agent-dock-run-chip");
     assert_eq!(
-        model.read_with(visual, |m, cx| m
-            .agents
-            .read(cx)
-            .selected_run_by_role
-            .get(&AgentRole::TaskSpecifier)
-            .cloned()),
-        Some("run-old".to_owned())
+        model.read_with(visual, |m, _| m
+            .agent_dock
+            .chosen_run_of(&spec)
+            .map(str::to_owned)),
+        None
+    );
+    // `Esc` closes the drawer, then the synthesis.
+    model.update(visual, |m, cx| assert!(m.dismiss_agents_synthesis(cx)));
+    assert_eq!(tab(&model, visual), AgentDetailTab::Summary);
+    model.update(visual, |m, cx| assert!(m.dismiss_agents_synthesis(cx)));
+    assert_eq!(
+        model.read_with(visual, |m, cx| m.agents.read(cx).selected_agent.clone()),
+        None
     );
 }
 
-/// ADR-040 M7: `Ctrl+Shift+]` and `Ctrl+Shift+[`, the other views' section
-/// keys, walk the agent detail's tabs, both ways round; a tab takes the focus.
+/// ADR-040 M7, then feature 25 M1: `Ctrl+Shift+]` and `Ctrl+Shift+[`, the
+/// other views' section keys, walk the synthesis's drawers both ways round;
+/// the canvas takes the focus with the click on its node.
 #[gpui::test]
-fn agent_detail_tabs_follow_the_section_keys(cx: &mut TestAppContext) {
+fn agent_drawers_follow_the_section_keys(cx: &mut TestAppContext) {
     use crate::agents::AgentDetailTab;
 
     let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
     visual.update(|_, cx| crate::shell::register_navigation_keybindings(cx));
     visual.simulate_resize(size(px(1280.0), px(820.0)));
     select(&model, visual, AppView::Agents);
-    click(visual, "agent-select:task_specifier");
-    click(visual, "agent-tab:task_specifier:activity");
+    click(visual, "agents-node:role:task_specifier");
     assert!(
         visual.update(|window, cx| window.focused(cx)).is_some(),
-        "a tab is focusable"
+        "the canvas is focusable"
     );
     let tab = |model: &Entity<AppModel>, visual: &mut VisualTestContext| {
         model.read_with(visual, |m, cx| m.agents.read(cx).detail_tab)
     };
-    assert_eq!(tab(&model, visual), AgentDetailTab::Activity);
+    assert_eq!(tab(&model, visual), AgentDetailTab::Summary);
     for (keys, expected) in [
         ("ctrl-shift-]", AgentDetailTab::Configuration),
         ("ctrl-shift-]", AgentDetailTab::History),
-        ("ctrl-shift-]", AgentDetailTab::Activity),
+        ("ctrl-shift-]", AgentDetailTab::Run),
+        ("ctrl-shift-]", AgentDetailTab::Summary),
+        ("ctrl-shift-[", AgentDetailTab::Run),
         ("ctrl-shift-[", AgentDetailTab::History),
         ("ctrl-shift-[", AgentDetailTab::Configuration),
     ] {
@@ -4647,15 +4721,59 @@ fn agent_detail_tabs_follow_the_section_keys(cx: &mut TestAppContext) {
     );
 }
 
-/// ADR-040 M7: every action of the old page is still reachable, with the same
-/// confirmations: transport, backend, profile and model; Start and Resume;
-/// the run's history; the slot's controls, archive and delete.
+/// Feature 25, M1: arrows walk the nodes, `Enter` opens the synthesis of the
+/// node they reached, and `Esc` closes it.
+#[gpui::test]
+fn agents_canvas_answers_the_arrows_enter_and_escape(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(1280.0), px(820.0)));
+    select(&model, visual, AppView::Agents);
+    click(visual, "agents-node:role:task_specifier");
+    let selected = |model: &Entity<AppModel>, visual: &mut VisualTestContext| {
+        model.read_with(visual, |m, cx| m.agents.read(cx).selected_agent.clone())
+    };
+    visual.simulate_keystrokes("right");
+    visual.run_until_parked();
+    // The arrows move the keyboard's mark; the synthesis stays until Enter.
+    assert_eq!(
+        selected(&model, visual),
+        Some(crate::agents::AgentIdentifier::Canonical(
+            AgentRole::TaskSpecifier
+        ))
+    );
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    assert_eq!(
+        selected(&model, visual),
+        Some(crate::agents::AgentIdentifier::Canonical(
+            AgentRole::BackendAgent
+        ))
+    );
+    visual.simulate_keystrokes("down enter");
+    visual.run_until_parked();
+    assert_eq!(
+        selected(&model, visual),
+        Some(crate::agents::AgentIdentifier::FreeForm("slot-free".into()))
+    );
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    assert_eq!(selected(&model, visual), None);
+}
+
+/// ADR-040 M7, then feature 25 M1 (criterion 3, R12): every action of the old
+/// page is still reachable from the synthesis and its drawers, with the same
+/// confirmations: Start and Resume in the header; the runs' history, copy,
+/// export and clear in History; the prompt in `Run…`; transport, backend,
+/// profile and model in Configure; and the free-form agent's own controls,
+/// with `Move earlier` and `Move later`, archive and delete.
 #[gpui::test]
 fn agents_actions_stay_reachable_with_their_confirmations(cx: &mut TestAppContext) {
+    use crate::agents::AgentDetailTab;
     use ikore_core::terminals::{ExecutionOrigin, TerminalRunStatus};
 
     let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
-    visual.simulate_resize(size(px(1280.0), px(820.0)));
+    // Tall enough for the History drawer to show its rows above the dock.
+    visual.simulate_resize(size(px(1440.0), px(1400.0)));
     select(&model, visual, AppView::Agents);
     model.update(visual, |model, cx| {
         model.agents.update(cx, |agents, _| {
@@ -4670,7 +4788,6 @@ fn agents_actions_stay_reachable_with_their_confirmations(cx: &mut TestAppContex
         cx.notify();
     });
     visual.run_until_parked();
-    click(visual, "agent-select:task_specifier");
     let present = |visual: &mut VisualTestContext, selectors: &[&'static str]| {
         for selector in selectors {
             assert!(
@@ -4679,12 +4796,30 @@ fn agents_actions_stay_reachable_with_their_confirmations(cx: &mut TestAppContex
             );
         }
     };
-    // The header and Activity: the actions, the runs and their history.
+    click(visual, "agents-node:role:task_specifier");
+    // The header: Start and Resume; the drawers under it.
     present(
         visual,
         &[
             "agent-start:task_specifier",
             "agent-resume:task_specifier",
+            "agents-synthesis-configure",
+            "agents-synthesis-history",
+            "agents-synthesis-run",
+        ],
+    );
+    // `Run…`: the prompt for a manual run.
+    open_agent_drawer(&model, visual, AgentDetailTab::Run);
+    present(
+        visual,
+        &["agents-drawer:run", "info:agent-stdin:task_specifier"],
+    );
+    // History: the runs, their navigation, copy, export and clear.
+    open_agent_drawer(&model, visual, AgentDetailTab::History);
+    present(
+        visual,
+        &[
+            "agent-history",
             "agent-history-older:task_specifier",
             "agent-history-newer:task_specifier",
             "agent-history-clear:task_specifier",
@@ -4704,8 +4839,8 @@ fn agents_actions_stay_reachable_with_their_confirmations(cx: &mut TestAppContex
             1
         );
     });
-    // Configuration: transport, backend, profile and model.
-    click(visual, "agent-tab:task_specifier:configuration");
+    // Configure: transport, backend, profile and model.
+    open_agent_drawer(&model, visual, crate::agents::AgentDetailTab::Configuration);
     present(
         visual,
         &[
@@ -4715,8 +4850,13 @@ fn agents_actions_stay_reachable_with_their_confirmations(cx: &mut TestAppContex
             "agent-model:task_specifier",
         ],
     );
-    // The free-form slot: New session in the header, its controls in Configuration.
-    click(visual, "agent-select:slot-free");
+    // The free-form agent: New session in the header, its controls in Configure.
+    click(visual, "agents-node:slot:slot-free");
+    if model.read_with(visual, |m, cx| m.agents.read(cx).detail_tab)
+        != AgentDetailTab::Configuration
+    {
+        click(visual, "agents-synthesis-configure");
+    }
     present(
         visual,
         &[
@@ -4743,24 +4883,64 @@ fn agents_actions_stay_reachable_with_their_confirmations(cx: &mut TestAppContex
         );
         assert_eq!(agents.snapshot.as_ref().unwrap().free_form_slots.len(), 1);
     });
+    // The ghost creates a free-form agent while there is room for one.
+    assert!(
+        visual
+            .debug_bounds("agents-node-ghost:new-free-form")
+            .is_some()
+    );
+    // A pipeline run's Stop asks first: it cancels the whole pulsation.
+    model.update(visual, |model, cx| {
+        model.agents.update(cx, |agents, _| {
+            let snapshot = agents.snapshot.as_mut().unwrap();
+            let mut run = dock_run(
+                AgentRole::TaskSpecifier,
+                "pipeline-run",
+                ExecutionOrigin::Pipeline,
+                TerminalRunStatus::Running,
+            );
+            run.pulsation_id = Some("pulse-a".into());
+            snapshot.agents[0].recent_runs = vec![run];
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    click(visual, "agents-node:role:task_specifier");
+    click(visual, "agent-stop:task_specifier");
+    assert_eq!(
+        model.read_with(visual, |m, cx| m
+            .agents
+            .read(cx)
+            .pending_pipeline_cancel
+            .clone()),
+        Some("pulse-a".to_owned())
+    );
 }
 
-/// ADR-040 M7 (ADR-012, item 10): in the three sizes the list and the detail
-/// sit side by side, and the header keeps its actions inside the detail,
-/// above the tabs.
+/// Feature 25, M1 (ADR-012, item 10): in the three sizes the canvas and the
+/// synthesis sit side by side, the synthesis at least 300 px wide, with the
+/// header's actions inside it and the drawers under the header.
 #[gpui::test]
 fn agents_page_fits_the_three_sizes(cx: &mut TestAppContext) {
     let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
     select(&model, visual, AppView::Agents);
-    click(visual, "agent-select:task_specifier");
+    click(visual, "agents-node:role:task_specifier");
     for (width, height) in [(960.0, 640.0), (1280.0, 820.0), (2560.0, 1440.0)] {
         visual.simulate_resize(size(px(width), px(height)));
         visual.run_until_parked();
-        let list = visual.debug_bounds("agents-list").unwrap();
+        // The split measures on the frame before: one more frame settles it.
+        model.update(visual, |_, cx| cx.notify());
+        visual.run_until_parked();
+        let canvas = visual.debug_bounds("agents-canvas").unwrap();
         let detail = visual.debug_bounds("agents-cli-scroll").unwrap();
+        let synthesis = visual.debug_bounds("agents-synthesis").unwrap();
         assert!(
-            list.right() <= detail.left(),
-            "{width}: {list:?} {detail:?}"
+            canvas.right() <= synthesis.left(),
+            "{width}: {canvas:?} {synthesis:?}"
+        );
+        assert!(
+            synthesis.size.width >= px(crate::agents_canvas::SYNTHESIS_MIN_WIDTH),
+            "{width}: {synthesis:?}"
         );
         assert!(detail.right() <= px(width), "{width}: {detail:?}");
         let header = visual.debug_bounds("agent-header:task_specifier").unwrap();
@@ -4776,13 +4956,13 @@ fn agents_page_fits_the_three_sizes(cx: &mut TestAppContext) {
                 && start.bottom() <= header.bottom(),
             "{width}: {start:?} {header:?}"
         );
-        for id in ["activity", "configuration", "history"] {
-            let tab = visual
-                .debug_bounds(leak(format!("agent-tab:task_specifier:{id}")))
+        for id in ["configure", "history", "run"] {
+            let button = visual
+                .debug_bounds(leak(format!("agents-synthesis-{id}")))
                 .unwrap();
             assert!(
-                tab.top() >= header.bottom() && tab.right() <= detail.right(),
-                "{width}: {id} {tab:?} {header:?}"
+                button.top() >= header.bottom() && button.right() <= detail.right(),
+                "{width}: {id} {button:?} {header:?}"
             );
         }
     }
@@ -4828,11 +5008,15 @@ fn a_stage_run_lists_its_changes_and_opens_them_in_the_diff_tab(cx: &mut TestApp
         cx.notify();
     });
     visual.run_until_parked();
-    click(visual, "agent-select:task_specifier");
-    let console = visual.debug_bounds("agent-console:task_specifier").unwrap();
-    let card = visual
-        .debug_bounds("agent-console-changes:task_specifier")
-        .unwrap();
+    click(visual, "agents-node:role:task_specifier");
+    // A dock tall enough for the run's last blocks and its changes.
+    model.update(visual, |model, cx| {
+        model.agent_dock.height = Some(480.0);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let console = visual.debug_bounds("agent-console:dock").unwrap();
+    let card = visual.debug_bounds("agent-console-changes:dock").unwrap();
     assert!(
         card.top() >= console.top() && card.bottom() <= console.bottom(),
         "{card:?} {console:?}"
@@ -4840,17 +5024,17 @@ fn a_stage_run_lists_its_changes_and_opens_them_in_the_diff_tab(cx: &mut TestApp
     for index in 0..3 {
         assert!(
             visual
-                .debug_bounds(leak(format!("agent-console-change:task_specifier:{index}")))
+                .debug_bounds(leak(format!("agent-console-change:dock:{index}")))
                 .is_some()
         );
     }
     assert!(
         visual
-            .debug_bounds("agent-console-changes-more:task_specifier")
+            .debug_bounds("agent-console-changes-more:dock")
             .is_some()
     );
 
-    click(visual, "agent-console-change:task_specifier:1");
+    click(visual, "agent-console-change:dock:1");
     model.read_with(visual, |m, _| {
         assert_eq!(m.work_panel.tab, WorkPanelTab::Diff);
         let diff = m.work_panel.diff.as_ref().unwrap();
@@ -5208,6 +5392,21 @@ fn the_mcp_page_lists_servers_tools_and_the_form(cx: &mut TestAppContext) {
     assert!(visual.debug_bounds("mcp-add-variable").is_some());
     model.update(visual, |model, cx| model.add_mcp_variable(cx));
     visual.run_until_parked();
+    // Keep command/argument sentinels in the actual native form, without saving
+    // or launching them. They must not escape through the form or parent Debug.
+    const C004_UI_COMMAND: &str = "C004UiCommandOpaque-7nR8vTq2";
+    const C004_UI_ARGUMENT: &str = "sk-proj-syntheticc004uiabcdefghijklmnopqrstuv";
+    model.update(visual, |model, cx| {
+        let (command, args) = {
+            let form = model.settings.read(cx).mcp.form.as_ref().unwrap();
+            (form.command.clone(), form.args.clone())
+        };
+        command.update(cx, |input, cx| input.set_value(C004_UI_COMMAND, cx));
+        args.update(cx, |input, cx| {
+            input.set_value(format!("--credential={C004_UI_ARGUMENT}"), cx)
+        });
+    });
+    visual.run_until_parked();
     model.read_with(visual, |m, cx| {
         let form = m.settings.read(cx).mcp.form.as_ref().unwrap();
         assert_eq!(
@@ -5215,6 +5414,21 @@ fn the_mcp_page_lists_servers_tools_and_the_form(cx: &mut TestAppContext) {
             [("API_TOKEN".to_owned(), Some("secret-value".to_owned()))]
         );
         assert!(form.value.read(cx).value().is_empty());
+        // REV-0002 C004: the hidden value must not reappear through Debug,
+        // including the parent Settings state that contains this form.
+        assert_eq!(form.command.read(cx).value(), C004_UI_COMMAND);
+        assert!(form.args.read(cx).value().contains(C004_UI_ARGUMENT));
+        let form_debug = format!("{form:?}");
+        assert!(form_debug.contains("API_TOKEN"));
+        let settings_debug = format!("{:?}", m.settings.read(cx).mcp);
+        for debug in [form_debug, settings_debug] {
+            for secret in ["secret-value", C004_UI_COMMAND, C004_UI_ARGUMENT] {
+                assert!(
+                    !debug.contains(secret),
+                    "a fixture value reached native MCP Debug"
+                );
+            }
+        }
     });
     assert!(visual.debug_bounds("mcp-cancel").is_some());
     model.update(visual, |model, cx| model.cancel_mcp_form(cx));
@@ -5260,6 +5474,7 @@ fn agents_api_detail_accepts_vertical_wheel_scrolling(cx: &mut TestAppContext) {
     });
     visual.simulate_resize(size(px(960.0), px(640.0)));
     select(&model, visual, AppView::Agents);
+    click(visual, "agents-node:role:task_specifier");
 
     let scroll = visual.debug_bounds("agents-api-scroll").unwrap();
     let before = visual
@@ -5305,8 +5520,10 @@ fn agent_logs_detail_accepts_vertical_wheel_scrolling(cx: &mut TestAppContext) {
     );
 }
 
+/// Feature 25, M1: the wheel pans the canvas; `Ctrl` with the wheel zooms it,
+/// between 0.5× and 2×; `Fit` frames every box again.
 #[gpui::test]
-fn agents_list_accepts_vertical_wheel_scrolling(cx: &mut TestAppContext) {
+fn agents_canvas_pans_with_the_wheel_and_zooms_with_ctrl(cx: &mut TestAppContext) {
     let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
     model.update(visual, |model, cx| {
         model.agents.update(cx, |agents, _| {
@@ -5325,22 +5542,39 @@ fn agents_list_accepts_vertical_wheel_scrolling(cx: &mut TestAppContext) {
     });
     visual.simulate_resize(size(px(960.0), px(640.0)));
     select(&model, visual, AppView::Agents);
+    click(visual, "agents-fit");
 
-    let scroll = visual.debug_bounds("agents-list").unwrap();
-    let before = visual
-        .debug_bounds("agent-select:slot-free")
-        .expect("FreeForm item should be present at the end of the agent list");
+    let canvas = visual.debug_bounds("agents-canvas").unwrap();
+    let fitted = visual.debug_bounds("agents-node:slot:slot-free").unwrap();
     visual.simulate_event(ScrollWheelEvent {
-        position: point(scroll.left() + px(12.0), scroll.top() + px(24.0)),
-        delta: ScrollDelta::Pixels(point(px(0.0), px(-240.0))),
+        position: point(canvas.left() + px(12.0), canvas.top() + px(24.0)),
+        delta: ScrollDelta::Pixels(point(px(0.0), px(-120.0))),
         ..Default::default()
     });
     visual.run_until_parked();
-    let after = visual.debug_bounds("agent-select:slot-free").unwrap();
-
+    let panned = visual.debug_bounds("agents-node:slot:slot-free").unwrap();
     assert!(
-        after.top() < before.top(),
-        "Agent list did not move after a downward wheel event: {before:?} -> {after:?}"
+        panned.top() < fitted.top(),
+        "the canvas did not pan: {fitted:?} -> {panned:?}"
+    );
+    assert_eq!(panned.size, fitted.size);
+    visual.simulate_event(ScrollWheelEvent {
+        position: canvas.center(),
+        delta: ScrollDelta::Pixels(point(px(0.0), px(-600.0))),
+        modifiers: Modifiers::control(),
+        ..Default::default()
+    });
+    visual.run_until_parked();
+    let zoomed = visual.debug_bounds("agents-node:slot:slot-free").unwrap();
+    assert!(
+        zoomed.size.width > panned.size.width,
+        "{panned:?} -> {zoomed:?}"
+    );
+    assert!(zoomed.size.width <= px(148.0 * 2.0 + 0.5));
+    click(visual, "agents-fit");
+    assert_eq!(
+        visual.debug_bounds("agents-node:slot:slot-free").unwrap(),
+        fitted
     );
 }
 
@@ -5703,14 +5937,26 @@ fn ui_source_contains_no_unapproved_portuguese_literals() {
     let src_dir = manifest_dir.join("src");
     let allowed_files = ["text_input.rs", "native_editor.rs"];
 
-    let mut violations = Vec::new();
+    let mut files = Vec::new();
     let entries = std::fs::read_dir(&src_dir).expect("src directory must exist");
     for entry in entries {
-        let entry = entry.expect("valid dir entry");
-        let path = entry.path();
-        if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
-            continue;
+        let path = entry.expect("valid dir entry").path();
+        if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+            files.push(path);
         }
+    }
+    let forge_view_dir = src_dir.join("forge_view");
+    if forge_view_dir.is_dir() {
+        for entry in std::fs::read_dir(&forge_view_dir).expect("forge_view dir must be readable") {
+            let path = entry.expect("valid dir entry").path();
+            if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+                files.push(path);
+            }
+        }
+    }
+
+    let mut violations = Vec::new();
+    for path in files {
         let file_name = path
             .file_name()
             .and_then(|name| name.to_str())
@@ -5721,7 +5967,12 @@ fn ui_source_contains_no_unapproved_portuguese_literals() {
         let content = std::fs::read_to_string(&path).expect("failed to read source file");
         for (line_idx, line) in content.lines().enumerate() {
             if line.chars().any(|c| PT_CHARS.contains(&c)) {
-                violations.push(format!("{file_name}:{}: {}", line_idx + 1, line.trim()));
+                violations.push(format!(
+                    "{}: {}: {}",
+                    path.display(),
+                    line_idx + 1,
+                    line.trim()
+                ));
             }
         }
     }
@@ -6187,6 +6438,7 @@ fn controls_size_to_content_instead_of_the_panel(cx: &mut TestAppContext) {
                     api_executions: Default::default(),
                     quota_deltas: Default::default(),
                     live_activity: Vec::new(),
+                    pipelines: Default::default(),
                 },
             );
         });
@@ -6194,20 +6446,22 @@ fn controls_size_to_content_instead_of_the_panel(cx: &mut TestAppContext) {
     for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
         visual.simulate_resize(size(px(width), px(height)));
 
-        // Agents: the console's event filter (ADR-040 M2) no longer spans the row.
+        // Agents: the console's event filter (ADR-040 M2) no longer spans the
+        // row. The console is the dock's (feature 25, M1), expanded on a tall
+        // window.
         select(&model, visual, AppView::Agents);
-        click(visual, "agent-tab:task_specifier:activity");
-        let column = visual.debug_bounds("agents-cli-scroll").unwrap();
-        let filter = visual
-            .debug_bounds("agent-console-filter:task_specifier")
-            .unwrap();
-        assert!(
-            filter.size.width <= px(360.0) && filter.size.width < column.size.width / 2.0,
-            "filter spans {:?} of a {:?} column at {width}x{height}",
-            filter.size.width,
-            column.size.width
-        );
-        click(visual, "agent-tab:task_specifier:configuration");
+        click(visual, "agents-node:role:task_specifier");
+        if height >= 900.0 {
+            let column = visual.debug_bounds("agent-dock-console").unwrap();
+            let filter = visual.debug_bounds("agent-console-filter:dock").unwrap();
+            assert!(
+                filter.size.width <= px(360.0) && filter.size.width < column.size.width / 2.0,
+                "filter spans {:?} of a {:?} column at {width}x{height}",
+                filter.size.width,
+                column.size.width
+            );
+        }
+        open_agent_drawer(&model, visual, crate::agents::AgentDetailTab::Configuration);
         let backend = visual.debug_bounds("agent-backend:task_specifier").unwrap();
         assert!(backend.size.width <= px(360.0));
 
@@ -10024,5 +10278,662 @@ fn granting_without_a_core_reports_why_and_keeps_the_checkpoint(cx: &mut TestApp
             "{:?}",
             failure.error
         );
+    });
+}
+
+/// Feature 25, M2b: a global child's synthesis carries the `Global` and
+/// `Based on` badges, `Remove from this project` and `Detach`; a box waiting
+/// for a newer version says so; the header offers the global pipelines the
+/// project does not show, and `Add` lists them.
+#[gpui::test]
+fn global_and_child_pipelines_show_their_badges_and_actions(cx: &mut TestAppContext) {
+    use ikore_core::custom_pipelines::{
+        AgentStep, CustomPipelineDefinitionV1, CustomPipelineView, GlobalPipelineSummary,
+        PipelineStep, PipelineTrigger, StepAgent, StepOutput, StepTransport,
+    };
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    select(&model, visual, AppView::Agents);
+    let view = CustomPipelineView {
+        id: "child".into(),
+        scope: "global".into(),
+        project_id: None,
+        name: "Shared review plus".into(),
+        description: String::new(),
+        current_version: 3,
+        adopted_version: 2,
+        position: 0,
+        ready: true,
+        needs_edit_reason: None,
+        archived: false,
+        definition: CustomPipelineDefinitionV1 {
+            schema_version: 1,
+            trigger: PipelineTrigger::Manual,
+            steps: vec![PipelineStep::Agent(AgentStep {
+                id: "review".into(),
+                label: "Review".into(),
+                agent: StepAgent {
+                    transport: StepTransport::Cli,
+                    backend: Some("codex".into()),
+                    model: Some("gpt-5".into()),
+                    model_profile: None,
+                    thinking_level: "default".into(),
+                    api_route_id: None,
+                },
+                instructions: "Review.".into(),
+                output: StepOutput::Text,
+            })],
+        },
+        run_count: 0,
+        updated_at: "now".into(),
+        parent_pipeline_id: Some("parent".into()),
+        parent_name: Some("Shared review".into()),
+        adopted_parent_version: Some(4),
+        children: 0,
+        projects: 2,
+        trigger_override: None,
+    };
+    model.update(visual, |model, cx| {
+        model.agents.update(cx, |agents, _| {
+            agents.pipelines.project_id = "layout-project".into();
+            agents.pipelines.pipelines = vec![view.clone()];
+            agents.pipelines.available_globals = vec![GlobalPipelineSummary {
+                id: "other".into(),
+                name: "Release notes".into(),
+                description: "Drafts the notes.".into(),
+                current_version: 1,
+                parent_name: None,
+            }];
+        });
+        model.select_canvas_pipeline("child".into(), cx);
+    });
+    visual.run_until_parked();
+    for selector in [
+        "agents-pipeline-badges",
+        "pipeline-remove",
+        "pipeline-detach",
+        "pipeline-move-to-project",
+        "agents-pipeline-behind",
+        "agents-add-global-pipeline",
+    ] {
+        assert!(visual.debug_bounds(selector).is_some(), "{selector}");
+    }
+    for selector in ["pipeline-make-global", "pipeline-create-child"] {
+        assert!(visual.debug_bounds(selector).is_none(), "{selector}");
+    }
+    click(visual, "agents-add-global-pipeline");
+    assert!(visual.debug_bounds("global-pipeline:other").is_some());
+    assert!(model.read_with(visual, |model, cx| {
+        let agents = model.agents.read(cx);
+        agents.show_global_pipelines && agents.selected_pipeline.is_none()
+    }));
+    assert_eq!(
+        crate::agents_view::pipeline_editor::parent_label(&view).as_deref(),
+        Some("Shared review v4")
+    );
+}
+
+/// Feature 25, M3: the editor offers `Manual`, `Stage passed` with its stage
+/// and `Pulsation done`, and keeps the pipeline's own trigger when editing; a
+/// global pipeline's synthesis shows this project's trigger with `Change`; a
+/// run an event started says so, with "Source pulsation failed".
+#[gpui::test]
+fn pipeline_triggers_show_in_the_editor_the_synthesis_and_the_runs(cx: &mut TestAppContext) {
+    use ikore_core::custom_pipelines::{
+        CustomPipelineDefinitionV1, CustomPipelineView, DefaultEvent, GateStep, PipelineRunStatus,
+        PipelineRunView, PipelineStep, PipelineTrigger,
+    };
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    select(&model, visual, AppView::Agents);
+    let after_code = PipelineTrigger::DefaultEvent {
+        event: DefaultEvent::StagePassed,
+        stage: Some("Code".into()),
+    };
+    let done = PipelineTrigger::DefaultEvent {
+        event: DefaultEvent::PulsationDone,
+        stage: None,
+    };
+    let definition = CustomPipelineDefinitionV1 {
+        schema_version: 1,
+        trigger: after_code.clone(),
+        steps: vec![PipelineStep::Gate(GateStep {
+            id: "look".into(),
+            label: "Look".into(),
+            prompt: "Read it.".into(),
+        })],
+    };
+    let view = CustomPipelineView {
+        id: "shared".into(),
+        scope: "global".into(),
+        project_id: None,
+        name: "Shared checks".into(),
+        description: String::new(),
+        current_version: 1,
+        adopted_version: 1,
+        position: 0,
+        ready: true,
+        needs_edit_reason: None,
+        archived: false,
+        definition: definition.clone(),
+        run_count: 1,
+        updated_at: "now".into(),
+        parent_pipeline_id: None,
+        parent_name: None,
+        adopted_parent_version: None,
+        children: 0,
+        projects: 2,
+        trigger_override: Some(done.clone()),
+    };
+    let run = PipelineRunView {
+        id: "run-1".into(),
+        pipeline_id: "shared".into(),
+        version: 1,
+        trigger_kind: "default_event".into(),
+        status: PipelineRunStatus::WaitingGate,
+        current_step: 0,
+        error: None,
+        created_at: "2026-11-23T10:00:00Z".into(),
+        updated_at: "2026-11-23T10:00:00Z".into(),
+        finished_at: None,
+        definition,
+        steps: Vec::new(),
+        source_pulsation_id: Some("pulse".into()),
+        source_pulsation_title: Some("Review tab navigation and artifact layout".into()),
+        trigger_label: Some("Stage passed \u{b7} Code".into()),
+        source_pulsation_failed: true,
+    };
+    model.update(visual, |model, cx| {
+        model.agents.update(cx, |agents, _| {
+            agents.pipelines.project_id = "layout-project".into();
+            agents.pipelines.pipelines = vec![view.clone()];
+            agents.pipelines.runs = vec![run];
+        });
+        model.select_canvas_pipeline("shared".into(), cx);
+    });
+    visual.run_until_parked();
+    for selector in [
+        "agents-pipeline-trigger",
+        "pipeline-trigger-change",
+        "pipeline-run-row:1",
+        "pipeline-run-trigger",
+        "pipeline-run-source-failed",
+    ] {
+        assert!(visual.debug_bounds(selector).is_some(), "{selector}");
+    }
+    assert!(visual.debug_bounds("pipeline-trigger-here").is_none());
+    // A long pulsation title wraps; the badge stays inside the run's card.
+    let card = visual.debug_bounds("pipeline-run-detail").unwrap();
+    for selector in ["pipeline-run-trigger", "pipeline-run-source-failed"] {
+        let bounds = visual.debug_bounds(selector).unwrap();
+        assert!(
+            bounds.right() <= card.right(),
+            "{selector} {bounds:?} {card:?}"
+        );
+    }
+    // The button stays inside the synthesis, next to a text that wraps.
+    let panel = visual.debug_bounds("agents-pipeline-synthesis").unwrap();
+    let change = visual.debug_bounds("pipeline-trigger-change").unwrap();
+    assert!(change.right() <= panel.right(), "{change:?} {panel:?}");
+    click(visual, "pipeline-trigger-change");
+    assert!(
+        model.read_with(visual, |model, cx| {
+            model.agents.read(cx).editing_pipeline_trigger.is_some()
+        }),
+        "Change opens the choices"
+    );
+    for selector in [
+        "pipeline-trigger-here",
+        "pipeline-trigger-here-manual",
+        "pipeline-trigger-here-stage-passed",
+        "pipeline-trigger-here-pulsation-done",
+        "pipeline-trigger-reset",
+    ] {
+        assert!(visual.debug_bounds(selector).is_some(), "{selector}");
+    }
+    // `Pulsation done` takes no stage.
+    assert!(
+        visual
+            .debug_bounds("pipeline-trigger-here-stage:Code")
+            .is_none()
+    );
+    assert!(model.read_with(visual, |model, cx| {
+        model.agents.read(cx).editing_pipeline_trigger.as_deref() == Some("shared")
+    }));
+
+    // The editor starts from the pipeline's own trigger, not this project's.
+    model.update(visual, |model, cx| model.edit_pipeline("shared".into(), cx));
+    visual.run_until_parked();
+    assert!(
+        model.read_with(visual, |model, _| {
+            model
+                .pipeline_editor
+                .as_ref()
+                .map(|editor| editor.trigger.clone())
+        }) == Some(after_code)
+    );
+    for selector in [
+        "pipeline-editor-trigger-manual",
+        "pipeline-editor-trigger-stage-passed",
+        "pipeline-editor-trigger-pulsation-done",
+        "pipeline-editor-trigger-stage:Intake",
+        "pipeline-editor-trigger-stage:SPECIFICATION",
+        "pipeline-editor-trigger-stage:Test",
+    ] {
+        assert!(visual.debug_bounds(selector).is_some(), "{selector}");
+    }
+    assert!(
+        visual
+            .debug_bounds("pipeline-editor-trigger-stage:Integrator")
+            .is_none()
+    );
+    click(visual, "pipeline-editor-trigger-stage:Intake");
+    assert!(
+        model.read_with(visual, |model, _| {
+            model
+                .pipeline_editor
+                .as_ref()
+                .map(|editor| editor.trigger.clone())
+        }) == Some(PipelineTrigger::DefaultEvent {
+            event: DefaultEvent::StagePassed,
+            stage: Some("Intake".into()),
+        })
+    );
+    click(visual, "pipeline-editor-trigger-pulsation-done");
+    assert!(
+        model.read_with(visual, |model, _| {
+            model
+                .pipeline_editor
+                .as_ref()
+                .map(|editor| editor.trigger.clone())
+        }) == Some(done)
+    );
+}
+
+#[gpui::test]
+fn forge_redesigned_tabs_fit_supported_window_sizes_and_wire_direct_controls(
+    cx: &mut TestAppContext,
+) {
+    use crate::forge::{BacklogKindFilter, ForgeAction, ForgeSection};
+    use ikore_core::feature_forge::*;
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    model.update(visual, |m, cx| {
+        m.forge.snapshot.current_wave_limit = 3;
+        m.forge.snapshot.features = vec![
+            Feature {
+                id: "feature-0".into(),
+                project_id: "layout-project".into(),
+                title: "Local storage foundation".into(),
+                original_idea: "Persist notes in SQLite".into(),
+                revision: 2,
+                approved_revision: Some(2),
+                state: FeatureState::Approved,
+                brief: FeatureBrief {
+                    objective: "Store notes locally".into(),
+                    audience: "Developers".into(),
+                    behavior: "Save and retrieve notes quickly".into(),
+                    scope: "Local SQLite tables".into(),
+                    criteria: vec![AcceptanceCriterion {
+                        id: "fc-1".into(),
+                        description: "Notes survive restart".into(),
+                    }],
+                    tasks: vec![TaskDraft {
+                        title: "Create schema".into(),
+                        kind: TaskKind::Foundation,
+                        description: "Create local SQLite schema".into(),
+                        criteria: vec![AcceptanceCriterion {
+                            id: "tc-1".into(),
+                            description: "Schema migrates cleanly".into(),
+                        }],
+                        dependencies: vec![],
+                        feature_id: None,
+                    }],
+                    coverage: "complete".into(),
+                    ..Default::default()
+                },
+                evaluation: FeatureEvaluation {
+                    impact: Some(5),
+                    confidence: Some(4),
+                    effort: Some(2),
+                    ..Default::default()
+                },
+                structural_level: 0,
+                wave: Some(Wave::Current),
+                position: 0,
+                archive_reason: None,
+            },
+            Feature {
+                id: "feature-1".into(),
+                project_id: "layout-project".into(),
+                title: "Tag and search notes".into(),
+                original_idea: "Filter notes with tags".into(),
+                revision: 2,
+                approved_revision: Some(2),
+                state: FeatureState::Executing,
+                brief: FeatureBrief {
+                    objective: "Tag and search notes".into(),
+                    audience: "Developers".into(),
+                    behavior: "Tag notes and query them".into(),
+                    scope: "Tagging and FTS".into(),
+                    criteria: vec![AcceptanceCriterion {
+                        id: "c1".into(),
+                        description: "Tags filter notes".into(),
+                    }],
+                    tasks: vec![],
+                    coverage: "complete".into(),
+                    ..Default::default()
+                },
+                evaluation: FeatureEvaluation {
+                    impact: Some(4),
+                    confidence: Some(4),
+                    effort: Some(2),
+                    ..Default::default()
+                },
+                structural_level: 2,
+                wave: Some(Wave::Current),
+                position: 1,
+                archive_reason: None,
+            },
+            Feature {
+                id: "feature-2".into(),
+                project_id: "layout-project".into(),
+                title: "Note templates".into(),
+                original_idea: "Reusable templates".into(),
+                revision: 1,
+                approved_revision: None,
+                state: FeatureState::InTriage,
+                brief: FeatureBrief {
+                    objective: "Provide ADR templates".into(),
+                    ..Default::default()
+                },
+                evaluation: FeatureEvaluation::default(),
+                structural_level: 1,
+                wave: None,
+                position: 2,
+                archive_reason: None,
+            },
+        ];
+        m.forge.snapshot.dependencies = vec![FeatureDependency {
+            feature_id: "feature-1".into(),
+            prerequisite_id: "feature-0".into(),
+            rationale: "Needs local SQLite schema".into(),
+            origin: DependencyOrigin::Human,
+        }];
+        m.forge.snapshot.tasks = vec![
+            WorkTask {
+                id: "task-bug".into(),
+                project_id: "layout-project".into(),
+                revision: 1,
+                draft: TaskDraft {
+                    title: "Fix expired token check".into(),
+                    kind: TaskKind::Bug,
+                    description: "Reject expired tokens".into(),
+                    criteria: vec![AcceptanceCriterion {
+                        id: "tb-1".into(),
+                        description: "Expired tokens return 401".into(),
+                    }],
+                    dependencies: vec![],
+                    feature_id: None,
+                },
+                feature_revision: None,
+                state: "ready".into(),
+                active_pulsation_id: None,
+                completed_pulsation_id: None,
+            },
+            WorkTask {
+                id: "task-done".into(),
+                project_id: "layout-project".into(),
+                revision: 1,
+                draft: TaskDraft {
+                    title: "Add tag query".into(),
+                    kind: TaskKind::Feature,
+                    description: "Query notes by tag".into(),
+                    criteria: vec![AcceptanceCriterion {
+                        id: "c1".into(),
+                        description: "Tags filter notes".into(),
+                    }],
+                    dependencies: vec![],
+                    feature_id: Some("feature-1".into()),
+                },
+                feature_revision: Some(2),
+                state: "done".into(),
+                active_pulsation_id: None,
+                completed_pulsation_id: Some("pulse-a".into()),
+            },
+            WorkTask {
+                id: "task-ready".into(),
+                project_id: "layout-project".into(),
+                revision: 1,
+                draft: TaskDraft {
+                    title: "Wire tag UI".into(),
+                    kind: TaskKind::Feature,
+                    description: "Add tag pills in UI".into(),
+                    criteria: vec![AcceptanceCriterion {
+                        id: "c2".into(),
+                        description: "Tag pills render".into(),
+                    }],
+                    dependencies: vec!["task-done".into()],
+                    feature_id: Some("feature-1".into()),
+                },
+                feature_revision: Some(2),
+                state: "ready".into(),
+                active_pulsation_id: None,
+                completed_pulsation_id: None,
+            },
+        ];
+        m.forge.snapshot.integration_evidence = vec![TaskEvidence {
+            task_id: "task-done".into(),
+            criterion_ids: vec!["c1".into()],
+            artifact_positions: vec![0],
+            summary: "Integrated tag query with passing unit check.".into(),
+        }];
+        m.forge.selected_feature = Some("feature-1".into());
+        m.select_view(AppView::Forge, cx);
+    });
+
+    for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
+        visual.simulate_resize(size(px(width), px(height)));
+
+        // 1. Backlog
+        model.update(visual, |m, cx| {
+            m.forge_action(ForgeAction::Section(ForgeSection::Backlog), cx);
+        });
+        visual.run_until_parked();
+        for selector in [
+            "backlog-filter-kind-all",
+            "backlog-filter-kind-bug",
+            "backlog-filter-state-ready",
+            "backlog-select-all-ready",
+            "task-card-task-bug",
+            "batch-composer",
+            "dispatch-batch",
+        ] {
+            let bounds = visual.debug_bounds(selector).unwrap_or_else(|| {
+                panic!("missing backlog selector {selector} at {width}x{height}")
+            });
+            assert!(
+                bounds.right() <= px(width) && bounds.bottom() <= px(height),
+                "{selector} overflows {width}x{height}: {bounds:?}"
+            );
+        }
+
+        // 2. Incubation
+        model.update(visual, |m, cx| {
+            m.forge.selected_feature = Some("feature-0".into());
+            m.forge_action(ForgeAction::Section(ForgeSection::Incubation), cx);
+        });
+        visual.run_until_parked();
+        for selector in [
+            "forge-detail",
+            "forge-incubation-aside",
+            "forge-scope-readiness",
+            "forge-message-composer",
+            "send-feature-message",
+            "approve-feature",
+        ] {
+            let bounds = visual.debug_bounds(selector).unwrap_or_else(|| {
+                panic!("missing incubation selector {selector} at {width}x{height}")
+            });
+            assert!(
+                bounds.right() <= px(width) && bounds.bottom() <= px(height),
+                "{selector} overflows {width}x{height}: {bounds:?}"
+            );
+        }
+
+        // 3. Triage (scrolls vertically inside forge-detail; check horizontal containment)
+        model.update(visual, |m, cx| {
+            m.forge.selected_feature = Some("feature-2".into());
+            m.forge_action(ForgeAction::Section(ForgeSection::Triage), cx);
+        });
+        visual.run_until_parked();
+        let detail = visual.debug_bounds("forge-detail").unwrap();
+        assert!(detail.right() <= px(width) && detail.bottom() <= px(height));
+        for selector in [
+            "structural-level",
+            "rating-impact-5",
+            "rating-confidence-4",
+            "rating-effort-2",
+            "triage-approve",
+        ] {
+            let bounds = visual.debug_bounds(selector).unwrap_or_else(|| {
+                panic!("missing triage selector {selector} at {width}x{height}")
+            });
+            assert!(
+                bounds.left() >= detail.left() && bounds.right() <= detail.right(),
+                "{selector} overflows triage column at {width}x{height}: {bounds:?} vs {detail:?}"
+            );
+        }
+
+        // 4. Dependencies
+        model.update(visual, |m, cx| {
+            m.forge.selected_feature = Some("feature-1".into());
+            m.forge_action(ForgeAction::Section(ForgeSection::Dependencies), cx);
+        });
+        visual.run_until_parked();
+        let detail = visual.debug_bounds("forge-detail").unwrap();
+        assert!(detail.right() <= px(width) && detail.bottom() <= px(height));
+        for selector in [
+            "dependency-focus-toggle",
+            "feature-graph",
+            "graph-node-feature-0",
+            "graph-node-feature-1",
+            "remove-edge-feature-0",
+        ] {
+            let bounds = visual.debug_bounds(selector).unwrap_or_else(|| {
+                panic!("missing dependencies selector {selector} at {width}x{height}")
+            });
+            assert!(
+                bounds.left() >= detail.left() && bounds.right() <= detail.right(),
+                "{selector} overflows dependencies column at {width}x{height}: {bounds:?} vs {detail:?}"
+            );
+        }
+
+        // 5. Waves
+        model.update(visual, |m, cx| {
+            m.forge_action(ForgeAction::Section(ForgeSection::Waves), cx);
+        });
+        visual.run_until_parked();
+        let detail = visual.debug_bounds("forge-detail").unwrap();
+        assert!(detail.right() <= px(width) && detail.bottom() <= px(height));
+        for selector in [
+            "wave-Current",
+            "wave-Next",
+            "wave-Horizon",
+            "wave-limit-dec",
+            "wave-limit-inc",
+            "set-wave-limit",
+        ] {
+            let bounds = visual
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("missing waves selector {selector} at {width}x{height}"));
+            assert!(
+                bounds.left() >= detail.left() && bounds.right() <= detail.right(),
+                "{selector} overflows waves column at {width}x{height}: {bounds:?} vs {detail:?}"
+            );
+        }
+
+        // 6. Delivery
+        model.update(visual, |m, cx| {
+            m.forge.selected_feature = Some("feature-1".into());
+            m.forge_action(ForgeAction::Section(ForgeSection::Delivery), cx);
+        });
+        visual.run_until_parked();
+        let detail = visual.debug_bounds("forge-detail").unwrap();
+        assert!(detail.right() <= px(width) && detail.bottom() <= px(height));
+        for selector in [
+            "compose-feature-tasks",
+            "delivery-evidence-task-done",
+            "complete-feature",
+        ] {
+            let bounds = visual.debug_bounds(selector).unwrap_or_else(|| {
+                panic!("missing delivery selector {selector} at {width}x{height}")
+            });
+            assert!(
+                bounds.left() >= detail.left() && bounds.right() <= detail.right(),
+                "{selector} overflows delivery column at {width}x{height}: {bounds:?} vs {detail:?}"
+            );
+        }
+    }
+
+    // Verify interactive clicks wire properly at 1440x900
+    model.update(visual, |m, cx| {
+        m.forge_action(ForgeAction::Section(ForgeSection::Backlog), cx);
+    });
+    visual.run_until_parked();
+    click(visual, "backlog-filter-kind-bug");
+    model.read_with(visual, |m, _| {
+        assert_eq!(m.forge.backlog_kind_filter, BacklogKindFilter::Bug);
+    });
+    click(visual, "toggle-task-details-task-bug");
+    model.read_with(visual, |m, _| {
+        assert!(m.forge.expanded_backlog_tasks.contains("task-bug"));
+    });
+    click(visual, "backlog-select-all-ready");
+    model.read_with(visual, |m, _| {
+        assert!(m.forge.selected_tasks.contains("task-bug"));
+        assert!(!m.forge.selected_tasks.contains("task-ready"));
+    });
+
+    model.update(visual, |m, cx| {
+        m.forge.selected_feature = Some("feature-0".into());
+        m.forge_action(ForgeAction::Section(ForgeSection::Incubation), cx);
+    });
+    visual.run_until_parked();
+    click(visual, "spec-section-toggle-overview");
+    model.read_with(visual, |m, _| {
+        assert!(m.forge.collapsed_spec_sections.contains("overview"));
+    });
+
+    model.update(visual, |m, cx| {
+        m.forge_action(ForgeAction::Section(ForgeSection::Triage), cx);
+    });
+    visual.run_until_parked();
+    click(visual, "rating-impact-5");
+    click(visual, "rating-confidence-4");
+    click(visual, "rating-effort-2");
+    click(visual, "structural-level-2");
+    model.read_with(visual, |m, _| {
+        assert_eq!(m.forge.impact, 5);
+        assert_eq!(m.forge.confidence, 4);
+        assert_eq!(m.forge.effort, 2);
+        assert_eq!(m.forge.level, 2);
+    });
+
+    model.update(visual, |m, cx| {
+        m.forge_action(ForgeAction::Section(ForgeSection::Dependencies), cx);
+    });
+    visual.run_until_parked();
+    click(visual, "dependency-focus-toggle");
+    model.read_with(visual, |m, _| {
+        assert!(m.forge.dependencies_focus_mode);
+    });
+
+    model.update(visual, |m, cx| {
+        m.forge_action(ForgeAction::Section(ForgeSection::Waves), cx);
+    });
+    visual.run_until_parked();
+    click(visual, "wave-limit-inc");
+    model.read_with(visual, |m, cx| {
+        assert_eq!(m.forge.wave_limit.read(cx).value(), "4");
     });
 }

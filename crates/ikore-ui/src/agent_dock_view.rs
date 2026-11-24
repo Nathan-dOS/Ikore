@@ -93,7 +93,94 @@ pub(crate) fn summarize(model: &AppModel, agent: &AgentIdentifier, cx: &App) -> 
                     .is_some_and(|slot| slot.slot.execution_mode == AgentExecutionMode::ApiDirect),
             }
         }
+        // `{pipeline} · {step}` (feature 25, section 6).
+        AgentIdentifier::PipelineStep {
+            pipeline_id,
+            step_id,
+        } => {
+            let slot = agents.automation_slot(pipeline_id, step_id);
+            AgentSummary {
+                agent: agent.clone(),
+                label: agents.pipeline_step_label(pipeline_id, step_id),
+                color: theme::accent(),
+                run: slot.and_then(|slot| slot.recent_runs.first().cloned()),
+                api: slot
+                    .is_some_and(|slot| slot.slot.execution_mode == AgentExecutionMode::ApiDirect),
+            }
+        }
     }
+}
+
+/// The agent's runs, newest first, from the agents snapshot.
+fn agent_runs(model: &AppModel, agent: &AgentIdentifier, cx: &App) -> Vec<TerminalRun> {
+    let agents = model.agents.read(cx);
+    let Some(snapshot) = agents.snapshot.as_ref() else {
+        return Vec::new();
+    };
+    match agent {
+        AgentIdentifier::Canonical(role) => snapshot
+            .agents
+            .iter()
+            .find(|candidate| candidate.config.agent_role == *role)
+            .map(|candidate| candidate.recent_runs.clone()),
+        AgentIdentifier::FreeForm(slot_id) => snapshot
+            .free_form_slots
+            .iter()
+            .chain(&snapshot.archived_free_form_slots)
+            .find(|candidate| candidate.slot.id == *slot_id)
+            .map(|candidate| candidate.recent_runs.clone()),
+        AgentIdentifier::PipelineStep {
+            pipeline_id,
+            step_id,
+        } => agents
+            .automation_slot(pipeline_id, step_id)
+            .map(|candidate| candidate.recent_runs.clone()),
+    }
+    .unwrap_or_default()
+}
+
+/// The run a console of the dock's agent shows: the one a History row or a
+/// unit chose while the dock is pinned on the agent (feature 25, R13), or
+/// the latest. A chosen run comes with its place: `(3, 7)` is `Run 3/7`.
+pub(crate) fn shown_run(
+    model: &AppModel,
+    summary: &AgentSummary,
+    cx: &App,
+) -> (Option<TerminalRun>, Option<(usize, usize)>) {
+    let Some(run_id) = model.agent_dock.chosen_run_of(&summary.agent) else {
+        return (summary.run.clone(), None);
+    };
+    let runs = agent_runs(model, &summary.agent, cx);
+    match runs.iter().position(|run| run.id == run_id) {
+        Some(index) => (runs.get(index).cloned(), Some((index + 1, runs.len()))),
+        None => (summary.run.clone(), None),
+    }
+}
+
+/// `Run 3/7 · Latest`: the dock shows an older run; a click brings the
+/// latest back.
+pub(crate) fn run_chip(place: (usize, usize), cx: &mut Context<AppModel>) -> AnyElement {
+    let (index, total) = place;
+    div()
+        .id("agent-dock-run-chip")
+        .debug_selector(|| "agent-dock-run-chip".into())
+        .flex_shrink_0()
+        .px_2()
+        .py_1()
+        .rounded_full()
+        .border_1()
+        .border_color(theme::accent())
+        .text_xs()
+        .text_color(theme::text())
+        .cursor_pointer()
+        .hover(|style| style.bg(theme::accent_soft()))
+        .tooltip(|_, cx| {
+            cx.new(|_| crate::widgets::Tooltip::new("Back to the latest run"))
+                .into()
+        })
+        .on_click(cx.listener(|model, _, _, cx| model.show_latest_agent_run(cx)))
+        .child(format!("Run {index}/{total} · Latest"))
+        .into_any_element()
 }
 
 /// `2:14` while a run goes on, `3m ago` after it.
@@ -106,7 +193,7 @@ pub(crate) fn run_time(run: &TerminalRun) -> Option<String> {
     )
 }
 
-fn time_label(
+pub(crate) fn time_label(
     active: bool,
     started: &str,
     ended: &str,
@@ -633,6 +720,11 @@ fn expanded_dock(
         .chip(now)
         .map(|agent| summarize(model, agent, cx).label);
     let overflow = tabs.len().saturating_sub(VISIBLE_TABS);
+    let (shown_run, place) = shown
+        .map(|summary| shown_run(model, summary, cx))
+        .unwrap_or_default();
+    // The chip shows only for an older run: the latest needs no way back.
+    let place = place.filter(|(index, _)| *index > 1);
     let header = div()
         .id("agent-dock-header")
         .h(STRIP_HEIGHT)
@@ -673,6 +765,7 @@ fn expanded_dock(
         .when_some(chip, |header, label| {
             header.child(switch_chip("agent-dock-switch-chip", &label, cx))
         })
+        .when_some(place, |header, place| header.child(run_chip(place, cx)))
         .child(agent_follow_control("agent-dock-follow", following, cx))
         .when_some(
             shown.map(|summary| summary.agent.clone()),
@@ -723,7 +816,7 @@ fn expanded_dock(
                 ConsoleSurface {
                     key: DOCK_SURFACE.to_owned(),
                     agent_label: &summary.label,
-                    run: summary.run.as_ref(),
+                    run: shown_run.as_ref(),
                     filter,
                     expanded: true,
                     narrow: false,
@@ -911,23 +1004,11 @@ pub(crate) fn api_lines(
 }
 
 impl AppModel {
-    /// `Open in Agents`: the page, the agent, and its latest run.
+    /// `Open in Agents`: the page, with the agent's node selected and the
+    /// dock still pinned on it (feature 25, M1).
     pub(crate) fn open_agent_in_agents(&mut self, agent: AgentIdentifier, cx: &mut Context<Self>) {
-        let run_id = summarize(self, &agent, cx).run.map(|run| run.id);
-        self.agents.update(cx, |agents, _| {
-            if let Some(run_id) = run_id {
-                match &agent {
-                    AgentIdentifier::Canonical(role) => {
-                        agents.selected_run_by_role.insert(*role, run_id);
-                    }
-                    AgentIdentifier::FreeForm(slot) => {
-                        agents.selected_run_by_slot.insert(slot.clone(), run_id);
-                    }
-                }
-            }
-            agents.selected_agent = Some(agent);
-        });
         self.select_view(AppView::Agents, cx);
+        self.select_canvas_agent(agent, cx);
     }
 
     /// The status bar's `● {agent} · {phase} · {elapsed}`, or

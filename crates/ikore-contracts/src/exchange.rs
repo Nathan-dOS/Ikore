@@ -84,12 +84,15 @@ pub enum ExchangeKind {
     ToolResult,
     ExternalChanges,
     PulsationDigest,
+    /// What the developer told an agent of their own pipeline to do, in the
+    /// pipeline editor (feature 25).
+    DeveloperInstructions,
     ReviewFinding,
     ClaimUnderVerification,
 }
 
 impl ExchangeKind {
-    pub const ALL: [Self; 30] = [
+    pub const ALL: [Self; 31] = [
         Self::Objective,
         Self::TaskScope,
         Self::Decision,
@@ -118,6 +121,7 @@ impl ExchangeKind {
         Self::ToolResult,
         Self::ExternalChanges,
         Self::PulsationDigest,
+        Self::DeveloperInstructions,
         Self::ReviewFinding,
         Self::ClaimUnderVerification,
     ];
@@ -152,6 +156,7 @@ impl ExchangeKind {
             Self::ToolResult => "tool_result",
             Self::ExternalChanges => "external_changes",
             Self::PulsationDigest => "pulsation_digest",
+            Self::DeveloperInstructions => "developer_instructions",
             Self::ReviewFinding => "review_finding",
             Self::ClaimUnderVerification => "claim_under_verification",
         }
@@ -232,6 +237,8 @@ pub enum HumanSource {
     CompanionMessage,
     CliPrompt,
     NotesInput,
+    /// A pipeline the developer defined (feature 25): a step's instructions.
+    PipelineDefinition,
 }
 
 impl HumanSource {
@@ -242,6 +249,7 @@ impl HumanSource {
             Self::CompanionMessage => "companion message",
             Self::CliPrompt => "cli prompt",
             Self::NotesInput => "notes input",
+            Self::PipelineDefinition => "pipeline definition",
         }
     }
 }
@@ -270,6 +278,8 @@ pub enum AgentProducer {
     CompanionAssistant,
     /// An agent in a CLI session the developer runs from the Agents view.
     TerminalSession,
+    /// An agent step of a pipeline the developer defined (feature 25).
+    PipelineStep,
 }
 
 impl AgentProducer {
@@ -289,6 +299,7 @@ impl AgentProducer {
             Self::Candidate => "candidate/units".into(),
             Self::CompanionAssistant => "companion/assistant".into(),
             Self::TerminalSession => "terminal/session".into(),
+            Self::PipelineStep => "pipeline/step".into(),
         }
     }
 }

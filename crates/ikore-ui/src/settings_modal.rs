@@ -798,10 +798,23 @@ fn content_pane(
                 ),
         )
         .when_some(status_line, |pane, (tone, text)| {
-            let color = match tone {
-                StatusTone::Working => theme::text_muted(),
-                StatusTone::Saved => theme::success(),
-                StatusTone::Failed => theme::danger(),
+            let (color, glyph) = match tone {
+                StatusTone::Working => (
+                    theme::text_muted(),
+                    crate::animated_icon::StatusGlyph::Loading,
+                ),
+                StatusTone::Saved => {
+                    use std::hash::{Hash as _, Hasher as _};
+                    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                    text.as_ref().hash(&mut hasher);
+                    (
+                        theme::success(),
+                        crate::animated_icon::StatusGlyph::Saved {
+                            key: hasher.finish() | 1,
+                        },
+                    )
+                }
+                StatusTone::Failed => (theme::danger(), crate::animated_icon::StatusGlyph::Error),
             };
             pane.child(
                 div()
@@ -817,7 +830,12 @@ fn content_pane(
                     .border_color(theme::border())
                     .text_sm()
                     .text_color(color)
-                    .child(crate::widgets::status_dot(color))
+                    .child(crate::animated_icon::status_glyph(
+                        "settings-status-glyph",
+                        glyph,
+                        px(13.0),
+                        color,
+                    ))
                     .child(div().min_w_0().overflow_hidden().child(text)),
             )
         })

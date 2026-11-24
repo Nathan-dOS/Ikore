@@ -1225,6 +1225,18 @@ pub(crate) fn composition_page(
             ),
         )
         .section(
+            "Pipelines",
+            section(
+                "Pipelines",
+                None,
+                vec![row(
+                    "automation-max-concurrent",
+                    hl,
+                    automation_stepper(model.agents.read(cx).pipelines.max_concurrent, !busy, cx),
+                )],
+            ),
+        )
+        .section(
             "Risk policy",
             section(
                 "Risk policy",
@@ -1286,6 +1298,40 @@ fn risk_policy_editor(model: &AppModel, enabled: bool, cx: &mut Context<AppModel
 }
 
 /// `−  n  +` for the revision-round threshold, within its range.
+/// Feature 25: the automation lane's ceiling, for the whole app (1 to 3).
+fn automation_stepper(current: u32, enabled: bool, cx: &mut Context<AppModel>) -> AnyElement {
+    let range = ikore_core::custom_pipelines::AUTOMATION_MAX_CONCURRENT_RANGE;
+    let current = current.clamp(*range.start(), *range.end());
+    div()
+        .flex()
+        .items_center()
+        .gap_2()
+        .child(crate::widgets::btn(
+            "automation-max-concurrent-down",
+            "−",
+            crate::widgets::ButtonVariant::Ghost,
+            enabled && current > *range.start(),
+            cx,
+            move |model, cx| model.set_automation_max_concurrent(current - 1, cx),
+        ))
+        .child(
+            div()
+                .debug_selector(|| "automation-max-concurrent-value".into())
+                .min_w(gpui::px(24.0))
+                .text_center()
+                .child(current.to_string()),
+        )
+        .child(crate::widgets::btn(
+            "automation-max-concurrent-up",
+            "+",
+            crate::widgets::ButtonVariant::Ghost,
+            enabled && current < *range.end(),
+            cx,
+            move |model, cx| model.set_automation_max_concurrent(current + 1, cx),
+        ))
+        .into_any_element()
+}
+
 fn revision_round_stepper(threshold: u32, enabled: bool, cx: &mut Context<AppModel>) -> AnyElement {
     let range = ikore_core::orchestration::composition::settings::REVISION_ROUND_THRESHOLD_RANGE;
     div()

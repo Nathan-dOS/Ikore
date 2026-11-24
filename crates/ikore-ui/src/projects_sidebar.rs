@@ -66,6 +66,17 @@ fn state_color(state: SessionState) -> gpui::Rgba {
     }
 }
 
+fn session_glyph(id: impl Into<SharedString>, state: SessionState) -> AnyElement {
+    let glyph = match state {
+        SessionState::Waiting => crate::animated_icon::StatusGlyph::Attention,
+        SessionState::Running => crate::animated_icon::StatusGlyph::Loading,
+        SessionState::Failed => crate::animated_icon::StatusGlyph::Error,
+        SessionState::Done => crate::animated_icon::StatusGlyph::Success,
+        SessionState::Idle => crate::animated_icon::StatusGlyph::Idle,
+    };
+    crate::animated_icon::status_glyph(id, glyph, px(12.0), state_color(state))
+}
+
 fn state_label(state: SessionState) -> &'static str {
     match state {
         SessionState::Waiting => "waiting on you",
@@ -261,10 +272,11 @@ fn project_row(
         ))
         .when(live, |row| {
             let state_id = format!("sidebar-project-state:{id}");
+            let glyph_id = format!("sidebar-proj-glyph:{id}");
             row.child(
                 div()
                     .debug_selector(move || state_id.clone())
-                    .child(crate::widgets::status_dot(state_color(entry.state))),
+                    .child(session_glyph(glyph_id, entry.state)),
             )
         })
         .when(!open_project, |row| {
@@ -367,7 +379,10 @@ fn session_row(
             )
         })
         .when(session.state != SessionState::Idle, |row| {
-            row.child(crate::widgets::status_dot(state_color(session.state)))
+            row.child(session_glyph(
+                format!("sidebar-sess-glyph:{}", session.id),
+                session.state,
+            ))
         })
         .into_any_element()
 }

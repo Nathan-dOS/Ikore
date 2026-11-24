@@ -32,8 +32,19 @@ pub(crate) fn reduced_motion() -> bool {
 
 /// A slow breathing loop for a live indicator (Home's hero dot while a stage runs). Kept off the
 /// rail and the footer on purpose: a repeating animation keeps the window repainting.
+#[allow(dead_code)]
 pub(crate) fn pulse() -> Animation {
     Animation::new(Duration::from_millis(1_600))
         .repeat()
         .with_easing(gpui::pulsating_between(0.45, 1.0))
+}
+
+/// The agents canvas's pulse of a running node (feature 25, M1; D7): slower
+/// and fainter than `pulse()`, for the border's opacity and its halo. Only
+/// running nodes carry it, so a canvas with nothing running asks for no
+/// frames.
+pub(crate) fn soft_pulse() -> Animation {
+    Animation::new(Duration::from_millis(2_400))
+        .repeat()
+        .with_easing(gpui::pulsating_between(0.35, 0.9))
 }

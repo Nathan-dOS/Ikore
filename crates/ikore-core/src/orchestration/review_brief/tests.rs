@@ -1413,6 +1413,23 @@ fn the_visualizer_input_names_every_judgement_item_and_reference_once() {
     assert!(input.changes.is_empty() && input.feedback.is_none());
 }
 
+#[test]
+fn the_visualizer_prompt_explains_relevance_without_exceeding_its_advisory_role() {
+    let prompt = visualizer_system_prompt(None);
+    assert!(prompt.contains("Lead with the most decision-relevant point."));
+    assert!(
+        prompt.contains("explain why a cited item matters or what practical consequence follows")
+    );
+    assert!(prompt.contains("Prefer plain, specific wording over unexplained jargon."));
+    assert!(prompt.contains(
+        "If the brief gives no consequence or comparison, say what is known without guessing."
+    ));
+    assert!(
+        prompt.contains("cannot add, remove or reclassify judgement items, verdicts or checks")
+    );
+    assert!(prompt.contains("Cite only references present in the input."));
+}
+
 fn visualizer_reply(value: serde_json::Value) -> String {
     value.to_string()
 }
