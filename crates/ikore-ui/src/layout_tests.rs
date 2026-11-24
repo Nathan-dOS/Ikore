@@ -5937,14 +5937,26 @@ fn ui_source_contains_no_unapproved_portuguese_literals() {
     let src_dir = manifest_dir.join("src");
     let allowed_files = ["text_input.rs", "native_editor.rs"];
 
-    let mut violations = Vec::new();
+    let mut files = Vec::new();
     let entries = std::fs::read_dir(&src_dir).expect("src directory must exist");
     for entry in entries {
-        let entry = entry.expect("valid dir entry");
-        let path = entry.path();
-        if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
-            continue;
+        let path = entry.expect("valid dir entry").path();
+        if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+            files.push(path);
         }
+    }
+    let forge_view_dir = src_dir.join("forge_view");
+    if forge_view_dir.is_dir() {
+        for entry in std::fs::read_dir(&forge_view_dir).expect("forge_view dir must be readable") {
+            let path = entry.expect("valid dir entry").path();
+            if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+                files.push(path);
+            }
+        }
+    }
+
+    let mut violations = Vec::new();
+    for path in files {
         let file_name = path
             .file_name()
             .and_then(|name| name.to_str())
@@ -5955,7 +5967,7 @@ fn ui_source_contains_no_unapproved_portuguese_literals() {
         let content = std::fs::read_to_string(&path).expect("failed to read source file");
         for (line_idx, line) in content.lines().enumerate() {
             if line.chars().any(|c| PT_CHARS.contains(&c)) {
-                violations.push(format!("{file_name}:{}: {}", line_idx + 1, line.trim()));
+                violations.push(format!("{}: {}: {}", path.display(), line_idx + 1, line.trim()));
             }
         }
     }
@@ -10531,4 +10543,392 @@ fn pipeline_triggers_show_in_the_editor_the_synthesis_and_the_runs(cx: &mut Test
                 .map(|editor| editor.trigger.clone())
         }) == Some(done)
     );
+}
+
+#[gpui::test]
+fn forge_redesigned_tabs_fit_supported_window_sizes_and_wire_direct_controls(
+    cx: &mut TestAppContext,
+) {
+    use crate::forge::{BacklogKindFilter, ForgeAction, ForgeSection};
+    use ikore_core::feature_forge::*;
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    model.update(visual, |m, cx| {
+        m.forge.snapshot.current_wave_limit = 3;
+        m.forge.snapshot.features = vec![
+            Feature {
+                id: "feature-0".into(),
+                project_id: "layout-project".into(),
+                title: "Local storage foundation".into(),
+                original_idea: "Persist notes in SQLite".into(),
+                revision: 2,
+                approved_revision: Some(2),
+                state: FeatureState::Approved,
+                brief: FeatureBrief {
+                    objective: "Store notes locally".into(),
+                    audience: "Developers".into(),
+                    behavior: "Save and retrieve notes quickly".into(),
+                    scope: "Local SQLite tables".into(),
+                    criteria: vec![AcceptanceCriterion {
+                        id: "fc-1".into(),
+                        description: "Notes survive restart".into(),
+                    }],
+                    tasks: vec![TaskDraft {
+                        title: "Create schema".into(),
+                        kind: TaskKind::Foundation,
+                        description: "Create local SQLite schema".into(),
+                        criteria: vec![AcceptanceCriterion {
+                            id: "tc-1".into(),
+                            description: "Schema migrates cleanly".into(),
+                        }],
+                        dependencies: vec![],
+                        feature_id: None,
+                    }],
+                    coverage: "complete".into(),
+                    ..Default::default()
+                },
+                evaluation: FeatureEvaluation {
+                    impact: Some(5),
+                    confidence: Some(4),
+                    effort: Some(2),
+                    ..Default::default()
+                },
+                structural_level: 0,
+                wave: Some(Wave::Current),
+                position: 0,
+                archive_reason: None,
+            },
+            Feature {
+                id: "feature-1".into(),
+                project_id: "layout-project".into(),
+                title: "Tag and search notes".into(),
+                original_idea: "Filter notes with tags".into(),
+                revision: 2,
+                approved_revision: Some(2),
+                state: FeatureState::Executing,
+                brief: FeatureBrief {
+                    objective: "Tag and search notes".into(),
+                    audience: "Developers".into(),
+                    behavior: "Tag notes and query them".into(),
+                    scope: "Tagging and FTS".into(),
+                    criteria: vec![AcceptanceCriterion {
+                        id: "c1".into(),
+                        description: "Tags filter notes".into(),
+                    }],
+                    tasks: vec![],
+                    coverage: "complete".into(),
+                    ..Default::default()
+                },
+                evaluation: FeatureEvaluation {
+                    impact: Some(4),
+                    confidence: Some(4),
+                    effort: Some(2),
+                    ..Default::default()
+                },
+                structural_level: 2,
+                wave: Some(Wave::Current),
+                position: 1,
+                archive_reason: None,
+            },
+            Feature {
+                id: "feature-2".into(),
+                project_id: "layout-project".into(),
+                title: "Note templates".into(),
+                original_idea: "Reusable templates".into(),
+                revision: 1,
+                approved_revision: None,
+                state: FeatureState::InTriage,
+                brief: FeatureBrief {
+                    objective: "Provide ADR templates".into(),
+                    ..Default::default()
+                },
+                evaluation: FeatureEvaluation::default(),
+                structural_level: 1,
+                wave: None,
+                position: 2,
+                archive_reason: None,
+            },
+        ];
+        m.forge.snapshot.dependencies = vec![FeatureDependency {
+            feature_id: "feature-1".into(),
+            prerequisite_id: "feature-0".into(),
+            rationale: "Needs local SQLite schema".into(),
+            origin: DependencyOrigin::Human,
+        }];
+        m.forge.snapshot.tasks = vec![
+            WorkTask {
+                id: "task-bug".into(),
+                project_id: "layout-project".into(),
+                revision: 1,
+                draft: TaskDraft {
+                    title: "Fix expired token check".into(),
+                    kind: TaskKind::Bug,
+                    description: "Reject expired tokens".into(),
+                    criteria: vec![AcceptanceCriterion {
+                        id: "tb-1".into(),
+                        description: "Expired tokens return 401".into(),
+                    }],
+                    dependencies: vec![],
+                    feature_id: None,
+                },
+                feature_revision: None,
+                state: "ready".into(),
+                active_pulsation_id: None,
+                completed_pulsation_id: None,
+            },
+            WorkTask {
+                id: "task-done".into(),
+                project_id: "layout-project".into(),
+                revision: 1,
+                draft: TaskDraft {
+                    title: "Add tag query".into(),
+                    kind: TaskKind::Feature,
+                    description: "Query notes by tag".into(),
+                    criteria: vec![AcceptanceCriterion {
+                        id: "c1".into(),
+                        description: "Tags filter notes".into(),
+                    }],
+                    dependencies: vec![],
+                    feature_id: Some("feature-1".into()),
+                },
+                feature_revision: Some(2),
+                state: "done".into(),
+                active_pulsation_id: None,
+                completed_pulsation_id: Some("pulse-a".into()),
+            },
+            WorkTask {
+                id: "task-ready".into(),
+                project_id: "layout-project".into(),
+                revision: 1,
+                draft: TaskDraft {
+                    title: "Wire tag UI".into(),
+                    kind: TaskKind::Feature,
+                    description: "Add tag pills in UI".into(),
+                    criteria: vec![AcceptanceCriterion {
+                        id: "c2".into(),
+                        description: "Tag pills render".into(),
+                    }],
+                    dependencies: vec!["task-done".into()],
+                    feature_id: Some("feature-1".into()),
+                },
+                feature_revision: Some(2),
+                state: "ready".into(),
+                active_pulsation_id: None,
+                completed_pulsation_id: None,
+            },
+        ];
+        m.forge.snapshot.integration_evidence = vec![TaskEvidence {
+            task_id: "task-done".into(),
+            criterion_ids: vec!["c1".into()],
+            artifact_positions: vec![0],
+            summary: "Integrated tag query with passing unit check.".into(),
+        }];
+        m.forge.selected_feature = Some("feature-1".into());
+        m.select_view(AppView::Forge, cx);
+    });
+
+    for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
+        visual.simulate_resize(size(px(width), px(height)));
+
+        // 1. Backlog
+        model.update(visual, |m, cx| {
+            m.forge_action(ForgeAction::Section(ForgeSection::Backlog), cx);
+        });
+        visual.run_until_parked();
+        for selector in [
+            "backlog-filter-kind-all",
+            "backlog-filter-kind-bug",
+            "backlog-filter-state-ready",
+            "backlog-select-all-ready",
+            "task-card-task-bug",
+            "batch-composer",
+            "dispatch-batch",
+        ] {
+            let bounds = visual.debug_bounds(selector).unwrap_or_else(|| {
+                panic!("missing backlog selector {selector} at {width}x{height}")
+            });
+            assert!(
+                bounds.right() <= px(width) && bounds.bottom() <= px(height),
+                "{selector} overflows {width}x{height}: {bounds:?}"
+            );
+        }
+
+        // 2. Incubation
+        model.update(visual, |m, cx| {
+            m.forge.selected_feature = Some("feature-0".into());
+            m.forge_action(ForgeAction::Section(ForgeSection::Incubation), cx);
+        });
+        visual.run_until_parked();
+        for selector in [
+            "forge-detail",
+            "forge-incubation-aside",
+            "forge-scope-readiness",
+            "forge-message-composer",
+            "send-feature-message",
+            "approve-feature",
+        ] {
+            let bounds = visual.debug_bounds(selector).unwrap_or_else(|| {
+                panic!("missing incubation selector {selector} at {width}x{height}")
+            });
+            assert!(
+                bounds.right() <= px(width) && bounds.bottom() <= px(height),
+                "{selector} overflows {width}x{height}: {bounds:?}"
+            );
+        }
+
+        // 3. Triage (scrolls vertically inside forge-detail; check horizontal containment)
+        model.update(visual, |m, cx| {
+            m.forge.selected_feature = Some("feature-2".into());
+            m.forge_action(ForgeAction::Section(ForgeSection::Triage), cx);
+        });
+        visual.run_until_parked();
+        let detail = visual.debug_bounds("forge-detail").unwrap();
+        assert!(detail.right() <= px(width) && detail.bottom() <= px(height));
+        for selector in [
+            "structural-level",
+            "rating-impact-5",
+            "rating-confidence-4",
+            "rating-effort-2",
+            "triage-approve",
+        ] {
+            let bounds = visual.debug_bounds(selector).unwrap_or_else(|| {
+                panic!("missing triage selector {selector} at {width}x{height}")
+            });
+            assert!(
+                bounds.left() >= detail.left() && bounds.right() <= detail.right(),
+                "{selector} overflows triage column at {width}x{height}: {bounds:?} vs {detail:?}"
+            );
+        }
+
+        // 4. Dependencies
+        model.update(visual, |m, cx| {
+            m.forge.selected_feature = Some("feature-1".into());
+            m.forge_action(ForgeAction::Section(ForgeSection::Dependencies), cx);
+        });
+        visual.run_until_parked();
+        let detail = visual.debug_bounds("forge-detail").unwrap();
+        assert!(detail.right() <= px(width) && detail.bottom() <= px(height));
+        for selector in [
+            "dependency-focus-toggle",
+            "feature-graph",
+            "graph-node-feature-0",
+            "graph-node-feature-1",
+            "remove-edge-feature-0",
+        ] {
+            let bounds = visual.debug_bounds(selector).unwrap_or_else(|| {
+                panic!("missing dependencies selector {selector} at {width}x{height}")
+            });
+            assert!(
+                bounds.left() >= detail.left() && bounds.right() <= detail.right(),
+                "{selector} overflows dependencies column at {width}x{height}: {bounds:?} vs {detail:?}"
+            );
+        }
+
+        // 5. Waves
+        model.update(visual, |m, cx| {
+            m.forge_action(ForgeAction::Section(ForgeSection::Waves), cx);
+        });
+        visual.run_until_parked();
+        let detail = visual.debug_bounds("forge-detail").unwrap();
+        assert!(detail.right() <= px(width) && detail.bottom() <= px(height));
+        for selector in [
+            "wave-Current",
+            "wave-Next",
+            "wave-Horizon",
+            "wave-limit-dec",
+            "wave-limit-inc",
+            "set-wave-limit",
+        ] {
+            let bounds = visual.debug_bounds(selector).unwrap_or_else(|| {
+                panic!("missing waves selector {selector} at {width}x{height}")
+            });
+            assert!(
+                bounds.left() >= detail.left() && bounds.right() <= detail.right(),
+                "{selector} overflows waves column at {width}x{height}: {bounds:?} vs {detail:?}"
+            );
+        }
+
+        // 6. Delivery
+        model.update(visual, |m, cx| {
+            m.forge.selected_feature = Some("feature-1".into());
+            m.forge_action(ForgeAction::Section(ForgeSection::Delivery), cx);
+        });
+        visual.run_until_parked();
+        let detail = visual.debug_bounds("forge-detail").unwrap();
+        assert!(detail.right() <= px(width) && detail.bottom() <= px(height));
+        for selector in [
+            "compose-feature-tasks",
+            "delivery-evidence-task-done",
+            "complete-feature",
+        ] {
+            let bounds = visual.debug_bounds(selector).unwrap_or_else(|| {
+                panic!("missing delivery selector {selector} at {width}x{height}")
+            });
+            assert!(
+                bounds.left() >= detail.left() && bounds.right() <= detail.right(),
+                "{selector} overflows delivery column at {width}x{height}: {bounds:?} vs {detail:?}"
+            );
+        }
+    }
+
+    // Verify interactive clicks wire properly at 1440x900
+    model.update(visual, |m, cx| {
+        m.forge_action(ForgeAction::Section(ForgeSection::Backlog), cx);
+    });
+    visual.run_until_parked();
+    click(visual, "backlog-filter-kind-bug");
+    model.read_with(visual, |m, _| {
+        assert_eq!(m.forge.backlog_kind_filter, BacklogKindFilter::Bug);
+    });
+    click(visual, "toggle-task-details-task-bug");
+    model.read_with(visual, |m, _| {
+        assert!(m.forge.expanded_backlog_tasks.contains("task-bug"));
+    });
+    click(visual, "backlog-select-all-ready");
+    model.read_with(visual, |m, _| {
+        assert!(m.forge.selected_tasks.contains("task-bug"));
+        assert!(!m.forge.selected_tasks.contains("task-ready"));
+    });
+
+    model.update(visual, |m, cx| {
+        m.forge.selected_feature = Some("feature-0".into());
+        m.forge_action(ForgeAction::Section(ForgeSection::Incubation), cx);
+    });
+    visual.run_until_parked();
+    click(visual, "spec-section-toggle-overview");
+    model.read_with(visual, |m, _| {
+        assert!(m.forge.collapsed_spec_sections.contains("overview"));
+    });
+
+    model.update(visual, |m, cx| {
+        m.forge_action(ForgeAction::Section(ForgeSection::Triage), cx);
+    });
+    visual.run_until_parked();
+    click(visual, "rating-impact-5");
+    click(visual, "rating-confidence-4");
+    click(visual, "rating-effort-2");
+    click(visual, "structural-level-2");
+    model.read_with(visual, |m, _| {
+        assert_eq!(m.forge.impact, 5);
+        assert_eq!(m.forge.confidence, 4);
+        assert_eq!(m.forge.effort, 2);
+        assert_eq!(m.forge.level, 2);
+    });
+
+    model.update(visual, |m, cx| {
+        m.forge_action(ForgeAction::Section(ForgeSection::Dependencies), cx);
+    });
+    visual.run_until_parked();
+    click(visual, "dependency-focus-toggle");
+    model.read_with(visual, |m, _| {
+        assert!(m.forge.dependencies_focus_mode);
+    });
+
+    model.update(visual, |m, cx| {
+        m.forge_action(ForgeAction::Section(ForgeSection::Waves), cx);
+    });
+    visual.run_until_parked();
+    click(visual, "wave-limit-inc");
+    model.read_with(visual, |m, cx| {
+        assert_eq!(m.forge.wave_limit.read(cx).value(), "4");
+    });
 }
