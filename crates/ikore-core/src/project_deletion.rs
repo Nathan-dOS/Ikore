@@ -302,7 +302,8 @@ fn active_work(db: &Connection, id: &str) -> Result<bool, Error> {
         OR EXISTS(SELECT 1 FROM artifact_publications WHERE project_id=?1 AND state='applying')
         OR EXISTS(SELECT 1 FROM chat_messages m JOIN chat_conversations c ON c.id=m.conversation_id WHERE c.project_id=?1 AND m.status IN ('pending','streaming'))
         OR EXISTS(SELECT 1 FROM forge_turns t JOIN forge_features f ON f.id=t.feature_id WHERE f.project_id=?1 AND t.status='running')
-        OR EXISTS(SELECT 1 FROM companion_note_turns t JOIN companion_notes n ON n.id=t.note_id WHERE n.project_id=?1 AND t.status='running')",[id],|r|r.get(0))?;
+        OR EXISTS(SELECT 1 FROM companion_note_turns t JOIN companion_notes n ON n.id=t.note_id WHERE n.project_id=?1 AND t.status='running')
+        OR EXISTS(SELECT 1 FROM stage_verifier_runs r JOIN pulsations p ON p.id=r.pulsation_id WHERE p.project_id=?1 AND r.status='running')",[id],|r|r.get(0))?;
     Ok(active)
 }
 
@@ -680,6 +681,43 @@ mod tests {
         db.execute("INSERT INTO attestation_seal_intents(pulsation_id,state,created_at,updated_at) VALUES(?1,'sealed','2026-10-26','2026-10-26')",[&pulse.id]).unwrap();
         db.execute("INSERT INTO pulsation_attestations(pulsation_id,schema_version,predicate_type,deriver_version,statement_json,statement_sha256,envelope_json,key_id,signature_state,outcome,subject_count,sealed_at,signed_at) VALUES(?1,1,'urn:hvc:pulsation-attestation:v1',1,'{}',?2,'{}',?3,'signed','failed',0,'2026-10-26','2026-10-26')",params![pulse.id,digest,key_id]).unwrap();
         db.execute("INSERT INTO attestation_verifications(pulsation_id,checked_at,signature,rederivation,workspace_json) VALUES(?1,'2026-10-26','valid','matches','[]')",[&pulse.id]).unwrap();
+        // Stage verifiers and runs (including ON DELETE RESTRICT on verifier_id)
+        // belong to their project and are removed cleanly on permanent deletion.
+        db.execute(
+            "INSERT INTO jobs(id,pulsation_id,project_id,kind,status,created_at,updated_at) VALUES('deleted-verifier-job',?1,?2,'run_stage::Code','done','2026-10-26','2026-10-26')",
+            params![pulse.id, deleted.id],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO stage_verifiers(id,project_id,stage,label,position,enabled,reject_limit,agent_json,instructions,version,created_at,updated_at) VALUES('deleted-verifier',?1,'Code','Security audit',0,1,2,'{}','Check auth.',1,'2026-10-26','2026-10-26')",
+            [&deleted.id],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO stage_verifiers(id,project_id,stage,label,position,enabled,reject_limit,agent_json,instructions,version,created_at,updated_at) VALUES('kept-verifier',?1,'Code','Survivor audit',0,1,2,'{}','Check survivor.',1,'2026-10-26','2026-10-26')",
+            [&kept.id],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO stage_verifier_runs(id,verifier_id,config_json,pulsation_id,stage,stage_job_id,stage_generation,attempt,recovery_count,status,created_at) VALUES('deleted-vrun','deleted-verifier','{}',?1,'Code','deleted-verifier-job',1,1,0,'error','2026-10-26')",
+            [&pulse.id],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO pulsation_stage_verification(pulsation_id,stage,stage_generation,stage_job_id,input_revision,state,deferred_disposition,updated_at) VALUES(?1,'Code',1,'deleted-verifier-job',1,'error','advance:Test','2026-10-26')",
+            [&pulse.id],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO checkpoints(id,pulsation_id,stage,status,created_at,updated_at,kind,producer_job_id,generation,purpose) VALUES('deleted-verr-cp',?1,'Code','pending','2026-10-26','2026-10-26','verification_error','deleted-verifier-job',1,'verification_error')",
+            [&pulse.id],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO verification_error_requests(checkpoint_id,pulsation_id,verifier_run_id,stage,error_message,created_at,updated_at) VALUES('deleted-verr-cp',?1,'deleted-vrun','Code','CLI crashed','2026-10-26','2026-10-26')",
+            [&pulse.id],
+        )
+        .unwrap();
         let global_connections: i64 = db
             .query_row("SELECT count(*) FROM provider_connections", [], |r| {
                 r.get(0)
@@ -782,6 +820,9 @@ mod tests {
             "attestation_seal_intents",
             "pulsation_attestations",
             "attestation_verifications",
+            "stage_verifier_runs",
+            "pulsation_stage_verification",
+            "verification_error_requests",
         ] {
             assert_eq!(
                 db.query_row(
@@ -794,6 +835,26 @@ mod tests {
                 "{table}"
             );
         }
+        assert_eq!(
+            db.query_row(
+                "SELECT count(*) FROM stage_verifiers WHERE project_id=?1",
+                [&deleted.id],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0,
+            "deleted project's stage_verifiers must be purged"
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT count(*) FROM stage_verifiers WHERE project_id=?1",
+                [&kept.id],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1,
+            "survivor project's stage_verifiers must remain untouched"
+        );
         assert_eq!(
             db.query_row("SELECT count(*) FROM attestation_keys", [], |r| r
                 .get::<_, i64>(0))
@@ -1002,6 +1063,101 @@ mod tests {
                 "{table}"
             );
         }
+    }
+
+    /// Feature 25 M4: a running stage verifier blocks project deletion, and
+    /// once finished, permanent deletion removes all four verifier tables with
+    /// zero foreign-key violations (even across ON DELETE RESTRICT).
+    #[test]
+    fn refuses_a_running_stage_verifier_and_purges_verifier_tables() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("repo");
+        fs::create_dir_all(&root).unwrap();
+        let service = PersistenceService::initialize(&fixture.path().join("data")).unwrap();
+        let project = service
+            .ensure_project_for_workspace(EnsureProjectForWorkspaceRequest {
+                workspace_path: root.to_string_lossy().into_owned(),
+                preferred_name: Some("Verifier Project".into()),
+            })
+            .unwrap()
+            .project;
+        let pulse = service
+            .create_pulsation(CreatePulsationRequest {
+                project_id: project.id.clone(),
+                feature_name: "Verifier pulse".into(),
+            })
+            .unwrap()
+            .pulsation;
+        let db = service.connection().unwrap();
+        db.execute(
+            "INSERT INTO jobs(id,pulsation_id,project_id,kind,status,created_at,updated_at) VALUES('v-job',?1,?2,'run_stage::Code','done','2026-11-24','2026-11-24')",
+            params![pulse.id, project.id],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO stage_verifiers(id,project_id,stage,label,position,enabled,reject_limit,agent_json,instructions,version,created_at,updated_at) VALUES('v1',?1,'Code','Security audit',0,1,2,'{}','Check secrets.',1,'2026-11-24','2026-11-24')",
+            [&project.id],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO stage_verifier_runs(id,verifier_id,config_json,pulsation_id,stage,stage_job_id,stage_generation,attempt,recovery_count,status,created_at,started_at) VALUES('vr1','v1','{}',?1,'Code','v-job',1,1,0,'running','2026-11-24','2026-11-24')",
+            [&pulse.id],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO pulsation_stage_verification(pulsation_id,stage,stage_generation,stage_job_id,input_revision,state,deferred_disposition,updated_at) VALUES(?1,'Code',1,'v-job',1,'running','advance:Test','2026-11-24')",
+            [&pulse.id],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO checkpoints(id,pulsation_id,stage,status,created_at,updated_at,kind,producer_job_id,generation,purpose) VALUES('v-cp',?1,'Code','pending','2026-11-24','2026-11-24','verification_error','v-job',1,'verification_error')",
+            [&pulse.id],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO verification_error_requests(checkpoint_id,pulsation_id,verifier_run_id,stage,error_message,created_at,updated_at) VALUES('v-cp',?1,'vr1','Code','transient error','2026-11-24','2026-11-24')",
+            [&pulse.id],
+        )
+        .unwrap();
+        assert!(
+            service
+                .delete_project_permanently(&project.id, &project.name)
+                .is_err()
+        );
+        assert!(root.exists());
+        db.execute(
+            "UPDATE stage_verifier_runs SET status='passed', finished_at='2026-11-24' WHERE id='vr1'",
+            [],
+        )
+        .unwrap();
+        drop(db);
+
+        service
+            .delete_project_permanently(&project.id, &project.name)
+            .unwrap();
+        assert!(!root.exists());
+        let db = service.connection().unwrap();
+        for table in [
+            "stage_verifiers",
+            "stage_verifier_runs",
+            "pulsation_stage_verification",
+            "verification_error_requests",
+        ] {
+            assert_eq!(
+                db.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                0,
+                "{table}"
+            );
+        }
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap(),
+            0
+        );
     }
 
     #[test]

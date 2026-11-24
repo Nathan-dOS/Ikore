@@ -35,6 +35,10 @@ pub struct CompositionSettings {
     /// Additions only; a project cannot lower a built-in rule.
     #[serde(default, skip_serializing_if = "ProjectRiskPolicy::is_empty")]
     pub risk_policy: ProjectRiskPolicy,
+    /// Feature 25 M4 (Labs): run project stage verifiers before a default
+    /// pipeline stage advances or opens its artifact checkpoint.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub stage_verifiers_enabled: bool,
 }
 
 pub const DEFAULT_REVISION_ROUND_THRESHOLD: u32 = 3;
@@ -42,6 +46,11 @@ pub const REVISION_ROUND_THRESHOLD_RANGE: std::ops::RangeInclusive<u32> = 1..=10
 
 const fn default_revision_round_threshold() -> u32 {
     DEFAULT_REVISION_ROUND_THRESHOLD
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl Default for CompositionSettings {
@@ -54,6 +63,7 @@ impl Default for CompositionSettings {
             visualizer_enabled: false,
             revision_round_threshold: DEFAULT_REVISION_ROUND_THRESHOLD,
             risk_policy: ProjectRiskPolicy::default(),
+            stage_verifiers_enabled: false,
         }
     }
 }
@@ -219,5 +229,68 @@ mod tests {
             }))
             .is_err()
         );
+    }
+
+    #[test]
+    fn stage_verifiers_flag_is_off_by_default_and_preserves_sha256_when_false() {
+        let plain = CompositionSettings::default();
+        assert!(!plain.stage_verifiers_enabled);
+        let serialized = serde_json::to_value(&plain).unwrap();
+        assert!(
+            serialized.get("stageVerifiersEnabled").is_none(),
+            "false flag must be omitted so default SHA-256 stays unchanged"
+        );
+        let pre_m4_sha = canonical_sha256(
+            &serde_json::json!({
+                "enabled": false,
+                "maxInFlightUnits": 1,
+                "validationEnabled": false,
+                "qualifiedRecipes": [],
+                "visualizerEnabled": false,
+                "revisionRoundThreshold": DEFAULT_REVISION_ROUND_THRESHOLD,
+            }),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(plain.sha256().unwrap(), pre_m4_sha);
+
+        let with_verifiers = CompositionSettings {
+            stage_verifiers_enabled: true,
+            ..CompositionSettings::default()
+        };
+        with_verifiers.validate().unwrap();
+        let enabled_json = serde_json::to_value(&with_verifiers).unwrap();
+        assert_eq!(
+            enabled_json.get("stageVerifiersEnabled"),
+            Some(&serde_json::Value::Bool(true))
+        );
+        assert_ne!(with_verifiers.sha256().unwrap(), plain.sha256().unwrap());
+        let round_trip: CompositionSettings = serde_json::from_value(enabled_json).unwrap();
+        assert_eq!(round_trip, with_verifiers);
+        assert!(round_trip.stage_verifiers_enabled);
+
+        // Legacy JSON without stageVerifiersEnabled deserializes to false.
+        let legacy: CompositionSettings = serde_json::from_value(serde_json::json!({
+            "enabled": true, "maxInFlightUnits": 1, "validationEnabled": false
+        }))
+        .unwrap();
+        assert!(!legacy.stage_verifiers_enabled);
+
+        // Explicit false deserializes cleanly and re-serializes without the key.
+        let explicit_false: CompositionSettings = serde_json::from_value(serde_json::json!({
+            "enabled": false,
+            "maxInFlightUnits": 1,
+            "validationEnabled": false,
+            "stageVerifiersEnabled": false
+        }))
+        .unwrap();
+        assert!(!explicit_false.stage_verifiers_enabled);
+        assert!(
+            serde_json::to_value(&explicit_false)
+                .unwrap()
+                .get("stageVerifiersEnabled")
+                .is_none()
+        );
+        assert_eq!(explicit_false.sha256().unwrap(), plain.sha256().unwrap());
     }
 }

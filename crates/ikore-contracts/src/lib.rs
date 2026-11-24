@@ -9,6 +9,7 @@ pub mod external_changes;
 pub mod line_diff;
 pub mod llm;
 pub mod redaction;
+pub mod stage_verifier;
 pub mod stages;
 pub mod timeout;
 pub mod usage;

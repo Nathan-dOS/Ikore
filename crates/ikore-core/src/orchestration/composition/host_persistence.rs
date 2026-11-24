@@ -221,7 +221,8 @@ impl PersistenceService {
         Ok(match row {
             Some((enabled, max_in_flight_units, validation_enabled, extra)) => {
                 // The typed columns are authoritative; `settings_json` carries
-                // the fields added after V32 (qualified recipes, Visualizer).
+                // the fields added after V32 (qualified recipes, Visualizer,
+                // stage verifiers).
                 let extra: serde_json::Value =
                     serde_json::from_str(&extra).unwrap_or(serde_json::Value::Null);
                 let qualified_recipes = extra["qualifiedRecipes"]
@@ -251,6 +252,9 @@ impl PersistenceService {
                     // risk assessment then applies the built-in policy alone.
                     risk_policy: serde_json::from_value(extra["riskPolicy"].clone())
                         .unwrap_or_default(),
+                    stage_verifiers_enabled: extra["stageVerifiersEnabled"]
+                        .as_bool()
+                        .unwrap_or(false),
                 }
             }
             None => CompositionSettings::default(),
@@ -279,13 +283,21 @@ impl PersistenceService {
                 "Project not found to configure composition.".into(),
             ));
         }
-        let extra = serde_json::json!({
+        let mut extra = serde_json::json!({
             "qualifiedRecipes": settings.qualified_recipes,
             "visualizerEnabled": settings.visualizer_enabled,
             "revisionRoundThreshold": settings.revision_round_threshold,
             "riskPolicy": settings.risk_policy,
-        })
-        .to_string();
+        });
+        if settings.stage_verifiers_enabled
+            && let Some(map) = extra.as_object_mut()
+        {
+            map.insert(
+                "stageVerifiersEnabled".into(),
+                serde_json::Value::Bool(true),
+            );
+        }
+        let extra = extra.to_string();
         db.execute(
             "INSERT INTO project_composition_settings(project_id,enabled,max_in_flight_units,validation_enabled,settings_json,updated_at)
              VALUES(?1,?2,?3,?4,?5,?6)
@@ -2630,5 +2642,60 @@ mod validation_profile_tests {
             detect_presets(std::path::Path::new("/definitely/missing")).len(),
             0
         );
+    }
+
+    #[test]
+    fn stage_verifiers_setting_round_trips_and_restores_digest() {
+        let (_root, service, project) = service_with_project();
+        let initial = service.get_composition_settings(&project).unwrap();
+        assert!(!initial.stage_verifiers_enabled);
+        let baseline_sha = initial.sha256().unwrap();
+
+        let enabled = CompositionSettings {
+            stage_verifiers_enabled: true,
+            ..initial.clone()
+        };
+        service
+            .update_composition_settings(&project, enabled)
+            .unwrap();
+        let reloaded = service.get_composition_settings(&project).unwrap();
+        assert!(reloaded.stage_verifiers_enabled);
+        assert_ne!(reloaded.sha256().unwrap(), baseline_sha);
+        let raw_enabled: String = service
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT settings_json FROM project_composition_settings WHERE project_id=?1",
+                [&project],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let parsed_enabled: serde_json::Value = serde_json::from_str(&raw_enabled).unwrap();
+        assert_eq!(
+            parsed_enabled.get("stageVerifiersEnabled"),
+            Some(&serde_json::Value::Bool(true))
+        );
+
+        let disabled = CompositionSettings {
+            stage_verifiers_enabled: false,
+            ..reloaded
+        };
+        service
+            .update_composition_settings(&project, disabled)
+            .unwrap();
+        let restored = service.get_composition_settings(&project).unwrap();
+        assert!(!restored.stage_verifiers_enabled);
+        assert_eq!(restored.sha256().unwrap(), baseline_sha);
+        let raw_disabled: String = service
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT settings_json FROM project_composition_settings WHERE project_id=?1",
+                [&project],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let parsed_disabled: serde_json::Value = serde_json::from_str(&raw_disabled).unwrap();
+        assert!(parsed_disabled.get("stageVerifiersEnabled").is_none());
     }
 }

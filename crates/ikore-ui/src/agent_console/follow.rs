@@ -35,9 +35,10 @@ impl Priority {
     pub(crate) fn of(origin: ikore_core::terminals::ExecutionOrigin) -> Self {
         use ikore_core::terminals::ExecutionOrigin;
         match origin {
-            ExecutionOrigin::Pipeline | ExecutionOrigin::Feature | ExecutionOrigin::Review => {
-                Self::Pipeline
-            }
+            ExecutionOrigin::Pipeline
+            | ExecutionOrigin::Verification
+            | ExecutionOrigin::Feature
+            | ExecutionOrigin::Review => Self::Pipeline,
             ExecutionOrigin::Manual => Self::Interactive,
             ExecutionOrigin::Automation => Self::Automation,
             ExecutionOrigin::Learning
@@ -623,6 +624,10 @@ mod tests {
         assert_eq!(
             Priority::of(ikore_core::terminals::ExecutionOrigin::Automation),
             Priority::Automation
+        );
+        assert_eq!(
+            Priority::of(ikore_core::terminals::ExecutionOrigin::Verification),
+            Priority::Pipeline
         );
 
         // A step never takes the dock from a running stage.

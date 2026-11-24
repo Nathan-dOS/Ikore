@@ -1207,6 +1207,7 @@ fn origin_label(origin: ikore_core::terminals::ExecutionOrigin) -> &'static str 
         ExecutionOrigin::Notes => "notes",
         ExecutionOrigin::Reconciliation => "reconciliation",
         ExecutionOrigin::Automation => "pipeline step",
+        ExecutionOrigin::Verification => "verification",
     }
 }
 

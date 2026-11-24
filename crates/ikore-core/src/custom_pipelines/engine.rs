@@ -27,7 +27,8 @@ use crate::llm::{
     LlmRequest, ResponseFormat,
 };
 use crate::terminals::{
-    AUTOMATION_OUTPUT_TOKENS, AutomationStepRequest, CliBackend, TerminalError, ThinkingLevel,
+    AUTOMATION_OUTPUT_TOKENS, AutomationStepRequest, CliBackend, ExecutionOrigin, TerminalError,
+    ThinkingLevel,
 };
 
 const INTERRUPTED: &str = "The app closed while this step ran.";
@@ -548,6 +549,8 @@ impl PersistenceService {
                             project_id: claim.project_id.clone(),
                             slot_id,
                             label: automation_slot_label(&claim.pipeline_name, &claim.step.label),
+                            origin: ExecutionOrigin::Automation,
+                            pulsation_id: None,
                             backend,
                             model: agent.model.clone(),
                             model_profile: agent.model_profile.clone(),

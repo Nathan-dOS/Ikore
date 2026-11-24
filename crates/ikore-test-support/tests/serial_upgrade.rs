@@ -74,10 +74,9 @@ fn v65_to_v66_preserves_legacy_failures_without_inventing_validation_evidence() 
     drop(service);
     let _reopened = PersistenceService::initialize(data.path()).unwrap();
     let db = Connection::open(path).unwrap();
-    for (table, sql) in before
-        .into_iter()
-        .filter(|(table, _)| !REBUILT_BY_V70.contains(&table.as_str()))
-    {
+    for (table, sql) in before.into_iter().filter(|(table, _)| {
+        !REBUILT_BY_V70.contains(&table.as_str()) && !REBUILT_BY_V73.contains(&table.as_str())
+    }) {
         assert_eq!(
             without_later_columns(
                 &db.query_row(
@@ -311,6 +310,25 @@ const REBUILT_BY_V70: [&str; 3] = ["terminal_slots", "terminal_runs", "llm_route
 
 fn rebuilt_by_v70(sql: &str) -> bool {
     REBUILT_BY_V70.iter().any(|table| {
+        sql.starts_with(&format!("CREATE TABLE \"{table}\" "))
+            || sql.starts_with(&format!("CREATE TABLE {table} "))
+    })
+}
+
+/// V73 rebuilds `checkpoints`, `stage_failure_requests` and
+/// `checkpoint_approval_receipts` to admit stage verifier rejections,
+/// `Continue anyway` and `verification_error` checkpoints (feature 25, M4);
+/// `v72_to_v73_rebuilds_checkpoint_tables_and_adds_stage_verifiers` proves
+/// their rows, indexes, trigger and foreign keys survive. The earlier
+/// "nothing is rebuilt" checks leave them out.
+const REBUILT_BY_V73: [&str; 3] = [
+    "checkpoints",
+    "stage_failure_requests",
+    "checkpoint_approval_receipts",
+];
+
+fn rebuilt_by_v73(sql: &str) -> bool {
+    REBUILT_BY_V73.iter().any(|table| {
         sql.starts_with(&format!("CREATE TABLE \"{table}\" "))
             || sql.starts_with(&format!("CREATE TABLE {table} "))
     })
@@ -1987,7 +2005,7 @@ fn v50_to_v51_adds_the_review_boundary_tables_without_rebuilding_existing_ones()
         .unwrap();
     for table in before
         .iter()
-        .filter(|sql| !rebuilt_by_v54(sql) && !rebuilt_by_v70(sql))
+        .filter(|sql| !rebuilt_by_v54(sql) && !rebuilt_by_v70(sql) && !rebuilt_by_v73(sql))
     {
         assert!(
             after.iter().any(|sql| without_later_columns(sql) == *table),
@@ -2109,7 +2127,7 @@ fn v51_to_v52_adds_the_risk_scrutiny_tables_without_rebuilding_existing_ones() {
         .unwrap();
     for table in before
         .iter()
-        .filter(|sql| !rebuilt_by_v54(sql) && !rebuilt_by_v70(sql))
+        .filter(|sql| !rebuilt_by_v54(sql) && !rebuilt_by_v70(sql) && !rebuilt_by_v73(sql))
     {
         assert!(
             after.iter().any(|sql| without_later_columns(sql) == *table),
@@ -2221,7 +2239,7 @@ fn v52_to_v53_adds_the_forge_preflight_findings_without_rebuilding_existing_ones
         .unwrap();
     for table in before
         .iter()
-        .filter(|sql| !rebuilt_by_v54(sql) && !rebuilt_by_v70(sql))
+        .filter(|sql| !rebuilt_by_v54(sql) && !rebuilt_by_v70(sql) && !rebuilt_by_v73(sql))
     {
         assert!(
             after.iter().any(|sql| without_later_columns(sql) == *table),
@@ -2322,7 +2340,7 @@ fn v53_to_v54_adds_the_reconciler_role_and_the_reconciliation_tables() {
     let after = tables(&db);
     for table in before
         .iter()
-        .filter(|sql| !rebuilt_by_v54(sql) && !rebuilt_by_v70(sql))
+        .filter(|sql| !rebuilt_by_v54(sql) && !rebuilt_by_v70(sql) && !rebuilt_by_v73(sql))
     {
         assert!(
             after.iter().any(|sql| without_later_columns(sql) == *table),
@@ -2490,10 +2508,9 @@ fn v54_to_v55_adds_cargo_evidence_without_rewriting_or_enabling_legacy_profiles(
         )
         .unwrap();
     assert_eq!(preserved, (7, false, profile_json));
-    for (name, definition) in before
-        .into_iter()
-        .filter(|(name, _)| !REBUILT_BY_V70.contains(&name.as_str()))
-    {
+    for (name, definition) in before.into_iter().filter(|(name, _)| {
+        !REBUILT_BY_V70.contains(&name.as_str()) && !REBUILT_BY_V73.contains(&name.as_str())
+    }) {
         let after: String = db
             .query_row(
                 "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
@@ -2619,10 +2636,9 @@ fn v55_to_v57_adds_canvas_tables_without_rewriting_legacy_data() {
         1,
         "the migration is applied exactly once"
     );
-    for (name, before) in definitions
-        .into_iter()
-        .filter(|(name, _)| !REBUILT_BY_V70.contains(&name.as_str()))
-    {
+    for (name, before) in definitions.into_iter().filter(|(name, _)| {
+        !REBUILT_BY_V70.contains(&name.as_str()) && !REBUILT_BY_V73.contains(&name.as_str())
+    }) {
         let after: String = db
             .query_row(
                 "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
@@ -2835,7 +2851,10 @@ fn v58_to_v59_adds_mandates_and_receipts_without_touching_running_pulsations() {
     let db = Connection::open(&path).unwrap();
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
     let after = tables(&db);
-    for table in before.iter().filter(|sql| !rebuilt_by_v70(sql)) {
+    for table in before
+        .iter()
+        .filter(|sql| !rebuilt_by_v70(sql) && !rebuilt_by_v73(sql))
+    {
         assert!(
             after.iter().any(|sql| without_later_columns(sql) == *table),
             "V59 rebuilds nothing: {table}"
@@ -2957,7 +2976,10 @@ fn v59_to_v60_adds_attestations_without_sealing_pulsations_that_already_ended() 
     let db = Connection::open(&path).unwrap();
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
     let after = tables(&db);
-    for table in before.iter().filter(|sql| !rebuilt_by_v70(sql)) {
+    for table in before
+        .iter()
+        .filter(|sql| !rebuilt_by_v70(sql) && !rebuilt_by_v73(sql))
+    {
         assert!(
             after.iter().any(|sql| without_later_columns(sql) == *table),
             "V60 rebuilds nothing: {table}"
@@ -3090,7 +3112,10 @@ fn v60_to_v61_adds_scope_requests_without_touching_parked_failures() {
     let db = Connection::open(&path).unwrap();
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
     let after = tables(&db);
-    for table in before.iter().filter(|sql| !rebuilt_by_v70(sql)) {
+    for table in before
+        .iter()
+        .filter(|sql| !rebuilt_by_v70(sql) && !rebuilt_by_v73(sql))
+    {
         assert!(
             after.iter().any(|sql| without_later_columns(sql) == *table),
             "V61 rebuilds nothing: {table}"
@@ -3203,7 +3228,10 @@ fn v61_to_v62_adds_the_exchange_log_without_backfilling_history() {
     let db = Connection::open(&path).unwrap();
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
     let after = tables(&db);
-    for table in before.iter().filter(|sql| !rebuilt_by_v70(sql)) {
+    for table in before
+        .iter()
+        .filter(|sql| !rebuilt_by_v70(sql) && !rebuilt_by_v73(sql))
+    {
         assert!(
             after.iter().any(|sql| without_later_columns(sql) == *table),
             "V62 rebuilds nothing: {table}"
@@ -3309,7 +3337,10 @@ fn v62_to_v63_keeps_earlier_runs_strict_and_adds_the_resume_manifest() {
     let db = Connection::open(&path).unwrap();
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
     let after = tables(&db);
-    for table in before.iter().filter(|sql| !rebuilt_by_v70(sql)) {
+    for table in before
+        .iter()
+        .filter(|sql| !rebuilt_by_v70(sql) && !rebuilt_by_v73(sql))
+    {
         assert!(
             after.iter().any(|sql| without_later_columns(sql) == *table),
             "V63 rebuilds nothing: {table}"
@@ -3429,7 +3460,10 @@ fn v63_to_v64_adds_pulsation_digests_without_backfilling_them() {
     let db = Connection::open(&path).unwrap();
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
     let after = tables(&db);
-    for table in before.iter().filter(|sql| !rebuilt_by_v70(sql)) {
+    for table in before
+        .iter()
+        .filter(|sql| !rebuilt_by_v70(sql) && !rebuilt_by_v73(sql))
+    {
         assert!(
             after.iter().any(|sql| without_later_columns(sql) == *table),
             "V64 rebuilds nothing: {table}"
@@ -3551,7 +3585,9 @@ fn v64_and_v65_to_v67_add_event_details_without_touching_old_events() {
         db.pragma_update(None, "foreign_keys", "ON").unwrap();
         let after = tables(&db);
         for table in before.iter().filter(|(name, _)| {
-            name != "terminal_events" && !REBUILT_BY_V70.contains(&name.as_str())
+            name != "terminal_events"
+                && !REBUILT_BY_V70.contains(&name.as_str())
+                && !REBUILT_BY_V73.contains(&name.as_str())
         }) {
             assert!(
                 after.contains(table),
@@ -3588,4 +3624,499 @@ fn v64_and_v65_to_v67_add_event_details_without_touching_old_events() {
         )
         .expect_err("the detail is JSON");
     }
+}
+
+/// Feature 25, M4: upgrading a populated V72 database to V73 rebuilds
+/// `checkpoints`, `stage_failure_requests` and `checkpoint_approval_receipts`
+/// without rebuilding `terminal_runs`, preserves all columns/indexes/triggers/
+/// child foreign keys, matches a fresh V73 database schema verbatim, and
+/// enforces all new verifier constraints and cascades.
+#[test]
+fn v72_to_v73_rebuilds_checkpoint_tables_and_adds_stage_verifiers() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("ikore.db");
+    let mut db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    cli_migrations::migrations::runner()
+        .set_target(refinery::Target::Version(72))
+        .run(&mut db)
+        .unwrap();
+
+    let sha_a = "a".repeat(64);
+    let sha_b = "b".repeat(64);
+    db.execute_batch(
+        "INSERT INTO projects(id,name,workspace_path,created_at,updated_at)
+           VALUES('p72','V72 Fixture','/tmp/v72','2026-11-24T00:00:00Z','2026-11-24T00:00:00Z');
+         INSERT INTO pulsations(id,project_id,feature_name,stage,status,pipeline_version,input_revision,state_version,created_at,updated_at)
+           VALUES('pulse72','p72','M4 upgrade','Code','running',4,2,5,'2026-11-24T00:00:00Z','2026-11-24T00:00:00Z');
+         INSERT INTO jobs(id,pulsation_id,project_id,kind,status,input_revision,generation,state_version,idempotency_key,created_at,updated_at)
+           VALUES('job72','pulse72','p72','run_stage::Code','done',2,3,5,'job72','2026-11-24T00:00:00Z','2026-11-24T00:00:00Z');
+         INSERT INTO checkpoints(id,pulsation_id,stage,status,created_at,updated_at,kind,input_revision,state_version,producer_job_id,generation,purpose,visualizer_brief_json)
+           VALUES('cp-review','pulse72','Code','approved','2026-11-24T00:00:00Z','2026-11-24T00:00:00Z','artifact_review',2,5,'job72',3,'artifact_review','{\"summary\":\"preserved\"}');
+         INSERT INTO checkpoints(id,pulsation_id,stage,status,created_at,updated_at,kind,input_revision,state_version,producer_job_id,generation,purpose)
+           VALUES('cp-fail','pulse72','Code','pending','2026-11-24T00:00:00Z','2026-11-24T00:00:00Z','stage_failure',2,5,'job72',3,'stage_failure');
+         INSERT INTO checkpoint_visualizations(checkpoint_id,pulsation_id,job_id,state,calls,brief_json,created_at,updated_at)
+           VALUES('cp-review','pulse72','job72','validated',1,'{\"summary\":\"preserved\"}','2026-11-24T00:00:00Z','2026-11-24T00:00:00Z');
+         UPDATE pulsations SET integration_checkpoint_id='cp-review' WHERE id='pulse72';
+         INSERT INTO stage_failure_requests(checkpoint_id,pulsation_id,job_id,stage,failure_class,allow_retry,allow_revision,revision_stage,error_code,diagnostic,created_at,updated_at,stage_execution_id,allowed_revision_targets_json,remaining_budget_json)
+           VALUES('cp-fail','pulse72','job72','Code','validation_failed',1,1,'Code','E_VAL','failed checks','2026-11-24T00:00:00Z','2026-11-24T00:00:00Z','exec72','[\"Code\",\"SPECIFICATION\"]','{\"extraInvocations\":1}');",
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO checkpoint_approval_receipts(checkpoint_id,pulsation_id,purpose,decision,receipt_json,receipt_sha256,mandate_revision,created_at)
+           VALUES('cp-review','pulse72','artifact_review','approved','{\"stage\":\"SPECIFICATION\"}',?1,1,'2026-11-24T00:00:00Z')",
+        [&sha_a],
+    )
+    .unwrap();
+
+    let table_sqls = |conn: &Connection| -> Vec<(String, String)> {
+        conn.prepare(
+            "SELECT name, sql FROM sqlite_master WHERE type='table' AND sql IS NOT NULL ORDER BY name",
+        )
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+    };
+    let before = table_sqls(&db);
+    drop(db);
+
+    // Double initialize verifies idempotency and checksum stability on reopen.
+    PersistenceService::initialize(root.path()).unwrap();
+    PersistenceService::initialize(root.path()).unwrap();
+
+    let db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+
+    // 1. Migration version, integrity, and foreign keys.
+    let max_version: i64 = db
+        .query_row(
+            "SELECT MAX(version) FROM refinery_schema_history",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(max_version, latest_migration_version());
+    assert_eq!(max_version, 73);
+    let v73_count: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM refinery_schema_history WHERE version=73",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(v73_count, 1);
+    let integrity: String = db
+        .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(integrity, "ok");
+    let fk_errors: i64 = db
+        .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(fk_errors, 0);
+
+    // 2. Non-rebuilt tables untouched (including terminal_runs).
+    let after = table_sqls(&db);
+    for table in before
+        .iter()
+        .filter(|(name, _)| !REBUILT_BY_V73.contains(&name.as_str()))
+    {
+        assert!(
+            after.contains(table),
+            "V73 must not rebuild table: {:?}",
+            table.0
+        );
+    }
+    assert!(before.iter().any(|(name, _)| name == "terminal_runs"));
+
+    // 3. Upgraded vs fresh V73 sqlite_master exact parity (tables, indexes, triggers).
+    let fresh_root = tempfile::tempdir().unwrap();
+    PersistenceService::initialize(fresh_root.path()).unwrap();
+    let fresh_db = Connection::open(fresh_root.path().join("ikore.db")).unwrap();
+    let schema_objects = |conn: &Connection| -> Vec<(String, String, String, Option<String>)> {
+        conn.prepare(
+            "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name",
+        )
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+    };
+    assert_eq!(schema_objects(&db), schema_objects(&fresh_db));
+
+    // 4. Populated data preservation + zero _v73 FK rewrites + zero implicit FK targets.
+    let vis_brief: Option<String> = db
+        .query_row(
+            "SELECT visualizer_brief_json FROM checkpoints WHERE id='cp-review'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(vis_brief.as_deref(), Some(r#"{"summary":"preserved"}"#));
+    let cp_count: i64 = db
+        .query_row("SELECT count(*) FROM checkpoints", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(cp_count, 2);
+    let integration_cp: Option<String> = db
+        .query_row(
+            "SELECT integration_checkpoint_id FROM pulsations WHERE id='pulse72'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(integration_cp.as_deref(), Some("cp-review"));
+    let vis_row_count: i64 = db
+        .query_row(
+            "SELECT count(*) FROM checkpoint_visualizations WHERE checkpoint_id='cp-review'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(vis_row_count, 1);
+
+    for (table_name, _) in &after {
+        let mut stmt = db
+            .prepare(&format!("PRAGMA foreign_key_list(\"{table_name}\")"))
+            .unwrap();
+        let fks: Vec<(String, Option<String>)> = stmt
+            .query_map([], |r| {
+                Ok((r.get::<_, String>(2)?, r.get::<_, Option<String>>(4)?))
+            })
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        for (target_table, target_col) in fks {
+            assert!(
+                !target_table.contains("_v73"),
+                "FK in {table_name} was rewritten to temporary table {target_table}"
+            );
+            assert!(
+                target_col.is_some(),
+                "FK in {table_name} -> {target_table} must specify explicit parent column"
+            );
+        }
+    }
+
+    let preserved_failure: (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        i64,
+        Option<String>,
+    ) = db
+        .query_row(
+            "SELECT stage_execution_id, allowed_revision_targets_json, remaining_budget_json, allow_continue_anyway, justification
+             FROM stage_failure_requests WHERE checkpoint_id='cp-fail'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        preserved_failure,
+        (
+            Some("exec72".into()),
+            Some(r#"["Code","SPECIFICATION"]"#.into()),
+            Some(r#"{"extraInvocations":1}"#.into()),
+            0,
+            None,
+        )
+    );
+    let receipt_row: (String, String, String, String, Option<i64>) = db
+        .query_row(
+            "SELECT purpose, decision, receipt_json, receipt_sha256, mandate_revision
+             FROM checkpoint_approval_receipts WHERE checkpoint_id='cp-review'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        receipt_row,
+        (
+            "artifact_review".into(),
+            "approved".into(),
+            r#"{"stage":"SPECIFICATION"}"#.into(),
+            sha_a.clone(),
+            Some(1),
+        )
+    );
+
+    // 5. Partial unique index idx_checkpoint_producer + widened kind/purpose CHECKs.
+    for id in ["ve-1", "ve-2"] {
+        db.execute(
+            "INSERT INTO checkpoints(id,pulsation_id,stage,status,created_at,updated_at,kind,producer_job_id,generation,purpose)
+               VALUES(?1,'pulse72','Code','pending','2026-11-24T00:00:00Z','2026-11-24T00:00:00Z','verification_error','job72',3,'verification_error')",
+            [id],
+        )
+        .expect("multiple verification_error checkpoints on same producer_job_id+generation must succeed");
+    }
+    db.execute(
+        "INSERT INTO checkpoints(id,pulsation_id,stage,status,created_at,updated_at,kind,producer_job_id,generation,purpose)
+           VALUES('dup-review','pulse72','Code','pending','2026-11-24T00:00:00Z','2026-11-24T00:00:00Z','artifact_review','job72',3,'artifact_review')",
+        [],
+    )
+    .expect_err("duplicate non-verification_error producer checkpoint must still fail");
+    db.execute(
+        "INSERT INTO checkpoints(id,pulsation_id,stage,status,created_at,updated_at,kind,purpose)
+           VALUES('bad-kind','pulse72','Code','pending','2026-11-24T00:00:00Z','2026-11-24T00:00:00Z','made_up','artifact_review')",
+        [],
+    )
+    .expect_err("unknown kind must fail");
+    db.execute(
+        "INSERT INTO checkpoints(id,pulsation_id,stage,status,created_at,updated_at,kind,purpose)
+           VALUES('bad-purpose','pulse72','Code','pending','2026-11-24T00:00:00Z','2026-11-24T00:00:00Z','artifact_review','made_up')",
+        [],
+    )
+    .expect_err("unknown purpose must fail");
+
+    // 6. Widened stage_failure_requests CHECKs.
+    db.execute(
+        "INSERT INTO checkpoints(id,pulsation_id,stage,status,created_at,updated_at,kind,producer_job_id,generation,purpose)
+           VALUES('cp-ver-rej','pulse72','Code','pending','2026-11-24T00:00:00Z','2026-11-24T00:00:00Z','stage_failure','job72',4,'stage_failure')",
+        [],
+    )
+    .unwrap();
+    let max_justification = "x".repeat(500);
+    db.execute(
+        "INSERT INTO stage_failure_requests(checkpoint_id,pulsation_id,job_id,stage,failure_class,allow_retry,allow_revision,error_code,diagnostic,decision,allow_continue_anyway,justification,created_at,updated_at)
+           VALUES('cp-ver-rej','pulse72','job72','Code','verification_rejected',0,0,'E_VER','verifier rejected','continue_anyway',1,?1,'2026-11-24T00:00:00Z','2026-11-24T00:00:00Z')",
+        [&max_justification],
+    )
+    .expect("verification_rejected + continue_anyway + 500-char justification must succeed");
+
+    db.execute(
+        "INSERT INTO checkpoints(id,pulsation_id,stage,status,created_at,updated_at,kind,producer_job_id,generation,purpose)
+           VALUES('cp-bad-fail','pulse72','Code','pending','2026-11-24T00:00:00Z','2026-11-24T00:00:00Z','stage_failure','job72',5,'stage_failure')",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO stage_failure_requests(checkpoint_id,pulsation_id,job_id,stage,failure_class,allow_retry,allow_revision,allow_continue_anyway,error_code,diagnostic,created_at,updated_at)
+           VALUES('cp-bad-fail','pulse72','job72','Code','verification_rejected',0,0,0,'E_VER','abort-only','2026-11-24T00:00:00Z','2026-11-24T00:00:00Z')",
+        [],
+    )
+    .expect_err("abort-only stage_failure_requests must fail");
+    let too_long_justification = "x".repeat(501);
+    db.execute(
+        "INSERT INTO stage_failure_requests(checkpoint_id,pulsation_id,job_id,stage,failure_class,allow_retry,allow_revision,allow_continue_anyway,error_code,diagnostic,justification,created_at,updated_at)
+           VALUES('cp-bad-fail','pulse72','job72','Code','verification_rejected',0,0,1,'E_VER','too long',?1,'2026-11-24T00:00:00Z','2026-11-24T00:00:00Z')",
+        [&too_long_justification],
+    )
+    .expect_err("justification > 500 chars must fail");
+    db.execute(
+        "INSERT INTO stage_failure_requests(checkpoint_id,pulsation_id,job_id,stage,failure_class,allow_retry,allow_revision,error_code,diagnostic,created_at,updated_at)
+           VALUES('cp-bad-fail','pulse72','job72','Code','unknown_class',1,0,'E_VER','bad class','2026-11-24T00:00:00Z','2026-11-24T00:00:00Z')",
+        [],
+    )
+    .expect_err("unknown failure_class must fail");
+    db.execute(
+        "INSERT INTO stage_failure_requests(checkpoint_id,pulsation_id,job_id,stage,failure_class,allow_retry,allow_revision,error_code,diagnostic,decision,created_at,updated_at)
+           VALUES('cp-bad-fail','pulse72','job72','Code','verification_rejected',1,0,'E_VER','bad decision','made_up','2026-11-24T00:00:00Z','2026-11-24T00:00:00Z')",
+        [],
+    )
+    .expect_err("unknown decision must fail");
+
+    // 7. checkpoint_approval_receipts widened CHECKs + append-only trigger survival.
+    for (cp_id, purpose, decision) in [
+        ("rc-1", "stage_failure", "continue_anyway"),
+        ("rc-2", "verification_error", "retry_verifier"),
+        ("rc-3", "verification_error", "skip_verifier"),
+        ("rc-4", "verification_error", "abort"),
+    ] {
+        db.execute(
+            "INSERT INTO checkpoint_approval_receipts(checkpoint_id,pulsation_id,purpose,decision,receipt_json,receipt_sha256,created_at)
+               VALUES(?1,'pulse72',?2,?3,'{}',?4,'2026-11-24T00:00:00Z')",
+            rusqlite::params![cp_id, purpose, decision, sha_b],
+        )
+        .expect("M4 approval receipt purpose/decision must succeed");
+    }
+    db.execute(
+        "INSERT INTO checkpoint_approval_receipts(checkpoint_id,pulsation_id,purpose,decision,receipt_json,receipt_sha256,created_at)
+           VALUES('rc-bad-p','pulse72','made_up','abort','{}',?1,'2026-11-24T00:00:00Z')",
+        [&sha_b],
+    )
+    .expect_err("unknown receipt purpose must fail");
+    db.execute(
+        "INSERT INTO checkpoint_approval_receipts(checkpoint_id,pulsation_id,purpose,decision,receipt_json,receipt_sha256,created_at)
+           VALUES('rc-bad-d','pulse72','verification_error','made_up','{}',?1,'2026-11-24T00:00:00Z')",
+        [&sha_b],
+    )
+    .expect_err("unknown receipt decision must fail");
+    db.execute(
+        "UPDATE checkpoint_approval_receipts SET decision='rejected' WHERE checkpoint_id='cp-review'",
+        [],
+    )
+    .expect_err("checkpoint_approval_receipts_append_only trigger must survive rebuild");
+
+    // 8. All 4 new verifier tables: constraints, uniqueness, ON DELETE RESTRICT, and cascades.
+    db.execute(
+        "INSERT INTO stage_verifiers(id,project_id,stage,label,position,enabled,reject_limit,agent_json,instructions,version,created_at,updated_at)
+           VALUES('v1','p72','SPECIFICATION','Spec check',0,1,2,'{\"transport\":\"cli\"}','Check spec.',1,'2026-11-24T00:00:00Z','2026-11-24T00:00:00Z')",
+        [],
+    )
+    .expect("valid stage_verifier must insert");
+    db.execute(
+        "INSERT INTO stage_verifiers(id,project_id,stage,label,position,enabled,reject_limit,agent_json,instructions,version,created_at,updated_at)
+           VALUES('v-unused','p72','Code','Advisory',1,1,0,'{\"transport\":\"cli\"}','Advise.',1,'2026-11-24T00:00:00Z','2026-11-24T00:00:00Z')",
+        [],
+    )
+    .expect("advisory verifier (reject_limit=0) must insert");
+    // Invalid stage_verifiers rows
+    for (bad_id, stage, label, limit, agent_json, instructions) in [
+        ("b1", "Specification", "Bad case", 2, "{}", "inst"),
+        ("b2", "Unknown", "Bad stage", 2, "{}", "inst"),
+        ("b3", "Code", "   ", 2, "{}", "inst"),
+        ("b4", "Code", &"l".repeat(61), 2, "{}", "inst"),
+        ("b5", "SPECIFICATION", "Spec check", 2, "{}", "dup label"),
+        ("b6", "Code", "Neg limit", -1, "{}", "inst"),
+        ("b7", "Code", "High limit", 6, "{}", "inst"),
+        ("b8", "Code", "Bad json", 2, "not-json", "inst"),
+        ("b9", "Code", "Too long", 2, "{}", &"x".repeat(16385)),
+    ] {
+        db.execute(
+            "INSERT INTO stage_verifiers(id,project_id,stage,label,position,enabled,reject_limit,agent_json,instructions,version,created_at,updated_at)
+               VALUES(?1,'p72',?2,?3,0,1,?4,?5,?6,1,'2026-11-24T00:00:00Z','2026-11-24T00:00:00Z')",
+            rusqlite::params![bad_id, stage, label, limit, agent_json, instructions],
+        )
+        .expect_err(&format!("invalid stage_verifier {bad_id} must fail"));
+    }
+
+    // stage_verifier_runs: attempt=1 & attempt=2 + nullable started_at/llm_execution_id + cancelled status
+    db.execute(
+        "INSERT INTO stage_verifier_runs(id,verifier_id,config_json,pulsation_id,stage,stage_job_id,stage_generation,attempt,recovery_count,status,llm_execution_id,created_at,started_at)
+           VALUES('vr1','v1','{}','pulse72','SPECIFICATION','job72',3,1,0,'error','llm-1','2026-11-24T00:00:00Z','2026-11-24T00:00:01Z')",
+        [],
+    )
+    .expect("attempt 1 must insert");
+    db.execute(
+        "INSERT INTO stage_verifier_runs(id,verifier_id,config_json,pulsation_id,stage,stage_job_id,stage_generation,attempt,recovery_count,status,created_at)
+           VALUES('vr2','v1','{}','pulse72','SPECIFICATION','job72',3,2,1,'cancelled','2026-11-24T00:00:02Z')",
+        [],
+    )
+    .expect("attempt 2 with recovery_count=1 and status=cancelled must insert");
+    db.execute(
+        "INSERT INTO stage_verifier_runs(id,verifier_id,config_json,pulsation_id,stage,stage_job_id,stage_generation,attempt,recovery_count,status,created_at)
+           VALUES('vr-dup','v1','{}','pulse72','SPECIFICATION','job72',3,1,0,'pending','2026-11-24T00:00:03Z')",
+        [],
+    )
+    .expect_err("duplicate (verifier_id, stage_job_id, stage_generation, attempt) must fail");
+    db.execute(
+        "INSERT INTO stage_verifier_runs(id,verifier_id,config_json,pulsation_id,stage,stage_job_id,stage_generation,attempt,recovery_count,status,created_at)
+           VALUES('vr-a0','v1','{}','pulse72','SPECIFICATION','job72',3,0,0,'pending','2026-11-24T00:00:03Z')",
+        [],
+    )
+    .expect_err("attempt=0 must fail");
+    db.execute(
+        "INSERT INTO stage_verifier_runs(id,verifier_id,config_json,pulsation_id,stage,stage_job_id,stage_generation,attempt,recovery_count,status,created_at)
+           VALUES('vr-rneg','v1','{}','pulse72','SPECIFICATION','job72',3,3,-1,'pending','2026-11-24T00:00:03Z')",
+        [],
+    )
+    .expect_err("recovery_count=-1 must fail");
+    db.execute(
+        "INSERT INTO stage_verifier_runs(id,verifier_id,config_json,pulsation_id,stage,stage_job_id,stage_generation,attempt,recovery_count,status,created_at)
+           VALUES('vr-stat','v1','{}','pulse72','SPECIFICATION','job72',3,3,0,'made_up','2026-11-24T00:00:03Z')",
+        [],
+    )
+    .expect_err("invalid status must fail");
+    db.execute(
+        "INSERT INTO stage_verifier_runs(id,verifier_id,config_json,pulsation_id,stage,stage_job_id,stage_generation,attempt,recovery_count,status,verdict_json,created_at)
+           VALUES('vr-vjson','v1','{}','pulse72','SPECIFICATION','job72',3,3,0,'passed','not-json','2026-11-24T00:00:03Z')",
+        [],
+    )
+    .expect_err("invalid verdict_json must fail");
+
+    // ON DELETE RESTRICT protects historical verifier runs, while unused verifier deletes cleanly.
+    db.execute("DELETE FROM stage_verifiers WHERE id='v1'", [])
+        .expect_err("ON DELETE RESTRICT must refuse deleting a verifier with runs");
+    db.execute("DELETE FROM stage_verifiers WHERE id='v-unused'", [])
+        .expect("deleting a verifier with zero runs must succeed");
+
+    // pulsation_stage_verification
+    db.execute(
+        "INSERT INTO pulsation_stage_verification(pulsation_id,stage,stage_generation,stage_job_id,input_revision,state,deferred_disposition,updated_at)
+           VALUES('pulse72','Code',3,'job72',2,'running','advance:Test','2026-11-24T00:00:00Z')",
+        [],
+    )
+    .expect("valid advance disposition must insert");
+    db.execute(
+        "INSERT INTO pulsation_stage_verification(pulsation_id,stage,stage_generation,stage_job_id,input_revision,state,deferred_disposition,updated_at)
+           VALUES('pulse72','SPECIFICATION',1,'job72',2,'passed','await_review','2026-11-24T00:00:00Z')",
+        [],
+    )
+    .expect("valid await_review disposition must insert");
+    db.execute(
+        "INSERT INTO pulsation_stage_verification(pulsation_id,stage,stage_generation,stage_job_id,input_revision,state,deferred_disposition,updated_at)
+           VALUES('pulse72','Code',3,'job72',2,'running','await_review','2026-11-24T00:00:00Z')",
+        [],
+    )
+    .expect_err("duplicate primary key must fail");
+    db.execute(
+        "INSERT INTO pulsation_stage_verification(pulsation_id,stage,stage_generation,stage_job_id,input_revision,state,deferred_disposition,updated_at)
+           VALUES('pulse72','Test',1,'job72',2,'made_up','await_review','2026-11-24T00:00:00Z')",
+        [],
+    )
+    .expect_err("invalid state must fail");
+    db.execute(
+        "INSERT INTO pulsation_stage_verification(pulsation_id,stage,stage_generation,stage_job_id,input_revision,state,deferred_disposition,updated_at)
+           VALUES('pulse72','Test',1,'job72',2,'running','advance:Intake','2026-11-24T00:00:00Z')",
+        [],
+    )
+    .expect_err("invalid deferred_disposition must fail");
+
+    // verification_error_requests + checkpoint cascade
+    db.execute(
+        "INSERT INTO verification_error_requests(checkpoint_id,pulsation_id,verifier_run_id,stage,error_message,decision,created_at,updated_at)
+           VALUES('ve-1','pulse72','vr1','SPECIFICATION','CLI crashed','retry_verifier','2026-11-24T00:00:00Z','2026-11-24T00:00:00Z')",
+        [],
+    )
+    .expect("valid verification_error_requests must insert");
+    db.execute(
+        "INSERT INTO verification_error_requests(checkpoint_id,pulsation_id,verifier_run_id,stage,error_message,decision,created_at,updated_at)
+           VALUES('ve-2','pulse72','vr1','SPECIFICATION','CLI crashed','made_up','2026-11-24T00:00:00Z','2026-11-24T00:00:00Z')",
+        [],
+    )
+    .expect_err("invalid verification_error decision must fail");
+    db.execute("DELETE FROM checkpoints WHERE id='ve-1'", [])
+        .unwrap();
+    let remaining_verr: i64 = db
+        .query_row(
+            "SELECT count(*) FROM verification_error_requests WHERE checkpoint_id='ve-1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(remaining_verr, 0);
+
+    // Deleting the pulsation cascades all run/checkpoint/verification tables, unblocking verifier deletion.
+    db.execute(
+        "UPDATE pulsations SET integration_checkpoint_id=NULL WHERE id='pulse72'",
+        [],
+    )
+    .unwrap();
+    db.execute("DELETE FROM pulsations WHERE id='pulse72'", [])
+        .unwrap();
+    for table in [
+        "stage_verifier_runs",
+        "pulsation_stage_verification",
+        "verification_error_requests",
+        "checkpoints",
+        "stage_failure_requests",
+        "checkpoint_approval_receipts",
+    ] {
+        let count: i64 = db
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "{table} must cascade to 0 rows");
+    }
+    db.execute("DELETE FROM stage_verifiers WHERE id='v1'", [])
+        .expect("verifier deletes cleanly once its runs are gone");
+    let final_fk_errors: i64 = db
+        .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(final_fk_errors, 0);
 }

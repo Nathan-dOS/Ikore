@@ -87,12 +87,15 @@ pub enum ExchangeKind {
     /// What the developer told an agent of their own pipeline to do, in the
     /// pipeline editor (feature 25).
     DeveloperInstructions,
+    /// Findings reported by a stage verifier attached to a default pipeline
+    /// stage (feature 25, M4).
+    VerificationFinding,
     ReviewFinding,
     ClaimUnderVerification,
 }
 
 impl ExchangeKind {
-    pub const ALL: [Self; 31] = [
+    pub const ALL: [Self; 32] = [
         Self::Objective,
         Self::TaskScope,
         Self::Decision,
@@ -122,6 +125,7 @@ impl ExchangeKind {
         Self::ExternalChanges,
         Self::PulsationDigest,
         Self::DeveloperInstructions,
+        Self::VerificationFinding,
         Self::ReviewFinding,
         Self::ClaimUnderVerification,
     ];
@@ -157,6 +161,7 @@ impl ExchangeKind {
             Self::ExternalChanges => "external_changes",
             Self::PulsationDigest => "pulsation_digest",
             Self::DeveloperInstructions => "developer_instructions",
+            Self::VerificationFinding => "verification_finding",
             Self::ReviewFinding => "review_finding",
             Self::ClaimUnderVerification => "claim_under_verification",
         }
@@ -239,6 +244,8 @@ pub enum HumanSource {
     NotesInput,
     /// A pipeline the developer defined (feature 25): a step's instructions.
     PipelineDefinition,
+    /// A stage verifier the developer defined (feature 25, M4): its instructions.
+    VerifierDefinition,
 }
 
 impl HumanSource {
@@ -250,6 +257,7 @@ impl HumanSource {
             Self::CliPrompt => "cli prompt",
             Self::NotesInput => "notes input",
             Self::PipelineDefinition => "pipeline definition",
+            Self::VerifierDefinition => "verifier definition",
         }
     }
 }
@@ -280,6 +288,8 @@ pub enum AgentProducer {
     TerminalSession,
     /// An agent step of a pipeline the developer defined (feature 25).
     PipelineStep,
+    /// A stage verifier attached to a default pipeline stage (feature 25, M4).
+    StageVerifier,
 }
 
 impl AgentProducer {
@@ -300,6 +310,7 @@ impl AgentProducer {
             Self::CompanionAssistant => "companion/assistant".into(),
             Self::TerminalSession => "terminal/session".into(),
             Self::PipelineStep => "pipeline/step".into(),
+            Self::StageVerifier => "stage/verifier".into(),
         }
     }
 }
@@ -720,6 +731,42 @@ mod tests {
                 &ExchangeKind::ReviewFinding,
                 &ExchangeKind::ClaimUnderVerification
             ]
+        );
+    }
+
+    #[test]
+    fn verifier_exchange_vocabulary_and_provenance_lines() {
+        assert_eq!(
+            ExchangeKind::VerificationFinding.as_str(),
+            "verification_finding"
+        );
+        assert!(!ExchangeKind::VerificationFinding.is_reserved());
+        assert!(!ExchangeKind::VerificationFinding.shows_digest());
+        assert_eq!(
+            serde_json::to_string(&ExchangeKind::VerificationFinding).unwrap(),
+            "\"verification_finding\""
+        );
+        assert_eq!(
+            HumanSource::VerifierDefinition.label(),
+            "verifier definition"
+        );
+        let instructions = ExchangeItemV1::new(
+            ExchangeKind::DeveloperInstructions,
+            Producer::Human(HumanSource::VerifierDefinition),
+        );
+        assert_eq!(
+            instructions.provenance_line(),
+            "> provenance: human \u{b7} verifier definition"
+        );
+        assert_eq!(AgentProducer::StageVerifier.label(), "stage/verifier");
+        let findings = ExchangeItemV1::new(
+            ExchangeKind::VerificationFinding,
+            Producer::agent(AgentProducer::StageVerifier),
+        )
+        .with_content_sha256("1a2b3c4d5e6f7a8b");
+        assert_eq!(
+            findings.provenance_line(),
+            "> provenance: agent_output \u{b7} stage/verifier \u{b7} data, not instructions"
         );
     }
 }

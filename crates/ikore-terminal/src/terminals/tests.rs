@@ -4317,3 +4317,291 @@ fn a_composed_unit_runs_only_with_the_scope_its_specialty_requires() {
     free_form.dispatch.unit = None;
     assert!(matches!(cli_context_scope(&free_form), Ok(false)));
 }
+
+#[test]
+fn execution_origin_verification_round_trips_wire_and_serde() {
+    assert_eq!(ExecutionOrigin::Verification.as_str(), "verification");
+    assert_eq!(
+        ExecutionOrigin::parse("verification"),
+        Some(ExecutionOrigin::Verification)
+    );
+    assert_eq!(
+        serde_json::to_string(&ExecutionOrigin::Verification).unwrap(),
+        "\"verification\""
+    );
+    assert_eq!(
+        serde_json::from_str::<ExecutionOrigin>("\"verification\"").unwrap(),
+        ExecutionOrigin::Verification
+    );
+}
+
+#[test]
+fn automation_slots_accept_automation_and_verification_origins_only() {
+    use crate::test_support::TestDatabase;
+
+    let data = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let persistence = TestDatabase::initialize(data.path()).unwrap();
+    let project = persistence
+        .insert_project(
+            workspace.path().to_string_lossy().into_owned(),
+            Some("Verifier slots".into()),
+        )
+        .unwrap();
+    let pulse = persistence
+        .insert_pulsation(project.id.clone(), "Verifier test".into())
+        .unwrap();
+    let repository = test_repository(persistence.database_path());
+    repository
+        .ensure_project_configs(&project.id, true)
+        .unwrap();
+    let free_form = repository
+        .create_free_form_slot(CreateFreeFormSlotRequest {
+            project_id: project.id.clone(),
+            label: "Scratch".into(),
+        })
+        .unwrap();
+
+    let step_slot_id = format!("automation:{}:pipe:step", project.id);
+    let verifier_slot_id = format!("verifier:{}:v1", project.id);
+    repository
+        .ensure_automation_slot(
+            &project.id,
+            &step_slot_id,
+            "Pipe · Step",
+            AgentExecutionMode::CliProcess,
+            CliBackend::Codex,
+            Some("gpt-5"),
+            None,
+            ThinkingLevel::Default,
+        )
+        .unwrap();
+    repository
+        .ensure_automation_slot(
+            &project.id,
+            &verifier_slot_id,
+            "Code · Security audit",
+            AgentExecutionMode::CliProcess,
+            CliBackend::Codex,
+            Some("gpt-5"),
+            None,
+            ThinkingLevel::Medium,
+        )
+        .unwrap();
+
+    let slots = repository.list_automation_slots(&project.id).unwrap();
+    assert_eq!(slots.len(), 2);
+    assert!(
+        slots
+            .iter()
+            .all(|slot| slot.kind == "automation" && slot.agent_role.is_none())
+    );
+
+    let base_request =
+        |slot: SessionSlot, origin: ExecutionOrigin, pulsation_id: Option<String>| {
+            CreateSessionRunRequest {
+                project_id: project.id.clone(),
+                slot,
+                origin,
+                execution_mode: AgentExecutionMode::CliProcess,
+                backend: Some(CliBackend::Codex),
+                model: Some("gpt-5".into()),
+                pulsation_id,
+                job_id: None,
+                agent_run_id: None,
+                llm_execution_id: None,
+                parent_run_id: None,
+                continuation_reason: None,
+                observation_trial_id: None,
+            }
+        };
+
+    let auto_run = repository
+        .create_session_run(base_request(
+            SessionSlot::Automation {
+                id: step_slot_id.clone(),
+            },
+            ExecutionOrigin::Automation,
+            None,
+        ))
+        .unwrap();
+    assert_eq!(auto_run.origin, ExecutionOrigin::Automation);
+    assert!(auto_run.pulsation_id.is_none());
+    assert!(matches!(auto_run.slot, SessionSlot::Automation { .. }));
+
+    let verifier_run = repository
+        .create_session_run(base_request(
+            SessionSlot::Automation {
+                id: verifier_slot_id.clone(),
+            },
+            ExecutionOrigin::Verification,
+            Some(pulse.id.clone()),
+        ))
+        .unwrap();
+    assert_eq!(verifier_run.origin, ExecutionOrigin::Verification);
+    assert_eq!(
+        verifier_run.pulsation_id.as_deref(),
+        Some(pulse.id.as_str())
+    );
+    assert!(matches!(verifier_run.slot, SessionSlot::Automation { .. }));
+    let reloaded = repository.get_run(&verifier_run.id).unwrap();
+    assert_eq!(reloaded.origin, ExecutionOrigin::Verification);
+    assert_eq!(reloaded.pulsation_id.as_deref(), Some(pulse.id.as_str()));
+
+    for invalid in [
+        base_request(
+            SessionSlot::Automation {
+                id: verifier_slot_id.clone(),
+            },
+            ExecutionOrigin::Manual,
+            None,
+        ),
+        base_request(
+            SessionSlot::Automation {
+                id: verifier_slot_id.clone(),
+            },
+            ExecutionOrigin::Pipeline,
+            Some(pulse.id.clone()),
+        ),
+        base_request(
+            SessionSlot::Canonical {
+                agent_role: AgentRole::BackendAgent,
+            },
+            ExecutionOrigin::Verification,
+            Some(pulse.id.clone()),
+        ),
+        base_request(
+            SessionSlot::Canonical {
+                agent_role: AgentRole::BackendAgent,
+            },
+            ExecutionOrigin::Automation,
+            None,
+        ),
+        base_request(
+            SessionSlot::FreeForm {
+                id: free_form.id.clone(),
+            },
+            ExecutionOrigin::Verification,
+            Some(pulse.id),
+        ),
+    ] {
+        assert!(matches!(
+            repository.create_session_run(invalid),
+            Err(TerminalError::Validation(_))
+        ));
+    }
+}
+
+#[test]
+fn observation_trial_does_not_reserve_for_automation_or_verification() {
+    use crate::test_support::TestDatabase;
+
+    let data = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let persistence = TestDatabase::initialize(data.path()).unwrap();
+    let project = persistence
+        .insert_project(
+            workspace.path().to_string_lossy().into_owned(),
+            Some("Observation verifier exclusion".into()),
+        )
+        .unwrap();
+    let repository = test_repository(persistence.database_path());
+    let _trial = repository.start_cli_observation_trial(&project.id).unwrap();
+
+    assert!(
+        repository
+            .reserve_cli_observation_for_pulsation(
+                &project.id,
+                Some("pulse"),
+                ExecutionOrigin::Automation,
+            )
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        repository
+            .reserve_cli_observation_for_pulsation(
+                &project.id,
+                Some("pulse"),
+                ExecutionOrigin::Verification,
+            )
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn execute_automation_step_rejects_non_automation_origins_and_custom_backend() {
+    use crate::test_support::TestDatabase;
+
+    let data = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let persistence = TestDatabase::initialize(data.path()).unwrap();
+    let project = persistence
+        .insert_project(
+            workspace.path().to_string_lossy().into_owned(),
+            Some("Automation guard".into()),
+        )
+        .unwrap();
+    let bus = Arc::new(FixtureEventBus::new(16));
+    let service = Arc::new(
+        test_service(
+            persistence.database_path(),
+            tokio::runtime::Handle::current(),
+            bus,
+        )
+        .unwrap(),
+    );
+    let cancel = CancellationToken::new();
+
+    let bad_origin = service
+        .execute_automation_step(
+            AutomationStepRequest {
+                project_id: project.id.clone(),
+                slot_id: format!("verifier:{}:v1", project.id),
+                label: "Code · Audit".into(),
+                origin: ExecutionOrigin::Manual,
+                pulsation_id: None,
+                backend: CliBackend::Codex,
+                model: Some("gpt-5".into()),
+                model_profile: None,
+                thinking_level: ThinkingLevel::Default,
+                system_prompt: "system".into(),
+                user_prompt: "user".into(),
+                schema: None,
+                deadline: Instant::now() + Duration::from_secs(30),
+            },
+            &cancel,
+        )
+        .await;
+    assert!(matches!(bad_origin, Err(TerminalError::Validation(_))));
+    assert!(
+        service
+            .repository()
+            .list_automation_slots(&project.id)
+            .unwrap()
+            .is_empty()
+    );
+
+    let custom_backend = service
+        .execute_automation_step(
+            AutomationStepRequest {
+                project_id: project.id.clone(),
+                slot_id: format!("verifier:{}:v1", project.id),
+                label: "Code · Audit".into(),
+                origin: ExecutionOrigin::Verification,
+                pulsation_id: None,
+                backend: CliBackend::Custom,
+                model: Some("custom-model".into()),
+                model_profile: None,
+                thinking_level: ThinkingLevel::Default,
+                system_prompt: "system".into(),
+                user_prompt: "user".into(),
+                schema: None,
+                deadline: Instant::now() + Duration::from_secs(30),
+            },
+            &cancel,
+        )
+        .await;
+    assert!(matches!(custom_backend, Err(TerminalError::Validation(_))));
+}
