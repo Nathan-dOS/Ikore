@@ -82,57 +82,54 @@ pub(super) fn delivery(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>
         })
         .collect();
 
-    let mut summary_card = card()
-        .border_1()
-        .border_color(theme::border())
-        .child(
-            div()
-                .flex()
-                .flex_wrap()
-                .items_start()
-                .justify_between()
-                .gap_3()
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .min_w_0()
-                        .child(
-                            div()
-                                .flex()
-                                .flex_wrap()
-                                .items_center()
-                                .gap_2()
-                                .child(pill(state_label, state_bg, state_fg))
-                                .child(mono_pill(
-                                    format!("rev {}", f.revision),
-                                    theme::surface(),
-                                    theme::text_muted(),
+    let mut summary_card = card().border_1().border_color(theme::border()).child(
+        div()
+            .flex()
+            .flex_wrap()
+            .items_start()
+            .justify_between()
+            .gap_3()
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .items_center()
+                            .gap_2()
+                            .child(pill(state_label, state_bg, state_fg))
+                            .child(mono_pill(
+                                format!("rev {}", f.revision),
+                                theme::surface(),
+                                theme::text_muted(),
+                            ))
+                            .when_some(f.approved_revision, |row, rev| {
+                                row.child(mono_pill(
+                                    format!("Approved rev {rev}"),
+                                    theme::accent_soft(),
+                                    theme::accent(),
                                 ))
-                                .when_some(f.approved_revision, |row, rev| {
-                                    row.child(mono_pill(
-                                        format!("Approved rev {rev}"),
-                                        theme::accent_soft(),
-                                        theme::accent(),
-                                    ))
-                                }),
-                        )
-                        .child(heading(f.title.clone())),
-                )
-                .child(button_variant(
-                    "compose-feature-tasks",
-                    "Select tasks from this feature",
-                    if ready > 0 {
-                        ButtonVariant::Primary
-                    } else {
-                        ButtonVariant::Tinted
-                    },
-                    ForgeAction::SelectFeatureTasks(f.id.clone()),
-                    Some(Icon::ListTodo),
-                    cx,
-                )),
-        );
+                            }),
+                    )
+                    .child(heading(f.title.clone())),
+            )
+            .child(button_variant(
+                "compose-feature-tasks",
+                "Select tasks from this feature",
+                if ready > 0 {
+                    ButtonVariant::Primary
+                } else {
+                    ButtonVariant::Tinted
+                },
+                ForgeAction::SelectFeatureTasks(f.id.clone()),
+                Some(Icon::ListTodo),
+                cx,
+            )),
+    );
 
     if total > 0 {
         let ratio = done as f32 / total as f32;
@@ -182,17 +179,13 @@ pub(super) fn delivery(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>
                         .bg(theme::surface_raised())
                         .overflow_hidden()
                         .when(done > 0, |track| {
-                            track.child(
-                                div()
-                                    .h_full()
-                                    .w(relative(ratio))
-                                    .rounded_full()
-                                    .bg(if done == total {
-                                        theme::success()
-                                    } else {
-                                        theme::accent()
-                                    }),
-                            )
+                            track.child(div().h_full().w(relative(ratio)).rounded_full().bg(
+                                if done == total {
+                                    theme::success()
+                                } else {
+                                    theme::accent()
+                                },
+                            ))
                         }),
                 ),
         );
@@ -201,7 +194,11 @@ pub(super) fn delivery(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>
             recessed_box()
                 .p_3()
                 .items_center()
-                .child(widgets::icon(Icon::ListTodo, px(18.0), theme::text_subtle()))
+                .child(widgets::icon(
+                    Icon::ListTodo,
+                    px(18.0),
+                    theme::text_subtle(),
+                ))
                 .child(label(if f.approved_revision.is_none() {
                     "Approve this feature in Incubation or Triage to generate delivery tasks."
                 } else {
@@ -228,15 +225,10 @@ pub(super) fn delivery(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>
                     px(13.0),
                     theme::warning(),
                 )))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .child(format!(
-                            "Blocked by pending prerequisite(s): {}",
-                            pending_prereqs.join(", ")
-                        )),
-                ),
+                .child(div().flex_1().min_w_0().child(format!(
+                    "Blocked by pending prerequisite(s): {}",
+                    pending_prereqs.join(", ")
+                ))),
         );
     }
 
@@ -562,7 +554,11 @@ pub(super) fn delivery(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>
                     .text_xs()
                     .text_color(theme::text())
                     .child(div().mt(px(2.0)).child(widgets::icon(
-                        if referenced { Icon::Check } else { Icon::Target },
+                        if referenced {
+                            Icon::Check
+                        } else {
+                            Icon::Target
+                        },
                         px(12.0),
                         if referenced {
                             theme::success()

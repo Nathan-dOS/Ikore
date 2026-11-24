@@ -15,11 +15,7 @@ use gpui::{AnyElement, Context, SharedString, div, prelude::*, px};
 use ikore_core::feature_forge::{Feature, FeatureState, Wave};
 use ikore_core::persistence_service::PulsationStatus;
 
-fn wave_stage_label(
-    model: &AppModel,
-    feature: &Feature,
-    cx: &Context<AppModel>,
-) -> Option<String> {
+fn wave_stage_label(model: &AppModel, feature: &Feature, cx: &Context<AppModel>) -> Option<String> {
     let task_pulse_id = model
         .forge
         .snapshot

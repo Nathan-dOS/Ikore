@@ -5967,7 +5967,12 @@ fn ui_source_contains_no_unapproved_portuguese_literals() {
         let content = std::fs::read_to_string(&path).expect("failed to read source file");
         for (line_idx, line) in content.lines().enumerate() {
             if line.chars().any(|c| PT_CHARS.contains(&c)) {
-                violations.push(format!("{}: {}: {}", path.display(), line_idx + 1, line.trim()));
+                violations.push(format!(
+                    "{}: {}: {}",
+                    path.display(),
+                    line_idx + 1,
+                    line.trim()
+                ));
             }
         }
     }
@@ -10838,9 +10843,9 @@ fn forge_redesigned_tabs_fit_supported_window_sizes_and_wire_direct_controls(
             "wave-limit-inc",
             "set-wave-limit",
         ] {
-            let bounds = visual.debug_bounds(selector).unwrap_or_else(|| {
-                panic!("missing waves selector {selector} at {width}x{height}")
-            });
+            let bounds = visual
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("missing waves selector {selector} at {width}x{height}"));
             assert!(
                 bounds.left() >= detail.left() && bounds.right() <= detail.right(),
                 "{selector} overflows waves column at {width}x{height}: {bounds:?} vs {detail:?}"

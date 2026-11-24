@@ -4,7 +4,9 @@
 //! `home_charts`). It stays read-mostly: the only controls are the flow steps and jumps to other
 //! views.
 
-use gpui::{AnyElement, Context, FontWeight, IntoElement, SharedString, Window, div, prelude::*, px};
+use gpui::{
+    AnyElement, Context, FontWeight, IntoElement, SharedString, Window, div, prelude::*, px,
+};
 
 use crate::app_model::{AppModel, AppView};
 use crate::context_rail::Density;

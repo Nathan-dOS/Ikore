@@ -470,7 +470,8 @@ impl Element for AnimatedIcon {
                     PlayMode::Loop => {
                         let started = *state.started_at.get_or_insert(now);
                         state.last_key = Some(0);
-                        let frac = (now.duration_since(started).as_secs_f32() / duration_secs) % 1.0;
+                        let frac =
+                            (now.duration_since(started).as_secs_f32() / duration_secs) % 1.0;
                         window.request_animation_frame();
                         ((Some(frac), prev_hovered), state)
                     }

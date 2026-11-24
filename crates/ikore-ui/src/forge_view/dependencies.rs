@@ -11,8 +11,12 @@ use crate::{
     theme,
     widgets::{self, ButtonVariant},
 };
-use gpui::{AnyElement, Context, Div, PathBuilder, SharedString, canvas, div, point, prelude::*, px};
-use ikore_core::feature_forge::{DependencyOrigin, Feature, FeatureState, TurnKind, failure_actions};
+use gpui::{
+    AnyElement, Context, Div, PathBuilder, SharedString, canvas, div, point, prelude::*, px,
+};
+use ikore_core::feature_forge::{
+    DependencyOrigin, Feature, FeatureState, TurnKind, failure_actions,
+};
 use ikore_core::llm::AgentRole;
 use std::collections::HashSet;
 
@@ -153,87 +157,83 @@ pub(super) fn dependencies(
     let pending_prereqs = prerequisites
         .iter()
         .filter(|edge| {
-            feature_of(&edge.prerequisite_id)
-                .is_none_or(|pre| pre.state != FeatureState::Done)
+            feature_of(&edge.prerequisite_id).is_none_or(|pre| pre.state != FeatureState::Done)
         })
         .count();
     let has_cycle = has_dependency_cycle(&model.forge.snapshot.dependencies);
 
-    let diagnostic_bar = card()
-        .border_1()
-        .border_color(theme::border())
-        .child(
-            div()
-                .flex()
-                .flex_wrap()
-                .items_center()
-                .justify_between()
-                .gap_3()
-                .child(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .items_center()
-                        .gap_2()
-                        .min_w_0()
-                        .child(heading(f.title.clone()))
-                        .child(if pending_prereqs > 0 {
-                            pill_icon(
-                                Icon::Ban,
-                                format!("Blocked: {pending_prereqs} pending prerequisite(s)"),
-                                theme::warning_soft(),
-                                theme::warning(),
-                            )
-                        } else if !prerequisites.is_empty() {
-                            pill_icon(
-                                Icon::Check,
-                                format!("Prerequisites satisfied ({})", prerequisites.len()),
-                                theme::success_soft(),
-                                theme::success(),
-                            )
+    let diagnostic_bar = card().border_1().border_color(theme::border()).child(
+        div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .justify_between()
+            .gap_3()
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_2()
+                    .min_w_0()
+                    .child(heading(f.title.clone()))
+                    .child(if pending_prereqs > 0 {
+                        pill_icon(
+                            Icon::Ban,
+                            format!("Blocked: {pending_prereqs} pending prerequisite(s)"),
+                            theme::warning_soft(),
+                            theme::warning(),
+                        )
+                    } else if !prerequisites.is_empty() {
+                        pill_icon(
+                            Icon::Check,
+                            format!("Prerequisites satisfied ({})", prerequisites.len()),
+                            theme::success_soft(),
+                            theme::success(),
+                        )
+                    } else {
+                        pill("No prerequisites", theme::surface(), theme::text_muted())
+                    }),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_2()
+                    .child(button_variant(
+                        "dependency-focus-toggle",
+                        if model.forge.dependencies_focus_mode {
+                            "View: Focused path"
                         } else {
-                            pill("No prerequisites", theme::surface(), theme::text_muted())
-                        }),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .items_center()
-                        .gap_2()
-                        .child(button_variant(
-                            "dependency-focus-toggle",
-                            if model.forge.dependencies_focus_mode {
-                                "View: Focused path"
-                            } else {
-                                "View: Full graph"
-                            },
-                            if model.forge.dependencies_focus_mode {
-                                ButtonVariant::Selected
-                            } else {
-                                ButtonVariant::Secondary
-                            },
-                            ForgeAction::ToggleDependencyFocusMode,
-                            Some(Icon::Eye),
-                            cx,
-                        ))
-                        .child(if has_cycle {
-                            pill_icon(
-                                Icon::TriangleAlert,
-                                "Cycle detected",
-                                theme::danger_soft(),
-                                theme::danger(),
-                            )
+                            "View: Full graph"
+                        },
+                        if model.forge.dependencies_focus_mode {
+                            ButtonVariant::Selected
                         } else {
-                            pill_icon(
-                                Icon::Check,
-                                "0 cycles",
-                                theme::success_soft(),
-                                theme::success(),
-                            )
-                        }),
-                ),
-        );
+                            ButtonVariant::Secondary
+                        },
+                        ForgeAction::ToggleDependencyFocusMode,
+                        Some(Icon::Eye),
+                        cx,
+                    ))
+                    .child(if has_cycle {
+                        pill_icon(
+                            Icon::TriangleAlert,
+                            "Cycle detected",
+                            theme::danger_soft(),
+                            theme::danger(),
+                        )
+                    } else {
+                        pill_icon(
+                            Icon::Check,
+                            "0 cycles",
+                            theme::success_soft(),
+                            theme::success(),
+                        )
+                    }),
+            ),
+    );
 
     let mut list = div().flex().flex_col().gap_2();
     if prerequisites.is_empty() {

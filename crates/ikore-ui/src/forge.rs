@@ -242,9 +242,7 @@ impl BacklogStateFilter {
 }
 
 /// Returns `true` if the feature dependency graph contains a directed cycle.
-pub(crate) fn has_dependency_cycle(
-    deps: &[ikore_core::feature_forge::FeatureDependency],
-) -> bool {
+pub(crate) fn has_dependency_cycle(deps: &[ikore_core::feature_forge::FeatureDependency]) -> bool {
     let mut adjacency: HashMap<&str, Vec<&str>> = HashMap::new();
     let mut nodes: Vec<&str> = Vec::new();
     for edge in deps {
@@ -483,18 +481,22 @@ impl ForgeUi {
         if normalized_query.is_empty() {
             return true;
         }
-        if task.draft.title.to_ascii_lowercase().contains(normalized_query)
+        if task
+            .draft
+            .title
+            .to_ascii_lowercase()
+            .contains(normalized_query)
             || task
                 .draft
                 .description
                 .to_ascii_lowercase()
                 .contains(normalized_query)
             || task.state.to_ascii_lowercase().contains(normalized_query)
-            || task
-                .draft
-                .criteria
-                .iter()
-                .any(|c| c.description.to_ascii_lowercase().contains(normalized_query))
+            || task.draft.criteria.iter().any(|c| {
+                c.description
+                    .to_ascii_lowercase()
+                    .contains(normalized_query)
+            })
         {
             return true;
         }

@@ -11,9 +11,7 @@ use crate::{
     widgets::{self, ButtonVariant},
 };
 use gpui::{AnyElement, Context, Div, SharedString, div, prelude::*, px};
-use ikore_core::feature_forge::{
-    AssumptionCategory, AssumptionReviewAction, Feature, TurnKind,
-};
+use ikore_core::feature_forge::{AssumptionCategory, AssumptionReviewAction, Feature, TurnKind};
 
 fn assumption_category_label(category: AssumptionCategory) -> &'static str {
     match category {
@@ -126,7 +124,8 @@ pub(super) fn incubation_main(
 
     // Analysis turns share the table but are not conversation -- their verdicts
     // are read in the Triage and Dependencies columns, not here.
-    let actionable = ikore_core::feature_forge::failure_actions(&model.forge.history, TurnKind::Discovery);
+    let actionable =
+        ikore_core::feature_forge::failure_actions(&model.forge.history, TurnKind::Discovery);
     for turn in model
         .forge
         .history
@@ -277,49 +276,46 @@ fn collapsible_spec_section(
     let collapsed = model.forge.collapsed_spec_sections.contains(key);
     let header_id = SharedString::from(format!("spec-section-toggle-{key}"));
     let header_debug = header_id.clone();
-    let mut section = div()
-        .border_b_1()
-        .border_color(theme::border())
-        .child(
-            div()
-                .id(header_id)
-                .debug_selector(move || header_debug.to_string())
-                .px_3()
-                .py_2()
-                .cursor_pointer()
-                .hover(|s| s.bg(theme::surface_hover()))
-                .on_click(cx.listener(move |m, _, _, cx| {
-                    m.forge_action(ForgeAction::ToggleSpecSection(key), cx)
-                }))
-                .flex()
-                .items_center()
-                .justify_between()
-                .gap_2()
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .min_w_0()
-                        .child(widgets::icon(
-                            if collapsed {
-                                Icon::ChevronRight
-                            } else {
-                                Icon::ChevronDown
-                            },
-                            px(12.0),
-                            theme::text_subtle(),
-                        ))
-                        .child(
-                            div()
-                                .text_xs()
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .text_color(theme::text())
-                                .child(title.into()),
-                        ),
-                )
-                .when_some(right_el, |row, el| row.child(el)),
-        );
+    let mut section = div().border_b_1().border_color(theme::border()).child(
+        div()
+            .id(header_id)
+            .debug_selector(move || header_debug.to_string())
+            .px_3()
+            .py_2()
+            .cursor_pointer()
+            .hover(|s| s.bg(theme::surface_hover()))
+            .on_click(cx.listener(move |m, _, _, cx| {
+                m.forge_action(ForgeAction::ToggleSpecSection(key), cx)
+            }))
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap_2()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .min_w_0()
+                    .child(widgets::icon(
+                        if collapsed {
+                            Icon::ChevronRight
+                        } else {
+                            Icon::ChevronDown
+                        },
+                        px(12.0),
+                        theme::text_subtle(),
+                    ))
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(theme::text())
+                            .child(title.into()),
+                    ),
+            )
+            .when_some(right_el, |row, el| row.child(el)),
+    );
     if !collapsed {
         section = section.child(body(
             div()
@@ -405,11 +401,7 @@ pub(super) fn incubation_aside(
                         .child(format!("rev {}", f.revision)),
                 )
                 .when(f.approved_revision == Some(f.revision), |row| {
-                    row.child(
-                        div()
-                            .text_color(theme::success())
-                            .child("· Approved"),
-                    )
+                    row.child(div().text_color(theme::success()).child("· Approved"))
                 }),
         );
 
@@ -919,17 +911,12 @@ pub(super) fn feature_question_card(
         );
 
     for (question_index, question) in turn.questions.iter().enumerate() {
-        let mut q_block = div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .min_w_0()
-            .child(
-                div()
-                    .text_sm()
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .child(question.clone()),
-            );
+        let mut q_block = div().flex().flex_col().gap_2().min_w_0().child(
+            div()
+                .text_sm()
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .child(question.clone()),
+        );
         if let Some(detail) = turn
             .question_details
             .iter()
@@ -957,10 +944,7 @@ pub(super) fn feature_question_card(
                         .border_1()
                         .border_color(theme::border())
                         .bg(theme::surface_raised())
-                        .hover(|s| {
-                            s.bg(theme::surface_hover())
-                                .border_color(theme::accent())
-                        })
+                        .hover(|s| s.bg(theme::surface_hover()).border_color(theme::accent()))
                         .focus_visible(|s| s.border_color(theme::accent()))
                         .on_click(cx.listener(move |model, _, _, cx| {
                             model.forge_action(
@@ -1026,23 +1010,15 @@ pub(super) fn feature_start_card(
         .as_ref()
         .filter(|p| p.feature_id == feature.id && p.expected_revision == feature.revision);
     let approved = feature.approved_revision == Some(feature.revision);
-    let mut panel = div()
-        .flex()
-        .flex_col()
-        .gap_1()
-        .child(gated_button_variant(
-            format!("approve-and-start-{}", feature.id),
-            if approved {
-                "Start"
-            } else {
-                "Approve & start"
-            },
-            ButtonVariant::Secondary,
-            ForgeAction::ApproveAndStart,
-            !model.forge.busy && preview.is_some_and(|p| p.blockers.is_empty()),
-            None,
-            cx,
-        ));
+    let mut panel = div().flex().flex_col().gap_1().child(gated_button_variant(
+        format!("approve-and-start-{}", feature.id),
+        if approved { "Start" } else { "Approve & start" },
+        ButtonVariant::Secondary,
+        ForgeAction::ApproveAndStart,
+        !model.forge.busy && preview.is_some_and(|p| p.blockers.is_empty()),
+        None,
+        cx,
+    ));
     if let Some(preview) = preview {
         for blocker in &preview.blockers {
             panel = panel.child(

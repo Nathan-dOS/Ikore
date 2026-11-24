@@ -1,7 +1,7 @@
 use super::{
-    agent_message_card, button, button_variant, card, eyebrow, feature_state_badge,
-    gated_button, gated_button_variant, heading, heading_info, incubation::feature_start_card,
-    label, mono_pill, pill, pill_icon, recessed_box, turn_failure_notice,
+    agent_message_card, button, button_variant, card, eyebrow, feature_state_badge, gated_button,
+    gated_button_variant, heading, heading_info, incubation::feature_start_card, label, mono_pill,
+    pill, pill_icon, recessed_box, turn_failure_notice,
 };
 use crate::{
     AppModel,
@@ -286,11 +286,7 @@ pub(super) fn triage_aside(
     agent.into_any_element()
 }
 
-pub(super) fn triage_main(
-    model: &AppModel,
-    f: &Feature,
-    cx: &mut Context<AppModel>,
-) -> AnyElement {
+pub(super) fn triage_main(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> AnyElement {
     let (state_label, state_bg, state_fg) = feature_state_badge(f.state);
     let live_score = f64::from(model.forge.impact) * f64::from(model.forge.confidence)
         / f64::from(model.forge.effort.max(1));
@@ -456,7 +452,13 @@ pub(super) fn triage_main(
                     "Confidence",
                     "Clarity of scope and supporting evidence",
                     model.forge.confidence,
-                    ["Speculative", "Hypothesis", "Estimated", "Validated", "Proven"],
+                    [
+                        "Speculative",
+                        "Hypothesis",
+                        "Estimated",
+                        "Validated",
+                        "Proven",
+                    ],
                     cx,
                 ))
                 .child(ice_scale_card(
@@ -599,11 +601,7 @@ pub(super) fn triage_main(
         }
     }
 
-    let mut root = div()
-        .flex()
-        .flex_col()
-        .gap_3()
-        .child(header_card);
+    let mut root = div().flex().flex_col().gap_3().child(header_card);
     if let Some(card) = preflight_card(model, f, cx) {
         root = root.child(card);
     }
@@ -628,7 +626,8 @@ fn preflight_card(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> 
     use ikore_core::feature_forge::preflight::{ConflictSeverity, PreflightResolution};
     let finding = model.forge.preflight_for(f)?;
     let current = finding.feature_revision == f.revision;
-    let blocking_active = finding.blocking > 0 && finding.resolution != PreflightResolution::Dismissed;
+    let blocking_active =
+        finding.blocking > 0 && finding.resolution != PreflightResolution::Dismissed;
     let (bg, border, icon_glyph, icon_color, summary_title) = if blocking_active {
         (
             theme::danger_soft(),
@@ -783,15 +782,10 @@ fn preflight_card(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> 
     }
     match finding.resolution {
         PreflightResolution::Dismissed => {
-            card_el = card_el.child(
-                div()
-                    .text_sm()
-                    .text_color(theme::text())
-                    .child(format!(
-                        "Dismissed: {}",
-                        finding.reason.as_deref().unwrap_or("")
-                    )),
-            );
+            card_el = card_el.child(div().text_sm().text_color(theme::text()).child(format!(
+                "Dismissed: {}",
+                finding.reason.as_deref().unwrap_or("")
+            )));
         }
         PreflightResolution::Adjusted => {
             card_el = card_el.child(label(

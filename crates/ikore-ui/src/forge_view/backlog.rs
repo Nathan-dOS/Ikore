@@ -1,6 +1,4 @@
-use super::{
-    REVIEW_POLICY_NEEDS_COMPOSITION, button_variant, label, search_box, task_kind_label,
-};
+use super::{REVIEW_POLICY_NEEDS_COMPOSITION, button_variant, label, search_box, task_kind_label};
 use crate::{
     AppModel,
     forge::{BacklogKindFilter, BacklogStateFilter, ForgeAction},
@@ -218,7 +216,11 @@ pub(super) fn backlog_body(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
             "backlog-filter-state-queued",
             "Queued",
         ),
-        (BacklogStateFilter::Done, "backlog-filter-state-done", "Done"),
+        (
+            BacklogStateFilter::Done,
+            "backlog-filter-state-done",
+            "Done",
+        ),
     ] {
         state_segment = state_segment.child(
             widgets::segment(
@@ -442,7 +444,10 @@ pub(super) fn backlog_body(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
                     .text_color(theme::text_subtle())
                     .hover(|s| s.text_color(theme::text()))
                     .on_click(cx.listener(move |model, _, _, cx| {
-                        model.forge_action(ForgeAction::ToggleBacklogTaskDetails(task_id.clone()), cx);
+                        model.forge_action(
+                            ForgeAction::ToggleBacklogTaskDetails(task_id.clone()),
+                            cx,
+                        );
                     }))
                     .child(if expanded { "Hide" } else { "Details" }),
             );
@@ -591,15 +596,9 @@ pub(super) fn backlog_body(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
                             .child(format!("Waiting on: {}", pending_prereqs.join(", "))),
                     );
                 } else {
-                    details = details.child(
-                        div()
-                            .text_xs()
-                            .text_color(theme::text_muted())
-                            .child(format!(
-                                "Prerequisites satisfied: {}",
-                                all_prereq_names.join(", ")
-                            )),
-                    );
+                    details = details.child(div().text_xs().text_color(theme::text_muted()).child(
+                        format!("Prerequisites satisfied: {}", all_prereq_names.join(", ")),
+                    ));
                 }
             }
 
@@ -777,14 +776,10 @@ pub(super) fn backlog_body(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
         composer_body = composer_body.child(queue_col);
 
         if unmet_prereqs > 0 {
-            composer_body = composer_body.child(
-                div()
-                    .text_xs()
-                    .text_color(theme::warning())
-                    .child(format!(
-                        "{unmet_prereqs} unresolved prerequisite(s) outside batch"
-                    )),
-            );
+            composer_body =
+                composer_body.child(div().text_xs().text_color(theme::warning()).child(format!(
+                    "{unmet_prereqs} unresolved prerequisite(s) outside batch"
+                )));
         }
         if model.forge.snapshot.composition_enabled && missing_criteria > 0 {
             composer_body = composer_body.child(

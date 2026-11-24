@@ -18,9 +18,7 @@ use gpui::{
     AnyElement, Context, Div, Entity, Focusable, Rgba, SharedString, Window, deferred, div,
     prelude::*, px, relative,
 };
-use ikore_core::feature_forge::{
-    Feature, FeatureState, FeatureTurn, TaskKind, TurnFailureKind,
-};
+use ikore_core::feature_forge::{Feature, FeatureState, FeatureTurn, TaskKind, TurnFailureKind};
 
 /// ADR-034 D1: shown in the batch composer while the project runs batches
 /// without stage composition, which earlier pipelines do not get.
@@ -217,12 +215,7 @@ pub(super) fn pill_icon(
         .into_any_element()
 }
 
-pub(super) fn pill_dot(
-    dot: Rgba,
-    text: impl Into<SharedString>,
-    bg: Rgba,
-    fg: Rgba,
-) -> AnyElement {
+pub(super) fn pill_dot(dot: Rgba, text: impl Into<SharedString>, bg: Rgba, fg: Rgba) -> AnyElement {
     div()
         .flex_shrink_0()
         .px_2()
@@ -241,18 +234,13 @@ pub(super) fn pill_dot(
 }
 
 pub(super) fn search_box(input: Entity<NativeTextInput>) -> Div {
-    div()
-        .relative()
-        .w_full()
-        .min_w_0()
-        .child(input)
-        .child(
-            div()
-                .absolute()
-                .left(px(10.0))
-                .top(px(13.0))
-                .child(widgets::icon(Icon::Search, px(14.0), theme::text_subtle())),
-        )
+    div().relative().w_full().min_w_0().child(input).child(
+        div()
+            .absolute()
+            .left(px(10.0))
+            .top(px(13.0))
+            .child(widgets::icon(Icon::Search, px(14.0), theme::text_subtle())),
+    )
 }
 
 pub(crate) fn button(
@@ -817,14 +805,12 @@ pub(super) fn turn_notices(turn: &FeatureTurn) -> Option<AnyElement> {
                 .child("Host adjustment"),
         );
     for (index, note) in turn.notices.iter().enumerate() {
-        notes = notes.child(
-            div().text_xs().text_color(theme::text_muted()).child(
-                crate::selectable_message::SelectableMessage::new(
-                    format!("forge-notice:{}:{index}", turn.id),
-                    note,
-                ),
+        notes = notes.child(div().text_xs().text_color(theme::text_muted()).child(
+            crate::selectable_message::SelectableMessage::new(
+                format!("forge-notice:{}:{index}", turn.id),
+                note,
             ),
-        );
+        ));
     }
     Some(notes.into_any_element())
 }
@@ -859,27 +845,25 @@ pub(super) fn turn_failure_notice(
                 .into_any_element(),
         );
     }
-    let summary = div()
-        .flex()
-        .items_start()
-        .gap_2()
-        .text_sm()
-        .font_weight(gpui::FontWeight::SEMIBOLD)
-        .text_color(theme::danger())
-        .child(div().mt(px(2.0)).child(widgets::icon(
-            Icon::TriangleAlert,
-            px(14.0),
-            theme::danger(),
-        )))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .child(crate::selectable_message::SelectableMessage::new(
+    let summary =
+        div()
+            .flex()
+            .items_start()
+            .gap_2()
+            .text_sm()
+            .font_weight(gpui::FontWeight::SEMIBOLD)
+            .text_color(theme::danger())
+            .child(div().mt(px(2.0)).child(widgets::icon(
+                Icon::TriangleAlert,
+                px(14.0),
+                theme::danger(),
+            )))
+            .child(div().flex_1().min_w_0().child(
+                crate::selectable_message::SelectableMessage::new(
                     format!("forge-summary:{}", turn.id),
                     explanation.summary,
-                )),
-        );
+                ),
+            ));
     let Some(actions) = actions else {
         return Some(summary.into_any_element());
     };

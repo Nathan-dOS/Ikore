@@ -313,8 +313,7 @@ mod tests {
                 let pixels = rendered.as_bytes(0).expect("svg frame 0 bytes");
                 assert!(!pixels.is_empty(), "{path} produced empty buffer");
                 if frame == clip.rest_frame() {
-                    let has_visible_alpha =
-                        pixels.as_chunks::<4>().0.iter().any(|px| px[3] > 0);
+                    let has_visible_alpha = pixels.as_chunks::<4>().0.iter().any(|px| px[3] > 0);
                     assert!(
                         has_visible_alpha,
                         "resting frame {path} for {:?} rendered completely transparent",
