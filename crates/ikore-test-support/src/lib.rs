@@ -20,8 +20,8 @@ mod pulsation_fixture;
 pub use controlled_gateway::ControlledLlmGateway;
 pub use core_harness::{CoreTestHarness, DatabaseVersion, IsolatedTestEnvironment};
 pub use doubles::{
-    FixedEmbeddingGateway, FixedJitter, ManualClock, MemoryClipboard, MemoryCredentialStore,
-    ScriptedPathPicker,
+    FixedEmbeddingGateway, FixedJitter, ManualClock, MemoryClipboard, MemoryCredentialSetPause,
+    MemoryCredentialStore, ScriptedPathPicker,
 };
 pub use http_fixture::{RecordedRequest, ScriptedHttpServer, ScriptedResponse};
 /// Moved to `ikore-core` so the app's pulsation report shares it (ADR-027 M6).

@@ -290,6 +290,14 @@ fn file_row(row: TreeRow, active: Option<&str>, cx: &mut Context<AppModel>) -> A
         .into_any_element()
 }
 
+/// Omission of an oversized file also makes a search partial, even below the match limit.
+fn search_summary(matches: usize, scanned_files: usize, truncated: bool) -> String {
+    format!(
+        "{matches} result(s) in {scanned_files} file(s){}",
+        if truncated { " · partial results" } else { "" }
+    )
+}
+
 /// The search field and its results. Enter searches; a result opens its file at the match.
 pub(crate) fn search_tab(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
     let Some(search) = model.work_panel.search.as_ref() else {
@@ -308,15 +316,10 @@ pub(crate) fn search_tab(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                 .into_any_element(),
         )
     } else if shown && !search.query.is_empty() {
-        Some(note(format!(
-            "{} result(s) in {} file(s){}",
+        Some(note(search_summary(
             search.matches.len(),
             search.scanned_files,
-            if search.truncated {
-                format!(" · the first {MAX_RESULTS} are shown")
-            } else {
-                String::new()
-            }
+            search.truncated,
         )))
     } else {
         Some(note(
@@ -592,6 +595,23 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::vault::{VaultBackend, VaultFuture};
+
+    #[test]
+    fn partial_search_results_do_not_claim_the_match_limit_was_reached() {
+        assert_eq!(
+            search_summary(1, 1, true),
+            "1 result(s) in 1 file(s) · partial results"
+        );
+        assert_eq!(
+            search_summary(0, 0, true),
+            "0 result(s) in 0 file(s) · partial results"
+        );
+        assert_eq!(
+            search_summary(MAX_RESULTS, 7, true),
+            "100 result(s) in 7 file(s) · partial results"
+        );
+        assert_eq!(search_summary(1, 1, false), "1 result(s) in 1 file(s)");
+    }
 
     /// Answers every search with one match per query word, in `src/{word}.rs`, and records the
     /// queries.

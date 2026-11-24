@@ -753,9 +753,15 @@ fn cli_default() -> CliModelCatalogEntry {
 }
 
 fn cli_default_with_hint(detected_model: Option<String>) -> CliModelCatalogEntry {
-    let display_name = match detected_model {
+    let display_name = match &detected_model {
         Some(model) => format!("CLI default (configured: {model})"),
         None => "CLI default".into(),
+    };
+    // The configured model, as data too: a pipeline step starts from it
+    // (feature 25, plan P9), since an automatic run needs a fixed model.
+    let raw_metadata = match detected_model {
+        Some(model) => serde_json::json!({ "configuredModel": model }),
+        None => Value::Object(Default::default()),
     };
     CliModelCatalogEntry {
         provider_id: None,
@@ -766,7 +772,7 @@ fn cli_default_with_hint(detected_model: Option<String>) -> CliModelCatalogEntry
         output_cost_usd_per_million: None,
         capabilities: Vec::new(),
         profiles: Vec::new(),
-        raw_metadata: Value::Object(Default::default()),
+        raw_metadata,
     }
 }
 

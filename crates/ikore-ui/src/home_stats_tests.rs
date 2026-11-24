@@ -106,6 +106,7 @@ fn snapshot(agents: Vec<(AgentRole, Vec<TerminalRun>)>) -> TerminalsSnapshot {
             .collect(),
         free_form_slots: vec![],
         archived_free_form_slots: vec![],
+        automation_slots: Vec::new(),
         discovery: vec![],
     }
 }

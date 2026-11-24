@@ -1,5 +1,31 @@
 # Testing and validation
 
+## MCP diagnostic confidentiality (REV-0002 C004)
+
+The MCP regression tests send JSON-RPC failures through anonymous pipes and the
+gateway's real SQLite persistence. Initialize, tool listing and granted tool-call
+errors contain both an opaque declared environment value and a recognizable
+synthetic token. The checks cover returned errors, stored connection/use errors,
+the server projection Settings reloads, credential-store failures and error
+source chains. Debug checks cover the launch, save request and actual UI form.
+Command and argument fields also hold synthetic sentinels; the native form is
+not saved or launched. The existing legacy-reload test contains a round-trip
+matrix for all closed categories, signed RPC limits/canonicalization, invalid
+numbers and appended free text; stored historical rows remain byte-for-byte.
+Legacy free-form connection errors are omitted on read without rewriting their
+historical rows. New diagnostics retain static categories and numeric RPC/SQLite
+codes; no external message body is needed to identify the failure.
+
+```powershell
+cargo test --locked -p ikore-core --lib mcp:: -- --test-threads=2
+cargo test --locked -p ikore-ui --lib the_mcp_page_lists_servers_tools_and_the_form -- --test-threads=2
+```
+
+These selections accompany the complete workspace regression gate. They use
+temporary databases, an injected memory store and pipes, without the OS keyring,
+an MCP executable, a provider request or any paid service. They do not qualify
+the separate MCP deadline/process cleanup or credential-deletion actions.
+
 ## Guided recovery evidence (I1)
 
 `composition_recovery_context` exercises two actual failing host checks,
@@ -96,6 +122,58 @@ cargo test --locked -p ikore-core --lib usage:: -- --test-threads=2
 Aliases already contain `--`; use `cargo test-ui --list` without adding a second
 separator. Keep each checkout's own `target/`. Compare timings only with the
 same selection, toolchain, cache conditions and concurrency.
+
+### Settings credential-save completion (REV-0002 C013 subdelivery)
+
+The native `writes_secret_once_and_clears_input` test pauses its actual memory
+credential store after counting the target attempt and before inserting it.
+While paused it verifies the missing value, busy operation and already-cleared
+input. After release it waits for this Save's success notice, the refreshed
+connection's next version and key presence, no error and no in-flight operation.
+The attempt counter alone is not completion evidence. The wall-clock watchdog
+only detects missing progress in the external Tokio worker; there is no save
+latency requirement or virtual GPUI timer in this wait.
+
+Three fixture tests cover reference isolation, one-shot explicit release,
+failure counts, unused-guard disarming and release during unwinding. The pause
+is opt-in, local to the fixture and released by RAII, including on a RED panic;
+ordinary credential-store behavior and counting of failed attempts are kept.
+
+```powershell
+cargo test --locked -p ikore-test-support --lib doubles::tests::credential_set_pause_ -- --test-threads=2
+cargo test --locked -p ikore-ui --lib settings::tests::writes_secret_once_and_clears_input -- --test-threads=2 --exact
+cargo test --locked -p ikore-ui --lib settings::tests:: -- --test-threads=2
+```
+
+The selections accompany the complete regression gate. This subdelivery
+addresses the Settings test's completion race; it does not claim a causal fix
+for the separate preview timing failure tracked by C013.
+
+## Compression dependency security (REV-0002 C006)
+
+The current workspace lock pins `libz-sys` 1.1.33, the patched floor for
+RUSTSEC-2026-0544. The security regression compares the vulnerable 1.1.31 lock
+with the minimal patched lock using the same official cargo-audit executable
+and identified RustSec snapshot, without advisory ignores. This tests the
+advisory condition rather than adding a unit test that repeats a version string.
+Informational maintenance warnings remain visible and have separate follow-up.
+
+On Windows, the application's normal/build graph excludes this package; GPUI's
+development/test-support chain uses it through git2/libgit2-sys. Validation must
+therefore include that development selection and the complete workspace suite,
+as well as the technical license/source audit. A successful advisory audit is
+not a gzip exploit reproduction or a binary-distribution approval.
+
+```powershell
+cargo tree --locked --offline --target x86_64-pc-windows-msvc -p ikore-app -e normal,build --prefix none
+cargo tree --locked --offline --target x86_64-pc-windows-msvc --workspace -e normal,build,dev -i libz-sys
+./scripts/audit-supply-chain.ps1
+```
+
+The review's paired audit retains its database revision and RED/GREEN outputs.
+For a routine audit against the current advisory database, use
+`./scripts/audit-advisories.ps1`. Historical qualification lock snapshots remain
+dated evidence; the change applies to the workspace's active `Cargo.lock`.
 
 ## SQLite security and compatibility
 
@@ -548,6 +626,34 @@ Feature 19 cards check each such text with `assert_readable`.
 
 ## Editor revisions, check output and voice setup
 
+### Bounded workspace search (REV-0002 C007)
+
+The `workspace_service::tests::search_bounded_` tests change or replace a file
+after its metadata check, without sleeps. Search reads at most 4 MiB plus one
+sentinel byte from each file. A counted synthetic reader checks the bytes
+actually consumed, so reading the whole stream and rejecting it afterwards
+does not satisfy the test. Oversized files are omitted completely and set the
+existing `truncated` flag; they do not add matches or count as scanned files.
+Files at the exact limit, Unicode positions, empty files, invalid UTF-8 and
+removal between metadata and open have separate assertions. Invalid UTF-8 and
+I/O errors retain their existing error behavior. This limits file reads, not
+the process's total memory or concurrent filesystem authority.
+
+`work_panel::tests::partial_search_results_do_not_claim_the_match_limit_was_reached`
+checks that the UI says "partial results", including zero or one result, rather
+than claiming the first 100 matches were shown. Existing search tests retain
+substring/regex semantics, result limits and line/column positions; the work
+panel's GPUI test covers the asynchronous request and result state.
+
+```powershell
+cargo test --locked -p ikore-core --lib workspace_service::tests::search_ -- --test-threads=2
+cargo test --locked -p ikore-ui --lib work_panel::tests:: -- --test-threads=2
+```
+
+These focused selections accompany the complete workspace regression suite.
+
+### Revision conflicts, command output and voice setup
+
 The workspace revision is a SHA-256 over the resolved path and the bytes read,
 so a same-size, same-mtime external edit is a conflict. `workspace_service`
 tests cover that edit, another file or root with identical content, a change
@@ -647,3 +753,36 @@ It checks the delivered prompt and the stored finding. Boundary fixtures cover
 root precedence, case and separators, UTF-8 byte budgets, the aggregate budget,
 changes to the effective digest, a refused root entry and a Windows junction.
 Run `cargo test --locked -p ikore-core --lib greenfield_principles -- --test-threads=2`.
+
+## Windows process control before execution (REV-0002 C013 subdelivery)
+
+The terminal process-tree tests inspect the actual initial thread before its
+release. A temporary, balanced suspension proves that it was already suspended;
+the same hook verifies membership in the specific kill-on-close Job and absence
+of the fixture's execution marker. After release, the fixture checks Unicode
+arguments, environment, cwd and all three standard streams. Other cases cover
+immediate exit, cleanup before assignment, injected pre-resume error and panic,
+an unexpected suspend count, missing-executable classification and confirmed
+exit of both parent and descendant when the Job is dropped. Native process
+handles are retained for exit checks; sleeps and attempted-call counters are
+not completion evidence.
+
+```powershell
+cargo test --locked -p ikore-terminal --lib terminals::process_tree:: -- --test-threads=2
+cargo test --locked -p ikore-test-support --test composition_validation -- --test-threads=2
+cargo test --locked -p ikore-test-support --test composition_checks -- --test-threads=2
+```
+
+The integrations retain timeout, cancellation, inherited pipes, bounded logs,
+literal hostile/Unicode/empty argv and reduced-environment coverage. Candidate
+and baseline receipts for the immediate failing command must both preserve
+exit code 2; a process-control error must not become a compiler failure. The
+controlled native diagnostic separately compares already-exited versus live
+children with valid retained handles. These focused selections accompany the
+complete workspace gate and do not close C002's separate CLI drain work.
+
+The suspended launch preserves `Command`'s Windows quoting, environment and
+stdio handling on the pinned stable toolchain. Cleanup and Job ownership cover
+ordinary errors and unwinding. Abrupt termination of the host before Job
+assignment can still leave a suspended child; this is not atomic job-at-birth
+or an operating system access sandbox.

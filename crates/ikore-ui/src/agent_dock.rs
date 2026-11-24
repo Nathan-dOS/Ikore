@@ -66,12 +66,23 @@ pub(crate) fn agent_key(agent: &AgentIdentifier) -> String {
     match agent {
         AgentIdentifier::Canonical(role) => format!("role:{}", role.as_str()),
         AgentIdentifier::FreeForm(slot) => format!("slot:{slot}"),
+        AgentIdentifier::PipelineStep {
+            pipeline_id,
+            step_id,
+        } => format!("pipeline:{pipeline_id}/{step_id}"),
     }
 }
 
 pub(crate) fn agent_from_key(key: &str) -> Option<AgentIdentifier> {
     if let Some(role) = key.strip_prefix("role:") {
         return AgentRole::parse(role).map(AgentIdentifier::Canonical);
+    }
+    if let Some(step) = key.strip_prefix("pipeline:") {
+        let (pipeline, step) = step.split_once('/')?;
+        return (!pipeline.is_empty() && !step.is_empty()).then(|| AgentIdentifier::PipelineStep {
+            pipeline_id: pipeline.to_owned(),
+            step_id: step.to_owned(),
+        });
     }
     key.strip_prefix("slot:")
         .filter(|slot| !slot.is_empty())
@@ -101,9 +112,14 @@ pub(crate) fn pipeline_step(role: AgentRole) -> Option<&'static str> {
     })
 }
 
-/// Stable tab order: the stages, then support, then free-form slots in the
-/// order they appeared (9.3).
-fn tab_rank(agent: &AgentIdentifier, arrival: usize) -> (u8, usize) {
+/// Stable tab order (feature 25, section 6): the stages, then support, then
+/// the pipelines' steps in the order of their boxes and steps, then free-form
+/// slots in the order they appeared (9.3).
+fn tab_rank(
+    agent: &AgentIdentifier,
+    arrival: usize,
+    steps: &HashMap<AgentIdentifier, usize>,
+) -> (u8, usize) {
     match agent {
         AgentIdentifier::Canonical(role) => match PIPELINE.iter().position(|stage| stage == role) {
             Some(position) => (0, position),
@@ -115,7 +131,14 @@ fn tab_rank(agent: &AgentIdentifier, arrival: usize) -> (u8, usize) {
                     .unwrap_or(usize::MAX),
             ),
         },
-        AgentIdentifier::FreeForm(_) => (2, arrival),
+        AgentIdentifier::PipelineStep { .. } => (
+            2,
+            steps
+                .get(agent)
+                .copied()
+                .unwrap_or(usize::MAX / 2 + arrival),
+        ),
+        AgentIdentifier::FreeForm(_) => (3, arrival),
     }
 }
 
@@ -134,6 +157,12 @@ pub(crate) struct AgentDock {
     closed: HashSet<AgentIdentifier>,
     /// The run each agent last started, to tell a new one.
     runs: HashMap<AgentIdentifier, String>,
+    /// Each pipeline step's place: its box, then its step (feature 25).
+    step_order: HashMap<AgentIdentifier, usize>,
+    /// The run a History row or a unit chose for its agent (feature 25,
+    /// R13). It holds while the dock is pinned on that agent; the session
+    /// does not keep it.
+    pub(crate) chosen_run: Option<(AgentIdentifier, String)>,
     /// The sash drag: where it started and the height then.
     pub(crate) drag: Option<(Pixels, f32)>,
     /// The height the dock took on the last frame, sash included.
@@ -151,6 +180,8 @@ impl Default for AgentDock {
             tabs: Vec::new(),
             closed: HashSet::new(),
             runs: HashMap::new(),
+            step_order: HashMap::new(),
+            chosen_run: None,
             drag: None,
             rendered: px(0.0),
             tick: None,
@@ -198,7 +229,7 @@ impl AgentDock {
             .iter()
             .enumerate()
             .filter(|(_, agent)| !self.closed.contains(*agent))
-            .map(|(arrival, agent)| (tab_rank(agent, arrival), agent.clone()))
+            .map(|(arrival, agent)| (tab_rank(agent, arrival, &self.step_order), agent.clone()))
             .collect::<Vec<_>>();
         tabs.sort_by_key(|(rank, _)| *rank);
         tabs.into_iter().map(|(_, agent)| agent).collect()
@@ -249,6 +280,43 @@ impl AgentDock {
 
     pub(crate) fn close_tab(&mut self, agent: &AgentIdentifier) {
         self.closed.insert(agent.clone());
+        if self
+            .chosen_run
+            .as_ref()
+            .is_some_and(|(chosen, _)| chosen == agent)
+        {
+            self.chosen_run = None;
+        }
+    }
+
+    /// The pipelines' steps in canvas order: boxes, then steps.
+    pub(crate) fn set_step_order(&mut self, steps: impl IntoIterator<Item = AgentIdentifier>) {
+        self.step_order = steps
+            .into_iter()
+            .enumerate()
+            .map(|(place, step)| (step, place))
+            .collect();
+    }
+
+    /// An agent the developer asked for gets a tab, run or not.
+    pub(crate) fn reveal(&mut self, agent: &AgentIdentifier) {
+        if !self.tabs.contains(agent) {
+            self.tabs.push(agent.clone());
+        }
+        self.closed.remove(agent);
+    }
+
+    /// The run the dock shows for `agent`: the one chosen, while the dock
+    /// is pinned on the agent; otherwise none, and the latest shows.
+    pub(crate) fn chosen_run_of(&self, agent: &AgentIdentifier) -> Option<&str> {
+        let pinned = matches!(
+            &self.follow.mode,
+            crate::agent_console::follow::FollowMode::Pinned(pinned) if pinned == agent
+        );
+        self.chosen_run
+            .as_ref()
+            .filter(|(chosen, _)| pinned && chosen == agent)
+            .map(|(_, run)| run.as_str())
     }
 
     pub(crate) fn session(&self) -> AgentDockSession {
@@ -287,10 +355,10 @@ impl AppModel {
             - crate::sizing::STATUS_BAR_HEIGHT
     }
 
-    /// Whether the dock shows under the current view (never on Agents, N4).
+    /// Whether the dock shows: under every view, the Agents canvas too
+    /// (feature 25, M1; it replaces the N4 rule of ADR-040).
     pub(crate) fn agent_dock_visible(&self, body: Pixels) -> bool {
-        self.active_view() != AppView::Agents
-            && self.agent_dock.effective_mode(body) != DockMode::Hidden
+        self.agent_dock.effective_mode(body) != DockMode::Hidden
     }
 
     /// What the Companion keeps clear above the status bar (9.6).
@@ -328,13 +396,45 @@ impl AppModel {
     }
 
     /// A tab click: the dock stays on that agent until `Resume following`.
+    /// On the Agents page the agent's node is selected too (feature 25, M1).
     pub(crate) fn pin_agent_dock(&mut self, agent: AgentIdentifier, cx: &mut Context<Self>) {
+        if self.active_view() == AppView::Agents {
+            self.select_canvas_agent(agent, cx);
+            return;
+        }
+        self.agent_dock.chosen_run = None;
         self.agent_dock.follow.apply(FollowInput::Pin(agent));
         self.schedule_session_persistence(cx);
         cx.notify();
     }
 
+    /// A node clicked, a History row or a unit (feature 25, M1): the dock
+    /// pins on the agent and, with `run`, on that run (R13). A hidden dock
+    /// opens in its last visible mode, or the project default (R14).
+    pub(crate) fn focus_agent_in_dock(
+        &mut self,
+        agent: AgentIdentifier,
+        run: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.agent_dock.reveal(&agent);
+        self.agent_dock.chosen_run = run.map(|run| (agent.clone(), run));
+        self.agent_dock.follow.apply(FollowInput::Pin(agent));
+        if self.agent_dock.mode == Some(DockMode::Hidden) {
+            self.agent_dock.mode = self.agent_dock.last_visible;
+        }
+        self.schedule_session_persistence(cx);
+        cx.notify();
+    }
+
+    /// The chip's `Latest`: back to the agent's latest run.
+    pub(crate) fn show_latest_agent_run(&mut self, cx: &mut Context<Self>) {
+        self.agent_dock.chosen_run = None;
+        cx.notify();
+    }
+
     pub(crate) fn resume_agent_dock_following(&mut self, cx: &mut Context<Self>) {
+        self.agent_dock.chosen_run = None;
         if self.agent_dock.follow.apply(FollowInput::ResumeFollowing) {
             self.schedule_session_persistence(cx);
         }
@@ -384,10 +484,7 @@ impl AppModel {
         envelope: &TerminalEventEnvelope,
         cx: &mut Context<Self>,
     ) {
-        let agent = match envelope.agent_role {
-            Some(role) => AgentIdentifier::Canonical(role),
-            None => AgentIdentifier::FreeForm(envelope.run.slot_id.clone()),
-        };
+        let agent = AgentIdentifier::of_run(&envelope.run);
         let changed = self.agent_dock.note_run(
             agent,
             &envelope.run_id,
@@ -596,5 +693,58 @@ mod tests {
         );
         assert_eq!(agent_from_key("slot:"), None);
         assert_eq!(agent_from_key("role:nobody"), None);
+    }
+
+    /// Feature 25, section 6: `pipeline:<pipelineId>/<stepId>`, and the steps
+    /// after support and before free-form agents, in the canvas order.
+    #[test]
+    fn pipeline_steps_have_keys_and_their_place_among_the_tabs() {
+        let step = |pipeline: &str, step: &str| AgentIdentifier::PipelineStep {
+            pipeline_id: pipeline.into(),
+            step_id: step.into(),
+        };
+        let review = step("p1", "review");
+        assert_eq!(agent_key(&review), "pipeline:p1/review");
+        assert_eq!(agent_from_key("pipeline:p1/review"), Some(review.clone()));
+        assert_eq!(agent_from_key("pipeline:p1/"), None);
+        assert_eq!(agent_from_key("pipeline:p1"), None);
+        assert_eq!(
+            AgentIdentifier::from_automation_slot("automation:project-1:p1:review"),
+            Some(review.clone())
+        );
+        assert_eq!(
+            AgentIdentifier::from_automation_slot("automation:p1:review"),
+            None
+        );
+        assert_eq!(AgentIdentifier::from_automation_slot("free-1"), None);
+
+        let mut dock = AgentDock::default();
+        let now = Instant::now();
+        let slot = AgentIdentifier::FreeForm("slot-a".into());
+        let learning = AgentIdentifier::Canonical(AgentRole::LearningAgent);
+        let backend = AgentIdentifier::Canonical(AgentRole::BackendAgent);
+        let later = step("p2", "check");
+        let first = step("p1", "summary");
+        dock.set_step_order([first.clone(), review.clone(), later.clone()]);
+        for (agent, run) in [
+            (slot.clone(), "r1"),
+            (later.clone(), "r2"),
+            (learning.clone(), "r3"),
+            (review.clone(), "r4"),
+            (backend.clone(), "r5"),
+            (first.clone(), "r6"),
+        ] {
+            dock.note_run(
+                agent,
+                run,
+                TerminalRunStatus::Running,
+                Priority::Automation,
+                now,
+            );
+        }
+        assert_eq!(
+            dock.tabs(),
+            vec![backend, learning, first, review, later, slot]
+        );
     }
 }

@@ -2,6 +2,7 @@
 //! line. The host starts a server for each use and stops it afterwards; the
 //! server gets only the environment it declares and the minimum to run.
 
+use std::fmt;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -35,13 +36,26 @@ pub const BASE_ENVIRONMENT: [&str; 9] = [
 ];
 
 /// How to start one server.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct McpLaunch {
     pub command: String,
     pub args: Vec<String>,
     /// The variables the developer declared, with their values.
     pub env: Vec<(String, String)>,
     pub working_dir: Option<PathBuf>,
+}
+
+// Values can be opaque and outside the detector catalog. Diagnostic output
+// reports only declared names/counts, never arguments or environment values.
+impl fmt::Debug for McpLaunch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let names: Vec<_> = self.env.iter().map(|(name, _)| name).collect();
+        f.debug_struct("McpLaunch")
+            .field("argument_count", &self.args.len())
+            .field("environment_names", &names)
+            .field("working_dir_set", &self.working_dir.is_some())
+            .finish()
+    }
 }
 
 /// One tool a server lists.
@@ -62,21 +76,116 @@ pub struct McpToolOutput {
     pub is_error: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+/// Typed variants remain available for local handling, but diagnostics and
+/// source chains never expose another process's free-form text.
+#[derive(Clone, PartialEq, Eq)]
 pub enum McpError {
-    #[error("The MCP server could not start: {0}")]
     Spawn(String),
-    #[error("The MCP server did not answer in time.")]
     Timeout,
-    #[error("The MCP server closed the connection.")]
     Closed,
-    #[error("The MCP server sent a message over the size limit.")]
     TooLarge,
-    #[error("The MCP server broke the protocol: {0}")]
     Protocol(String),
-    #[error("The MCP server answered with an error ({code}): {message}")]
     Server { code: i64, message: String },
 }
+
+impl McpError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Spawn(_) => "mcp_spawn_failed",
+            Self::Timeout => "mcp_timeout",
+            Self::Closed => "mcp_closed",
+            Self::TooLarge => "mcp_message_too_large",
+            Self::Protocol(reason) => match reason.as_str() {
+                "tools/list without tools" => "mcp_tools_list_invalid",
+                "a tool without a name" => "mcp_tool_name_missing",
+                "too many pages of tools" => "mcp_catalog_page_limit",
+                "a message that is not JSON" => "mcp_invalid_json",
+                _ => "mcp_protocol_error",
+            },
+            Self::Server { .. } => "mcp_server_error",
+        }
+    }
+
+    pub fn rpc_code(&self) -> Option<i64> {
+        match self {
+            Self::Server { code, .. } => Some(*code),
+            _ => None,
+        }
+    }
+
+    /// SQLite can contain error text written by an older build. Only a closed
+    /// grammar of diagnostics produced here qualifies for a Settings reload.
+    /// Requalification never rewrites the operational/historical row.
+    pub(crate) fn stored_message(text: &str) -> String {
+        if let Some(code) = text
+            .strip_prefix("The MCP server answered with an error (mcp_server_error, RPC ")
+            .and_then(|rest| rest.strip_suffix(")."))
+            .and_then(|code| code.parse::<i64>().ok())
+        {
+            return Self::Server {
+                code,
+                message: String::new(),
+            }
+            .to_string();
+        }
+        let known = [
+            Self::Spawn(String::new()),
+            Self::Timeout,
+            Self::Closed,
+            Self::TooLarge,
+            Self::Protocol(String::new()),
+            Self::Protocol("tools/list without tools".into()),
+            Self::Protocol("a tool without a name".into()),
+            Self::Protocol("too many pages of tools".into()),
+            Self::Protocol("a message that is not JSON".into()),
+        ];
+        if known.iter().any(|error| error.to_string() == text) {
+            text.to_owned()
+        } else {
+            "The previous MCP error is unavailable in a safe format (mcp_legacy_error). Test the connection again.".into()
+        }
+    }
+}
+
+impl fmt::Display for McpError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Spawn(_) => write!(
+                f,
+                "The MCP server could not start ({}). Check the configured command and environment.",
+                self.code()
+            ),
+            Self::Timeout => write!(
+                f,
+                "The MCP server did not answer in time ({}).",
+                self.code()
+            ),
+            Self::Closed => write!(f, "The MCP server closed the connection ({}).", self.code()),
+            Self::TooLarge => write!(
+                f,
+                "The MCP server sent a message over the size limit ({}).",
+                self.code()
+            ),
+            Self::Protocol(_) => write!(f, "The MCP server broke the protocol ({}).", self.code()),
+            Self::Server { code, .. } => write!(
+                f,
+                "The MCP server answered with an error ({}, RPC {code}).",
+                self.code()
+            ),
+        }
+    }
+}
+
+impl fmt::Debug for McpError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("McpError")
+            .field("code", &self.code())
+            .field("rpc_code", &self.rpc_code())
+            .finish()
+    }
+}
+
+impl std::error::Error for McpError {}
 
 /// The server's process: a cleared environment with [`BASE_ENVIRONMENT`] and
 /// what `launch` declares, never the rest of the app's; no window.
@@ -307,11 +416,10 @@ impl McpSession {
             if let Some(error) = message.get("error") {
                 return Err(McpError::Server {
                     code: error.get("code").and_then(Value::as_i64).unwrap_or(0),
-                    message: error
-                        .get("message")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_owned(),
+                    // This process may echo a declared environment value,
+                    // including opaque secrets outside the detector catalog.
+                    // Keep the typed RPC code, never the untrusted body.
+                    message: "Server error details omitted.".into(),
                 });
             }
             return Ok(message.get("result").cloned().unwrap_or(Value::Null));

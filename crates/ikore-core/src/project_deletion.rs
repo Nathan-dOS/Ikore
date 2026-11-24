@@ -295,6 +295,7 @@ fn checked_root(
 fn active_work(db: &Connection, id: &str) -> Result<bool, Error> {
     let active:bool=db.query_row("SELECT
         EXISTS(SELECT 1 FROM runtime_slots WHERE project_id=?1)
+        OR EXISTS(SELECT 1 FROM automation_slots WHERE project_id=?1)
         OR EXISTS(SELECT 1 FROM jobs WHERE project_id=?1 AND status='running')
         OR EXISTS(SELECT 1 FROM companion_canvas_requests WHERE project_id=?1 AND state='running')
         OR EXISTS(SELECT 1 FROM terminal_runs WHERE project_id=?1 AND status IN ('queued','starting','running'))

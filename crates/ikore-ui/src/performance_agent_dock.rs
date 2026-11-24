@@ -9,17 +9,17 @@ use ikore_core::llm::AgentRole;
 use ikore_core::terminals::{
     ActivityCounters, ActivityPhase, AgentActivityPulseV1, AgentExecutionMode,
     AgentTerminalSnapshot, CliAgentConfig, CliBackend, CliModelSelectionSource, EventDetailV1,
-    ExecutionOrigin, PulseActionDelta, PulseTarget, SessionSlot, TerminalEvent,
-    TerminalEventEnvelope, TerminalEventKind, TerminalRun, TerminalRunStatus, TerminalsSnapshot,
-    ThinkingLevel, ToolKind,
+    ExecutionOrigin, FreeFormTerminalSnapshot, PulseActionDelta, PulseTarget, SessionPolicy,
+    SessionSlot, TerminalEvent, TerminalEventEnvelope, TerminalEventKind, TerminalRun,
+    TerminalRunStatus, TerminalSlot, TerminalsSnapshot, ThinkingLevel, ToolKind,
 };
 
 use crate::agents::AgentsDashboardSnapshot;
 
-const PROJECT: &str = "benchmark-project";
+pub(crate) const PROJECT: &str = "benchmark-project";
 
 /// The three stages that stream; the dock follows the first.
-const ROLES: [AgentRole; 3] = [
+pub(crate) const ROLES: [AgentRole; 3] = [
     AgentRole::BackendAgent,
     AgentRole::TestAgent,
     AgentRole::TaskSpecifier,
@@ -67,7 +67,7 @@ fn run(role: AgentRole) -> TerminalRun {
     }
 }
 
-fn agent(role: AgentRole) -> AgentTerminalSnapshot {
+pub(crate) fn agent(role: AgentRole) -> AgentTerminalSnapshot {
     AgentTerminalSnapshot {
         config: CliAgentConfig {
             project_id: PROJECT.into(),
@@ -90,9 +90,39 @@ fn agent(role: AgentRole) -> AgentTerminalSnapshot {
     }
 }
 
+/// An idle free-form agent, for the canvas workload (feature 25, M1).
+pub(crate) fn free_form(index: usize) -> FreeFormTerminalSnapshot {
+    FreeFormTerminalSnapshot {
+        slot: TerminalSlot {
+            id: format!("benchmark-free-form-{index}"),
+            project_id: PROJECT.into(),
+            kind: "free_form".into(),
+            agent_role: None,
+            label: format!("Free-form {}", index + 1),
+            execution_mode: AgentExecutionMode::CliProcess,
+            backend: CliBackend::Codex,
+            model: None,
+            model_profile: None,
+            model_source: CliModelSelectionSource::Default,
+            thinking_level: ThinkingLevel::Default,
+            session_policy: SessionPolicy::FreshPerRun,
+            custom_executable: None,
+            custom_args: vec![],
+            custom_risk_ack: false,
+            position: u32::try_from(index).unwrap_or(u32::MAX),
+            archived: false,
+            version: 1,
+            created_at: "2026-11-22T00:00:00Z".into(),
+            updated_at: "2026-11-22T00:00:00Z".into(),
+        },
+        recent_runs: vec![],
+        recent_events: vec![],
+    }
+}
+
 /// One action of `role`'s run, as the coordinator records it: a call and,
 /// on the next frame, its result.
-fn envelope(role: AgentRole, frame: u64) -> TerminalEventEnvelope {
+pub(crate) fn envelope(role: AgentRole, frame: u64) -> TerminalEventEnvelope {
     let sequence = frame + 1;
     let ordinal = u32::try_from(frame / 2 + 1).unwrap_or(u32::MAX);
     let run = run(role);
@@ -124,7 +154,7 @@ fn envelope(role: AgentRole, frame: u64) -> TerminalEventEnvelope {
     }
 }
 
-fn pulse(role: AgentRole, frame: u64) -> AgentActivityPulseV1 {
+pub(crate) fn pulse(role: AgentRole, frame: u64) -> AgentActivityPulseV1 {
     let ordinal = u32::try_from(frame + 1).unwrap_or(u32::MAX);
     AgentActivityPulseV1 {
         protocol_version: 1,
@@ -173,6 +203,7 @@ pub(crate) fn apply(
                         agents: ROLES.into_iter().map(agent).collect(),
                         free_form_slots: vec![],
                         archived_free_form_slots: vec![],
+                        automation_slots: Vec::new(),
                         discovery: vec![],
                     },
                     fallbacks: vec![],
@@ -180,6 +211,7 @@ pub(crate) fn apply(
                     api_executions: Default::default(),
                     quota_deltas: Default::default(),
                     live_activity: Vec::new(),
+                    pipelines: Default::default(),
                 },
             );
         });

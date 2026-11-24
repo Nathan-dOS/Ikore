@@ -10,9 +10,12 @@ impl PersistenceService {
     }
 
     pub async fn run_job_worker_until(&self, cancellation: CancellationToken) {
+        // Feature 25: the automation lane admits pipeline steps by its own
+        // places, so the main lane's single slot never waits for them (E3).
         tokio::join!(
             self.run_execution_lane(JobClass::Main, &cancellation),
             self.run_execution_lane(JobClass::Background, &cancellation),
+            self.run_automation_lane(&cancellation),
         );
     }
 

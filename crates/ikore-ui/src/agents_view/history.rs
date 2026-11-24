@@ -1,6 +1,7 @@
 //! An agent's runs as a table (ADR-040 M7, specification 12.2): Started,
-//! Origin, Status, Duration, Tokens, Exit and Model. A row opens its run in
-//! Activity.
+//! Origin, Status, Duration, Tokens, Exit and Model. A row pins the dock on
+//! its run (feature 25, R13). In the synthesis's drawer the table is wider
+//! than the column, so it scrolls across.
 
 use gpui::{AnyElement, Context, IntoElement, Rgba, SharedString, div, prelude::*, px};
 use ikore_core::terminals::TerminalRun;
@@ -10,6 +11,9 @@ use crate::app_model::AppModel;
 use crate::theme;
 
 use super::{empty_state, origin_label, run_status, status_color};
+
+/// The room Model gets at least.
+const MODEL_MIN_WIDTH: f32 = 160.0;
 
 /// The columns and their widths; Model takes what is left.
 const COLUMNS: [(&str, f32); 6] = [
@@ -130,13 +134,24 @@ pub(super) fn history_tab(
                 .child(cell(model_name, None, theme::text_muted()))
         })
         .collect::<Vec<_>>();
+    // Every column, the gaps and the row's padding, with Model at its least.
+    let width = COLUMNS.iter().map(|(_, width)| width).sum::<f32>()
+        + MODEL_MIN_WIDTH
+        + 8.0 * COLUMNS.len() as f32
+        + 16.0;
     div()
         .id("agent-history")
         .debug_selector(|| "agent-history".into())
-        .flex()
-        .flex_col()
-        .gap_1()
-        .child(header)
-        .children(rows)
+        .w_full()
+        .overflow_x_scroll()
+        .child(
+            div()
+                .min_w(px(width))
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(header)
+                .children(rows),
+        )
         .into_any_element()
 }

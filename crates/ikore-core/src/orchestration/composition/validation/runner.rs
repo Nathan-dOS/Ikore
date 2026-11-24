@@ -23,7 +23,7 @@ use super::candidate::Candidate;
 use super::diagnostics::{self, PathResolver};
 use super::profile::ValidationProfileSnapshot;
 use crate::orchestration::SchemaV1;
-use crate::terminals::{ProcessTreeJob, configure_hidden};
+use crate::terminals::{ProcessTreeJob, ProcessTreeSpawnError};
 
 /// Host correlation a receipt carries.
 #[derive(Debug, Clone)]
@@ -481,12 +481,10 @@ async fn run_check_in_environment(
         .kill_on_drop(true)
         .env_clear();
     command.envs(&environment.values);
-    configure_hidden(&mut command);
-
     let started_at = Timestamp::now();
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(error) => {
+    let (mut child, job) = match ProcessTreeJob::spawn(&mut command) {
+        Ok(controlled) => controlled,
+        Err(ProcessTreeSpawnError::Spawn(error)) => {
             return empty_receipt(
                 snapshot,
                 candidate,
@@ -498,12 +496,7 @@ async fn run_check_in_environment(
                 environment,
             );
         }
-    };
-    // Lifecycle control before any work is allowed to matter (§1).
-    let job = match ProcessTreeJob::assign(&child) {
-        Ok(job) => job,
-        Err(error) => {
-            let _ = child.kill().await;
+        Err(ProcessTreeSpawnError::Control(error)) => {
             let mut receipt = empty_receipt(
                 snapshot,
                 candidate,

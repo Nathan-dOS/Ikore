@@ -1,15 +1,17 @@
-//! The Agents page (ADR-040 M7, specification 12): the stepper and the
-//! picker here; the list, the detail with its tabs, the free-form cards, the
-//! shared configuration controls and API Mode in their own modules.
+//! The Agents page: the canvas of agents (feature 25, M1) and, on the right,
+//! the synthesis of the node clicked. The picker lives here; the agents'
+//! model, the synthesis and its drawers, API Mode and the shared
+//! configuration controls in their own modules. The console is the dock's.
 
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, Context, FontWeight, IntoElement, Rgba, SharedString, deferred, div, prelude::*,
-    px, uniform_list,
+    AnyElement, Context, FontWeight, IntoElement, KeyDownEvent, Rgba, SharedString, deferred, div,
+    prelude::*, px, uniform_list,
 };
 use ikore_core::persistence_service::{
     CLI_VALIDATION_FAILED, CLI_VERSION_UNVALIDATED, CliFallbackCheckpoint, CliFallbackDecision,
+    PulsationStatus,
 };
 use ikore_core::terminals::{
     AgentExecutionMode, CliAvailabilityState, CliBackend, CliModelCatalogEntry,
@@ -17,6 +19,7 @@ use ikore_core::terminals::{
 };
 
 use crate::agents::{AgentIdentifier, CliModelPickerState, CliModelPickerTarget};
+use crate::agents_canvas::{CanvasAgents, CanvasNode, FREE_FORM_LIMIT, NodeState};
 use crate::app_model::AppModel;
 use crate::icons::Icon;
 use crate::pipeline_status::PipelineStatus;
@@ -27,37 +30,258 @@ mod config;
 mod detail;
 mod free_form;
 mod history;
-mod list;
+mod model;
+pub(crate) mod pipeline_editor;
+mod pipelines;
+mod synthesis;
+
+pub(crate) use pipeline_editor::PipelineEditor;
 
 use api::api_detail_panel;
 use config::field;
 use detail::agent_detail_panel;
-use list::agents_sidebar;
+use model::{AgentItem, AgentItems, agent_items};
 
-/// The six-stage stepper for the active pulsation. Sized to its content so the header's two
-/// `flex_1` spacers keep it centred; the stage · agent · state readout lives in the flow bar.
-fn agents_pipeline_header(
+/// The default box's title: `Pipeline`, and the active pulsation's title,
+/// stage and state when there is one.
+fn pipeline_title(
     model: &AppModel,
-    snapshot: Option<&ikore_core::terminals::TerminalsSnapshot>,
+    snapshot: &ikore_core::terminals::TerminalsSnapshot,
+    cx: &gpui::App,
+) -> String {
+    let pulsations = model.pulsations.read(cx);
+    let Some(active) = pulsations.active() else {
+        return "Pipeline".to_owned();
+    };
+    let status = PipelineStatus::derive(active, Some(snapshot));
+    format!(
+        "Pipeline · {} · {} · {}",
+        active.feature_name,
+        crate::pipeline_status::step_label(active.stage),
+        status.state
+    )
+}
+
+/// The stage waiting on the developer at its checkpoint, by its agent.
+fn waiting_role(model: &AppModel, cx: &gpui::App) -> Option<ikore_core::llm::AgentRole> {
+    let pulsations = model.pulsations.read(cx);
+    let active = pulsations.active()?;
+    (active.status == PulsationStatus::Checkpoint).then(|| {
+        ikore_core::llm::AgentRole::for_stage(crate::pulsations::stage_label(active.stage))
+    })
+}
+
+/// A node from an agent: its state by the feature's table, and the line
+/// under its name.
+fn canvas_node(item: &AgentItem, waiting: bool, checkpoint: bool) -> CanvasNode {
+    let run = item.run.as_ref();
+    let time = run.and_then(crate::agent_dock_view::run_time);
+    let (state, status) = if item.needs_attention() {
+        let status = match run.map(|run| run.status) {
+            Some(status @ (TerminalRunStatus::Failed | TerminalRunStatus::AwaitingFallback)) => {
+                run_status(status).to_owned()
+            }
+            _ => "Fallback pending".to_owned(),
+        };
+        (NodeState::Attention, status)
+    } else if run.is_some_and(|run| run.status.is_active()) {
+        let mut status = match time {
+            Some(time) => format!("Running {time}"),
+            None => "Running".to_owned(),
+        };
+        if item.units > 1 {
+            status.push_str(&format!(" · {} units", item.units));
+        }
+        (NodeState::Running, status)
+    } else if waiting {
+        (NodeState::Waiting, "Waiting on you".to_owned())
+    } else if let Some(run) = run {
+        let label = if run.status == TerminalRunStatus::Completed {
+            "Done"
+        } else {
+            run_status(run.status)
+        };
+        let status = match time {
+            Some(time) => format!("{label} · {time}"),
+            None => label.to_owned(),
+        };
+        (NodeState::Done, status)
+    } else {
+        (NodeState::Idle, "Idle".to_owned())
+    };
+    CanvasNode {
+        agent: item.id.clone(),
+        label: item.label.clone(),
+        color: item.color,
+        state,
+        status,
+        transport: item.transport.clone(),
+        checkpoint,
+    }
+}
+
+/// What the canvas draws, from the agents of the snapshot.
+fn canvas_agents(
+    model: &AppModel,
+    snapshot: &ikore_core::terminals::TerminalsSnapshot,
+    items: &AgentItems,
+    busy: bool,
+    cx: &gpui::App,
+) -> CanvasAgents {
+    let waiting = waiting_role(model, cx);
+    let node = |item: &AgentItem| {
+        let role = match &item.id {
+            AgentIdentifier::Canonical(role) => Some(*role),
+            AgentIdentifier::FreeForm(_) | AgentIdentifier::PipelineStep { .. } => None,
+        };
+        let checkpoint = role
+            .and_then(|role| {
+                ikore_contracts::stages::STAGES
+                    .iter()
+                    .find(|(_, _, stage_role)| *stage_role == role)
+            })
+            .is_some_and(|(stage, _, _)| stage.requires_checkpoint());
+        canvas_node(item, role.is_some() && role == waiting, checkpoint)
+    };
+    CanvasAgents {
+        title: pipeline_title(model, snapshot, cx),
+        stages: items.stages.iter().map(node).collect(),
+        loose: items
+            .support
+            .iter()
+            .chain(&items.free_form)
+            .map(node)
+            .collect(),
+        ghost: (items.free_form.len() < FREE_FORM_LIMIT).then_some(!busy),
+        archived: items.archived.len(),
+        pipelines: pipelines::canvas_pipelines(model, cx),
+        selected_pipeline: model.agents.read(cx).selected_pipeline.clone(),
+    }
+}
+
+/// The right column: the synthesis of the node clicked, or the archived
+/// free-form agents.
+fn synthesis_panel(
+    model: &AppModel,
+    snapshot: &ikore_core::terminals::TerminalsSnapshot,
+    busy: bool,
     cx: &mut Context<AppModel>,
 ) -> AnyElement {
-    let status = model
-        .pulsations
-        .read(cx)
-        .active()
-        .map(|active| PipelineStatus::derive(active, snapshot));
-    let Some(status) = status else {
-        return div()
-            .id("agents-pipeline")
-            .debug_selector(|| "agents-pipeline".into())
-            .flex_shrink_0()
-            .text_xs()
-            .text_color(theme::text_muted())
-            .child("No active pulsation")
-            .into_any_element();
+    let agents = model.agents.read(cx);
+    let show_archived = agents.show_archived;
+    let api_mode = match agents.selected_agent.as_ref() {
+        Some(AgentIdentifier::Canonical(role)) => snapshot
+            .agents
+            .iter()
+            .find(|agent| agent.config.agent_role == *role)
+            .is_some_and(|agent| agent.config.execution_mode == AgentExecutionMode::ApiDirect),
+        Some(AgentIdentifier::FreeForm(slot_id)) => snapshot
+            .free_form_slots
+            .iter()
+            .find(|slot| slot.slot.id == *slot_id)
+            .is_some_and(|slot| slot.slot.execution_mode == AgentExecutionMode::ApiDirect),
+        Some(AgentIdentifier::PipelineStep { .. }) | None => false,
     };
+    // Feature 25: the editor, the archived pipelines, a pipeline's synthesis
+    // or a step's come before the agents' panels.
+    let step = match agents.selected_agent.as_ref() {
+        Some(AgentIdentifier::PipelineStep {
+            pipeline_id,
+            step_id,
+        }) => agents
+            .pipeline(pipeline_id)
+            .cloned()
+            .map(|pipeline| (pipeline, step_id.clone())),
+        _ => None,
+    };
+    let pipeline = agents
+        .selected_pipeline
+        .as_ref()
+        .and_then(|id| agents.pipeline(id))
+        .cloned();
+    let show_archived_pipelines = agents.show_archived_pipelines;
+    let show_global_pipelines = agents.show_global_pipelines;
+    let content = if model.pipeline_editor.is_some() {
+        pipeline_editor::pipeline_editor_panel(model, cx)
+    } else if show_archived_pipelines {
+        pipelines::archived_pipelines(model, busy, cx)
+    } else if show_global_pipelines {
+        pipelines::global_pipelines(model, busy, cx)
+    } else if let Some(pipeline) = pipeline {
+        pipelines::pipeline_synthesis(model, &pipeline, busy, cx)
+    } else if let Some((pipeline, step_id)) = step {
+        pipelines::step_synthesis(model, &pipeline, &step_id, busy, cx)
+    } else if show_archived {
+        archived_panel(model, snapshot, busy, cx)
+    } else if api_mode {
+        api_detail_panel(model, snapshot, cx)
+    } else {
+        agent_detail_panel(model, snapshot, busy, cx)
+    };
+    div()
+        .id("agents-synthesis")
+        .debug_selector(|| "agents-synthesis".into())
+        .size_full()
+        .min_w_0()
+        .min_h_0()
+        .flex()
+        .flex_col()
+        .border_l_1()
+        .border_color(theme::border())
+        .bg(theme::surface())
+        .child(content)
+        .into_any_element()
+}
 
-    crate::widgets::pipeline_stepper(&status, "agents-pipeline", false)
+/// `Archived · N`: the archived free-form agents, each with `Restore` and
+/// `Delete`.
+fn archived_panel(
+    model: &AppModel,
+    snapshot: &ikore_core::terminals::TerminalsSnapshot,
+    busy: bool,
+    cx: &mut Context<AppModel>,
+) -> AnyElement {
+    let rows = snapshot
+        .archived_free_form_slots
+        .iter()
+        .map(|slot| free_form::archived_free_form_card(model, slot, busy, cx))
+        .collect::<Vec<_>>();
+    let count = rows.len();
+    div()
+        .id("agents-drawer:archived")
+        .debug_selector(|| "agents-drawer:archived".into())
+        .flex_1()
+        .min_h_0()
+        .overflow_y_scroll()
+        .p_4()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .flex_1()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(format!("Archived · {count}")),
+                )
+                .child(icon_action(
+                    "agents-drawer-close".into(),
+                    Icon::X,
+                    "Close",
+                    true,
+                    cx,
+                    |model, cx| model.close_agents_synthesis(cx),
+                )),
+        )
+        .when(count == 0, |panel| {
+            panel.child(empty_state("No archived agents."))
+        })
+        .children(rows)
+        .into_any_element()
 }
 
 pub(crate) fn agents_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
@@ -66,8 +290,16 @@ pub(crate) fn agents_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
     let busy = agents.busy;
     let snapshot = agents.snapshot.clone();
     let active_model_picker = agents.active_model_picker.clone();
-    let pipeline = agents_pipeline_header(model, snapshot.as_ref(), cx);
-    let focus = cx.focus_handle();
+    let selected = agents.selected_agent.clone();
+    let synthesis_open = selected.is_some()
+        || agents.show_archived
+        || agents.selected_pipeline.is_some()
+        || agents.show_archived_pipelines
+        || agents.show_global_pipelines
+        || model.pipeline_editor.is_some();
+    let can_create = pipelines::can_create_pipeline(agents);
+    let archived_pipelines = agents.pipelines.archived.len();
+    let available_globals = agents.pipelines.available_globals.len();
 
     div()
         .id("agents-panel")
@@ -78,11 +310,11 @@ pub(crate) fn agents_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
         .min_w_0()
         .min_h_0()
         .h_full()
-        .track_focus(&focus)
-        .tab_index(0)
-        .on_key_down(cx.listener(|model, event: &gpui::KeyDownEvent, _, cx| {
-            if event.keystroke.key == "escape" && model.agents.read(cx).terminal_expanded {
-                model.toggle_agents_terminal_expanded(cx);
+        // Esc closes the drawer first, then the synthesis. The page holds no
+        // focus of its own: the canvas keeps a lasting one (feature 25, M1),
+        // and a handle made anew on every frame would drop the keyboard.
+        .on_key_down(cx.listener(|model, event: &KeyDownEvent, _, cx| {
+            if event.keystroke.key == "escape" && model.dismiss_agents_synthesis(cx) {
                 cx.stop_propagation();
             }
         }))
@@ -102,32 +334,72 @@ pub(crate) fn agents_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
                 .items_center()
                 .gap_2()
                 .child(div().flex_1().min_w_0())
-                .child(pipeline)
                 .child(
                     div()
-                        .flex_1()
                         .min_w_0()
-                        .flex()
-                        .items_center()
-                        .justify_end()
-                        .gap_2()
-                        .child(
-                            div()
-                                .min_w_0()
-                                .text_xs()
-                                .text_color(theme::text_muted())
-                                .text_ellipsis()
-                                .child("Project-isolated configuration"),
-                        )
+                        .text_xs()
+                        .text_color(theme::text_muted())
+                        .text_ellipsis()
+                        .child("Project-isolated configuration"),
+                )
+                .when(available_globals > 0, |header| {
+                    header.child(action_button(
+                        "agents-add-global-pipeline".into(),
+                        "Add global pipeline\u{2026}".into(),
+                        snapshot.is_some() && !busy,
+                        false,
+                        cx,
+                        |model, cx| model.open_global_pipelines(cx),
+                    ))
+                })
+                .when(archived_pipelines > 0, |header| {
+                    header.child(action_button(
+                        "agents-archived-pipelines".into(),
+                        format!("Archived pipelines · {archived_pipelines}").into(),
+                        snapshot.is_some(),
+                        false,
+                        cx,
+                        |model, cx| model.open_archived_pipelines(cx),
+                    ))
+                })
+                .child(
+                    div()
+                        .id("agents-new-pipeline-frame")
+                        .when(!can_create, |frame| {
+                            frame.tooltip(|_, cx| {
+                                cx.new(|_| {
+                                    crate::widgets::Tooltip::new(
+                                        "A project has at most 5 pipelines of its own. Archive one first.",
+                                    )
+                                })
+                                .into()
+                            })
+                        })
                         .child(action_button(
-                            "agents-refresh".into(),
-                            if loading { "Checking…" } else { "Refresh" }.into(),
-                            !loading && !busy,
+                            "agents-new-pipeline".into(),
+                            "New pipeline".into(),
+                            snapshot.is_some() && can_create && !busy,
                             false,
                             cx,
-                            |model, cx| model.refresh_agent_diagnostics(cx),
+                            |model, cx| model.open_new_pipeline(cx),
                         )),
-                ),
+                )
+                .child(action_button(
+                    "agents-fit".into(),
+                    "Fit".into(),
+                    snapshot.is_some(),
+                    false,
+                    cx,
+                    |model, cx| model.fit_agents_canvas(cx),
+                ))
+                .child(action_button(
+                    "agents-refresh".into(),
+                    if loading { "Checking…" } else { "Refresh" }.into(),
+                    !loading && !busy,
+                    false,
+                    cx,
+                    |model, cx| model.refresh_agent_diagnostics(cx),
+                )),
         )
         .child(
             div()
@@ -144,37 +416,25 @@ pub(crate) fn agents_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
                         "Open a workspace to configure and monitor agents."
                     }),
                     Some(snapshot) => {
-                        let selected = model.agents.read(cx).selected_agent.clone();
-                        let api_mode = match selected.as_ref() {
-                            Some(AgentIdentifier::Canonical(role)) => snapshot
-                                .agents
-                                .iter()
-                                .find(|agent| agent.config.agent_role == *role)
-                                .is_some_and(|agent| {
-                                    agent.config.execution_mode == AgentExecutionMode::ApiDirect
-                                }),
-                            Some(AgentIdentifier::FreeForm(slot_id)) => snapshot
-                                .free_form_slots
-                                .iter()
-                                .chain(&snapshot.archived_free_form_slots)
-                                .find(|slot| slot.slot.id == *slot_id)
-                                .is_some_and(|slot| {
-                                    slot.slot.execution_mode == AgentExecutionMode::ApiDirect
-                                }),
-                            None => false,
-                        };
-                        let detail = if api_mode {
-                            api_detail_panel(model, &snapshot, cx)
-                        } else {
-                            agent_detail_panel(model, &snapshot, busy, cx)
-                        };
-                        crate::split_pane::split_pane(
-                            "agents-columns",
-                            &model.agents_split,
-                            agents_sidebar(model, &snapshot, busy, cx),
-                            detail,
+                        let items = agent_items(model, &snapshot, cx);
+                        let drawn = canvas_agents(model, &snapshot, &items, busy, cx);
+                        let canvas = crate::agents_canvas::agents_canvas(
+                            model,
+                            drawn,
+                            selected.as_ref(),
                             cx,
-                        )
+                        );
+                        if synthesis_open {
+                            crate::split_pane::split_pane(
+                                "agents-columns",
+                                &model.agents_split,
+                                canvas,
+                                synthesis_panel(model, &snapshot, busy, cx),
+                                cx,
+                            )
+                        } else {
+                            canvas
+                        }
                     }
                 }),
         )
@@ -227,6 +487,12 @@ pub(crate) fn cli_model_picker_panel(
         ),
         CliModelPickerTarget::FreeForm(_) => {
             format!("Choose {} model for FreeForm agent", picker.backend.label())
+        }
+        CliModelPickerTarget::PipelineStep(_) => {
+            format!(
+                "Choose {} model for the pipeline step",
+                picker.backend.label()
+            )
         }
         CliModelPickerTarget::Companion => "Choose the Companion's model".into(),
     };
@@ -940,6 +1206,7 @@ fn origin_label(origin: ikore_core::terminals::ExecutionOrigin) -> &'static str 
         ExecutionOrigin::Review => "review",
         ExecutionOrigin::Notes => "notes",
         ExecutionOrigin::Reconciliation => "reconciliation",
+        ExecutionOrigin::Automation => "pipeline step",
     }
 }
 
@@ -1162,7 +1429,13 @@ mod tests {
             ("detail.rs", include_str!("detail.rs")),
             ("free_form.rs", include_str!("free_form.rs")),
             ("history.rs", include_str!("history.rs")),
-            ("list.rs", include_str!("list.rs")),
+            ("model.rs", include_str!("model.rs")),
+            ("synthesis.rs", include_str!("synthesis.rs")),
+            ("pipelines.rs", include_str!("pipelines.rs")),
+            ("pipeline_editor.rs", include_str!("pipeline_editor.rs")),
+            ("canvas", include_str!("../agents_canvas/mod.rs")),
+            ("canvas paint", include_str!("../agents_canvas/paint.rs")),
+            ("canvas layout", include_str!("../agents_canvas/layout.rs")),
         ];
         // Spelled apart, so this test does not find itself.
         let words = [
@@ -1182,6 +1455,77 @@ mod tests {
                 assert!(!source.contains(&word), "{file} says `{word}`");
             }
         }
+    }
+
+    /// Feature 25, M1: a node's state and line come from its run, as the
+    /// feature's table of states says.
+    #[test]
+    fn a_node_takes_its_state_from_its_run() {
+        use crate::agents_canvas::NodeState;
+        use ikore_core::llm::AgentRole;
+
+        let run = |status: TerminalRunStatus| {
+            let mut run = crate::performance_agent_dock::agent(AgentRole::BackendAgent)
+                .recent_runs
+                .remove(0);
+            run.status = status;
+            run
+        };
+        let item =
+            |run: Option<ikore_core::terminals::TerminalRun>, fallbacks, units| model::AgentItem {
+                id: AgentIdentifier::Canonical(AgentRole::BackendAgent),
+                label: "BackendAgent".into(),
+                color: theme::accent(),
+                run,
+                transport: "CLI · claude".into(),
+                fallbacks,
+                units,
+            };
+        let idle = canvas_node(&item(None, 0, 0), false, false);
+        assert_eq!(
+            (idle.state, idle.status.as_str()),
+            (NodeState::Idle, "Idle")
+        );
+        let running = canvas_node(
+            &item(Some(run(TerminalRunStatus::Running)), 0, 2),
+            false,
+            false,
+        );
+        assert_eq!(running.state, NodeState::Running);
+        assert!(running.status.starts_with("Running"), "{}", running.status);
+        assert!(running.status.ends_with(" · 2 units"), "{}", running.status);
+        let waiting = canvas_node(
+            &item(Some(run(TerminalRunStatus::Completed)), 0, 0),
+            true,
+            true,
+        );
+        assert_eq!(
+            (waiting.state, waiting.status.as_str(), waiting.checkpoint),
+            (NodeState::Waiting, "Waiting on you", true)
+        );
+        let failed = canvas_node(
+            &item(Some(run(TerminalRunStatus::Failed)), 0, 0),
+            false,
+            false,
+        );
+        assert_eq!(failed.state, NodeState::Attention);
+        assert_eq!(failed.status, run_status(TerminalRunStatus::Failed));
+        let fallback = canvas_node(
+            &item(Some(run(TerminalRunStatus::Completed)), 1, 0),
+            false,
+            false,
+        );
+        assert_eq!(
+            (fallback.state, fallback.status.as_str()),
+            (NodeState::Attention, "Fallback pending")
+        );
+        let done = canvas_node(
+            &item(Some(run(TerminalRunStatus::Completed)), 0, 0),
+            false,
+            false,
+        );
+        assert_eq!(done.state, NodeState::Done);
+        assert!(done.status.starts_with("Done"), "{}", done.status);
     }
 
     #[test]

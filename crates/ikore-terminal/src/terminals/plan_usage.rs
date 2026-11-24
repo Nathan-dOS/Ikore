@@ -12,8 +12,7 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWrite
 use tokio::process::Command;
 
 use super::{
-    CliAvailability, CliBackend, ProcessTreeJob, configure_hidden, copy_safe_environment,
-    secure_probe_spec,
+    CliAvailability, CliBackend, ProcessTreeJob, copy_safe_environment, secure_probe_spec,
 };
 use crate::quota::sources::{codex_scope, epoch_seconds};
 use crate::quota::{
@@ -90,9 +89,8 @@ async fn codex_usage(executable: &Path) -> std::io::Result<QuotaReading> {
     for (name, value) in &spec.environment {
         command.env(name, value);
     }
-    configure_hidden(&mut command);
-    let mut child = command.spawn()?;
-    let process_tree = ProcessTreeJob::assign(&child)?;
+    let (mut child, process_tree) =
+        ProcessTreeJob::spawn(&mut command).map_err(std::io::Error::from)?;
     let stdin = child.stdin.take().ok_or_else(invalid_response)?;
     let stdout = child.stdout.take().ok_or_else(invalid_response)?;
     let result = tokio::time::timeout(USAGE_TIMEOUT, read_codex_usage(stdin, stdout)).await;

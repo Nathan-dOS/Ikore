@@ -74,7 +74,10 @@ fn v65_to_v66_preserves_legacy_failures_without_inventing_validation_evidence() 
     drop(service);
     let _reopened = PersistenceService::initialize(data.path()).unwrap();
     let db = Connection::open(path).unwrap();
-    for (table, sql) in before {
+    for (table, sql) in before
+        .into_iter()
+        .filter(|(table, _)| !REBUILT_BY_V70.contains(&table.as_str()))
+    {
         assert_eq!(
             without_later_columns(
                 &db.query_row(
@@ -297,6 +300,20 @@ fn rebuilt_by_v54(sql: &str) -> bool {
             sql.starts_with(&format!("CREATE TABLE \"{table}\" "))
                 || sql.starts_with(&format!("CREATE TABLE {table} "))
         })
+}
+
+/// V70 rebuilds the slot and run tables for the `automation` slot kind and
+/// the `automation` and `verification` origins, and the API executions for
+/// an automation slot as target (feature 25, M2a); the core's
+/// `v69_databases_keep_their_slots_runs_and_executions` proves their rows
+/// survive. The earlier "nothing is rebuilt" checks leave them out.
+const REBUILT_BY_V70: [&str; 3] = ["terminal_slots", "terminal_runs", "llm_route_executions"];
+
+fn rebuilt_by_v70(sql: &str) -> bool {
+    REBUILT_BY_V70.iter().any(|table| {
+        sql.starts_with(&format!("CREATE TABLE \"{table}\" "))
+            || sql.starts_with(&format!("CREATE TABLE {table} "))
+    })
 }
 
 #[test]
@@ -1968,7 +1985,10 @@ fn v50_to_v51_adds_the_review_boundary_tables_without_rebuilding_existing_ones()
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap();
-    for table in before.iter().filter(|sql| !rebuilt_by_v54(sql)) {
+    for table in before
+        .iter()
+        .filter(|sql| !rebuilt_by_v54(sql) && !rebuilt_by_v70(sql))
+    {
         assert!(
             after.iter().any(|sql| without_later_columns(sql) == *table),
             "no existing table was rebuilt: {table}"
@@ -2087,7 +2107,10 @@ fn v51_to_v52_adds_the_risk_scrutiny_tables_without_rebuilding_existing_ones() {
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap();
-    for table in before.iter().filter(|sql| !rebuilt_by_v54(sql)) {
+    for table in before
+        .iter()
+        .filter(|sql| !rebuilt_by_v54(sql) && !rebuilt_by_v70(sql))
+    {
         assert!(
             after.iter().any(|sql| without_later_columns(sql) == *table),
             "no existing table was rebuilt: {table}"
@@ -2196,7 +2219,10 @@ fn v52_to_v53_adds_the_forge_preflight_findings_without_rebuilding_existing_ones
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap();
-    for table in before.iter().filter(|sql| !rebuilt_by_v54(sql)) {
+    for table in before
+        .iter()
+        .filter(|sql| !rebuilt_by_v54(sql) && !rebuilt_by_v70(sql))
+    {
         assert!(
             after.iter().any(|sql| without_later_columns(sql) == *table),
             "no existing table was rebuilt: {table}"
@@ -2294,7 +2320,10 @@ fn v53_to_v54_adds_the_reconciler_role_and_the_reconciliation_tables() {
             >= 54
     );
     let after = tables(&db);
-    for table in before.iter().filter(|sql| !rebuilt_by_v54(sql)) {
+    for table in before
+        .iter()
+        .filter(|sql| !rebuilt_by_v54(sql) && !rebuilt_by_v70(sql))
+    {
         assert!(
             after.iter().any(|sql| without_later_columns(sql) == *table),
             "only the role tables are rebuilt: {table}"
@@ -2461,7 +2490,10 @@ fn v54_to_v55_adds_cargo_evidence_without_rewriting_or_enabling_legacy_profiles(
         )
         .unwrap();
     assert_eq!(preserved, (7, false, profile_json));
-    for (name, definition) in before {
+    for (name, definition) in before
+        .into_iter()
+        .filter(|(name, _)| !REBUILT_BY_V70.contains(&name.as_str()))
+    {
         let after: String = db
             .query_row(
                 "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
@@ -2587,7 +2619,10 @@ fn v55_to_v57_adds_canvas_tables_without_rewriting_legacy_data() {
         1,
         "the migration is applied exactly once"
     );
-    for (name, before) in definitions {
+    for (name, before) in definitions
+        .into_iter()
+        .filter(|(name, _)| !REBUILT_BY_V70.contains(&name.as_str()))
+    {
         let after: String = db
             .query_row(
                 "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
@@ -2800,7 +2835,7 @@ fn v58_to_v59_adds_mandates_and_receipts_without_touching_running_pulsations() {
     let db = Connection::open(&path).unwrap();
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
     let after = tables(&db);
-    for table in &before {
+    for table in before.iter().filter(|sql| !rebuilt_by_v70(sql)) {
         assert!(
             after.iter().any(|sql| without_later_columns(sql) == *table),
             "V59 rebuilds nothing: {table}"
@@ -2922,7 +2957,7 @@ fn v59_to_v60_adds_attestations_without_sealing_pulsations_that_already_ended() 
     let db = Connection::open(&path).unwrap();
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
     let after = tables(&db);
-    for table in &before {
+    for table in before.iter().filter(|sql| !rebuilt_by_v70(sql)) {
         assert!(
             after.iter().any(|sql| without_later_columns(sql) == *table),
             "V60 rebuilds nothing: {table}"
@@ -3055,7 +3090,7 @@ fn v60_to_v61_adds_scope_requests_without_touching_parked_failures() {
     let db = Connection::open(&path).unwrap();
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
     let after = tables(&db);
-    for table in &before {
+    for table in before.iter().filter(|sql| !rebuilt_by_v70(sql)) {
         assert!(
             after.iter().any(|sql| without_later_columns(sql) == *table),
             "V61 rebuilds nothing: {table}"
@@ -3168,7 +3203,7 @@ fn v61_to_v62_adds_the_exchange_log_without_backfilling_history() {
     let db = Connection::open(&path).unwrap();
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
     let after = tables(&db);
-    for table in &before {
+    for table in before.iter().filter(|sql| !rebuilt_by_v70(sql)) {
         assert!(
             after.iter().any(|sql| without_later_columns(sql) == *table),
             "V62 rebuilds nothing: {table}"
@@ -3274,7 +3309,7 @@ fn v62_to_v63_keeps_earlier_runs_strict_and_adds_the_resume_manifest() {
     let db = Connection::open(&path).unwrap();
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
     let after = tables(&db);
-    for table in &before {
+    for table in before.iter().filter(|sql| !rebuilt_by_v70(sql)) {
         assert!(
             after.iter().any(|sql| without_later_columns(sql) == *table),
             "V63 rebuilds nothing: {table}"
@@ -3394,7 +3429,7 @@ fn v63_to_v64_adds_pulsation_digests_without_backfilling_them() {
     let db = Connection::open(&path).unwrap();
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
     let after = tables(&db);
-    for table in &before {
+    for table in before.iter().filter(|sql| !rebuilt_by_v70(sql)) {
         assert!(
             after.iter().any(|sql| without_later_columns(sql) == *table),
             "V64 rebuilds nothing: {table}"
@@ -3515,7 +3550,9 @@ fn v64_and_v65_to_v67_add_event_details_without_touching_old_events() {
         let db = Connection::open(&path).unwrap();
         db.pragma_update(None, "foreign_keys", "ON").unwrap();
         let after = tables(&db);
-        for table in before.iter().filter(|(name, _)| name != "terminal_events") {
+        for table in before.iter().filter(|(name, _)| {
+            name != "terminal_events" && !REBUILT_BY_V70.contains(&name.as_str())
+        }) {
             assert!(
                 after.contains(table),
                 "V67 from V{from} rebuilds nothing: {table:?}"

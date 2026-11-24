@@ -29,7 +29,7 @@ pub(crate) struct McpSettings {
 }
 
 /// The add or edit form.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct McpForm {
     pub(crate) id: Option<String>,
     pub(crate) version: Option<u64>,
@@ -42,6 +42,18 @@ pub(crate) struct McpForm {
     pub(crate) value: Entity<NativeTextInput>,
     /// Each variable with the value typed here, or `None` to keep the stored one.
     pub(crate) env: Vec<(String, Option<String>)>,
+}
+
+impl std::fmt::Debug for McpForm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let names: Vec<_> = self.env.iter().map(|(name, _)| name).collect();
+        f.debug_struct("McpForm")
+            .field("id", &self.id)
+            .field("version", &self.version)
+            .field("global", &self.global)
+            .field("environment_names", &names)
+            .finish()
+    }
 }
 
 /// Splits the arguments line on spaces; double quotes keep spaces inside one.

@@ -1,19 +1,26 @@
-//! An agent's detail: the header, its tabs and the expanded console (ADR-040 M7, 12.2).
+//! A stage's or support agent's synthesis on the Agents canvas (feature 25,
+//! M1): the header with the run actions of ADR-040 M7 (12.2), the summary,
+//! and the `Configure`, `History` and `Run…` drawers. The console is the
+//! dock's.
 
 use gpui::{AnyElement, Context, FontWeight, IntoElement, Rgba, SharedString, div, prelude::*, px};
 use ikore_core::terminals::{
     AgentExecutionMode, CanonicalAgentDescriptor, CliAvailabilityState, TerminalRunStatus,
 };
 
-use crate::agent_console::view::{ConsoleSurface, console};
-use crate::agents::AgentIdentifier;
+use crate::agents::{AgentDetailTab, AgentIdentifier};
 use crate::app_model::AppModel;
 use crate::icons::Icon;
 use crate::theme;
 
 use super::config::{StageConfiguration, stage_configuration};
-use super::free_form::{archived_free_form_card, free_form_card};
+use super::free_form::free_form_card;
 use super::history::history_tab;
+use super::model::{stage_route, transport};
+use super::synthesis::{
+    SynthesisFacts, drawer, now_line, run_numbers, run_quota, running_units, summary,
+    synthesis_actions, transport_line, waiting_review,
+};
 use super::{
     action_button, availability_status, chip, empty_state, fallback_panel, icon_action,
     resume_label, run_metadata, run_status, session_continuation, status_color,
@@ -29,10 +36,6 @@ pub(super) fn agent_detail_panel(
     let selected = agents.selected_agent.clone();
     let fallbacks = agents.fallbacks.clone();
     let pending_cancel = agents.pending_fallback_cancel.clone();
-    let expanded = agents.terminal_expanded;
-    if expanded {
-        return expanded_cli_detail_panel(model, snapshot, busy, cx);
-    }
     let panel = div()
         .id("agents-cli-scroll")
         .debug_selector(|| "agents-cli-scroll".into())
@@ -123,9 +126,6 @@ pub(super) fn agent_detail_panel(
                                 })
                                 .is_some_and(|entry| !entry.profiles.is_empty())
                         });
-                    let run_quota = selected_run.and_then(|run| {
-                        crate::quota_bar::run_delta_line(agents_model.quota_deltas.get(&run.id)?)
-                    });
                     let history_clear_armed = agents_model.pending_history_clear == Some(role);
                     let pipeline_cancel_armed = active_run
                         .and_then(|run| run.pulsation_id.as_deref())
@@ -133,34 +133,50 @@ pub(super) fn agent_detail_panel(
                             agents_model.pending_pipeline_cancel.as_deref() == Some(pulsation_id)
                         });
                     let detail_tab = agents_model.detail_tab;
-                    let event_filter = agents_model
-                        .event_filters
-                        .get(role.as_str())
-                        .copied()
-                        .unwrap_or_default();
                     let history_copied = selected_run
                         .is_some_and(|r| model.notifications.copied.contains_key(&r.id));
-                    let run_console = console(
-                        model,
-                        ConsoleSurface {
-                            key: role.as_str().to_owned(),
-                            agent_label: descriptor.name,
-                            run: selected_run,
-                            filter: event_filter,
-                            expanded: false,
-                            narrow: false,
-                        },
-                        cx,
+                    let identifier = AgentIdentifier::Canonical(role);
+                    let badge = transport(
+                        agent.config.execution_mode,
+                        agent.config.backend,
+                        stage_route(
+                            model.settings.read(cx).snapshot.as_ref(),
+                            &snapshot.project_id,
+                            role,
+                        ),
                     );
+                    let latest = agent.recent_runs.first();
+                    let facts = SynthesisFacts {
+                        key: role.as_str().to_owned(),
+                        agent: identifier.clone(),
+                        transport: transport_line(
+                            &badge,
+                            agent.config.execution_mode,
+                            agent.config.model.as_deref(),
+                            agent.config.thinking_level,
+                        ),
+                        now: latest.and_then(|run| now_line(model, run, cx)),
+                        numbers: selected_run.and_then(|run| run_numbers(model, run, cx)),
+                        quota: selected_run.and_then(|run| run_quota(model, run, cx)),
+                        failure: latest
+                            .filter(|run| run.status == TerminalRunStatus::Failed)
+                            .map(|run| {
+                                run.error_message
+                                    .clone()
+                                    .unwrap_or_else(|| "The run failed.".to_owned())
+                            }),
+                        units: running_units(&agent.recent_runs),
+                        review: waiting_review(model, &identifier, cx),
+                    };
                     let history = history_tab(
                         model,
-                        &AgentIdentifier::Canonical(role),
+                        &identifier,
                         &agent.recent_runs,
                         selected_run.map(|run| run.id.as_str()),
                         cx,
                     );
 
-                    // The transport's segmented control lives in Configuration (12.2).
+                    // The transport's segmented control lives in Configure (12.2).
                     let transport = crate::select_menu::mode_control(
                         format!("agent-mode:{}", role.as_str()),
                         "CLI",
@@ -178,22 +194,25 @@ pub(super) fn agent_detail_panel(
                             descriptor,
                             agent,
                             availability,
-                            input,
-                            model_input,
-                            custom_executable_input,
-                            custom_args_input,
+                            CardInputs {
+                                prompt: input,
+                                model: model_input,
+                                custom_executable: custom_executable_input,
+                                custom_args: custom_args_input,
+                            },
                             selected_run,
-                            run_console,
-                            history_clear_armed,
-                            pipeline_cancel_armed,
-                            thinking_available,
-                            prompt_ready,
-                            executable_ready,
-                            running,
-                            busy,
-                            history_copied,
+                            facts,
+                            CardFlags {
+                                history_clear_armed,
+                                pipeline_cancel_armed,
+                                thinking_available,
+                                prompt_ready,
+                                executable_ready,
+                                running,
+                                busy,
+                                history_copied,
+                            },
                             model.quota.backend(agent.config.backend).cloned(),
-                            run_quota,
                             detail_tab,
                             history,
                             transport,
@@ -210,12 +229,8 @@ pub(super) fn agent_detail_panel(
             let slot = snapshot
                 .free_form_slots
                 .iter()
-                .chain(&snapshot.archived_free_form_slots)
                 .find(|slot| slot.slot.id == slot_id);
             match slot {
-                Some(slot) if slot.slot.archived => panel
-                    .child(archived_free_form_card(model, slot, busy, cx))
-                    .into_any_element(),
                 Some(slot) => panel
                     .child(free_form_card(model, snapshot, slot, busy, cx))
                     .into_any_element(),
@@ -224,274 +239,31 @@ pub(super) fn agent_detail_panel(
                     .into_any_element(),
             }
         }
-        None => panel
+        Some(AgentIdentifier::PipelineStep { .. }) | None => panel
             .child(empty_state("Select or create an agent."))
             .into_any_element(),
     }
 }
 
-pub(super) fn expanded_cli_detail_panel(
-    model: &AppModel,
-    snapshot: &ikore_core::terminals::TerminalsSnapshot,
-    busy: bool,
-    cx: &mut Context<AppModel>,
-) -> AnyElement {
-    let agents = model.agents.read(cx);
-    let selected = agents.selected_agent.clone();
-    let canonical = match selected.as_ref() {
-        Some(AgentIdentifier::Canonical(role)) => snapshot
-            .agents
-            .iter()
-            .find(|agent| agent.config.agent_role == *role)
-            .cloned(),
-        _ => None,
-    };
-    let free_form = match selected.as_ref() {
-        Some(AgentIdentifier::FreeForm(slot_id)) => snapshot
-            .free_form_slots
-            .iter()
-            .chain(&snapshot.archived_free_form_slots)
-            .find(|slot| slot.slot.id == *slot_id)
-            .cloned(),
-        _ => None,
-    };
-    let panel = div()
-        .id("agents-terminal-expanded")
-        .debug_selector(|| "agents-terminal-expanded".into())
-        .flex_1()
-        .h_full()
-        .min_h_0()
-        .min_w_0()
-        .p_4()
-        .flex()
-        .flex_col()
-        .gap_2()
-        .bg(theme::surface());
-    if let Some(agent) = canonical {
-        let role = agent.config.agent_role;
-        let descriptor = ikore_core::terminals::canonical_agent(role);
-        let selected_run = agents
-            .selected_run_by_role
-            .get(&role)
-            .and_then(|run_id| agent.recent_runs.iter().find(|run| &run.id == run_id))
-            .or_else(|| agent.recent_runs.first())
-            .cloned();
-        let filter = agents
-            .event_filters
-            .get(role.as_str())
-            .copied()
-            .unwrap_or_default();
-        let running = agent
-            .recent_runs
-            .first()
-            .is_some_and(|run| run.status.is_active());
-        let input = model.agent_prompt_inputs.get(&role).cloned();
-        let prompt_ready = input
-            .as_ref()
-            .is_some_and(|input| !input.read(cx).value().trim().is_empty());
-        let run_id = agent.recent_runs.first().map(|run| run.id.clone());
-        let run_console = console(
-            model,
-            ConsoleSurface {
-                key: role.as_str().to_owned(),
-                agent_label: descriptor.name,
-                run: selected_run.as_ref(),
-                filter,
-                expanded: true,
-                narrow: false,
-            },
-            cx,
-        );
-        return panel
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(crate::widgets::status_dot(theme::agent_color(role)))
-                    .child(
-                        div()
-                            .flex_1()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(descriptor.name),
-                    )
-                    .child(crate::select_menu::mode_control(
-                        format!("agent-mode:{}", role.as_str()),
-                        "CLI",
-                        !busy && !running,
-                        None,
-                        cx,
-                    ))
-                    .child(icon_action(
-                        SharedString::from(format!("agent-collapse:{}", role.as_str())),
-                        Icon::ChevronDown,
-                        "Collapse terminal",
-                        true,
-                        cx,
-                        |model, cx| model.toggle_agents_terminal_expanded(cx),
-                    )),
-            )
-            .when_some(selected_run.as_ref(), |panel, run| {
-                panel.child(
-                    div()
-                        .text_xs()
-                        .text_color(theme::text_muted())
-                        .child(run_metadata(run)),
-                )
-            })
-            .child(run_console)
-            .when_some(input, |panel, input| {
-                panel.child(crate::sizing::text_area(input)).child(
-                    div()
-                        .flex()
-                        .gap_2()
-                        .when(running, |row| {
-                            row.when_some(run_id, |row, run_id| {
-                                row.child(action_button(
-                                    SharedString::from(format!(
-                                        "agent-expanded-stop:{}",
-                                        role.as_str()
-                                    )),
-                                    "Stop".into(),
-                                    !busy,
-                                    true,
-                                    cx,
-                                    move |model, cx| {
-                                        model.request_cancel_agent_run(run_id.clone(), None, cx)
-                                    },
-                                ))
-                            })
-                        })
-                        .when(!running, |row| {
-                            row.child(action_button(
-                                SharedString::from(format!(
-                                    "agent-expanded-start:{}",
-                                    role.as_str()
-                                )),
-                                "Start".into(),
-                                !busy && prompt_ready,
-                                false,
-                                cx,
-                                move |model, cx| model.start_manual_agent(role, cx),
-                            ))
-                        }),
-                )
-            })
-            .into_any_element();
-    }
-    if let Some(free_form) = free_form {
-        let slot_id = free_form.slot.id.clone();
-        let selected_run = agents
-            .selected_run_by_slot
-            .get(&slot_id)
-            .and_then(|run_id| free_form.recent_runs.iter().find(|run| &run.id == run_id))
-            .or_else(|| free_form.recent_runs.first())
-            .cloned();
-        let filter_key = format!("free-form:{slot_id}");
-        let filter = agents
-            .event_filters
-            .get(&filter_key)
-            .copied()
-            .unwrap_or_default();
-        let running = free_form
-            .recent_runs
-            .first()
-            .is_some_and(|run| run.status.is_active());
-        let input = model.free_form_prompt_inputs.get(&slot_id).cloned();
-        let prompt_ready = input
-            .as_ref()
-            .is_some_and(|input| !input.read(cx).value().trim().is_empty());
-        let run_id = free_form.recent_runs.first().map(|run| run.id.clone());
-        let slot_for_start = slot_id.clone();
-        let run_console = console(
-            model,
-            ConsoleSurface {
-                key: filter_key,
-                agent_label: &free_form.slot.label,
-                run: selected_run.as_ref(),
-                filter,
-                expanded: true,
-                narrow: false,
-            },
-            cx,
-        );
-        return panel
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        div()
-                            .flex_1()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(free_form.slot.label.clone()),
-                    )
-                    .child(crate::select_menu::mode_control(
-                        format!("free-form-mode:{slot_id}"),
-                        "CLI",
-                        !busy && !running && !free_form.slot.archived,
-                        None,
-                        cx,
-                    ))
-                    .child(icon_action(
-                        SharedString::from(format!("free-form-collapse:{slot_id}")),
-                        Icon::ChevronDown,
-                        "Collapse terminal",
-                        true,
-                        cx,
-                        |model, cx| model.toggle_agents_terminal_expanded(cx),
-                    )),
-            )
-            .when_some(selected_run.as_ref(), |panel, run| {
-                panel.child(
-                    div()
-                        .text_xs()
-                        .text_color(theme::text_muted())
-                        .child(run_metadata(run)),
-                )
-            })
-            .child(run_console)
-            .when_some(input, |panel, input| {
-                panel.child(crate::sizing::text_area(input)).child(
-                    div()
-                        .flex()
-                        .gap_2()
-                        .when(running, |row| {
-                            row.when_some(run_id, |row, run_id| {
-                                row.child(action_button(
-                                    SharedString::from(format!(
-                                        "free-form-expanded-stop:{slot_id}"
-                                    )),
-                                    "Stop".into(),
-                                    !busy,
-                                    true,
-                                    cx,
-                                    move |model, cx| {
-                                        model.request_cancel_agent_run(run_id.clone(), None, cx)
-                                    },
-                                ))
-                            })
-                        })
-                        .when(!running, |row| {
-                            row.child(action_button(
-                                SharedString::from(format!("free-form-expanded-start:{slot_id}")),
-                                "New session".into(),
-                                !busy && prompt_ready && !free_form.slot.archived,
-                                false,
-                                cx,
-                                move |model, cx| {
-                                    model.start_free_form_agent(slot_for_start.clone(), cx)
-                                },
-                            ))
-                        }),
-                )
-            })
-            .into_any_element();
-    }
-    panel
-        .child(empty_state("Select an agent."))
-        .into_any_element()
+/// The card's text inputs: the prompt and the configuration fields.
+pub(super) struct CardInputs {
+    pub(super) prompt: Option<gpui::Entity<crate::text_input::NativeTextInput>>,
+    pub(super) model: Option<gpui::Entity<crate::text_input::NativeTextInput>>,
+    pub(super) custom_executable: Option<gpui::Entity<crate::text_input::NativeTextInput>>,
+    pub(super) custom_args: Option<gpui::Entity<crate::text_input::NativeTextInput>>,
+}
+
+/// What the card's actions depend on.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct CardFlags {
+    pub(super) history_clear_armed: bool,
+    pub(super) pipeline_cancel_armed: bool,
+    pub(super) thinking_available: bool,
+    pub(super) prompt_ready: bool,
+    pub(super) executable_ready: bool,
+    pub(super) running: bool,
+    pub(super) busy: bool,
+    pub(super) history_copied: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -499,27 +271,26 @@ pub(super) fn agent_card(
     descriptor: &CanonicalAgentDescriptor,
     agent: &ikore_core::terminals::AgentTerminalSnapshot,
     availability: Option<&ikore_core::terminals::CliAvailability>,
-    input: Option<gpui::Entity<crate::text_input::NativeTextInput>>,
-    model_input: Option<gpui::Entity<crate::text_input::NativeTextInput>>,
-    custom_executable_input: Option<gpui::Entity<crate::text_input::NativeTextInput>>,
-    custom_args_input: Option<gpui::Entity<crate::text_input::NativeTextInput>>,
+    inputs: CardInputs,
     selected_run: Option<&ikore_core::terminals::TerminalRun>,
-    run_console: AnyElement,
-    history_clear_armed: bool,
-    pipeline_cancel_armed: bool,
-    thinking_available: bool,
-    prompt_ready: bool,
-    executable_ready: bool,
-    running: bool,
-    busy: bool,
-    history_copied: bool,
+    facts: SynthesisFacts,
+    flags: CardFlags,
     quota: Option<ikore_core::quota::BackendQuota>,
-    run_quota: Option<String>,
-    tab: crate::agents::AgentDetailTab,
+    tab: AgentDetailTab,
     history: AnyElement,
     transport: AnyElement,
     cx: &mut Context<AppModel>,
 ) -> AnyElement {
+    let CardFlags {
+        history_clear_armed,
+        pipeline_cancel_armed,
+        thinking_available,
+        prompt_ready,
+        executable_ready,
+        running,
+        busy,
+        history_copied,
+    } = flags;
     let role = agent.config.agent_role;
     let color = theme::agent_color(role);
     let status = agent
@@ -553,136 +324,154 @@ pub(super) fn agent_card(
             )
         })
         .unwrap_or_default();
-    // ADR-040 M7: Configuration, Activity and History are tabs under a fixed header.
-    let config = stage_configuration(
-        StageConfiguration {
-            agent,
-            availability,
-            model_input,
-            custom_executable_input,
-            custom_args_input,
-            quota,
-            transport,
-            thinking_available,
-            running,
-            busy,
-        },
-        cx,
-    );
-    let activity = div()
-        .flex()
-        .flex_col()
-        .gap_3()
-        .when_some(selected_run, |card, selected_run| {
-            let index = agent
-                .recent_runs
-                .iter()
-                .position(|run| run.id == selected_run.id)
-                .unwrap_or(0);
-            card.child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .gap_2()
-                    .child(
+    let composer = agent.config.execution_mode == AgentExecutionMode::CliProcess;
+    let review = facts.review.clone();
+    let body = match tab {
+        AgentDetailTab::Summary => summary(facts, cx),
+        AgentDetailTab::Configuration => {
+            let config = stage_configuration(
+                StageConfiguration {
+                    agent,
+                    availability,
+                    model_input: inputs.model,
+                    custom_executable_input: inputs.custom_executable,
+                    custom_args_input: inputs.custom_args,
+                    quota,
+                    transport,
+                    thinking_available,
+                    running,
+                    busy,
+                },
+                cx,
+            );
+            drawer(tab, config, cx)
+        }
+        AgentDetailTab::History => {
+            let runs = div()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .when_some(selected_run, |card, selected_run| {
+                    let index = agent
+                        .recent_runs
+                        .iter()
+                        .position(|run| run.id == selected_run.id)
+                        .unwrap_or(0);
+                    card.child(
                         div()
-                            .w_full()
-                            .text_xs()
-                            .text_color(theme::text_muted())
-                            .child(format!(
-                                "Run {}/{} · {}",
-                                index + 1,
-                                agent.recent_runs.len(),
-                                run_metadata(selected_run)
+                            .flex()
+                            .flex_wrap()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .w_full()
+                                    .text_xs()
+                                    .text_color(theme::text_muted())
+                                    .child(format!(
+                                        "Run {}/{} · {}",
+                                        index + 1,
+                                        agent.recent_runs.len(),
+                                        run_metadata(selected_run)
+                                    )),
+                            )
+                            .child(icon_action(
+                                SharedString::from(format!(
+                                    "agent-history-older:{}",
+                                    role.as_str()
+                                )),
+                                Icon::ChevronLeft,
+                                "Older run",
+                                !busy && index + 1 < agent.recent_runs.len(),
+                                cx,
+                                move |model, cx| model.select_agent_history(role, 1, cx),
+                            ))
+                            .child(icon_action(
+                                SharedString::from(format!(
+                                    "agent-history-newer:{}",
+                                    role.as_str()
+                                )),
+                                Icon::ChevronRight,
+                                "Newer run",
+                                !busy && index > 0,
+                                cx,
+                                move |model, cx| model.select_agent_history(role, -1, cx),
+                            ))
+                            .child(action_button(
+                                SharedString::from(format!(
+                                    "agent-history-clear:{}",
+                                    role.as_str()
+                                )),
+                                if history_clear_armed {
+                                    "Confirm clear"
+                                } else {
+                                    "Clear history"
+                                }
+                                .into(),
+                                !busy && !running,
+                                true,
+                                cx,
+                                move |model, cx| model.request_clear_agent_history(role, cx),
+                            ))
+                            .child(action_button(
+                                SharedString::from(format!("agent-copy:{}", role.as_str())),
+                                if history_copied { "Copied" } else { "Copy" }.into(),
+                                !busy,
+                                false,
+                                cx,
+                                {
+                                    let run_id = selected_run.id.clone();
+                                    move |model, cx| model.copy_agent_history(run_id.clone(), cx)
+                                },
+                            ))
+                            .child(action_button(
+                                SharedString::from(format!("agent-export:{}", role.as_str())),
+                                "Export".into(),
+                                !busy,
+                                false,
+                                cx,
+                                {
+                                    let run_id = selected_run.id.clone();
+                                    move |model, cx| model.export_agent_history(run_id.clone(), cx)
+                                },
                             )),
                     )
-                    .when_some(run_quota.clone(), |row, line| {
-                        let selector = format!("agent-run-quota:{}", role.as_str());
-                        row.child(
-                            div()
-                                .debug_selector(move || selector.clone())
-                                .w_full()
-                                .text_xs()
-                                .text_color(theme::text_muted())
-                                .child(line),
-                        )
-                    })
-                    .child(icon_action(
-                        SharedString::from(format!("agent-history-older:{}", role.as_str())),
-                        Icon::ChevronLeft,
-                        "Older run",
-                        !busy && index + 1 < agent.recent_runs.len(),
-                        cx,
-                        move |model, cx| model.select_agent_history(role, 1, cx),
-                    ))
-                    .child(icon_action(
-                        SharedString::from(format!("agent-history-newer:{}", role.as_str())),
-                        Icon::ChevronRight,
-                        "Newer run",
-                        !busy && index > 0,
-                        cx,
-                        move |model, cx| model.select_agent_history(role, -1, cx),
-                    ))
-                    .child(action_button(
-                        SharedString::from(format!("agent-history-clear:{}", role.as_str())),
-                        if history_clear_armed {
-                            "Confirm clear"
-                        } else {
-                            "Clear history"
-                        }
-                        .into(),
-                        !busy && !running,
-                        true,
-                        cx,
-                        move |model, cx| model.request_clear_agent_history(role, cx),
-                    ))
-                    .child(action_button(
-                        SharedString::from(format!("agent-copy:{}", role.as_str())),
-                        if history_copied { "Copied" } else { "Copy" }.into(),
-                        !busy,
-                        false,
-                        cx,
-                        {
-                            let run_id = selected_run.id.clone();
-                            move |model, cx| model.copy_agent_history(run_id.clone(), cx)
-                        },
-                    ))
-                    .child(action_button(
-                        SharedString::from(format!("agent-export:{}", role.as_str())),
-                        "Export".into(),
-                        !busy,
-                        false,
-                        cx,
-                        {
-                            let run_id = selected_run.id.clone();
-                            move |model, cx| model.export_agent_history(run_id.clone(), cx)
-                        },
-                    )),
-            )
-        })
-        .child(run_console)
-        .when_some(input, |card, input| {
-            card.child(crate::sizing::text_area(input)).child(
-                div()
-                    .flex()
-                    .text_xs()
-                    .text_color(theme::text_muted())
-                    .map(|status| {
-                        if agent.config.execution_mode == AgentExecutionMode::ApiDirect {
-                            status.child("Manual execution blocked while agent uses API.")
-                        } else if running {
-                            status.child("Input blocked during execution.")
-                        } else {
-                            status.child(crate::widgets::info_tip(
-                                format!("agent-stdin:{}", role.as_str()),
-                                "Prompt will be sent via stdin; this is not a PTY terminal.",
-                            ))
-                        }
-                    }),
-            )
-        });
-    // Start, Stop and Resume stay in the header whatever the tab (12.2).
+                })
+                .child(history)
+                .into_any_element();
+            drawer(tab, runs, cx)
+        }
+        AgentDetailTab::Run => {
+            let composer = div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .when_some(inputs.prompt, |card, input| {
+                    card.child(crate::sizing::text_area(input)).child(
+                        div()
+                            .flex()
+                            .text_xs()
+                            .text_color(theme::text_muted())
+                            .map(|status| {
+                                if agent.config.execution_mode == AgentExecutionMode::ApiDirect {
+                                    status.child("Manual execution blocked while agent uses API.")
+                                } else if running {
+                                    status.child("Input blocked during execution.")
+                                } else {
+                                    status.child(crate::widgets::info_tip(
+                                        format!("agent-stdin:{}", role.as_str()),
+                                        "Prompt will be sent via stdin; this is not a PTY terminal.",
+                                    ))
+                                }
+                            }),
+                    )
+                })
+                .into_any_element();
+            drawer(tab, composer, cx)
+        }
+    };
+    // Start, Stop and Resume stay in the header whatever the drawer (12.2;
+    // feature 25, R12).
     let resume_run_id = selected_run.map(|run| run.id.clone());
     let actions = div()
         .flex()
@@ -748,11 +537,6 @@ pub(super) fn agent_card(
         .or_else(|| agent.config.model.clone())
         .unwrap_or_else(|| "CLI default".into());
     let session = selected_run.and_then(|run| run.native_session_id.clone());
-    let content = match tab {
-        crate::agents::AgentDetailTab::Activity => activity.into_any_element(),
-        crate::agents::AgentDetailTab::Configuration => config,
-        crate::agents::AgentDetailTab::History => history,
-    };
     div()
         .id(SharedString::from(format!("agent-card:{}", role.as_str())))
         .debug_selector(move || format!("agent-card:{}", role.as_str()))
@@ -781,8 +565,8 @@ pub(super) fn agent_card(
             },
             cx,
         ))
-        .child(detail_tabs(role.as_str(), tab, cx))
-        .child(content)
+        .child(synthesis_actions(role.as_str(), tab, review, composer, cx))
+        .child(body)
         .into_any_element()
 }
 
@@ -801,8 +585,8 @@ pub(super) struct DetailHeader {
     pub(super) actions: AnyElement,
 }
 
-/// The detail's fixed header (12.2): who, how it is, the model, the session
-/// and the main actions, the same over every tab.
+/// The synthesis's fixed header (12.2): who, how it is, the model, the
+/// session and the run actions, the same whatever the drawer.
 pub(super) fn detail_header(header: DetailHeader, cx: &mut Context<AppModel>) -> AnyElement {
     let DetailHeader {
         key,
@@ -888,57 +672,5 @@ pub(super) fn detail_header(header: DetailHeader, cx: &mut Context<AppModel>) ->
             )
         })
         .child(actions)
-        .into_any_element()
-}
-
-/// Activity, Configuration and History (12.2).
-pub(super) fn detail_tabs(
-    key: &str,
-    selected: crate::agents::AgentDetailTab,
-    cx: &mut Context<AppModel>,
-) -> AnyElement {
-    use crate::agents::AgentDetailTab;
-    div()
-        .flex()
-        .items_center()
-        .gap_1()
-        .border_b_1()
-        .border_color(theme::border())
-        .children(AgentDetailTab::ALL.into_iter().map(|tab| {
-            let selector = format!("agent-tab:{key}:{}", tab.id());
-            let active = tab == selected;
-            div()
-                .id(SharedString::from(selector.clone()))
-                .debug_selector(move || selector.clone())
-                // Reached by Tab; Ctrl+Shift+[ and ] cycle them from anywhere on the page.
-                .tab_index(0)
-                .px_3()
-                .py_1()
-                .rounded_t_md()
-                .text_sm()
-                .cursor_pointer()
-                .border_b_2()
-                .border_color(if active {
-                    gpui::Hsla::from(theme::accent())
-                } else {
-                    gpui::transparent_black()
-                })
-                .text_color(if active {
-                    theme::text()
-                } else {
-                    theme::text_muted()
-                })
-                // Backgrounds only in the refinements: a text colour there replaces the whole
-                // text style in GPUI, and the label would lose its size.
-                .when(!active, |tab| {
-                    tab.hover(|style| style.bg(theme::hover_bg()))
-                })
-                .focus_visible(|style| style.bg(theme::accent_soft()))
-                .on_click(cx.listener(move |model, _, _, cx| {
-                    model.agents.update(cx, |agents, _| agents.detail_tab = tab);
-                    cx.notify();
-                }))
-                .child(tab.label())
-        }))
         .into_any_element()
 }
