@@ -218,6 +218,7 @@ async fn antigravity_effort_the_model_lacks_is_refused_on_save_and_before_launch
             custom_executable: None,
             custom_args: Vec::new(),
             custom_risk_ack: false,
+            cli_silence_timeout_ms: None,
             expected_version: current.version,
         })
     };
@@ -323,6 +324,7 @@ fn stage_dispatch_keeps_preflight_blockers_when_the_recheck_still_requires_login
                 custom_executable: None,
                 custom_args: Vec::new(),
                 custom_risk_ack: false,
+                cli_silence_timeout_ms: None,
                 expected_version: current.version,
             })
             .unwrap();

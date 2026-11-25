@@ -34,6 +34,83 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::*;
 
+#[test]
+fn configured_cli_silence_updates_watchdog_budget_without_removing_ceiling() {
+    let original = AgentTimeoutPolicy::for_role(AgentRole::FeatureAgent);
+    let effective = cli_silence_policy(original, 600_000);
+    assert_eq!(effective.inactivity_window_ms, 600_000);
+    assert_eq!(effective.reasoning_silence_window_ms, 1_800_000);
+    assert_eq!(effective.base_timeout_ms, 600_000);
+    assert_eq!(effective.max_timeout_ms, original.max_timeout_ms);
+}
+
+#[test]
+fn companion_timeout_diagnostic_stores_only_bounded_metadata() {
+    let db = Connection::open_in_memory().unwrap();
+    db.execute_batch("CREATE TABLE companion_timeout_diagnostics (model_call_id TEXT PRIMARY KEY, reason TEXT NOT NULL, cli_version TEXT, watchdog_diagnostic TEXT NOT NULL)").unwrap();
+    let watchdog = ProgressWatchdog::new(AgentTimeoutPolicy::new(120_000, 90_000, 120_000, 30_000));
+    watchdog.record_reasoning();
+    record_companion_timeout_diagnostic(
+        &db,
+        "call",
+        TimeoutReason::Inactivity,
+        Some("1.5.3"),
+        &watchdog.diagnostic(),
+    )
+    .unwrap();
+    let row: (String, Option<String>, String) = db.query_row("SELECT reason, cli_version, watchdog_diagnostic FROM companion_timeout_diagnostics WHERE model_call_id='call'", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
+    assert_eq!(row.0, "cli_inactivity_timeout");
+    assert_eq!(row.1.as_deref(), Some("1.5.3"));
+    assert!(row.2.contains("reasoning=true"));
+    assert!(row.2.contains("progress_reads=1"));
+    record_companion_timeout_diagnostic(
+        &db,
+        "call",
+        TimeoutReason::MaxCeiling,
+        Some("1.5.3 secret"),
+        &watchdog.diagnostic(),
+    )
+    .unwrap();
+    let row: (String, Option<String>) = db.query_row("SELECT reason, cli_version FROM companion_timeout_diagnostics WHERE model_call_id='call'", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+    assert_eq!(row.0, "cli_timeout");
+    assert_eq!(row.1, None);
+}
+
+#[tokio::test]
+async fn companion_stream_recognizes_fragmented_reasoning_and_restores_normal_silence() {
+    use tokio::io::AsyncWriteExt;
+
+    let watchdog = ProgressWatchdog::new(AgentTimeoutPolicy::new(10_000, 1_000, 20_000, 100));
+    let (mut writer, reader) = tokio::io::duplex(4096);
+    let task = tokio::spawn(read_bounded_stream(
+        reader,
+        CancellationToken::new(),
+        4096,
+        Some((watchdog.clone(), CliBackend::Antigravity, "stdout")),
+        None,
+    ));
+    writer
+        .write_all(br#"{"event":"step_update","step_update":{"step_type":"planner"#)
+        .await
+        .unwrap();
+    tokio::task::yield_now().await;
+    writer
+        .write_all(b"_response\",\"state\":\"ACTIVE\"}}\n")
+        .await
+        .unwrap();
+    tokio::task::yield_now().await;
+    assert!(watchdog.diagnostic().contains("reasoning=true"));
+
+    writer.write_all(b"{\"event\":\"init\"}\n").await.unwrap();
+    tokio::task::yield_now().await;
+    assert!(watchdog.diagnostic().contains("reasoning=true"));
+    writer.write_all(b"{\"event\":\"step_update\",\"step_update\":{\"step_type\":\"agent_response\",\"text_delta\":\"done\"}}\n").await.unwrap();
+    tokio::task::yield_now().await;
+    assert!(watchdog.diagnostic().contains("reasoning=false"));
+    writer.shutdown().await.unwrap();
+    task.await.unwrap().unwrap();
+}
+
 /// A project whose `notes_scribe` route was never created, with the
 /// Feature Agent on the given backend.
 fn scribe_route_fixture(
@@ -2005,14 +2082,23 @@ fn repository_round_trips_project_configs_runs_and_events() {
             custom_executable: None,
             custom_args: vec![],
             custom_risk_ack: false,
+            cli_silence_timeout_ms: Some(180_000),
             expected_version: original.version,
         })
         .unwrap();
     assert_eq!(updated.version, original.version + 1);
     assert_eq!(updated.model.as_deref(), Some("test-model"));
     assert_eq!(updated.model_profile, None);
+    assert_eq!(
+        repository
+            .get_config(&project.id, AgentRole::BackendAgent)
+            .unwrap()
+            .cli_silence_timeout_ms,
+        Some(180_000)
+    );
     assert!(matches!(
         repository.update_config(UpdateCliAgentConfigRequest {
+            cli_silence_timeout_ms: None,
             expected_version: original.version,
             project_id: project.id.clone(),
             agent_role: AgentRole::BackendAgent,
@@ -2237,6 +2323,7 @@ fn custom_identity_change_requires_a_fresh_explicit_acknowledgement() {
             custom_executable: Some(executable.clone()),
             custom_args: Vec::new(),
             custom_risk_ack: true,
+            cli_silence_timeout_ms: None,
             expected_version: original.version,
         })
         .unwrap_err();
@@ -2254,6 +2341,7 @@ fn custom_identity_change_requires_a_fresh_explicit_acknowledgement() {
             custom_executable: Some(executable.clone()),
             custom_args: Vec::new(),
             custom_risk_ack: true,
+            cli_silence_timeout_ms: None,
             expected_version: original.version,
         })
         .unwrap();
@@ -2271,6 +2359,7 @@ fn custom_identity_change_requires_a_fresh_explicit_acknowledgement() {
             custom_executable: Some(executable),
             custom_args: Vec::new(),
             custom_risk_ack: true,
+            cli_silence_timeout_ms: None,
             expected_version: staged.version,
         })
         .unwrap();

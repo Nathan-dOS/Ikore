@@ -352,6 +352,29 @@ impl AppModel {
                 .map(|display| Choice::new(display.value(), display.label(), display == current))
                 .collect();
         }
+        if field == "agent-cli-silence" {
+            let Some(config) = role(key).and_then(|role| self.current_agent_config(role, cx))
+            else {
+                return vec![];
+            };
+            return std::iter::once(Choice::new(
+                "",
+                "Role default",
+                config.cli_silence_timeout_ms.is_none(),
+            ))
+            .chain(
+                [60_u64, 90, 120, 180, 300, 600, 900]
+                    .into_iter()
+                    .map(|seconds| {
+                        Choice::new(
+                            seconds.to_string(),
+                            format!("{seconds} seconds"),
+                            config.cli_silence_timeout_ms == Some(seconds * 1000),
+                        )
+                    }),
+            )
+            .collect();
+        }
         if matches!(
             field,
             "agent-mode"
@@ -759,6 +782,19 @@ impl AppModel {
                 }
                 match field {
                     "agent-mode" => config.execution_mode = mode,
+                    "agent-cli-silence" => {
+                        config.cli_silence_timeout_ms = if value.is_empty() {
+                            None
+                        } else {
+                            let Ok(seconds) = value.parse::<u64>() else {
+                                return;
+                            };
+                            if ![60, 90, 120, 180, 300, 600, 900].contains(&seconds) {
+                                return;
+                            }
+                            Some(seconds * 1000)
+                        };
+                    }
                     "agent-backend" => {
                         let Some(b) = backend(value) else {
                             return;
@@ -1144,6 +1180,27 @@ mod tests {
                 }
             })
         }
+    }
+    #[gpui::test]
+    fn agent_cli_silence_choice_saves_the_selected_value(cx: &mut gpui::TestAppContext) {
+        let model = cx.new(crate::layout_tests::fixture);
+        let backend = model.update(cx, |m, cx| {
+            let config = m
+                .current_agent_config(AgentRole::TaskSpecifier, cx)
+                .unwrap();
+            let backend = Arc::new(RecordingBackend {
+                calls: Mutex::new(vec![]),
+                config: Mutex::new(config),
+                fail: AtomicBool::new(false),
+            });
+            m.agents_backend = Some(backend.clone());
+            m.apply_choice("agent-cli-silence:task_specifier", "180", cx);
+            backend
+        });
+        cx.run_until_parked();
+        let calls = backend.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].cli_silence_timeout_ms, Some(180_000));
     }
     #[gpui::test]
     fn direct_selection_saves_once_noop_preserves_model_and_failure_preserves_configuration(

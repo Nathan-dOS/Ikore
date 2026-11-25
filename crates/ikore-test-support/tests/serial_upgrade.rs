@@ -27,11 +27,18 @@ fn latest_migration_version() -> i64 {
 /// (no rebuild, no row rewritten), but SQLite writes it into the table's
 /// stored definition: a test of an earlier migration compares the table as
 /// that migration left it.
-const LATER_COLUMNS: [(&str, &str); 1] = [(
-    "CREATE TABLE terminal_events (",
-    // V67, ADR-040 M1.
-    ", detail_json TEXT\n  CHECK(detail_json IS NULL OR json_valid(detail_json)), observed_at TEXT",
-)];
+const LATER_COLUMNS: [(&str, &str); 2] = [
+    (
+        "CREATE TABLE terminal_events (",
+        // V67, ADR-040 M1.
+        ", detail_json TEXT\n  CHECK(detail_json IS NULL OR json_valid(detail_json)), observed_at TEXT",
+    ),
+    (
+        "CREATE TABLE \"cli_agent_configs\" (",
+        // V74, configurable CLI silence timeout.
+        ", cli_silence_timeout_ms INTEGER\n  CHECK(cli_silence_timeout_ms IS NULL OR cli_silence_timeout_ms BETWEEN 30000 AND 900000)",
+    ),
+];
 
 fn without_later_columns(sql: &str) -> String {
     LATER_COLUMNS
@@ -75,7 +82,7 @@ fn v65_to_v66_preserves_legacy_failures_without_inventing_validation_evidence() 
     let _reopened = PersistenceService::initialize(data.path()).unwrap();
     let db = Connection::open(path).unwrap();
     for (table, sql) in before.into_iter().filter(|(table, _)| {
-        !REBUILT_BY_V70.contains(&table.as_str()) && !REBUILT_BY_V73.contains(&table.as_str())
+        !REBUILT_BY_V70.contains(&table.as_str()) && !REBUILT_BY_V75.contains(&table.as_str())
     }) {
         assert_eq!(
             without_later_columns(
@@ -315,20 +322,20 @@ fn rebuilt_by_v70(sql: &str) -> bool {
     })
 }
 
-/// V73 rebuilds `checkpoints`, `stage_failure_requests` and
+/// V75 rebuilds `checkpoints`, `stage_failure_requests` and
 /// `checkpoint_approval_receipts` to admit stage verifier rejections,
 /// `Continue anyway` and `verification_error` checkpoints (feature 25, M4);
-/// `v72_to_v73_rebuilds_checkpoint_tables_and_adds_stage_verifiers` proves
+/// `v74_to_v75_rebuilds_checkpoint_tables_and_adds_stage_verifiers` proves
 /// their rows, indexes, trigger and foreign keys survive. The earlier
 /// "nothing is rebuilt" checks leave them out.
-const REBUILT_BY_V73: [&str; 3] = [
+const REBUILT_BY_V75: [&str; 3] = [
     "checkpoints",
     "stage_failure_requests",
     "checkpoint_approval_receipts",
 ];
 
-fn rebuilt_by_v73(sql: &str) -> bool {
-    REBUILT_BY_V73.iter().any(|table| {
+fn rebuilt_by_v75(sql: &str) -> bool {
+    REBUILT_BY_V75.iter().any(|table| {
         sql.starts_with(&format!("CREATE TABLE \"{table}\" "))
             || sql.starts_with(&format!("CREATE TABLE {table} "))
     })
@@ -2005,7 +2012,7 @@ fn v50_to_v51_adds_the_review_boundary_tables_without_rebuilding_existing_ones()
         .unwrap();
     for table in before
         .iter()
-        .filter(|sql| !rebuilt_by_v54(sql) && !rebuilt_by_v70(sql) && !rebuilt_by_v73(sql))
+        .filter(|sql| !rebuilt_by_v54(sql) && !rebuilt_by_v70(sql) && !rebuilt_by_v75(sql))
     {
         assert!(
             after.iter().any(|sql| without_later_columns(sql) == *table),
@@ -2127,7 +2134,7 @@ fn v51_to_v52_adds_the_risk_scrutiny_tables_without_rebuilding_existing_ones() {
         .unwrap();
     for table in before
         .iter()
-        .filter(|sql| !rebuilt_by_v54(sql) && !rebuilt_by_v70(sql) && !rebuilt_by_v73(sql))
+        .filter(|sql| !rebuilt_by_v54(sql) && !rebuilt_by_v70(sql) && !rebuilt_by_v75(sql))
     {
         assert!(
             after.iter().any(|sql| without_later_columns(sql) == *table),
@@ -2239,7 +2246,7 @@ fn v52_to_v53_adds_the_forge_preflight_findings_without_rebuilding_existing_ones
         .unwrap();
     for table in before
         .iter()
-        .filter(|sql| !rebuilt_by_v54(sql) && !rebuilt_by_v70(sql) && !rebuilt_by_v73(sql))
+        .filter(|sql| !rebuilt_by_v54(sql) && !rebuilt_by_v70(sql) && !rebuilt_by_v75(sql))
     {
         assert!(
             after.iter().any(|sql| without_later_columns(sql) == *table),
@@ -2340,7 +2347,7 @@ fn v53_to_v54_adds_the_reconciler_role_and_the_reconciliation_tables() {
     let after = tables(&db);
     for table in before
         .iter()
-        .filter(|sql| !rebuilt_by_v54(sql) && !rebuilt_by_v70(sql) && !rebuilt_by_v73(sql))
+        .filter(|sql| !rebuilt_by_v54(sql) && !rebuilt_by_v70(sql) && !rebuilt_by_v75(sql))
     {
         assert!(
             after.iter().any(|sql| without_later_columns(sql) == *table),
@@ -2509,7 +2516,7 @@ fn v54_to_v55_adds_cargo_evidence_without_rewriting_or_enabling_legacy_profiles(
         .unwrap();
     assert_eq!(preserved, (7, false, profile_json));
     for (name, definition) in before.into_iter().filter(|(name, _)| {
-        !REBUILT_BY_V70.contains(&name.as_str()) && !REBUILT_BY_V73.contains(&name.as_str())
+        !REBUILT_BY_V70.contains(&name.as_str()) && !REBUILT_BY_V75.contains(&name.as_str())
     }) {
         let after: String = db
             .query_row(
@@ -2637,7 +2644,7 @@ fn v55_to_v57_adds_canvas_tables_without_rewriting_legacy_data() {
         "the migration is applied exactly once"
     );
     for (name, before) in definitions.into_iter().filter(|(name, _)| {
-        !REBUILT_BY_V70.contains(&name.as_str()) && !REBUILT_BY_V73.contains(&name.as_str())
+        !REBUILT_BY_V70.contains(&name.as_str()) && !REBUILT_BY_V75.contains(&name.as_str())
     }) {
         let after: String = db
             .query_row(
@@ -2853,7 +2860,7 @@ fn v58_to_v59_adds_mandates_and_receipts_without_touching_running_pulsations() {
     let after = tables(&db);
     for table in before
         .iter()
-        .filter(|sql| !rebuilt_by_v70(sql) && !rebuilt_by_v73(sql))
+        .filter(|sql| !rebuilt_by_v70(sql) && !rebuilt_by_v75(sql))
     {
         assert!(
             after.iter().any(|sql| without_later_columns(sql) == *table),
@@ -2978,7 +2985,7 @@ fn v59_to_v60_adds_attestations_without_sealing_pulsations_that_already_ended() 
     let after = tables(&db);
     for table in before
         .iter()
-        .filter(|sql| !rebuilt_by_v70(sql) && !rebuilt_by_v73(sql))
+        .filter(|sql| !rebuilt_by_v70(sql) && !rebuilt_by_v75(sql))
     {
         assert!(
             after.iter().any(|sql| without_later_columns(sql) == *table),
@@ -3114,7 +3121,7 @@ fn v60_to_v61_adds_scope_requests_without_touching_parked_failures() {
     let after = tables(&db);
     for table in before
         .iter()
-        .filter(|sql| !rebuilt_by_v70(sql) && !rebuilt_by_v73(sql))
+        .filter(|sql| !rebuilt_by_v70(sql) && !rebuilt_by_v75(sql))
     {
         assert!(
             after.iter().any(|sql| without_later_columns(sql) == *table),
@@ -3230,7 +3237,7 @@ fn v61_to_v62_adds_the_exchange_log_without_backfilling_history() {
     let after = tables(&db);
     for table in before
         .iter()
-        .filter(|sql| !rebuilt_by_v70(sql) && !rebuilt_by_v73(sql))
+        .filter(|sql| !rebuilt_by_v70(sql) && !rebuilt_by_v75(sql))
     {
         assert!(
             after.iter().any(|sql| without_later_columns(sql) == *table),
@@ -3339,7 +3346,7 @@ fn v62_to_v63_keeps_earlier_runs_strict_and_adds_the_resume_manifest() {
     let after = tables(&db);
     for table in before
         .iter()
-        .filter(|sql| !rebuilt_by_v70(sql) && !rebuilt_by_v73(sql))
+        .filter(|sql| !rebuilt_by_v70(sql) && !rebuilt_by_v75(sql))
     {
         assert!(
             after.iter().any(|sql| without_later_columns(sql) == *table),
@@ -3462,7 +3469,7 @@ fn v63_to_v64_adds_pulsation_digests_without_backfilling_them() {
     let after = tables(&db);
     for table in before
         .iter()
-        .filter(|sql| !rebuilt_by_v70(sql) && !rebuilt_by_v73(sql))
+        .filter(|sql| !rebuilt_by_v70(sql) && !rebuilt_by_v75(sql))
     {
         assert!(
             after.iter().any(|sql| without_later_columns(sql) == *table),
@@ -3587,10 +3594,12 @@ fn v64_and_v65_to_v67_add_event_details_without_touching_old_events() {
         for table in before.iter().filter(|(name, _)| {
             name != "terminal_events"
                 && !REBUILT_BY_V70.contains(&name.as_str())
-                && !REBUILT_BY_V73.contains(&name.as_str())
+                && !REBUILT_BY_V75.contains(&name.as_str())
         }) {
             assert!(
-                after.contains(table),
+                after
+                    .iter()
+                    .any(|(name, sql)| name == &table.0 && without_later_columns(sql) == table.1),
                 "V67 from V{from} rebuilds nothing: {table:?}"
             );
         }
@@ -3626,19 +3635,19 @@ fn v64_and_v65_to_v67_add_event_details_without_touching_old_events() {
     }
 }
 
-/// Feature 25, M4: upgrading a populated V72 database to V73 rebuilds
+/// Feature 25, M4: upgrading a populated V74 database to V75 rebuilds
 /// `checkpoints`, `stage_failure_requests` and `checkpoint_approval_receipts`
 /// without rebuilding `terminal_runs`, preserves all columns/indexes/triggers/
-/// child foreign keys, matches a fresh V73 database schema verbatim, and
+/// child foreign keys, matches a fresh V75 database schema verbatim, and
 /// enforces all new verifier constraints and cascades.
 #[test]
-fn v72_to_v73_rebuilds_checkpoint_tables_and_adds_stage_verifiers() {
+fn v74_to_v75_rebuilds_checkpoint_tables_and_adds_stage_verifiers() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("ikore.db");
     let mut db = Connection::open(&path).unwrap();
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
     cli_migrations::migrations::runner()
-        .set_target(refinery::Target::Version(72))
+        .set_target(refinery::Target::Version(74))
         .run(&mut db)
         .unwrap();
 
@@ -3698,15 +3707,15 @@ fn v72_to_v73_rebuilds_checkpoint_tables_and_adds_stage_verifiers() {
         )
         .unwrap();
     assert_eq!(max_version, latest_migration_version());
-    assert_eq!(max_version, 73);
-    let v73_count: i64 = db
+    assert_eq!(max_version, 75);
+    let v75_count: i64 = db
         .query_row(
-            "SELECT COUNT(*) FROM refinery_schema_history WHERE version=73",
+            "SELECT COUNT(*) FROM refinery_schema_history WHERE version=75",
             [],
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(v73_count, 1);
+    assert_eq!(v75_count, 1);
     let integrity: String = db
         .query_row("PRAGMA integrity_check", [], |r| r.get(0))
         .unwrap();
@@ -3722,17 +3731,17 @@ fn v72_to_v73_rebuilds_checkpoint_tables_and_adds_stage_verifiers() {
     let after = table_sqls(&db);
     for table in before
         .iter()
-        .filter(|(name, _)| !REBUILT_BY_V73.contains(&name.as_str()))
+        .filter(|(name, _)| !REBUILT_BY_V75.contains(&name.as_str()))
     {
         assert!(
             after.contains(table),
-            "V73 must not rebuild table: {:?}",
+            "V75 must not rebuild table: {:?}",
             table.0
         );
     }
     assert!(before.iter().any(|(name, _)| name == "terminal_runs"));
 
-    // 3. Upgraded vs fresh V73 sqlite_master exact parity (tables, indexes, triggers).
+    // 3. Upgraded vs fresh V75 sqlite_master exact parity (tables, indexes, triggers).
     let fresh_root = tempfile::tempdir().unwrap();
     PersistenceService::initialize(fresh_root.path()).unwrap();
     let fresh_db = Connection::open(fresh_root.path().join("ikore.db")).unwrap();
@@ -3748,7 +3757,7 @@ fn v72_to_v73_rebuilds_checkpoint_tables_and_adds_stage_verifiers() {
     };
     assert_eq!(schema_objects(&db), schema_objects(&fresh_db));
 
-    // 4. Populated data preservation + zero _v73 FK rewrites + zero implicit FK targets.
+    // 4. Populated data preservation + zero _v75 FK rewrites + zero implicit FK targets.
     let vis_brief: Option<String> = db
         .query_row(
             "SELECT visualizer_brief_json FROM checkpoints WHERE id='cp-review'",
@@ -3791,7 +3800,7 @@ fn v72_to_v73_rebuilds_checkpoint_tables_and_adds_stage_verifiers() {
             .unwrap();
         for (target_table, target_col) in fks {
             assert!(
-                !target_table.contains("_v73"),
+                !target_table.contains("_v75"),
                 "FK in {table_name} was rewritten to temporary table {target_table}"
             );
             assert!(

@@ -62,6 +62,7 @@ CREATE TABLE "cli_agent_configs" (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL, model_profile TEXT, model_source TEXT NOT NULL DEFAULT 'default'
   CHECK(model_source IN ('default','catalog','manual')),
+  cli_silence_timeout_ms INTEGER,
   PRIMARY KEY(project_id,agent_role)
 );
 

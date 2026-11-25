@@ -22,7 +22,7 @@ PRAGMA legacy_alter_table=ON;
 
 -- 1. checkpoints: widen kind & purpose with 'verification_error', keep V47's
 --    visualizer_brief_json, and exclude verification_error from producer uniqueness.
-CREATE TABLE checkpoints_v73 (
+CREATE TABLE checkpoints_v75 (
   id TEXT PRIMARY KEY,
   pulsation_id TEXT NOT NULL,
   stage TEXT NOT NULL,
@@ -48,7 +48,7 @@ CREATE TABLE checkpoints_v73 (
   FOREIGN KEY(pulsation_id) REFERENCES pulsations(id) ON DELETE CASCADE
 );
 
-INSERT INTO checkpoints_v73(
+INSERT INTO checkpoints_v75(
   "id","pulsation_id","stage","status","created_at","updated_at","kind",
   "input_revision","state_version","producer_job_id","generation","purpose",
   "visualizer_brief_json"
@@ -61,7 +61,7 @@ FROM checkpoints;
 
 DROP TABLE checkpoints;
 
-ALTER TABLE checkpoints_v73 RENAME TO checkpoints;
+ALTER TABLE checkpoints_v75 RENAME TO checkpoints;
 
 CREATE INDEX idx_checkpoints_pulsation_id ON checkpoints(pulsation_id);
 CREATE UNIQUE INDEX idx_checkpoint_producer
@@ -71,7 +71,7 @@ CREATE INDEX idx_checkpoints_purpose ON checkpoints(pulsation_id,purpose,status)
 
 -- 2. stage_failure_requests: admit 'verification_rejected' and 'continue_anyway',
 --    allow ContinueAnyway as an offered choice, and store its optional justification.
-CREATE TABLE stage_failure_requests_v73 (
+CREATE TABLE stage_failure_requests_v75 (
   checkpoint_id TEXT PRIMARY KEY REFERENCES checkpoints(id) ON DELETE CASCADE,
   pulsation_id TEXT NOT NULL REFERENCES pulsations(id) ON DELETE CASCADE,
   job_id TEXT NOT NULL REFERENCES jobs(id),
@@ -105,7 +105,7 @@ CREATE TABLE stage_failure_requests_v73 (
   CHECK(allow_revision=0 OR revision_stage IS NOT NULL)
 );
 
-INSERT INTO stage_failure_requests_v73(
+INSERT INTO stage_failure_requests_v75(
   "checkpoint_id","pulsation_id","job_id","stage","failure_class",
   "allow_retry","allow_revision","revision_stage","error_code","diagnostic",
   "agent_run_id","decision","resolved_at","created_at","updated_at",
@@ -122,14 +122,14 @@ FROM stage_failure_requests;
 
 DROP TABLE stage_failure_requests;
 
-ALTER TABLE stage_failure_requests_v73 RENAME TO stage_failure_requests;
+ALTER TABLE stage_failure_requests_v75 RENAME TO stage_failure_requests;
 
 CREATE INDEX idx_stage_failure_pulsation
   ON stage_failure_requests(pulsation_id,created_at DESC);
 
 -- 3. checkpoint_approval_receipts: admit 'verification_error' and the M4
 --    checkpoint decisions while preserving its append-only trigger.
-CREATE TABLE checkpoint_approval_receipts_v73 (
+CREATE TABLE checkpoint_approval_receipts_v75 (
   checkpoint_id TEXT PRIMARY KEY,
   pulsation_id TEXT NOT NULL REFERENCES pulsations(id) ON DELETE CASCADE,
   purpose TEXT NOT NULL CHECK(purpose IN (
@@ -147,7 +147,7 @@ CREATE TABLE checkpoint_approval_receipts_v73 (
   created_at TEXT NOT NULL
 );
 
-INSERT INTO checkpoint_approval_receipts_v73(
+INSERT INTO checkpoint_approval_receipts_v75(
   "checkpoint_id","pulsation_id","purpose","decision",
   "receipt_json","receipt_sha256","mandate_revision","created_at"
 )
@@ -158,7 +158,7 @@ FROM checkpoint_approval_receipts;
 
 DROP TABLE checkpoint_approval_receipts;
 
-ALTER TABLE checkpoint_approval_receipts_v73 RENAME TO checkpoint_approval_receipts;
+ALTER TABLE checkpoint_approval_receipts_v75 RENAME TO checkpoint_approval_receipts;
 
 CREATE INDEX idx_checkpoint_approval_receipts_pulsation
   ON checkpoint_approval_receipts(pulsation_id, created_at);

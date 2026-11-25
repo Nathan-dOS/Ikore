@@ -44,12 +44,13 @@ pub use sessions::{
 const MAX_MODEL_ROUNDS: usize = 8;
 const MAX_TOOL_CALLS: usize = 24;
 const MAX_TOOL_RESULT_BYTES: usize = 256 * 1024;
-const TURN_TIMEOUT: Duration = Duration::from_secs(120);
+const TURN_TIMEOUT: Duration = Duration::from_secs(300);
 /// A CLI turn runs one fresh CLI process per round and re-sends every read so
 /// far. A seven-round repository review took about 70 s of rounds plus two
 /// repairs and hit the API's 120 s limit on its last round (2026-09-26). Each
-/// round keeps its own `TURN_TIMEOUT`; the developer can cancel at any time.
-const CLI_TURN_TIMEOUT: Duration = Duration::from_secs(300);
+/// round has a separate ceiling; the developer can cancel at any time.
+const CLI_TURN_TIMEOUT: Duration = Duration::from_secs(600);
+const CLI_ROUND_TIMEOUT: Duration = Duration::from_secs(300);
 const MAX_USER_MESSAGE_CHARS: usize = 20_000;
 
 #[derive(Debug, Clone, Serialize)]
@@ -1976,12 +1977,12 @@ impl ChatService {
         let (limit, limit_message) = if context.conversation.transport == ChatTransportKind::Cli {
             (
                 CLI_TURN_TIMEOUT,
-                "The turn reached its 5-minute limit. Narrow the question and try again.",
+                "The turn reached its 10-minute limit. Narrow the question and try again.",
             )
         } else {
             (
                 TURN_TIMEOUT,
-                "The turn reached its 120-second limit. Narrow the question and try again.",
+                "The turn reached its 5-minute limit. Narrow the question and try again.",
             )
         };
         let result = tokio::select! {
@@ -2424,7 +2425,7 @@ impl ChatService {
                             schema: companion_schema_for_backend(backend),
                         },
                         &context.cancellation,
-                        Instant::now() + TURN_TIMEOUT,
+                        Instant::now() + CLI_ROUND_TIMEOUT,
                     )
                     .await;
                 let latency_ms = started.elapsed().as_millis().min(i64::MAX as u128) as i64;
@@ -5006,6 +5007,7 @@ fn terminal_termination_reason(error: &TerminalError) -> &'static str {
     match error {
         TerminalError::Cancelled => "cancelled",
         TerminalError::Timeout => "timeout",
+        TerminalError::InactivityTimeout => "inactivity_timeout",
         TerminalError::OutputLimit => "output_limit",
         _ => "failed",
     }
@@ -5020,7 +5022,12 @@ fn chat_cli_error(error: TerminalError) -> ChatCommandError {
         TerminalError::VersionUnsupported(backend) => {
             format!("The installed {backend} version is not supported by this adapter.")
         }
-        TerminalError::Timeout => "The Companion CLI reached the 120 second timeout.".into(),
+        TerminalError::Timeout => {
+            "The Companion CLI reached the maximum time allowed for this call.".into()
+        }
+        TerminalError::InactivityTimeout => {
+            "The Companion CLI stopped after a period without output.".into()
+        }
         TerminalError::Cancelled => "Resposta cancelada.".into(),
         TerminalError::OutputLimit => "The Companion CLI exceeded the safe output limit.".into(),
         TerminalError::NotFound(_) => "The selected CLI is not installed or discoverable.".into(),
@@ -7867,6 +7874,25 @@ mod tests {
                 companion_control_envelope_schema()
             );
         }
+    }
+
+    #[test]
+    fn companion_timeout_errors_describe_and_record_the_actual_reason() {
+        let idle = chat_cli_error(TerminalError::InactivityTimeout);
+        assert_eq!(idle.code, "cli_inactivity_timeout");
+        assert!(idle.message.contains("without output"));
+        assert_eq!(
+            terminal_termination_reason(&TerminalError::InactivityTimeout),
+            "inactivity_timeout"
+        );
+
+        let ceiling = chat_cli_error(TerminalError::Timeout);
+        assert_eq!(ceiling.code, "cli_timeout");
+        assert!(ceiling.message.contains("maximum time"));
+        assert_eq!(
+            terminal_termination_reason(&TerminalError::Timeout),
+            "timeout"
+        );
     }
 
     #[test]

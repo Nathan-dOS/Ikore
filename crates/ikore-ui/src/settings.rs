@@ -958,7 +958,9 @@ impl SettingsPage {
                 "Refinement before Specification, the handoff budget and learning after a run."
             }
             Self::Composition => "Host-coordinated units, checks and overrides for this project.",
-            Self::Timeouts => "Deadlines that stop hung or runaway agent runs.",
+            Self::Timeouts => {
+                "Default CLI deadlines. Per-agent silence is editable in Agent Configuration; API routes have separate deadlines. Companion ceiling is per call."
+            }
             Self::Labs => "Experimental switches. Each one says what it changes and can be reset.",
             Self::Security => "The local key that signs each finished pulsation's attestation.",
             Self::About => "Version, where your data lives and a snapshot of the runtime.",
