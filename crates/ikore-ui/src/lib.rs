@@ -8,6 +8,7 @@ mod agent_dock_view;
 mod agents;
 mod agents_canvas;
 mod agents_view;
+mod animated_icon;
 mod app_model;
 mod assets;
 mod attestation_view;

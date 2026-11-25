@@ -1,0 +1,3 @@
+{
+  "install": "dpkg -s libclang-dev libdbus-1-dev >/dev/null 2>&1 || (sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libclang-dev libdbus-1-dev) && rustup default 1.98.0 && rustup component add clippy rustfmt"
+}

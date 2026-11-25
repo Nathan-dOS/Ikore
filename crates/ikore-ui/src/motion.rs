@@ -32,6 +32,7 @@ pub(crate) fn reduced_motion() -> bool {
 
 /// A slow breathing loop for a live indicator (Home's hero dot while a stage runs). Kept off the
 /// rail and the footer on purpose: a repeating animation keeps the window repainting.
+#[allow(dead_code)]
 pub(crate) fn pulse() -> Animation {
     Animation::new(Duration::from_millis(1_600))
         .repeat()
