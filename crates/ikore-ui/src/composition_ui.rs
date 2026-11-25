@@ -366,6 +366,16 @@ impl AppModel {
         );
     }
 
+    /// Automatic verification agents attached after default pipeline stages
+    /// (feature 25, M4). Off by default in Labs.
+    pub(crate) fn toggle_stage_verifiers(&mut self, cx: &mut Context<Self>) {
+        self.save_composition(
+            |settings| settings.stage_verifiers_enabled = !settings.stage_verifiers_enabled,
+            "Stage verifiers updated; the change applies on the next stage transition.",
+            cx,
+        );
+    }
+
     /// The human revision rounds after which each further revision needs an
     /// explicit decision (ADR-032 M4). The host reads it at each decision.
     pub(crate) fn set_revision_round_threshold(&mut self, threshold: u32, cx: &mut Context<Self>) {
@@ -702,16 +712,23 @@ pub(crate) enum LabsFlag {
     MaxInFlight,
     RecipeCode,
     RecipeTest,
+    StageVerifiers,
 }
 
 impl LabsFlag {
-    const ALL: [Self; 3] = [Self::MaxInFlight, Self::RecipeCode, Self::RecipeTest];
+    const ALL: [Self; 4] = [
+        Self::MaxInFlight,
+        Self::RecipeCode,
+        Self::RecipeTest,
+        Self::StageVerifiers,
+    ];
 
     fn id(self) -> &'static str {
         match self {
             Self::MaxInFlight => "labs-reset:max-in-flight",
             Self::RecipeCode => "labs-reset:recipe-code",
             Self::RecipeTest => "labs-reset:recipe-test",
+            Self::StageVerifiers => "labs-reset:stage-verifiers",
         }
     }
 
@@ -721,6 +738,9 @@ impl LabsFlag {
             Self::MaxInFlight => settings.max_in_flight_units != default.max_in_flight_units,
             Self::RecipeCode => has_recipe(settings, "code") != has_recipe(&default, "code"),
             Self::RecipeTest => has_recipe(settings, "test") != has_recipe(&default, "test"),
+            Self::StageVerifiers => {
+                settings.stage_verifiers_enabled != default.stage_verifiers_enabled
+            }
         }
     }
 
@@ -728,6 +748,9 @@ impl LabsFlag {
         let default = CompositionSettings::default();
         match self {
             Self::MaxInFlight => settings.max_in_flight_units = default.max_in_flight_units,
+            Self::StageVerifiers => {
+                settings.stage_verifiers_enabled = default.stage_verifiers_enabled;
+            }
             Self::RecipeCode | Self::RecipeTest => {
                 let recipe = if self == Self::RecipeCode {
                     "code"
@@ -1459,6 +1482,19 @@ pub(crate) fn labs_page(
                 !busy,
                 cx,
                 |model, cx| model.toggle_composition_recipe("test", cx),
+            ),
+        },
+        LabsRow {
+            entry: "labs-stage-verifiers",
+            flag: LabsFlag::StageVerifiers,
+            default: "Off",
+            changed: LabsFlag::StageVerifiers.changed(&settings),
+            control: switch(
+                "composition-stage-verifiers",
+                settings.stage_verifiers_enabled,
+                !busy,
+                cx,
+                |model, cx| model.toggle_stage_verifiers(cx),
             ),
         },
     ];

@@ -359,6 +359,7 @@ pub struct AppModel {
     pub(crate) description_review_input: Entity<NativeTextInput>,
     pub(crate) specification_answer_inputs: Vec<(String, Entity<NativeTextInput>)>,
     pub(crate) stage_feedback_input: Entity<NativeTextInput>,
+    pub(crate) failure_override_justification_input: Entity<NativeTextInput>,
     /// Keeps the Review's C/F/Tab/Enter/R/D bindings reachable after a click on the brief.
     pub(crate) review_focus: gpui::FocusHandle,
     /// Holds the keyboard from the first frame. With nothing focused, GPUI sends a key
@@ -424,6 +425,8 @@ pub struct AppModel {
     pub(crate) pipeline_gate_note_input: Entity<NativeTextInput>,
     /// The pipeline editor, while it is open (feature 25, M2a).
     pub(crate) pipeline_editor: Option<crate::agents_view::PipelineEditor>,
+    /// The stage verifier editor, while it is open (feature 25, M4).
+    pub(crate) verifier_editor: Option<crate::agents_view::VerifierEditor>,
     /// The agent console whose search is open, and its current match (ADR-040, M2).
     pub(crate) agent_console_search: Option<(String, usize)>,
     pub(crate) agent_console_search_input: Entity<NativeTextInput>,
@@ -504,6 +507,7 @@ pub struct AppModel {
     visualizer_poll_task: Option<Task<()>>,
     failure_task: Option<Task<()>>,
     failure_detail_task: Option<Task<()>>,
+    verification_error_task: Option<Task<()>>,
     backend_override_task: Option<Task<()>>,
     backend_override_mutation_task: Option<Task<()>>,
     cleanup_preview_task: Option<Task<()>>,
@@ -575,6 +579,9 @@ pub struct AppModel {
     pub(crate) confirm_hitl_reject: bool,
     pub(crate) confirm_stage_reject: bool,
     pub(crate) confirm_failure_abort: bool,
+    pub(crate) confirm_verification_error_abort: bool,
+    pub(crate) verification_error_busy: bool,
+    pub(crate) verification_error_error: Option<String>,
     pub(crate) confirm_brownfield_revoke: bool,
     pub(crate) active_dropdown: Option<String>,
     pub(crate) choice_menu: Option<gpui::Entity<crate::select_menu::SelectMenu>>,
@@ -712,6 +719,14 @@ impl AppModel {
             cx.new(|cx| NativeTextInput::new("Describe the action and expected result", cx));
         let stage_feedback_input =
             cx.new(|cx| NativeTextInput::new("Feedback to request stage review", cx));
+        let failure_override_justification_input = cx.new(|cx| {
+            NativeTextInput::new(
+                "Optional justification to continue anyway (up to 500 characters)",
+                cx,
+            )
+            .multiline()
+            .max_rows(4)
+        });
         let preparation_threshold_input =
             cx.new(|cx| NativeTextInput::new("Threshold from 0 to 100", cx));
         let composition_override_model_input =
@@ -856,6 +871,9 @@ impl AppModel {
             cx.observe(&reconciliation_input, |_, _, cx| cx.notify()),
             cx.observe(&description_review_input, |_, _, cx| cx.notify()),
             cx.observe(&stage_feedback_input, |_, _, cx| cx.notify()),
+            cx.observe(&failure_override_justification_input, |_, _, cx| {
+                cx.notify()
+            }),
             cx.observe(&preparation_threshold_input, |_, _, cx| cx.notify()),
             cx.observe(&composition_override_model_input, |_, _, cx| cx.notify()),
             cx.observe(&cargo_toolchain_input, |_, _, cx| cx.notify()),
@@ -958,6 +976,7 @@ impl AppModel {
             reconciliation_input,
             description_review_input,
             stage_feedback_input,
+            failure_override_justification_input,
             review_focus: cx.focus_handle(),
             shell_focus: cx.focus_handle(),
             shell_focus_claimed: false,
@@ -1005,6 +1024,7 @@ impl AppModel {
             cli_model_search_input,
             pipeline_gate_note_input,
             pipeline_editor: None,
+            verifier_editor: None,
             agent_console_search: None,
             agent_console_search_input,
             agent_prompt_inputs,
@@ -1071,6 +1091,7 @@ impl AppModel {
             visualizer_poll_task: None,
             failure_task: None,
             failure_detail_task: None,
+            verification_error_task: None,
             backend_override_task: None,
             backend_override_mutation_task: None,
             cleanup_preview_task: None,
@@ -1122,6 +1143,9 @@ impl AppModel {
             confirm_hitl_reject: false,
             confirm_stage_reject: false,
             confirm_failure_abort: false,
+            confirm_verification_error_abort: false,
+            verification_error_busy: false,
+            verification_error_error: None,
             confirm_brownfield_revoke: false,
             active_dropdown: None,
             choice_menu: None,
@@ -1308,6 +1332,12 @@ impl AppModel {
             .chain(
                 pulsations
                     .failure_checkpoints
+                    .iter()
+                    .map(|checkpoint| checkpoint.pulsation_id.as_str()),
+            )
+            .chain(
+                pulsations
+                    .verification_error_checkpoints
                     .iter()
                     .map(|checkpoint| checkpoint.pulsation_id.as_str()),
             )
@@ -2219,6 +2249,17 @@ impl AppModel {
                 .map(|c| (&c.checkpoint_id, c.state_version))
         {
             self.confirm_failure_abort = false;
+            self.failure_override_justification_input
+                .update(cx, |input, cx| input.clear(cx));
+        }
+        if self
+            .pulsations
+            .read(cx)
+            .active_verification_error_checkpoint()
+            .is_none()
+        {
+            self.confirm_verification_error_abort = false;
+            self.verification_error_error = None;
         }
         self.refresh_hitl_documents(cx);
         self.refresh_failure_detail(cx);
@@ -2749,8 +2790,23 @@ impl AppModel {
             return;
         };
         let project_id = self.workspace.read(cx).project_id.clone();
+        let checkpoint_stage = self
+            .pulsations
+            .read(cx)
+            .pulsations
+            .iter()
+            .find(|p| p.id == checkpoint.pulsation_id)
+            .map(|p| p.stage);
         self.hitl_documents_task = Some(cx.spawn(async move |this, cx| {
             let result = backend.review_documents(checkpoint.clone()).await;
+            let verification_findings = match checkpoint_stage {
+                Some(stage) => {
+                    backend
+                        .checkpoint_verification_findings(checkpoint.pulsation_id.clone(), stage)
+                        .await
+                }
+                None => Ok(Vec::new()),
+            };
             // The brief is a derived view of the same checkpoint: read it only
             // when the documents are there, and apply both together so the
             // reader never flashes a document before switching to the brief.
@@ -2786,9 +2842,15 @@ impl AppModel {
                     return;
                 }
                 model.pulsations.update(cx, |state, _| {
-                    if state.hitl.finish_documents(generation, &checkpoint, result)
-                        && let Some(brief) = brief
-                    {
+                    let applied = state.hitl.finish_documents(generation, &checkpoint, result);
+                    if applied {
+                        state.hitl.finish_verification_findings(
+                            generation,
+                            &checkpoint,
+                            verification_findings,
+                        );
+                    }
+                    if applied && let Some(brief) = brief {
                         state.hitl.finish_brief(generation, &checkpoint, brief);
                         if let Some(visualization) = visualization {
                             state
@@ -2853,18 +2915,24 @@ impl AppModel {
             return;
         };
         let project_id = self.workspace.read(cx).project_id.clone();
-        let pulsation_id = self
+        let (pulsation_id, stage) = self
             .pulsations
             .read(cx)
             .failure
             .checkpoint
             .as_ref()
-            .map(|checkpoint| checkpoint.pulsation_id.clone());
+            .map(|checkpoint| (checkpoint.pulsation_id.clone(), checkpoint.stage))
+            .unzip();
         self.failure_detail_task = Some(cx.spawn(async move |this, cx| {
             let result = backend.stage_failure_detail(checkpoint_id.clone()).await;
-            let convergence = match pulsation_id {
-                Some(pulsation_id) => backend.convergence(pulsation_id).await,
-                None => Ok(None),
+            let (convergence, verification_findings) = match (pulsation_id, stage) {
+                (Some(pulsation_id), Some(stage)) => (
+                    backend.convergence(pulsation_id.clone()).await,
+                    backend
+                        .checkpoint_verification_findings(pulsation_id, stage)
+                        .await,
+                ),
+                _ => (Ok(None), Ok(Vec::new())),
             };
             let _ = this.update(cx, |model, cx| {
                 if model.workspace.read(cx).project_id != project_id {
@@ -2878,6 +2946,11 @@ impl AppModel {
                         state
                             .failure
                             .finish_convergence(generation, &checkpoint_id, convergence);
+                        state.failure.finish_verification_findings(
+                            generation,
+                            &checkpoint_id,
+                            verification_findings,
+                        );
                     }
                 });
                 cx.notify();
@@ -2942,6 +3015,28 @@ impl AppModel {
         cx: &mut Context<Self>,
     ) {
         self.confirm_failure_abort = false;
+        let override_justification = if decision == StageFailureDecision::ContinueAnyway {
+            let trimmed = self
+                .failure_override_justification_input
+                .read(cx)
+                .value()
+                .trim()
+                .to_owned();
+            let count = trimmed.chars().count();
+            if count > ikore_core::stage_verifiers::MAX_JUSTIFICATION_CHARS {
+                self.pulsations.update(cx, |pulsations, _| {
+                    pulsations.failure.error = Some(format!(
+                        "Justification must be at most {} characters (currently {count}).",
+                        ikore_core::stage_verifiers::MAX_JUSTIFICATION_CHARS
+                    ));
+                });
+                cx.notify();
+                return;
+            }
+            (!trimmed.is_empty()).then_some(trimmed)
+        } else {
+            None
+        };
         let (request, revision_target) = self.pulsations.update(cx, |pulsations, _| {
             let target = pulsations
                 .failure
@@ -2954,6 +3049,8 @@ impl AppModel {
         let request = request.map(|mut request| {
             if decision == StageFailureDecision::RequestRevision {
                 request.feedback = Some(self.stage_feedback_input.read(cx).value().to_owned());
+            } else if decision == StageFailureDecision::ContinueAnyway {
+                request.feedback = override_justification;
             }
             request
         });
@@ -3008,12 +3105,73 @@ impl AppModel {
                 });
                 match result {
                     Ok(()) => {
+                        model
+                            .failure_override_justification_input
+                            .update(cx, |input, cx| {
+                                input.clear(cx);
+                            });
                         model.status = "Failure decision applied".into();
                         model.schedule_session_persistence(cx);
                         model.refresh_pulsations(cx);
                     }
                     Err(error) => {
                         model.status = "Failed to apply failure decision".into();
+                        model.push_header_notice(HeaderNoticeKind::Error, error, cx);
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    pub(crate) fn resolve_verification_error(
+        &mut self,
+        decision: ikore_core::stage_verifiers::VerificationErrorDecision,
+        cx: &mut Context<Self>,
+    ) {
+        if self.verification_error_busy {
+            return;
+        }
+        let Some(checkpoint) = self
+            .pulsations
+            .read(cx)
+            .active_verification_error_checkpoint()
+        else {
+            return;
+        };
+        let Some(backend) = self.pulsations_backend.clone() else {
+            self.verification_error_error =
+                Some("Verification error decisions are unavailable here.".into());
+            cx.notify();
+            return;
+        };
+        self.confirm_verification_error_abort = false;
+        self.verification_error_busy = true;
+        self.verification_error_error = None;
+        self.status = "Applying verification decision…".into();
+        cx.notify();
+        let request = ikore_core::stage_verifiers::ResolveVerificationErrorRequest {
+            checkpoint_id: checkpoint.checkpoint_id,
+            expected_state_version: checkpoint.state_version,
+            decision,
+        };
+        self.verification_error_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend.resolve_verification_error(request).await;
+            let _ = this.update(cx, |model, cx| {
+                if model.lifecycle.is_disposed() {
+                    return;
+                }
+                model.verification_error_busy = false;
+                match result {
+                    Ok(_) => {
+                        model.verification_error_error = None;
+                        model.status = "Verification decision applied".into();
+                        model.schedule_session_persistence(cx);
+                        model.refresh_pulsations(cx);
+                    }
+                    Err(error) => {
+                        model.verification_error_error = Some(error.clone());
+                        model.status = "Failed to apply verification decision".into();
                         model.push_header_notice(HeaderNoticeKind::Error, error, cx);
                     }
                 }
@@ -5660,11 +5818,29 @@ impl AppModel {
                             .update(cx, |agents, _| agents.apply_snapshot(generation, snapshot));
                         if applied {
                             model.finish_agents_resync();
-                            // The dock orders the steps as the canvas does
-                            // (feature 25, section 6).
-                            let steps = model
-                                .agents
-                                .read(cx)
+                            // The dock orders stage verifiers immediately after their stage
+                            // (Stage x Position) and pipeline steps as the canvas does
+                            // (feature 25, sections 6 & M4).
+                            let agents_read = model.agents.read(cx);
+                            let mut verifiers = agents_read.verifiers.verifiers.clone();
+                            let stage_col = |raw: &str| {
+                                ikore_core::persistence_service::PulsationStage::from_db_value(raw)
+                                    .map_or(5, crate::agents_canvas::layout::stage_column)
+                            };
+                            verifiers
+                                .sort_by_key(|v| (stage_col(&v.stage), v.position, v.id.clone()));
+                            let verifier_order = verifiers
+                                .into_iter()
+                                .map(|verifier| {
+                                    let col = stage_col(&verifier.stage);
+                                    (
+                                        crate::agents::AgentIdentifier::StageVerifier(verifier.id),
+                                        col,
+                                        verifier.position as usize,
+                                    )
+                                })
+                                .collect::<Vec<_>>();
+                            let steps = agents_read
                                 .pipelines
                                 .pipelines
                                 .iter()
@@ -5677,6 +5853,7 @@ impl AppModel {
                                     })
                                 })
                                 .collect::<Vec<_>>();
+                            model.agent_dock.set_verifier_order(verifier_order);
                             model.agent_dock.set_step_order(steps);
                             model.follow_pipeline_runs(cx);
                         }
@@ -6003,6 +6180,7 @@ impl AppModel {
             CliModelPickerTarget::PipelineStep(index) => {
                 self.set_pipeline_step_model(index, model_id, cx)
             }
+            CliModelPickerTarget::StageVerifier => self.set_verifier_editor_model(model_id, cx),
         }
         self.close_cli_model_picker(cx);
     }
@@ -7025,6 +7203,14 @@ impl AppModel {
                         agents.selected_run_by_slot.insert(slot, run_id.clone());
                     }
                 }
+                AgentIdentifier::StageVerifier(verifier_id) => {
+                    if let Some(slot) = agents
+                        .verifier_slot(verifier_id)
+                        .map(|slot| slot.slot.id.clone())
+                    {
+                        agents.selected_run_by_slot.insert(slot, run_id.clone());
+                    }
+                }
             }
             agents.events_by_run.contains_key(&run_id)
         });
@@ -7051,6 +7237,13 @@ impl AppModel {
                             } => {
                                 let slot = agents
                                     .automation_slot(&pipeline_id, &step_id)
+                                    .map(|slot| slot.slot.id.clone())
+                                    .unwrap_or_default();
+                                agents.apply_slot_run_events(generation, slot, run_id, events);
+                            }
+                            AgentIdentifier::StageVerifier(verifier_id) => {
+                                let slot = agents
+                                    .verifier_slot(&verifier_id)
                                     .map(|slot| slot.slot.id.clone())
                                     .unwrap_or_default();
                                 agents.apply_slot_run_events(generation, slot, run_id, events);
@@ -10048,6 +10241,7 @@ mod tests {
                     pulsations: vec![test_pulsation()],
                     hitl_waiting_count: 0,
                     failure_checkpoints: Vec::new(),
+                    verification_error_checkpoints: Vec::new(),
                     failure_waiting_count: 0,
                     background_agents_count: 1,
                     active_jobs: Vec::new(),

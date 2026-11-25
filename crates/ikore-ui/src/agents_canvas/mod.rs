@@ -6,7 +6,7 @@
 //! the bottom dock on it.
 
 mod constants;
-mod layout;
+pub(crate) mod layout;
 mod paint;
 mod physics;
 #[cfg(test)]
@@ -71,6 +71,10 @@ pub(crate) struct CanvasAgents {
     pub(crate) stages: Vec<CanvasNode>,
     /// Support agents, roles in neither list, then free-form agents.
     pub(crate) loose: Vec<CanvasNode>,
+    /// Stage verifiers attached vertically below their default stage (feature 25, M4).
+    pub(crate) verifiers: Vec<(usize, CanvasNode)>,
+    /// Whether Settings › Labs `stage_verifiers_enabled` is On for the active project.
+    pub(crate) verifiers_enabled: bool,
     /// `New freeform agent`: shown below the limit, usable when not busy.
     pub(crate) ghost: Option<bool>,
     pub(crate) archived: usize,
@@ -302,6 +306,14 @@ pub(crate) fn agents_canvas(
             .iter()
             .map(|node| node_key(&node.agent))
             .collect(),
+        verifiers: agents
+            .verifiers
+            .iter()
+            .map(|(stage_index, node)| layout::VerifierNodeInput {
+                key: node_key(&node.agent),
+                stage_index: *stage_index,
+            })
+            .collect(),
         loose: agents
             .loose
             .iter()
@@ -351,6 +363,7 @@ pub(crate) fn agents_canvas(
     let nodes = agents
         .stages
         .iter()
+        .chain(agents.verifiers.iter().map(|(_, node)| node))
         .chain(&agents.loose)
         .chain(agents.pipelines.iter().flat_map(|pipeline| &pipeline.steps))
         .map(|node| (node_key(&node.agent), node.clone()))
@@ -505,7 +518,7 @@ pub(crate) fn agents_canvas(
     let links = layout
         .edges
         .iter()
-        .map(|edge| (positions[edge.from], positions[edge.to]))
+        .map(|edge| (positions[edge.from], positions[edge.to], edge.style))
         .collect::<Vec<_>>();
     // The dragged node goes over everything else: its bubble on a layer of
     // its own above the other nodes, then its text.
@@ -608,6 +621,40 @@ pub(crate) fn agents_canvas(
             },
             cx,
         ));
+        if agents.verifiers_enabled
+            && node_layout.kind == NodeKind::Stage
+            && let AgentIdentifier::Canonical(role) = &node.agent
+            && let Some((stage, _, _)) = ikore_contracts::stages::STAGES
+                .iter()
+                .find(|(_, _, stage_role)| *stage_role == *role)
+        {
+            let stage_db = stage.as_db_value();
+            let add_id = format!("agents-stage-add-verifier:{}", stage_db.to_lowercase());
+            let stage_arg = stage_db.to_owned();
+            surface = surface.child(
+                div()
+                    .id(SharedString::from(add_id.clone()))
+                    .debug_selector(move || add_id.clone())
+                    .absolute()
+                    .left(px(left + NODE_WIDTH * zoom - 58.0 * zoom))
+                    .top(px(top + NODE_HEIGHT * zoom + 3.0 * zoom))
+                    .px(px(6.0 * zoom))
+                    .py(px(1.5 * zoom))
+                    .rounded(px(4.0 * zoom))
+                    .border_1()
+                    .border_color(theme::border())
+                    .bg(theme::surface())
+                    .hover(|style| style.bg(theme::accent_soft()).border_color(theme::accent()))
+                    .text_size(px(9.5 * zoom))
+                    .text_color(theme::text_muted())
+                    .cursor_pointer()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(cx.listener(move |model, _, _, cx| {
+                        model.open_new_verifier(Some(&stage_arg), cx);
+                    }))
+                    .child("+ Verifier"),
+            );
+        }
     }
     surface.into_any_element()
 }
@@ -776,6 +823,21 @@ fn node_element(
                         .text_color(theme::text())
                         .child(node.label.clone()),
                 )
+                .when(
+                    matches!(node.agent, AgentIdentifier::StageVerifier(_)),
+                    |row| {
+                        row.child(
+                            div()
+                                .flex_shrink_0()
+                                .px(px(4.0 * zoom))
+                                .rounded(px(3.0 * zoom))
+                                .bg(theme::accent_soft())
+                                .text_color(theme::accent())
+                                .text_size(px(9.0 * zoom))
+                                .child("Added by you"),
+                        )
+                    },
+                )
                 .when(node.checkpoint, |row| {
                     let id = format!("agents-node-gate:{key}");
                     row.child(
@@ -892,6 +954,7 @@ impl AppModel {
     pub(crate) fn select_canvas_agent(&mut self, agent: AgentIdentifier, cx: &mut Context<Self>) {
         let same = self.agents.read(cx).selected_agent.as_ref() == Some(&agent);
         self.pipeline_editor = None;
+        self.verifier_editor = None;
         self.agents.update(cx, |agents, _| {
             agents.selected_agent = Some(agent.clone());
             agents.selected_pipeline = None;
@@ -931,6 +994,7 @@ impl AppModel {
                             && matches!(step, ikore_core::custom_pipelines::PipelineStep::Agent(_))
                     })
                 }),
+            AgentIdentifier::StageVerifier(_) => true,
         };
         if console {
             self.focus_agent_in_dock(agent, None, cx);
@@ -941,6 +1005,7 @@ impl AppModel {
     /// A pipeline box's title: the pipeline's synthesis opens.
     pub(crate) fn select_canvas_pipeline(&mut self, id: String, cx: &mut Context<Self>) {
         self.pipeline_editor = None;
+        self.verifier_editor = None;
         self.agents.update(cx, |agents, _| {
             if agents.selected_pipeline.as_ref() != Some(&id) {
                 agents.selected_pipeline_run = None;
@@ -962,6 +1027,7 @@ impl AppModel {
     /// canvas takes the whole width.
     pub(crate) fn close_agents_synthesis(&mut self, cx: &mut Context<Self>) {
         self.pipeline_editor = None;
+        self.verifier_editor = None;
         self.agents.update(cx, |agents, _| {
             agents.selected_agent = None;
             agents.selected_pipeline = None;
@@ -989,7 +1055,8 @@ impl AppModel {
                     || agents.selected_pipeline.is_some()
                     || agents.show_archived_pipelines
                     || agents.show_global_pipelines
-                    || self.pipeline_editor.is_some(),
+                    || self.pipeline_editor.is_some()
+                    || self.verifier_editor.is_some(),
             )
         };
         if drawer && open {
@@ -1022,6 +1089,7 @@ impl AppModel {
     /// `Archived · N`: the archived free-form agents, with restore and delete.
     pub(crate) fn open_archived_agents(&mut self, cx: &mut Context<Self>) {
         self.pipeline_editor = None;
+        self.verifier_editor = None;
         self.agents.update(cx, |agents, _| {
             agents.selected_agent = None;
             agents.selected_pipeline = None;

@@ -31,14 +31,15 @@ use crate::attestation::{
     MAX_STATEMENT_BYTES, MandateRefV1, ModelUsageV1, PREDICATE_TYPE, PreflightFindingV1,
     PulsationAttestationV1, PulsationBlock, ReceiptRefV1, RederivationCheck, RiskRefV1,
     SanitizationBlock, SealingBlock, SignatureCheck, SigningKey, StageBudgetRefV1, StageRunV1,
-    StatementV1, SubjectCheck, SubjectDigest, SubjectV1, UsageBlock, VerifyError, WorkspaceCheck,
-    public_key_from_pem, public_key_pem,
+    StatementV1, SubjectCheck, SubjectDigest, SubjectV1, UsageBlock, VerificationRefV1,
+    VerifyError, WorkspaceCheck, public_key_from_pem, public_key_pem,
 };
 use crate::orchestration::ContentSha256;
 use crate::orchestration::composition::RelPath;
 use crate::orchestration::composition::risk::{CoverageMatrix, CoverageState};
 use crate::orchestration::mandate::{digest_of_set, path_key, task_revisions, text_sha256};
 use crate::sanitization::SanitizationStore;
+use crate::stage_verifiers::{FindingSeverity, StageVerdictV1, parse_verifier_config};
 
 /// `runtime_settings` key; sealing is on unless it says `false`.
 pub const ATTESTATION_SEALING_SETTING: &str = "attestation.sealing_enabled";
@@ -54,6 +55,7 @@ fn sha_of(text: &str) -> String {
 
 /// The stored record of one attestation.
 struct StoredAttestation {
+    deriver_version: u32,
     statement_json: Option<String>,
     statement_sha256: String,
     envelope_json: Option<String>,
@@ -202,7 +204,7 @@ impl PersistenceService {
         }
         let key = self.resolve_attestation_key(&tx, true)?;
         let sealed_at = Self::now_iso();
-        let statement = Self::derive_statement_v1(
+        let statement = Self::derive_statement_v2(
             &tx,
             pulsation_id,
             Self::current_builder(key.as_ref().ok().map(SigningKey::key_id)),
@@ -429,19 +431,20 @@ impl PersistenceService {
     ) -> Result<Option<StoredAttestation>, PersistenceServiceError> {
         Ok(db
             .query_row(
-                "SELECT statement_json,statement_sha256,envelope_json,key_id,signature_state,outcome,subject_count,sealed_at,signed_at FROM pulsation_attestations WHERE pulsation_id=?1",
+                "SELECT deriver_version,statement_json,statement_sha256,envelope_json,key_id,signature_state,outcome,subject_count,sealed_at,signed_at FROM pulsation_attestations WHERE pulsation_id=?1",
                 [pulsation_id],
                 |row| {
                     Ok(StoredAttestation {
-                        statement_json: row.get(0)?,
-                        statement_sha256: row.get(1)?,
-                        envelope_json: row.get(2)?,
-                        key_id: row.get(3)?,
-                        signature_state: row.get(4)?,
-                        outcome: row.get(5)?,
-                        subject_count: row.get::<_, i64>(6)? as usize,
-                        sealed_at: row.get(7)?,
-                        signed_at: row.get(8)?,
+                        deriver_version: row.get::<_, u32>(0)?,
+                        statement_json: row.get(1)?,
+                        statement_sha256: row.get(2)?,
+                        envelope_json: row.get(3)?,
+                        key_id: row.get(4)?,
+                        signature_state: row.get(5)?,
+                        outcome: row.get(6)?,
+                        subject_count: row.get::<_, i64>(7)? as usize,
+                        sealed_at: row.get(8)?,
+                        signed_at: row.get(9)?,
                     })
                 },
             )
@@ -642,7 +645,12 @@ impl PersistenceService {
                 stored.sealed_at.clone(),
             ),
         };
-        let Ok(current) = Self::derive_statement_v1(db, pulsation_id, builder, &sealed_at) else {
+        let derived = match stored.deriver_version {
+            1 => Self::derive_statement_v1(db, pulsation_id, builder, &sealed_at),
+            2 => Self::derive_statement_v2(db, pulsation_id, builder, &sealed_at),
+            _ => return (RederivationCheck::Unavailable, None, None),
+        };
+        let Ok(current) = derived else {
             return (RederivationCheck::Unavailable, None, None);
         };
         let check = match signed {
@@ -1148,6 +1156,7 @@ impl PersistenceService {
             coverage,
             risk,
             acknowledgements,
+            verifications: Vec::new(),
         };
 
         // Sanitization: totals and how many sanitized inputs and outputs
@@ -1250,10 +1259,126 @@ impl PersistenceService {
                 sealing: SealingBlock {
                     sealed_at: sealed_at.to_owned(),
                     clock: "local".to_owned(),
-                    deriver_version: DERIVER_VERSION,
+                    deriver_version: 1,
                 },
             },
         ))
+    }
+
+    /// Deriver v2 (feature 25 M4): extends v1 with host facts and digests of
+    /// stage verifier runs (`evidence.verifications`), keeping zero free text.
+    pub(super) fn derive_statement_v2(
+        db: &Connection,
+        pulsation_id: &str,
+        builder: BuilderBlock,
+        sealed_at: &str,
+    ) -> Result<StatementV1, PersistenceServiceError> {
+        let mut statement = Self::derive_statement_v1(db, pulsation_id, builder, sealed_at)?;
+        statement.predicate.evidence.verifications = Self::derive_verifications(db, pulsation_id)?;
+        statement.predicate.sealing.deriver_version = 2;
+        Ok(statement)
+    }
+
+    fn derive_verifications(
+        db: &Connection,
+        pulsation_id: &str,
+    ) -> Result<Vec<VerificationRefV1>, PersistenceServiceError> {
+        let stage_order = |stage: &str| match stage {
+            "Intake" => 0usize,
+            "Specification" | "SPECIFICATION" => 1,
+            "Contract" => 2,
+            "Code" => 3,
+            "Test" => 4,
+            "Integrator" => 5,
+            _ => 6,
+        };
+        let rows = db
+            .prepare(
+                "SELECT r.stage,r.stage_generation,r.attempt,r.verifier_id,r.config_json,
+                        r.status,r.verdict_json,
+                        (SELECT f.justification
+                           FROM stage_failure_requests f
+                           JOIN checkpoints c ON c.id=f.checkpoint_id
+                          WHERE f.pulsation_id=r.pulsation_id
+                            AND c.purpose='stage_failure'
+                            AND c.generation=r.stage_generation
+                            AND (c.stage=r.stage OR (c.stage='Specification' AND r.stage='SPECIFICATION'))
+                            AND f.failure_class='verification_rejected'
+                            AND f.decision='continue_anyway'
+                          ORDER BY f.resolved_at DESC LIMIT 1)
+                   FROM stage_verifier_runs r
+                  WHERE r.pulsation_id=?1",
+            )?
+            .query_map([pulsation_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut out = Vec::with_capacity(rows.len());
+        for (
+            stage,
+            stage_generation,
+            attempt,
+            verifier_id,
+            config_json,
+            status,
+            verdict_json,
+            justification,
+        ) in rows
+        {
+            let cfg = parse_verifier_config(&config_json).ok();
+            let verifier_version = cfg.as_ref().map(|c| c.version).unwrap_or(1);
+            let advisory = cfg.as_ref().is_some_and(|c| c.is_advisory());
+            let mut blocking_count = 0u32;
+            let mut warning_count = 0u32;
+            let mut note_count = 0u32;
+            if let Some(json) = verdict_json.as_deref()
+                && let Ok(verdict) = serde_json::from_str::<StageVerdictV1>(json)
+            {
+                for finding in &verdict.findings {
+                    match finding.severity {
+                        FindingSeverity::Blocking => blocking_count += 1,
+                        FindingSeverity::Warning => warning_count += 1,
+                        FindingSeverity::Note => note_count += 1,
+                    }
+                }
+            }
+            let justification_sha256 = (status == "overridden")
+                .then_some(justification)
+                .flatten()
+                .map(|text| text_sha256(&text));
+            out.push(VerificationRefV1 {
+                stage,
+                stage_generation: stage_generation.max(1) as u64,
+                attempt: attempt.max(1) as u64,
+                verifier_id,
+                verifier_version,
+                config_sha256: sha_of(&config_json),
+                status,
+                advisory,
+                verdict_sha256: verdict_json.as_deref().map(sha_of),
+                blocking_count,
+                warning_count,
+                note_count,
+                justification_sha256,
+            });
+        }
+        out.sort_by(|left, right| {
+            stage_order(&left.stage)
+                .cmp(&stage_order(&right.stage))
+                .then_with(|| left.stage_generation.cmp(&right.stage_generation))
+                .then_with(|| left.verifier_id.cmp(&right.verifier_id))
+                .then_with(|| left.attempt.cmp(&right.attempt))
+        });
+        Ok(out)
     }
 }
 

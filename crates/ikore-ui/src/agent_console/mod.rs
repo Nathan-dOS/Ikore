@@ -310,8 +310,9 @@ impl AppModel {
                 .selected_run_by_slot
                 .get(slot)
                 .is_some_and(|id| id == run_id),
-            // A step's console is the dock's.
-            Some(AgentIdentifier::PipelineStep { .. }) | None => false,
+            // A step's or verifier's console is the dock's.
+            Some(AgentIdentifier::PipelineStep { .. } | AgentIdentifier::StageVerifier(_))
+            | None => false,
         }
     }
 }

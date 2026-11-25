@@ -64,7 +64,8 @@ impl PersistenceService {
         let failure_decisions = |decision: &str| -> Result<u32, PersistenceServiceError> {
             Ok(db.query_row(
                 "SELECT COUNT(*) FROM stage_failure_requests f JOIN checkpoints c ON c.id=f.checkpoint_id
-                 WHERE f.pulsation_id=?1 AND c.input_revision=?2 AND f.decision=?3",
+                 WHERE f.pulsation_id=?1 AND c.input_revision=?2 AND f.decision=?3
+                   AND NOT (?3='retry_stage' AND f.failure_class='verification_rejected')",
                 params![pulsation_id, input_revision, decision],
                 |row| row.get(0),
             )?)

@@ -124,6 +124,7 @@ pub(crate) fn sample_statement() -> StatementV1 {
                     policy_sha256: sha('d'),
                 }],
                 acknowledgements: Vec::new(),
+                verifications: Vec::new(),
             },
             sanitization: SanitizationBlock {
                 policy_identities: vec!["secret-sanitization-v1".into()],
@@ -158,7 +159,8 @@ pub(crate) fn sample_statement() -> StatementV1 {
             sealing: SealingBlock {
                 sealed_at: "2026-10-26T12:45:05Z".into(),
                 clock: "local".into(),
-                deriver_version: DERIVER_VERSION,
+                // Frozen v1 test vector kept byte-for-byte compatible with fixtures/statement.json.
+                deriver_version: 1,
             },
         },
     )
@@ -303,4 +305,30 @@ fn the_first_difference_names_the_block() {
     let mut evidence = statement.clone();
     evidence.predicate.evidence.receipts[0].status = "failed".into();
     assert_eq!(statement.first_difference(&evidence), Some("evidence"));
+}
+
+#[test]
+fn v2_evidence_verifications_enter_canonical_bytes_with_no_free_text() {
+    assert_eq!(DERIVER_VERSION, 2);
+    let mut statement = sample_statement();
+    statement.predicate.sealing.deriver_version = DERIVER_VERSION;
+    statement.predicate.evidence.verifications = vec![VerificationRefV1 {
+        stage: "Code".into(),
+        stage_generation: 2,
+        attempt: 1,
+        verifier_id: "ver-1".into(),
+        verifier_version: 3,
+        config_sha256: sha('1'),
+        status: "overridden".into(),
+        advisory: false,
+        verdict_sha256: Some(sha('2')),
+        blocking_count: 1,
+        warning_count: 2,
+        note_count: 0,
+        justification_sha256: Some(sha('3')),
+    }];
+    let bytes = statement.canonical_bytes().unwrap();
+    assert!(bytes.contains("\"deriverVersion\":2"));
+    assert!(bytes.contains("\"verifications\":[{"));
+    assert!(bytes.contains("\"justificationSha256\""));
 }

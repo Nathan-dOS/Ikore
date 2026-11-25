@@ -933,7 +933,7 @@ fn the_deriver_reads_each_block_from_its_rows() {
     assert_eq!(predicate.usage.completeness, "partial");
 
     // The same rows give the same bytes.
-    let again = PersistenceService::derive_statement_v1(
+    let again = PersistenceService::derive_statement_v2(
         &db,
         &f.pulse.id,
         predicate.builder.clone(),
@@ -941,4 +941,98 @@ fn the_deriver_reads_each_block_from_its_rows() {
     )
     .unwrap();
     assert_eq!(again.canonical_bytes(), statement.canonical_bytes());
+}
+
+#[test]
+fn attestation_v2_records_verifications_without_free_text_and_keeps_v1_rederivation() {
+    let (f, _keys) = fixture();
+    let db = f.service.connection().unwrap();
+    db.execute(
+        "INSERT INTO stage_verifiers(id,project_id,stage,label,position,enabled,reject_limit,agent_json,instructions,version,created_at,updated_at)
+         VALUES('v-att',?1,'Code','SecretVerifierLabel',0,1,2,'{\"transport\":\"cli\",\"backend\":\"claude\",\"model\":\"haiku\",\"thinkingLevel\":\"default\"}','Top secret verifier prompt',2,'now','now')",
+        [&f.pulse.project_id],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO jobs(id,project_id,pulsation_id,kind,status,attempts,input_revision,generation,state_version,idempotency_key,created_at,updated_at)
+         VALUES('job-att',?1,?2,'run_stage::Code','done',0,1,2,3,'job-att','now','now')",
+        params![f.pulse.project_id, f.pulse.id],
+    )
+    .unwrap();
+    let cfg_json = "{\"verifierId\":\"v-att\",\"version\":2,\"stage\":\"Code\",\"label\":\"SecretVerifierLabel\",\"position\":0,\"rejectLimit\":2,\"agent\":{\"transport\":\"cli\",\"backend\":\"claude\",\"model\":\"haiku\",\"thinkingLevel\":\"default\"},\"instructions\":\"Top secret verifier prompt\"}";
+    let verdict_json = "{\"verdict\":\"reject\",\"summary\":\"Sensitive failure prose\",\"findings\":[{\"id\":\"F1\",\"severity\":\"blocking\",\"message\":\"Sensitive finding prose\",\"file\":null,\"line\":null,\"suggestion\":null,\"fileNotFound\":false},{\"id\":\"F2\",\"severity\":\"note\",\"message\":\"Minor note\",\"file\":null,\"line\":null,\"suggestion\":null,\"fileNotFound\":false}]}";
+    db.execute(
+        "INSERT INTO stage_verifier_runs(id,verifier_id,config_json,pulsation_id,stage,stage_job_id,stage_generation,attempt,recovery_count,status,verdict_json,created_at)
+         VALUES('run-att','v-att',?1,?2,'Code','job-att',2,1,0,'overridden',?3,'now')",
+        params![cfg_json, f.pulse.id, verdict_json],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO checkpoints(id,pulsation_id,stage,status,created_at,updated_at,kind,input_revision,state_version,producer_job_id,generation,purpose)
+         VALUES('cp-att',?1,'Code','approved','now','now','stage_failure',1,3,'job-att',2,'stage_failure')",
+        [&f.pulse.id],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO stage_failure_requests(checkpoint_id,pulsation_id,job_id,stage,failure_class,allow_retry,allow_revision,allow_continue_anyway,revision_stage,error_code,diagnostic,decision,justification,created_at,updated_at)
+         VALUES('cp-att',?1,'job-att','Code','verification_rejected',1,1,1,'Code','verification_rejected','diag','continue_anyway','Sensitive override justification prose','now','now')",
+        [&f.pulse.id],
+    )
+    .unwrap();
+
+    end(&f, PulsationStatus::Done, None);
+    seal_all(&f.service);
+    let raw = stored_statement(&f);
+    let statement: StatementV1 = serde_json::from_str(&raw).unwrap();
+    assert_eq!(statement.predicate.sealing.deriver_version, 2);
+    assert_eq!(statement.predicate.evidence.verifications.len(), 1);
+    let vref = &statement.predicate.evidence.verifications[0];
+    assert_eq!(vref.verifier_id, "v-att");
+    assert_eq!(vref.verifier_version, 2);
+    assert_eq!(vref.blocking_count, 1);
+    assert_eq!(vref.warning_count, 0);
+    assert_eq!(vref.note_count, 1);
+    assert_eq!(
+        vref.justification_sha256.as_deref(),
+        Some(text_sha256("Sensitive override justification prose").as_str())
+    );
+    // ADR-036 zero-free-text invariant.
+    for forbidden in [
+        "SecretVerifierLabel",
+        "Sensitive failure prose",
+        "Sensitive finding prose",
+        "Sensitive override justification prose",
+        "Top secret verifier prompt",
+    ] {
+        assert!(
+            !raw.contains(forbidden),
+            "attestation leaks free text: {forbidden}"
+        );
+    }
+    assert_eq!(verify(&f).rederivation, RederivationCheck::Matches);
+
+    // Historical v1 attestation continues to re-derive identically; unknown version returns Unavailable.
+    db.execute_batch("DROP TRIGGER pulsation_attestations_sign_only")
+        .unwrap();
+    let v1_stmt = PersistenceService::derive_statement_v1(
+        &db,
+        &f.pulse.id,
+        statement.predicate.builder.clone(),
+        &statement.predicate.sealing.sealed_at,
+    )
+    .unwrap();
+    let v1_json = v1_stmt.canonical_bytes().unwrap();
+    db.execute(
+        "UPDATE pulsation_attestations SET deriver_version=1,statement_json=?2,statement_sha256=?3 WHERE pulsation_id=?1",
+        params![f.pulse.id, v1_json, sha(&v1_json)],
+    )
+    .unwrap();
+    assert_eq!(verify(&f).rederivation, RederivationCheck::Matches);
+
+    db.execute(
+        "UPDATE pulsation_attestations SET deriver_version=99 WHERE pulsation_id=?1",
+        [&f.pulse.id],
+    )
+    .unwrap();
+    assert_eq!(verify(&f).rederivation, RederivationCheck::Unavailable);
 }

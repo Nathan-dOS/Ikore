@@ -34,8 +34,10 @@ mod model;
 pub(crate) mod pipeline_editor;
 mod pipelines;
 mod synthesis;
+pub(crate) mod verifiers;
 
 pub(crate) use pipeline_editor::PipelineEditor;
+pub(crate) use verifiers::VerifierEditor;
 
 use api::api_detail_panel;
 use config::field;
@@ -132,7 +134,9 @@ fn canvas_agents(
     let node = |item: &AgentItem| {
         let role = match &item.id {
             AgentIdentifier::Canonical(role) => Some(*role),
-            AgentIdentifier::FreeForm(_) | AgentIdentifier::PipelineStep { .. } => None,
+            AgentIdentifier::FreeForm(_)
+            | AgentIdentifier::PipelineStep { .. }
+            | AgentIdentifier::StageVerifier(_) => None,
         };
         let checkpoint = role
             .and_then(|role| {
@@ -143,6 +147,7 @@ fn canvas_agents(
             .is_some_and(|(stage, _, _)| stage.requires_checkpoint());
         canvas_node(item, role.is_some() && role == waiting, checkpoint)
     };
+    let agents_state = model.agents.read(cx);
     CanvasAgents {
         title: pipeline_title(model, snapshot, cx),
         stages: items.stages.iter().map(node).collect(),
@@ -152,10 +157,12 @@ fn canvas_agents(
             .chain(&items.free_form)
             .map(node)
             .collect(),
+        verifiers: verifiers::canvas_verifiers(model, items, cx),
+        verifiers_enabled: agents_state.verifiers.enabled_by_labs,
         ghost: (items.free_form.len() < FREE_FORM_LIMIT).then_some(!busy),
         archived: items.archived.len(),
         pipelines: pipelines::canvas_pipelines(model, cx),
-        selected_pipeline: model.agents.read(cx).selected_pipeline.clone(),
+        selected_pipeline: agents_state.selected_pipeline.clone(),
     }
 }
 
@@ -180,10 +187,18 @@ fn synthesis_panel(
             .iter()
             .find(|slot| slot.slot.id == *slot_id)
             .is_some_and(|slot| slot.slot.execution_mode == AgentExecutionMode::ApiDirect),
-        Some(AgentIdentifier::PipelineStep { .. }) | None => false,
+        Some(AgentIdentifier::PipelineStep { .. } | AgentIdentifier::StageVerifier(_)) | None => {
+            false
+        }
     };
-    // Feature 25: the editor, the archived pipelines, a pipeline's synthesis
-    // or a step's come before the agents' panels.
+    // Feature 25: the editor, the archived pipelines, a pipeline's synthesis,
+    // a verifier's synthesis, or a step's come before the agents' panels.
+    let verifier = match agents.selected_agent.as_ref() {
+        Some(AgentIdentifier::StageVerifier(id)) if agents.verifiers.enabled_by_labs => {
+            agents.verifier(id).cloned()
+        }
+        _ => None,
+    };
     let step = match agents.selected_agent.as_ref() {
         Some(AgentIdentifier::PipelineStep {
             pipeline_id,
@@ -201,7 +216,9 @@ fn synthesis_panel(
         .cloned();
     let show_archived_pipelines = agents.show_archived_pipelines;
     let show_global_pipelines = agents.show_global_pipelines;
-    let content = if model.pipeline_editor.is_some() {
+    let content = if model.verifier_editor.is_some() {
+        verifiers::verifier_editor_panel(model, cx)
+    } else if model.pipeline_editor.is_some() {
         pipeline_editor::pipeline_editor_panel(model, cx)
     } else if show_archived_pipelines {
         pipelines::archived_pipelines(model, busy, cx)
@@ -209,6 +226,8 @@ fn synthesis_panel(
         pipelines::global_pipelines(model, busy, cx)
     } else if let Some(pipeline) = pipeline {
         pipelines::pipeline_synthesis(model, &pipeline, busy, cx)
+    } else if let Some(verifier) = verifier {
+        verifiers::verifier_synthesis(model, &verifier, busy, cx)
     } else if let Some((pipeline, step_id)) = step {
         pipelines::step_synthesis(model, &pipeline, &step_id, busy, cx)
     } else if show_archived {
@@ -296,7 +315,10 @@ pub(crate) fn agents_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
         || agents.selected_pipeline.is_some()
         || agents.show_archived_pipelines
         || agents.show_global_pipelines
-        || model.pipeline_editor.is_some();
+        || model.pipeline_editor.is_some()
+        || model.verifier_editor.is_some();
+    let verifiers_enabled = agents.verifiers.enabled_by_labs;
+    let can_create_verifier = verifiers::can_create_verifier(agents, None);
     let can_create = pipelines::can_create_pipeline(agents);
     let archived_pipelines = agents.pipelines.archived.len();
     let available_globals = agents.pipelines.available_globals.len();
@@ -384,6 +406,30 @@ pub(crate) fn agents_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
                             |model, cx| model.open_new_pipeline(cx),
                         )),
                 )
+                .when(verifiers_enabled, |header| {
+                    header.child(
+                        div()
+                            .id("agents-new-verifier-frame")
+                            .when(!can_create_verifier, |frame| {
+                                frame.tooltip(|_, cx| {
+                                    cx.new(|_| {
+                                        crate::widgets::Tooltip::new(
+                                            "A project has at most 15 stage verifiers. Remove or disable one first.",
+                                        )
+                                    })
+                                    .into()
+                                })
+                            })
+                            .child(action_button(
+                                "agents-new-verifier".into(),
+                                "+ Verifier".into(),
+                                snapshot.is_some() && can_create_verifier && !busy,
+                                false,
+                                cx,
+                                |model, cx| model.open_new_verifier(None, cx),
+                            )),
+                    )
+                })
                 .child(action_button(
                     "agents-fit".into(),
                     "Fit".into(),
@@ -491,6 +537,12 @@ pub(crate) fn cli_model_picker_panel(
         CliModelPickerTarget::PipelineStep(_) => {
             format!(
                 "Choose {} model for the pipeline step",
+                picker.backend.label()
+            )
+        }
+        CliModelPickerTarget::StageVerifier => {
+            format!(
+                "Choose {} model for the stage verifier",
                 picker.backend.label()
             )
         }
@@ -1434,6 +1486,7 @@ mod tests {
             ("synthesis.rs", include_str!("synthesis.rs")),
             ("pipelines.rs", include_str!("pipelines.rs")),
             ("pipeline_editor.rs", include_str!("pipeline_editor.rs")),
+            ("verifiers.rs", include_str!("verifiers.rs")),
             ("canvas", include_str!("../agents_canvas/mod.rs")),
             ("canvas paint", include_str!("../agents_canvas/paint.rs")),
             ("canvas layout", include_str!("../agents_canvas/layout.rs")),

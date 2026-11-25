@@ -1414,6 +1414,7 @@ pub fn to_html_report(report: &Value) -> Result<PulsationReport, AnalysisError> 
         risk: None,
         layers: None,
         provenance: None,
+        verifications: None,
     })
 }
 

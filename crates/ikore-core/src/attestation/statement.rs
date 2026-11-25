@@ -19,7 +19,7 @@ pub const STATEMENT_TYPE: &str = "https://in-toto.io/Statement/v1";
 pub const PREDICATE_TYPE: &str = "urn:hvc:pulsation-attestation:v1";
 /// The version of the deriver that builds the predicate from rows. A newer
 /// deriver gets a new number; old ones stay so old statements re-derive.
-pub const DERIVER_VERSION: u32 = 1;
+pub const DERIVER_VERSION: u32 = 2;
 /// A statement above this is recorded as `too_large`, never truncated
 /// (hypothesis, ADR-036).
 pub const MAX_STATEMENT_BYTES: usize = 1024 * 1024;
@@ -227,12 +227,32 @@ pub struct AcknowledgementRefV1 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct VerificationRefV1 {
+    pub stage: String,
+    pub stage_generation: u64,
+    pub attempt: u64,
+    pub verifier_id: String,
+    pub verifier_version: i64,
+    pub config_sha256: String,
+    pub status: String,
+    pub advisory: bool,
+    pub verdict_sha256: Option<String>,
+    pub blocking_count: u32,
+    pub warning_count: u32,
+    pub note_count: u32,
+    pub justification_sha256: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct EvidenceBlock {
     pub receipts: Vec<ReceiptRefV1>,
     pub integrator_manifest: Option<IntegratorManifestRefV1>,
     pub coverage: Option<CoverageRefV1>,
     pub risk: Vec<RiskRefV1>,
     pub acknowledgements: Vec<AcknowledgementRefV1>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub verifications: Vec<VerificationRefV1>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -7,6 +7,7 @@ use std::f32::consts::TAU;
 use gpui::{Bounds, PathBuilder, Pixels, Point, Rgba, Window, point, px};
 
 use super::constants::{BUBBLE_POINTS, WOBBLE_RADIUS};
+use super::layout::EdgeStyle;
 use super::physics::{Mode, Vec2};
 use crate::theme;
 
@@ -28,28 +29,56 @@ fn to_point(bounds: Bounds<Pixels>, at: Vec2) -> Point<Pixels> {
     point(bounds.origin.x + px(at.x), bounds.origin.y + px(at.y))
 }
 
-/// From the right edge of each stage to the left edge of the next, as a
-/// curve that bends when the nodes move; the ends never change.
+/// From the right edge of each stage to the left edge of the next (solid curve),
+/// or vertically between a default stage and its stacked verifier nodes (dotted).
 pub(super) fn links(
     bounds: Bounds<Pixels>,
-    links: &[(Vec2, Vec2)],
+    links: &[(Vec2, Vec2, EdgeStyle)],
     zoom: f32,
     window: &mut Window,
 ) {
-    let half = super::constants::NODE_WIDTH * zoom / 2.0;
-    for (from, to) in links {
-        let start = Vec2::new(from.x + half, from.y);
-        let end = Vec2::new(to.x - half, to.y);
-        let reach = ((end.x - start.x).abs() / 2.0).max(16.0 * zoom);
-        let mut path = PathBuilder::stroke(px((1.5 * zoom).max(1.0)));
-        path.move_to(to_point(bounds, start));
-        path.cubic_bezier_to(
-            to_point(bounds, end),
-            to_point(bounds, Vec2::new(start.x + reach, start.y)),
-            to_point(bounds, Vec2::new(end.x - reach, end.y)),
-        );
-        if let Ok(path) = path.build() {
-            window.paint_path(path, theme::border_strong());
+    let half_w = super::constants::NODE_WIDTH * zoom / 2.0;
+    let half_h = super::constants::NODE_HEIGHT * zoom / 2.0;
+    for (from, to, style) in links {
+        match style {
+            EdgeStyle::Line | EdgeStyle::Wave => {
+                let start = Vec2::new(from.x + half_w, from.y);
+                let end = Vec2::new(to.x - half_w, to.y);
+                let reach = ((end.x - start.x).abs() / 2.0).max(16.0 * zoom);
+                let mut path = PathBuilder::stroke(px((1.5 * zoom).max(1.0)));
+                path.move_to(to_point(bounds, start));
+                path.cubic_bezier_to(
+                    to_point(bounds, end),
+                    to_point(bounds, Vec2::new(start.x + reach, start.y)),
+                    to_point(bounds, Vec2::new(end.x - reach, end.y)),
+                );
+                if let Ok(path) = path.build() {
+                    window.paint_path(path, theme::border_strong());
+                }
+            }
+            EdgeStyle::Dotted => {
+                let start = Vec2::new(from.x, from.y + half_h);
+                let end = Vec2::new(to.x, to.y - half_h);
+                let delta = end - start;
+                let distance = (delta.x * delta.x + delta.y * delta.y).sqrt();
+                if distance <= f32::EPSILON {
+                    continue;
+                }
+                let unit = delta * (1.0 / distance);
+                let dash = (3.5 * zoom).max(2.0);
+                let gap = (3.5 * zoom).max(2.0);
+                let mut offset = 0.0;
+                while offset < distance {
+                    let seg_end = (offset + dash).min(distance);
+                    let mut path = PathBuilder::stroke(px((1.5 * zoom).max(1.0)));
+                    path.move_to(to_point(bounds, start + unit * offset));
+                    path.line_to(to_point(bounds, start + unit * seg_end));
+                    if let Ok(path) = path.build() {
+                        window.paint_path(path, theme::border_strong());
+                    }
+                    offset += dash + gap;
+                }
+            }
         }
     }
 }

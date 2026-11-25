@@ -1235,6 +1235,7 @@ mod tests {
                 pulsations.awaiting_failure = 0;
                 pulsations.hitl_checkpoints.clear();
                 pulsations.failure_checkpoints.clear();
+                pulsations.verification_error_checkpoints.clear();
                 pulsations.pulsations[0].status =
                     ikore_core::persistence_service::PulsationStatus::Planning;
                 (

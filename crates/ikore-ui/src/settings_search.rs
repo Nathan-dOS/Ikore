@@ -705,6 +705,14 @@ pub(crate) static ENTRIES: &[SettingsEntry] = &[
         "recipe qualification test",
     ),
     entry(
+        "labs-stage-verifiers",
+        P::Labs,
+        "Stage composition experiments",
+        "Stage verifiers",
+        "Let verifier agents check outputs right after each default stage and reject back to re-run when configured. Off leaves the default pipeline untouched.",
+        "verifiers stage quality gate labs",
+    ),
+    entry(
         "labs-cli-observation",
         P::Labs,
         "CLI observation trial",

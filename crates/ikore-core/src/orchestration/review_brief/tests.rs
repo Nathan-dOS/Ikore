@@ -926,6 +926,7 @@ fn failure(
         diagnostic: "core_tests failed".into(),
         allow_retry,
         allow_revision: !targets.is_empty(),
+        allow_continue_anyway: false,
         revision_stage: targets.first().copied(),
         attempts: 3,
         state_version: 7,

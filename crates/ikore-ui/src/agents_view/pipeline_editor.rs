@@ -968,6 +968,7 @@ impl AppModel {
     }
 
     fn open_editor_column(&mut self, cx: &mut Context<Self>) {
+        self.verifier_editor = None;
         if self.settings.read(cx).snapshot.is_none() {
             self.refresh_settings(cx);
         }

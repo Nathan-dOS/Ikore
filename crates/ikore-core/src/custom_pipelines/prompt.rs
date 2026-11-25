@@ -20,7 +20,7 @@ const VERDICT_OUTPUT: &str = "OUTPUT: Return only valid JSON matching the suppli
 
 /// A name the developer typed, kept to one line and out of the backticks
 /// that quote it.
-fn quoted_name(text: &str) -> String {
+pub(crate) fn quoted_name(text: &str) -> String {
     single_line(text).replace('`', "'").trim().to_owned()
 }
 

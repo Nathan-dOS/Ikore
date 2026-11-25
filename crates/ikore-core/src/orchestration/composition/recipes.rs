@@ -180,6 +180,9 @@ pub struct StageInputs {
     /// Delivered files granted to a unit of this stage at a failure
     /// checkpoint (ADR-035 M4), by logical unit key.
     pub scope_amendments: Vec<(String, RelPath)>,
+    /// Findings from rejected stage verifiers (feature 25 M4), never mixed
+    /// into `revision_feedback`.
+    pub verification_findings: Vec<crate::stage_verifiers::StageVerificationFinding>,
 }
 
 impl StageInputs {
@@ -210,6 +213,8 @@ pub struct StagePreparation {
     /// The Integrator's classified inputs (ADR-032), attached by the host
     /// after preparation; `None` for every other stage.
     pub review: Option<std::sync::Arc<ReviewBoundary>>,
+    /// Findings from rejected stage verifiers when re-running the stage (P24).
+    pub verification_findings: Vec<crate::stage_verifiers::StageVerificationFinding>,
 }
 
 impl std::fmt::Debug for StagePreparation {
@@ -955,6 +960,7 @@ pub fn prepare(stage: Stage, inputs: &StageInputs) -> Result<StagePreparation, C
         interfaces,
         extra_instructions: extra,
         review: None,
+        verification_findings: Vec::new(),
     })
 }
 
@@ -1301,6 +1307,7 @@ pub fn prompt_inputs<'a>(
         extra_instructions: preparation.extra_instructions.as_deref(),
         review: preparation.review.as_deref(),
         recovery_context: preparation.recovery_context.as_ref(),
+        verification_findings: &preparation.verification_findings,
     }
 }
 
@@ -2230,6 +2237,7 @@ mod tests {
             clarification_answers: vec![],
             qualified_recipes: vec!["code".into(), "test".into()],
             scope_amendments: Vec::new(),
+            verification_findings: Vec::new(),
         }
     }
 

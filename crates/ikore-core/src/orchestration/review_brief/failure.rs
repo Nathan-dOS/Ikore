@@ -13,6 +13,8 @@ pub enum FailureDecisionKind {
     GrantScope,
     Retry,
     Revision,
+    /// Override stage verifier rejections and proceed (feature 25, M4).
+    ContinueAnyway,
     Abort,
 }
 
@@ -57,10 +59,17 @@ pub fn failure_choices(checkpoint: &StageFailureCheckpoint) -> Vec<FailureChoice
         });
     }
     if checkpoint.allow_retry {
-        let mut effect = format!(
-            "Runs the failed {stage} job once more. The automatic attempts stay spent, so another failure reopens this checkpoint."
-        );
-        if checkpoint.stage_execution_id.is_some()
+        let mut effect = if checkpoint.failure_class == "verification_rejected" {
+            format!(
+                "Runs {stage} again with the verifier findings and grants one more verifier round without resetting the rejection counter."
+            )
+        } else {
+            format!(
+                "Runs the failed {stage} job once more. The automatic attempts stay spent, so another failure reopens this checkpoint."
+            )
+        };
+        if checkpoint.failure_class != "verification_rejected"
+            && checkpoint.stage_execution_id.is_some()
             && let Some(left) = checkpoint.remaining_extra_invocations
         {
             effect.push_str(&format!(
@@ -91,6 +100,13 @@ pub fn failure_choices(checkpoint: &StageFailureCheckpoint) -> Vec<FailureChoice
                 ),
             });
         }
+    }
+    if checkpoint.allow_continue_anyway {
+        choices.push(FailureChoice {
+            decision: FailureDecisionKind::ContinueAnyway,
+            target: None,
+            effect: "Overrides the verifier rejection with an optional justification (up to 500 characters) and lets the pipeline proceed.".to_owned(),
+        });
     }
     choices.push(FailureChoice {
         decision: FailureDecisionKind::Abort,

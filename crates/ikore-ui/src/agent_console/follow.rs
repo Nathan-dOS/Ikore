@@ -748,4 +748,33 @@ mod tests {
         assert!(state.apply(FollowInput::ResumeFollowing));
         assert_eq!(state.current.as_ref(), Some(&spec));
     }
+
+    #[test]
+    fn stage_verifier_follows_at_pipeline_priority_above_manual() {
+        let clock = Clock(Instant::now());
+        let manual = agent(AgentRole::TaskSpecifier);
+        let verifier = AgentIdentifier::StageVerifier("ver-code-1".into());
+        assert_eq!(
+            Priority::of(ikore_core::terminals::ExecutionOrigin::Verification),
+            Priority::Pipeline
+        );
+        let mut state = FollowState::default();
+        start(
+            &mut state,
+            &manual,
+            "m1",
+            Priority::Interactive,
+            clock.at(0),
+        );
+        tick(&mut state, &clock, 0, 100);
+        start(
+            &mut state,
+            &verifier,
+            "v1",
+            Priority::of(ikore_core::terminals::ExecutionOrigin::Verification),
+            clock.at(200),
+        );
+        tick(&mut state, &clock, 200, 1_800);
+        assert_eq!(state.current.as_ref(), Some(&verifier));
+    }
 }

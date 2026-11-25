@@ -20,7 +20,7 @@ pub(crate) use grants::grants_panel;
 pub(crate) use layers::layers_card;
 pub(crate) use review_inputs::review_inputs_panel;
 pub(crate) use risk::risk_panel;
-pub(crate) use stages::failure_choices_card;
+pub(crate) use stages::{failure_choices_card, verification_findings_card};
 
 use std::collections::HashMap;
 

@@ -14,5 +14,6 @@ pub use pulsation::{
     FileChange, LineCounts, PulsationReport, RejectedOutput, ReportCheck, ReportConvergence,
     ReportCoverageRow, ReportCriterion, ReportFile, ReportGap, ReportLayer, ReportLayerItem,
     ReportLayers, ReportOutcome, ReportPlanQuota, ReportProvenance, ReportPulsation, ReportReview,
-    ReportRisk, ReportRun, ReportStage, ReportSubject, ReportTokens, render_pulsation_report,
+    ReportRisk, ReportRun, ReportStage, ReportSubject, ReportTokens, ReportVerificationFinding,
+    ReportVerificationRun, ReportVerifications, render_pulsation_report,
 };

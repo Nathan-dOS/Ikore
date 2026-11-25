@@ -6066,10 +6066,10 @@ impl TerminalService {
         Ok(run)
     }
 
-    /// Runs one step of a developer's pipeline (feature 25) on its own slot,
-    /// with the stages' read-only hardening: adapters, action ledger, pulse,
-    /// deadline and history work as for any CLI run. Official adapters only
-    /// (E1); the answer is the step's text or verdict.
+    /// Runs one step of a developer's pipeline or a stage verifier (feature 25)
+    /// on its own slot, with the stages' read-only hardening: adapters, action
+    /// ledger, pulse, deadline and history work as for any CLI run. Official
+    /// adapters only (E1); the answer is the step's text or verdict.
     pub async fn execute_automation_step(
         self: &Arc<Self>,
         request: AutomationStepRequest,

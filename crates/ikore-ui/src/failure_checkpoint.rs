@@ -66,6 +66,8 @@ pub(crate) struct FailureCheckpointState {
     /// The pulsation's revision rounds (ADR-032 M4): a failure-path revision
     /// is a human round too.
     pub(crate) convergence: Option<ikore_core::persistence_service::ConvergenceStatus>,
+    /// Stage verifier findings recorded alongside the failing stage (feature 25, M4).
+    pub(crate) verification_findings: Vec<ikore_core::stage_verifiers::StageVerifierRunView>,
     load_generation: u64,
 }
 
@@ -96,8 +98,27 @@ impl FailureCheckpointState {
             self.error = None;
             self.revision_target = None;
             self.convergence = None;
+            self.verification_findings.clear();
         }
         self.checkpoint = checkpoint;
+    }
+
+    pub(crate) fn finish_verification_findings(
+        &mut self,
+        generation: u64,
+        checkpoint_id: &str,
+        result: Result<Vec<ikore_core::stage_verifiers::StageVerifierRunView>, String>,
+    ) -> bool {
+        if generation != self.load_generation
+            || self
+                .checkpoint
+                .as_ref()
+                .is_none_or(|c| c.checkpoint_id != checkpoint_id)
+        {
+            return false;
+        }
+        self.verification_findings = result.unwrap_or_default();
+        true
     }
 
     /// The round count read with the detail; a failed read leaves it absent.
@@ -237,6 +258,9 @@ impl FailureCheckpointState {
                 "A worker tried to write outside its ownership and the correction did not hold. Revise the plan."
             }
             "stale_input" => "An input changed under the execution. Retrying re-reads it.",
+            "verification_rejected" => {
+                "A blocking stage verifier rejected the stage output past its reject limit. Review the findings below before deciding."
+            }
             _ => "The stage failed and is waiting on a decision.",
         })
     }
@@ -245,6 +269,7 @@ impl FailureCheckpointState {
         self.checkpoint.as_ref().is_some_and(|c| match decision {
             StageFailureDecision::RetryStage => c.allow_retry,
             StageFailureDecision::RequestRevision => c.allow_revision,
+            StageFailureDecision::ContinueAnyway => c.allow_continue_anyway,
             StageFailureDecision::Abort => true,
         })
     }
@@ -335,6 +360,7 @@ mod tests {
             diagnostic: "the provider timed out".into(),
             allow_retry: retry,
             allow_revision: revision,
+            allow_continue_anyway: false,
             revision_stage: revision.then_some(PulsationStage::Code),
             attempts: 3,
             state_version: 7,

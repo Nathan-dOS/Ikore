@@ -70,6 +70,7 @@ pub(crate) fn agent_key(agent: &AgentIdentifier) -> String {
             pipeline_id,
             step_id,
         } => format!("pipeline:{pipeline_id}/{step_id}"),
+        AgentIdentifier::StageVerifier(id) => format!("verifier:{id}"),
     }
 }
 
@@ -83,6 +84,9 @@ pub(crate) fn agent_from_key(key: &str) -> Option<AgentIdentifier> {
             pipeline_id: pipeline.to_owned(),
             step_id: step.to_owned(),
         });
+    }
+    if let Some(id) = key.strip_prefix("verifier:") {
+        return (!id.is_empty()).then(|| AgentIdentifier::StageVerifier(id.to_owned()));
     }
     key.strip_prefix("slot:")
         .filter(|slot| !slot.is_empty())
@@ -112,24 +116,31 @@ pub(crate) fn pipeline_step(role: AgentRole) -> Option<&'static str> {
     })
 }
 
-/// Stable tab order (feature 25, section 6): the stages, then support, then
-/// the pipelines' steps in the order of their boxes and steps, then free-form
+/// Stable tab order (feature 25, section 6 & M4): each default stage followed
+/// immediately by its stage verifiers in position order, then support agents,
+/// then the pipelines' steps in the order of their boxes and steps, then free-form
 /// slots in the order they appeared (9.3).
 fn tab_rank(
     agent: &AgentIdentifier,
     arrival: usize,
+    verifiers: &HashMap<AgentIdentifier, (usize, usize)>,
     steps: &HashMap<AgentIdentifier, usize>,
-) -> (u8, usize) {
+) -> (u8, usize, usize) {
     match agent {
         AgentIdentifier::Canonical(role) => match PIPELINE.iter().position(|stage| stage == role) {
-            Some(position) => (0, position),
+            Some(position) => (0, position, 0),
             None => (
                 1,
                 AgentRole::ALL
                     .iter()
                     .position(|candidate| candidate == role)
                     .unwrap_or(usize::MAX),
+                0,
             ),
+        },
+        AgentIdentifier::StageVerifier(_) => match verifiers.get(agent).copied() {
+            Some((stage_index, pos)) => (0, stage_index, 1 + pos),
+            None => (0, usize::MAX, 1 + arrival),
         },
         AgentIdentifier::PipelineStep { .. } => (
             2,
@@ -137,8 +148,9 @@ fn tab_rank(
                 .get(agent)
                 .copied()
                 .unwrap_or(usize::MAX / 2 + arrival),
+            0,
         ),
-        AgentIdentifier::FreeForm(_) => (3, arrival),
+        AgentIdentifier::FreeForm(_) => (3, arrival, 0),
     }
 }
 
@@ -157,6 +169,8 @@ pub(crate) struct AgentDock {
     closed: HashSet<AgentIdentifier>,
     /// The run each agent last started, to tell a new one.
     runs: HashMap<AgentIdentifier, String>,
+    /// Each stage verifier's `(stage_column, position)` for immediate post-stage tab order.
+    verifier_order: HashMap<AgentIdentifier, (usize, usize)>,
     /// Each pipeline step's place: its box, then its step (feature 25).
     step_order: HashMap<AgentIdentifier, usize>,
     /// The run a History row or a unit chose for its agent (feature 25,
@@ -180,6 +194,7 @@ impl Default for AgentDock {
             tabs: Vec::new(),
             closed: HashSet::new(),
             runs: HashMap::new(),
+            verifier_order: HashMap::new(),
             step_order: HashMap::new(),
             chosen_run: None,
             drag: None,
@@ -229,7 +244,12 @@ impl AgentDock {
             .iter()
             .enumerate()
             .filter(|(_, agent)| !self.closed.contains(*agent))
-            .map(|(arrival, agent)| (tab_rank(agent, arrival, &self.step_order), agent.clone()))
+            .map(|(arrival, agent)| {
+                (
+                    tab_rank(agent, arrival, &self.verifier_order, &self.step_order),
+                    agent.clone(),
+                )
+            })
             .collect::<Vec<_>>();
         tabs.sort_by_key(|(rank, _)| *rank);
         tabs.into_iter().map(|(_, agent)| agent).collect()
@@ -287,6 +307,23 @@ impl AgentDock {
         {
             self.chosen_run = None;
         }
+    }
+
+    /// Stage verifiers in `stage_column x position` order (feature 25, M4).
+    pub(crate) fn set_verifier_order(
+        &mut self,
+        verifiers: impl IntoIterator<Item = (AgentIdentifier, usize, usize)>,
+    ) {
+        self.verifier_order = verifiers
+            .into_iter()
+            .enumerate()
+            .map(|(fallback_pos, (agent, stage_index, pos))| {
+                (
+                    agent,
+                    (stage_index, pos.saturating_mul(1024) + fallback_pos),
+                )
+            })
+            .collect();
     }
 
     /// The pipelines' steps in canvas order: boxes, then steps.
@@ -745,6 +782,58 @@ mod tests {
         assert_eq!(
             dock.tabs(),
             vec![backend, learning, first, review, later, slot]
+        );
+    }
+
+    #[test]
+    fn stage_verifiers_round_trip_keys_and_follow_their_stage_in_tabs() {
+        let verifier = AgentIdentifier::StageVerifier("ver-1".into());
+        assert_eq!(agent_key(&verifier), "verifier:ver-1");
+        assert_eq!(agent_from_key("verifier:ver-1"), Some(verifier.clone()));
+        assert_eq!(agent_from_key("verifier:"), None);
+        assert_eq!(
+            AgentIdentifier::from_automation_slot("verifier:proj-1:ver-1"),
+            Some(verifier.clone())
+        );
+
+        let mut dock = AgentDock::default();
+        let now = Instant::now();
+        let verifier_0 = AgentIdentifier::StageVerifier("ver-code-0".into());
+        let verifier_1 = AgentIdentifier::StageVerifier("ver-code-1".into());
+        let step = AgentIdentifier::PipelineStep {
+            pipeline_id: "p1".into(),
+            step_id: "s1".into(),
+        };
+        let slot = AgentIdentifier::FreeForm("free-1".into());
+        let intake = AgentIdentifier::Canonical(AgentRole::IntakeRouter);
+        let code = AgentIdentifier::Canonical(AgentRole::BackendAgent);
+        let test_agent = AgentIdentifier::Canonical(AgentRole::TestAgent);
+        let learning = AgentIdentifier::Canonical(AgentRole::LearningAgent);
+        dock.set_verifier_order([(verifier_0.clone(), 3, 0), (verifier_1.clone(), 3, 1)]);
+        dock.set_step_order([step.clone()]);
+        for (agent, run) in [
+            (slot.clone(), "r1"),
+            (step.clone(), "r2"),
+            (learning.clone(), "r3"),
+            (test_agent.clone(), "r4"),
+            (verifier_1.clone(), "r5"),
+            (code.clone(), "r6"),
+            (verifier_0.clone(), "r7"),
+            (intake.clone(), "r8"),
+        ] {
+            dock.note_run(
+                agent,
+                run,
+                TerminalRunStatus::Running,
+                Priority::Pipeline,
+                now,
+            );
+        }
+        assert_eq!(
+            dock.tabs(),
+            vec![
+                intake, code, verifier_0, verifier_1, test_agent, learning, step, slot,
+            ]
         );
     }
 }

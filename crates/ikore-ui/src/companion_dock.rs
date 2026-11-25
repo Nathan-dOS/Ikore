@@ -1257,10 +1257,26 @@ impl AppModel {
                             feedback, decision: match action { "approve" => HitlDecision::Approve, "reject" => HitlDecision::Reject, _ => HitlDecision::RequestRevision },
                         }).map(|_| ())
                     }
-                    "retry" | "revision" | "abort" => core.persistence().resolve_stage_failure(ResolveStageFailureRequest {
+                    "retry" | "revision" | "continue_anyway" | "abort" => core.persistence().resolve_stage_failure(ResolveStageFailureRequest {
                         checkpoint_id: checkpoint, expected_state_version: decision.state_version, feedback,
-                        decision: match action { "retry" => StageFailureDecision::RetryStage, "abort" => StageFailureDecision::Abort, _ => StageFailureDecision::RequestRevision },
+                        decision: match action {
+                            "retry" => StageFailureDecision::RetryStage,
+                            "continue_anyway" => StageFailureDecision::ContinueAnyway,
+                            "abort" => StageFailureDecision::Abort,
+                            _ => StageFailureDecision::RequestRevision,
+                        },
                     }).map(|_| ()),
+                    "retry_verifier" | "skip_verifier" => core.persistence().resolve_verification_error_checkpoint(
+                        ikore_core::stage_verifiers::ResolveVerificationErrorRequest {
+                            checkpoint_id: checkpoint,
+                            expected_state_version: decision.state_version,
+                            decision: if action == "retry_verifier" {
+                                ikore_core::stage_verifiers::VerificationErrorDecision::RetryVerifier
+                            } else {
+                                ikore_core::stage_verifiers::VerificationErrorDecision::SkipVerifier
+                            },
+                        },
+                    ).map(|_| ()),
                     "grant" => {
                         let scope = scope.ok_or_else(|| invalid("Open the full review to inspect the current scope request."))?;
                         core.persistence().grant_scope_and_retry(ikore_core::orchestration::mandate::ScopeGrantCommandV1 {

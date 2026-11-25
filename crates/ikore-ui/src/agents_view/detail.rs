@@ -239,9 +239,11 @@ pub(super) fn agent_detail_panel(
                     .into_any_element(),
             }
         }
-        Some(AgentIdentifier::PipelineStep { .. }) | None => panel
-            .child(empty_state("Select or create an agent."))
-            .into_any_element(),
+        Some(AgentIdentifier::PipelineStep { .. } | AgentIdentifier::StageVerifier(_)) | None => {
+            panel
+                .child(empty_state("Select or create an agent."))
+                .into_any_element()
+        }
     }
 }
 

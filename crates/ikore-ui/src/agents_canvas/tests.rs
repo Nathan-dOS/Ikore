@@ -35,6 +35,7 @@ fn input(free_forms: usize, archived: usize) -> LayoutInput {
     loose.extend((0..free_forms).map(|index| format!("slot:free-{index}")));
     LayoutInput {
         stages: stages(),
+        verifiers: Vec::new(),
         loose,
         ghost: free_forms < FREE_FORM_LIMIT,
         archived,
@@ -393,4 +394,81 @@ fn a_moving_node_stretches_along_its_motion() {
     let (factor, direction) = physics.stretch(7);
     assert!(factor > 1.0 && factor <= 1.16);
     assert!(direction.x < 0.0, "heading home, to the left");
+}
+
+#[test]
+fn empty_verifiers_keep_default_layout_unchanged() {
+    let baseline = layout(&input(2, 1));
+    assert!(
+        baseline
+            .nodes
+            .iter()
+            .all(|node| node.kind != NodeKind::Verifier)
+    );
+    assert!(
+        baseline
+            .edges
+            .iter()
+            .all(|edge| edge.style == super::layout::EdgeStyle::Line)
+    );
+}
+
+#[test]
+fn verifiers_stack_vertically_with_dotted_edges_and_push_loose_rows_down() {
+    use super::constants::{VERIFIER_GAP, VERIFIER_TOP_GAP};
+    use super::layout::{EdgeStyle, VerifierNodeInput};
+
+    let base = layout(&input(1, 0));
+    let mut with_verifiers = input(1, 0);
+    with_verifiers.verifiers = vec![
+        VerifierNodeInput {
+            key: "verifier:v1".into(),
+            stage_index: 3,
+        },
+        VerifierNodeInput {
+            key: "verifier:v2".into(),
+            stage_index: 3,
+        },
+    ];
+    let canvas = layout(&with_verifiers);
+    let code_idx = canvas.index_of("role:backend_agent").unwrap();
+    let v1_idx = canvas.index_of("verifier:v1").unwrap();
+    let v2_idx = canvas.index_of("verifier:v2").unwrap();
+    let code = &canvas.nodes[code_idx];
+    let v1 = &canvas.nodes[v1_idx];
+    let v2 = &canvas.nodes[v2_idx];
+
+    assert_eq!(v1.kind, NodeKind::Verifier);
+    assert_eq!(v1.home.x, code.home.x);
+    assert_eq!(v1.home.y, code.home.bottom() + VERIFIER_TOP_GAP);
+    assert_eq!(v2.home.x, code.home.x);
+    assert_eq!(v2.home.y, v1.home.bottom() + VERIFIER_GAP);
+
+    assert!(canvas.edges.contains(&super::layout::EdgeLayout {
+        from: code_idx,
+        to: v1_idx,
+        style: EdgeStyle::Dotted,
+    }));
+    assert!(canvas.edges.contains(&super::layout::EdgeLayout {
+        from: v1_idx,
+        to: v2_idx,
+        style: EdgeStyle::Dotted,
+    }));
+
+    let loose_v = canvas
+        .nodes
+        .iter()
+        .find(|n| n.kind == NodeKind::Loose)
+        .unwrap();
+    assert!(loose_v.home.y > v2.home.bottom());
+    let base_loose = base
+        .nodes
+        .iter()
+        .find(|n| n.kind == NodeKind::Loose)
+        .unwrap();
+    assert!(loose_v.home.y > base_loose.home.y);
+    assert!(canvas.boxes[0].rect.contains(v2.home));
+    assert_eq!(canvas.neighbour(code_idx, Direction::Down), Some(v1_idx));
+    assert_eq!(canvas.neighbour(v1_idx, Direction::Down), Some(v2_idx));
+    assert_eq!(canvas.neighbour(v2_idx, Direction::Up), Some(v1_idx));
 }

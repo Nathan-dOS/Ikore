@@ -432,6 +432,7 @@ pub struct StageExecutionInput {
     pub runtime_db_path: String,
     pub handoff: Option<crate::orchestration::StageHandoffV1>,
     pub previous_attempt: Option<PreviousAttempt>,
+    pub verification_findings: Vec<crate::stage_verifiers::StageVerificationFinding>,
     /// The agent run this execution reports into. Without it a CLI process
     /// cannot be joined back to the attempt that consumed it, and a rejected
     /// output can only be matched to its process by guessing on timestamps.
@@ -1182,6 +1183,15 @@ fn build_stage_prompt(
             ));
             prompt.push_str("Fix ONLY what the error above describes. Preserve every other decision, artifact, and piece of content from the previous attempt unless the error specifically requires changing it. Return the complete corrected JSON matching the schema below in full - never a diff or partial output.\n\n");
         }
+    }
+
+    if !input.verification_findings.is_empty() {
+        prompt.push_str(
+            &crate::stage_verifiers::prompt::render_verification_findings_section(
+                &input.verification_findings,
+            ),
+        );
+        prompt.push('\n');
     }
 
     prompt.push_str("## Output schema\n");
@@ -2859,6 +2869,7 @@ mod m4_context_tests {
             runtime_db_path: root.join("test.db").to_str().unwrap().into(),
             handoff: None,
             previous_attempt: None,
+            verification_findings: Vec::new(),
             agent_run_id: None,
         }
     }
@@ -3179,6 +3190,7 @@ mod prompt_tests {
             runtime_db_path: ":memory:".into(),
             handoff,
             previous_attempt: None,
+            verification_findings: Vec::new(),
             agent_run_id: None,
         }
     }
@@ -3575,5 +3587,37 @@ mod prompt_tests {
     fn clip_text_handles_the_degenerate_budget_and_short_ascii() {
         assert_eq!(clip_text("short", 100), "short");
         assert_eq!(clip_text("abc", 0), "\n...[truncated]");
+    }
+
+    #[test]
+    fn verification_findings_render_with_verifier_provenance_only_when_present() {
+        let base = input(
+            "Code",
+            Some(handoff(PulsationStage::Code, Some(manifest()))),
+        );
+        let gen1 = build_stage_prompt(&base, &[], &stage_output_schema()).unwrap();
+        assert!(!gen1.contains("## Verification findings"));
+
+        let finding = crate::stage_verifiers::StageVerificationFinding {
+            verifier_label: "Security gate".into(),
+            summary: "Missing validation".into(),
+            findings: vec![crate::stage_verifiers::VerdictFinding {
+                id: "F1".into(),
+                severity: crate::stage_verifiers::FindingSeverity::Blocking,
+                message: "Validate path traversal".into(),
+                file: Some("src/lib.rs".into()),
+                line: Some(18),
+                suggestion: None,
+                file_not_found: false,
+            }],
+        };
+        let with_findings = StageExecutionInput {
+            verification_findings: vec![finding],
+            ..base
+        };
+        let gen2 = build_stage_prompt(&with_findings, &[], &stage_output_schema()).unwrap();
+        assert!(gen2.contains("## Verification findings"));
+        assert!(gen2.contains("> provenance: agent_output · stage/verifier"));
+        assert!(gen2.contains("Validate path traversal"));
     }
 }

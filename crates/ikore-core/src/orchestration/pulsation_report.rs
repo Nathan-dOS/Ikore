@@ -23,8 +23,9 @@ use crate::reports::{
     self, FileChange, LineCounts, PulsationReport, ReportCheck, ReportConvergence,
     ReportCoverageRow, ReportCriterion, ReportFile, ReportGap, ReportLayer, ReportLayerItem,
     ReportLayers, ReportOutcome, ReportProvenance, ReportReview, ReportRisk, ReportSubject,
-    analysis,
+    ReportVerificationFinding, ReportVerificationRun, ReportVerifications, analysis,
 };
+use crate::stage_verifiers::{FindingSeverity, StageVerdictV1, parse_verifier_config};
 use coordination::invalid;
 
 /// The latest Integrator execution's recorded inputs, without hashes.
@@ -196,6 +197,7 @@ impl PersistenceService {
                 .collect(),
         });
         report.provenance = Self::report_provenance(&self.connection()?, &pulse)?;
+        report.verifications = report_verifications(&self.connection()?, &pulse)?;
         Ok(report)
     }
 
@@ -525,6 +527,129 @@ fn report_files(
         }
     }
     Ok(files)
+}
+
+fn verification_stage_order(stage: &str) -> usize {
+    match stage {
+        "Intake" => 0,
+        "Specification" | "SPECIFICATION" => 1,
+        "Contract" => 2,
+        "Code" => 3,
+        "Test" => 4,
+        "Integrator" => 5,
+        _ => 6,
+    }
+}
+
+/// Loads all persisted stage verifier runs (plus any `Continue anyway`
+/// justification for overridden generations) for the HTML report.
+fn report_verifications(
+    db: &Connection,
+    pulsation_id: &str,
+) -> Result<Option<ReportVerifications>, PersistenceServiceError> {
+    let mut stmt = db.prepare(
+        "SELECT r.stage,r.stage_generation,r.attempt,r.config_json,r.status,
+                r.verdict_json,r.error,COALESCE(v.label,'Verifier'),
+                (SELECT f.justification
+                   FROM stage_failure_requests f
+                   JOIN checkpoints c ON c.id=f.checkpoint_id
+                  WHERE f.pulsation_id=r.pulsation_id
+                    AND c.purpose='stage_failure'
+                    AND c.generation=r.stage_generation
+                    AND (c.stage=r.stage OR (c.stage='Specification' AND r.stage='SPECIFICATION'))
+                    AND f.failure_class='verification_rejected'
+                    AND f.decision='continue_anyway'
+                  ORDER BY f.resolved_at DESC LIMIT 1)
+           FROM stage_verifier_runs r
+           LEFT JOIN stage_verifiers v ON v.id=r.verifier_id
+          WHERE r.pulsation_id=?1
+          ORDER BY r.stage_generation ASC,
+                   COALESCE(json_extract(r.config_json,'$.position'),0) ASC,
+                   r.created_at ASC,r.attempt ASC,r.rowid ASC",
+    )?;
+    let raw_rows = stmt
+        .query_map([pulsation_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, String>(7)?,
+                row.get::<_, Option<String>>(8)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    if raw_rows.is_empty() {
+        return Ok(None);
+    }
+    let mut keyed: Vec<(usize, u64, i64, ReportVerificationRun)> =
+        Vec::with_capacity(raw_rows.len());
+    for (
+        stage,
+        stage_generation,
+        attempt,
+        config_json,
+        status,
+        verdict_json,
+        error,
+        fallback_label,
+        justification,
+    ) in raw_rows
+    {
+        let cfg = parse_verifier_config(&config_json).ok();
+        let verifier_label = cfg
+            .as_ref()
+            .map(|c| c.label.clone())
+            .unwrap_or(fallback_label);
+        let advisory = cfg.as_ref().is_some_and(|c| c.is_advisory());
+        let position = cfg.as_ref().map(|c| c.position).unwrap_or(0);
+        let parsed_verdict = verdict_json
+            .as_deref()
+            .and_then(|json| serde_json::from_str::<StageVerdictV1>(json).ok());
+        let summary = parsed_verdict.as_ref().map(|v| v.summary.clone());
+        let findings = parsed_verdict
+            .map(|v| {
+                v.findings
+                    .into_iter()
+                    .map(|finding| ReportVerificationFinding {
+                        severity: match finding.severity {
+                            FindingSeverity::Blocking => "blocking".to_owned(),
+                            FindingSeverity::Warning => "warning".to_owned(),
+                            FindingSeverity::Note => "note".to_owned(),
+                        },
+                        message: finding.message,
+                        file: finding.file,
+                        line: finding.line,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let override_justification = (status == "overridden").then_some(justification).flatten();
+        let gen_u64 = stage_generation.max(1) as u64;
+        keyed.push((
+            verification_stage_order(&stage),
+            gen_u64,
+            position,
+            ReportVerificationRun {
+                stage,
+                stage_generation: gen_u64,
+                attempt: attempt.max(1) as u64,
+                verifier_label,
+                status,
+                advisory,
+                summary,
+                findings,
+                error,
+                override_justification,
+            },
+        ));
+    }
+    keyed.sort_by_key(|(stage_ord, gen_u64, pos, run)| (*stage_ord, *gen_u64, *pos, run.attempt));
+    let runs = keyed.into_iter().map(|(_, _, _, run)| run).collect();
+    Ok(Some(ReportVerifications { runs }))
 }
 
 #[cfg(test)]

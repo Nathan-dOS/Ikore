@@ -156,6 +156,14 @@ mod custom_pipeline_tests;
 mod custom_pipeline_trigger_tests;
 #[path = "custom_pipelines/triggers.rs"]
 mod custom_pipeline_triggers;
+// Feature 25 (M4): stage verifiers behind project Labs.
+#[path = "stage_verifiers/engine.rs"]
+mod stage_verifier_engine;
+#[path = "stage_verifiers/store.rs"]
+mod stage_verifier_store;
+#[cfg(test)]
+#[path = "stage_verifiers/tests.rs"]
+mod stage_verifier_tests;
 #[path = "orchestration/visualizer.rs"]
 mod visualizer;
 // ADR-037 baseline: ignored measurements, rerun at each milestone.
@@ -601,12 +609,15 @@ impl AgentDockSession {
                 step.split_once('/').is_some_and(|(pipeline, step)| {
                     plain(pipeline) && plain(step) && !step.contains('/')
                 })
+            } else if let Some(verifier) = agent.strip_prefix("verifier:") {
+                // A stage verifier of the project (feature 25 M4).
+                plain(verifier)
             } else {
                 false
             };
             if !known {
                 return Err(
-                    "agentDock.agent must be `role:<agent role>`, `slot:<id>` or `pipeline:<pipeline>/<step>`."
+                    "agentDock.agent must be role:<agent role>, slot:<id>, pipeline:<pipeline>/<step>, or verifier:<id>."
                         .to_string(),
                 );
             }
@@ -745,6 +756,8 @@ pub enum StageFailureDecision {
     RetryStage,
     /// Re-enter at `failure_revision_target(stage)` with the operator's own prose.
     RequestRevision,
+    /// Override a `VerificationRejected` failure checkpoint and accept the candidate.
+    ContinueAnyway,
     /// What used to happen automatically: the pulsation becomes terminal.
     Abort,
 }
@@ -754,6 +767,7 @@ impl StageFailureDecision {
         match self {
             Self::RetryStage => "retry_stage",
             Self::RequestRevision => "request_revision",
+            Self::ContinueAnyway => "continue_anyway",
             Self::Abort => "abort",
         }
     }
@@ -904,6 +918,8 @@ pub struct PulsationRuntimeSnapshot {
     pub main_agents_count: usize,
     pub hitl_checkpoints: Vec<HitlCheckpoint>,
     pub failure_checkpoints: Vec<StageFailureCheckpoint>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub verification_error_checkpoints: Vec<crate::stage_verifiers::VerificationErrorCheckpoint>,
     pub pulsations: Vec<Pulsation>,
     pub hitl_waiting_count: usize,
     pub failure_waiting_count: usize,
@@ -1098,6 +1114,8 @@ pub struct StageFailureCheckpoint {
     pub diagnostic: String,
     pub allow_retry: bool,
     pub allow_revision: bool,
+    #[serde(default)]
+    pub allow_continue_anyway: bool,
     pub revision_stage: Option<PulsationStage>,
     pub attempts: i64,
     pub state_version: u64,
@@ -1147,6 +1165,7 @@ struct WaitingFailure {
     class_raw: String,
     allow_retry: bool,
     allow_revision: bool,
+    allow_continue_anyway: bool,
     revision_stage_raw: Option<String>,
     error_code: String,
     stage_execution_id: Option<String>,
@@ -3638,7 +3657,8 @@ impl PersistenceService {
             "SELECT c.id,c.pulsation_id,p.project_id,p.feature_name,f.stage,f.failure_class,
                     f.error_code,f.diagnostic,f.allow_retry,f.allow_revision,f.revision_stage,
                     COALESCE(j.attempts,0),p.state_version,c.created_at,
-                    f.allowed_revision_targets_json,f.remaining_budget_json,f.stage_execution_id
+                    f.allowed_revision_targets_json,f.remaining_budget_json,f.stage_execution_id,
+                    f.allow_continue_anyway
              FROM stage_failure_requests f
              JOIN checkpoints c ON c.id=f.checkpoint_id
              JOIN pulsations p ON p.id=f.pulsation_id
@@ -3679,6 +3699,7 @@ impl PersistenceService {
                 diagnostic: row.get(7)?,
                 allow_retry: row.get::<_, i64>(8)? != 0,
                 allow_revision: row.get::<_, i64>(9)? != 0,
+                allow_continue_anyway: row.get::<_, i64>(17)? != 0,
                 revision_stage: revision_stage
                     .as_deref()
                     .and_then(PulsationStage::from_db_value),
@@ -3786,6 +3807,11 @@ impl PersistenceService {
                 "Feedback excede 16.000 caracteres.".to_string(),
             ));
         }
+        let sanitized_justification = if request.decision == StageFailureDecision::ContinueAnyway {
+            Self::sanitize_continue_anyway_justification(request.feedback.as_deref())?
+        } else {
+            None
+        };
         let mut connection = self.connection()?;
         let transaction =
             connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -3796,6 +3822,7 @@ impl PersistenceService {
             class_raw,
             allow_retry,
             allow_revision,
+            allow_continue_anyway,
             revision_stage_raw,
             error_code,
             stage_execution_id,
@@ -3809,6 +3836,7 @@ impl PersistenceService {
         let permitted = match request.decision {
             StageFailureDecision::RetryStage => allow_retry,
             StageFailureDecision::RequestRevision => allow_revision,
+            StageFailureDecision::ContinueAnyway => allow_continue_anyway,
             StageFailureDecision::Abort => true,
         };
         if !permitted {
@@ -3850,7 +3878,9 @@ impl PersistenceService {
         let checkpoint_status = match request.decision {
             StageFailureDecision::Abort => CheckpointStatus::Rejected,
             StageFailureDecision::RequestRevision => CheckpointStatus::RevisionRequested,
-            StageFailureDecision::RetryStage => CheckpointStatus::Approved,
+            StageFailureDecision::RetryStage | StageFailureDecision::ContinueAnyway => {
+                CheckpointStatus::Approved
+            }
         };
         transaction.execute(
             "UPDATE checkpoints SET status=?2,updated_at=?3 WHERE id=?1",
@@ -3870,6 +3900,7 @@ impl PersistenceService {
         )?;
 
         let mut cancellation_ids = Vec::new();
+        let mut cancelled_verifiers = Vec::new();
         let result = match request.decision {
             StageFailureDecision::Abort => {
                 cancellation_ids = transaction
@@ -3885,6 +3916,8 @@ impl PersistenceService {
                      WHERE pulsation_id=?1 AND status IN ('pending','running','interrupted')",
                     params![pulsation_id, now],
                 )?;
+                cancelled_verifiers =
+                    Self::cancel_stage_verifiers_in_tx(&transaction, &pulsation_id, &now)?;
                 let mut updated = Self::transition_pulsation(
                     &transaction,
                     &current,
@@ -3923,8 +3956,26 @@ impl PersistenceService {
                 updated
             }
             StageFailureDecision::RetryStage => {
-                Self::resume_failed_stage(&transaction, &current, stage, &producer_job_id, &now)?
+                if class == crate::orchestration::FailureClass::VerificationRejected {
+                    Self::apply_verification_retry_in_tx(&transaction, &current, stage)?
+                } else {
+                    Self::resume_failed_stage(
+                        &transaction,
+                        &current,
+                        stage,
+                        &producer_job_id,
+                        &now,
+                    )?
+                }
             }
+            StageFailureDecision::ContinueAnyway => Self::apply_verification_continue_anyway_in_tx(
+                &transaction,
+                checkpoint_id,
+                &current,
+                stage,
+                sanitized_justification.as_deref(),
+                &now,
+            )?,
             StageFailureDecision::RequestRevision => {
                 let target_raw = revision_stage_raw.ok_or_else(|| {
                     PersistenceServiceError::Runtime(
@@ -4012,6 +4063,11 @@ impl PersistenceService {
                 updated
             }
         };
+        let receipt_feedback = if request.decision == StageFailureDecision::ContinueAnyway {
+            sanitized_justification.as_deref()
+        } else {
+            request.feedback.as_deref()
+        };
         Self::record_approval_receipt(
             &transaction,
             mandate_persistence::ReceiptInput {
@@ -4023,13 +4079,14 @@ impl PersistenceService {
                 state_version: request.expected_state_version,
                 reviewed: Vec::new(),
                 confirmed_paths: Vec::new(),
-                feedback: request.feedback.as_deref(),
+                feedback: receipt_feedback,
             },
         )?;
         transaction.commit()?;
         for job_id in cancellation_ids {
             self.request_job_cancellation(&job_id);
         }
+        self.cancel_verifier_tokens(&cancelled_verifiers);
         self.wake_scheduler();
         Ok(ResolveStageFailureResponse { pulsation: result })
     }
@@ -4046,7 +4103,7 @@ impl PersistenceService {
             .query_row(
                 "SELECT c.pulsation_id,f.stage,f.job_id,f.failure_class,f.allow_retry,
                         f.allow_revision,f.revision_stage,f.error_code,f.stage_execution_id,
-                        f.allowed_revision_targets_json
+                        f.allowed_revision_targets_json,f.allow_continue_anyway
                  FROM stage_failure_requests f
                  JOIN checkpoints c ON c.id=f.checkpoint_id
                  JOIN pulsations p ON p.id=f.pulsation_id
@@ -4064,6 +4121,7 @@ impl PersistenceService {
                         class_raw: row.get(3)?,
                         allow_retry: row.get::<_, i64>(4)? != 0,
                         allow_revision: row.get::<_, i64>(5)? != 0,
+                        allow_continue_anyway: row.get::<_, i64>(10)? != 0,
                         revision_stage_raw: row.get(6)?,
                         error_code: row.get(7)?,
                         stage_execution_id: row.get(8)?,
@@ -4217,6 +4275,8 @@ impl PersistenceService {
                     .collect::<Result<Vec<_>, _>>()?
                 },
                 failure_checkpoints: Self::stage_failure_checkpoints(&connection, &project_id)?,
+                verification_error_checkpoints:
+                    Self::open_verification_error_checkpoints_for_project(&connection, &project_id)?,
                 pulsations,
                 hitl_waiting_count: hitl_waiting_count.max(0) as usize,
                 failure_waiting_count: failure_waiting_count.max(0) as usize,
@@ -4852,11 +4912,13 @@ impl PersistenceService {
         tx.execute("UPDATE checkpoints SET status='rejected',updated_at=?2 WHERE pulsation_id=?1 AND status='waiting'",params![pulse,now])?;
         tx.execute("UPDATE stage_failure_requests SET decision='abort',resolved_at=?2,updated_at=?2 WHERE pulsation_id=?1 AND decision IS NULL",params![pulse,now])?;
         tx.execute("UPDATE cli_fallback_requests SET decision='cancel',resolved_at=?2,updated_at=?2 WHERE pulsation_id=?1 AND decision IS NULL",params![pulse,now])?;
+        let cancelled_verifiers = Self::cancel_stage_verifiers_in_tx(&tx, &pulse, &now)?;
         Self::enqueue_learning(&tx, &pulse)?;
         tx.commit()?;
         for id in &ids {
             self.request_job_cancellation(id);
         }
+        self.cancel_verifier_tokens(&cancelled_verifiers);
         self.wake_scheduler();
         Ok(CancelPulsationJobsResponse {
             cancelled_jobs: ids.len(),
@@ -6477,10 +6539,14 @@ impl PersistenceService {
                 )
                 .await;
         }
-        let mut handoff = self.load_stage_handoff(
-            &Self::execution_fence(&connection, &job.id)?,
+        let fence = Self::execution_fence(&connection, &job.id)?;
+        let mut handoff =
+            self.load_stage_handoff(&fence, stage, runtime_config.context_chars_limit)?;
+        let verification_findings = crate::stage_verifiers::prompt::load_latest_rejected_findings(
+            &connection,
+            &current.id,
             stage,
-            runtime_config.context_chars_limit,
+            fence.generation,
         )?;
         if stage == PulsationStage::Specification {
             handoff = self
@@ -6526,6 +6592,7 @@ impl PersistenceService {
             workspace_path: project.workspace_path.clone(),
             runtime_db_path: self.db_path.to_string_lossy().to_string(),
             previous_attempt,
+            verification_findings,
             agent_run_id: Some(agent_run_id.to_string()),
         };
 

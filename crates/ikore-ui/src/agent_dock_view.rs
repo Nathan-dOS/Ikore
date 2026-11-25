@@ -108,6 +108,20 @@ pub(crate) fn summarize(model: &AppModel, agent: &AgentIdentifier, cx: &App) -> 
                     .is_some_and(|slot| slot.slot.execution_mode == AgentExecutionMode::ApiDirect),
             }
         }
+        AgentIdentifier::StageVerifier(verifier_id) => {
+            let slot = agents.verifier_slot(verifier_id);
+            let verifier = agents.verifier(verifier_id);
+            AgentSummary {
+                agent: agent.clone(),
+                label: agents.verifier_tab_label(verifier_id),
+                color: theme::purple(),
+                run: slot.and_then(|slot| slot.recent_runs.first().cloned()),
+                api: verifier.is_some_and(|v| {
+                    v.agent.transport == ikore_core::custom_pipelines::StepTransport::Api
+                }) || slot
+                    .is_some_and(|slot| slot.slot.execution_mode == AgentExecutionMode::ApiDirect),
+            }
+        }
     }
 }
 
@@ -134,6 +148,9 @@ fn agent_runs(model: &AppModel, agent: &AgentIdentifier, cx: &App) -> Vec<Termin
             step_id,
         } => agents
             .automation_slot(pipeline_id, step_id)
+            .map(|candidate| candidate.recent_runs.clone()),
+        AgentIdentifier::StageVerifier(verifier_id) => agents
+            .verifier_slot(verifier_id)
             .map(|candidate| candidate.recent_runs.clone()),
     }
     .unwrap_or_default()
