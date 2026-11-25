@@ -5811,6 +5811,7 @@ impl AppModel {
             custom_executable: config.custom_executable,
             custom_args: config.custom_args,
             custom_risk_ack: config.custom_risk_ack,
+            cli_silence_timeout_ms: config.cli_silence_timeout_ms,
             expected_version: config.version,
         };
         let generation = self.agents.update(cx, |agents, _| agents.begin(false));

@@ -1920,6 +1920,7 @@ fn active_agent_cli_backend_resolves_only_for_configured_cli_process_agents() {
             custom_executable: None,
             custom_args: vec![],
             custom_risk_ack: false,
+            cli_silence_timeout_ms: None,
             expected_version: backend_agent.version,
         })
         .unwrap();

@@ -773,6 +773,8 @@ pub struct CliAgentConfig {
     pub custom_executable: Option<String>,
     pub custom_args: Vec<String>,
     pub custom_risk_ack: bool,
+    #[serde(default)]
+    pub cli_silence_timeout_ms: Option<u64>,
     pub version: u64,
     pub created_at: String,
     pub updated_at: String,
@@ -796,6 +798,8 @@ pub struct UpdateCliAgentConfigRequest {
     pub custom_args: Vec<String>,
     #[serde(default)]
     pub custom_risk_ack: bool,
+    #[serde(default)]
+    pub cli_silence_timeout_ms: Option<u64>,
     pub expected_version: u64,
 }
 
@@ -1169,7 +1173,7 @@ impl TerminalRepository {
         let mut statement = connection.prepare(
             "SELECT project_id,agent_role,execution_mode,backend,model,thinking_level,
                     custom_executable,custom_args_json,custom_risk_ack,version,created_at,updated_at,
-                    model_profile,model_source
+                    model_profile,model_source,cli_silence_timeout_ms
              FROM cli_agent_configs WHERE project_id=?1 ORDER BY rowid",
         )?;
         let rows = statement.query_map([project_id], map_config)?;
@@ -1182,6 +1186,14 @@ impl TerminalRepository {
         mut request: UpdateCliAgentConfigRequest,
     ) -> Result<CliAgentConfig, TerminalError> {
         request.project_id = required(&request.project_id, "projectId")?.to_string();
+        if request
+            .cli_silence_timeout_ms
+            .is_some_and(|v| !(30_000..=900_000).contains(&v))
+        {
+            return Err(TerminalError::Validation(
+                "CLI silence timeout must be between 30 and 900 seconds".into(),
+            ));
+        }
         request.model = normalize_model_id(request.model)?;
         request.model_profile = normalize_model_profile(request.model_profile)?;
         validate_model_selection(
@@ -1242,7 +1254,7 @@ impl TerminalRepository {
             "UPDATE cli_agent_configs SET
                execution_mode=?1,backend=?2,model=?3,thinking_level=?4,
                custom_executable=?5,custom_args_json=?6,custom_risk_ack=?7,
-               version=version+1,updated_at=?8,model_profile=?9,model_source=?10
+               version=version+1,updated_at=?8,model_profile=?9,model_source=?10,cli_silence_timeout_ms=?14
              WHERE project_id=?11 AND agent_role=?12 AND version=?13",
             params![
                 request.execution_mode.as_str(),
@@ -1258,6 +1270,7 @@ impl TerminalRepository {
                 request.project_id,
                 request.agent_role.as_str(),
                 request.expected_version,
+                request.cli_silence_timeout_ms,
             ],
         )?;
         if changed == 0 {
@@ -1306,7 +1319,7 @@ impl TerminalRepository {
             .query_row(
                 "SELECT project_id,agent_role,execution_mode,backend,model,thinking_level,
                         custom_executable,custom_args_json,custom_risk_ack,version,created_at,updated_at,
-                        model_profile,model_source
+                        model_profile,model_source,cli_silence_timeout_ms
                  FROM cli_agent_configs WHERE project_id=?1 AND agent_role=?2",
                 params![project_id, role.as_str()],
                 map_config,
@@ -3188,6 +3201,7 @@ fn map_config(row: &rusqlite::Row<'_>) -> rusqlite::Result<CliAgentConfig> {
             )
         })?,
         custom_risk_ack: row.get(8)?,
+        cli_silence_timeout_ms: row.get(14)?,
         version: row.get(9)?,
         created_at: row.get(10)?,
         updated_at: row.get(11)?,
@@ -4158,12 +4172,13 @@ async fn read_bounded_stream<R: AsyncRead + Unpin>(
     mut reader: R,
     abort: CancellationToken,
     max_output_bytes: usize,
-    watchdog: Option<ProgressWatchdog>,
+    watchdog: Option<(ProgressWatchdog, CliBackend, &'static str)>,
     usage: Option<Arc<dyn crate::host::TerminalUsageRecorder>>,
 ) -> Result<Vec<u8>, std::io::Error> {
     let mut output = Vec::new();
     let mut buffer = [0u8; 4096];
     let mut usage_offset = 0usize;
+    let mut frame_offset = 0usize;
     loop {
         let read = match reader.read(&mut buffer).await {
             Ok(read) => read,
@@ -4173,6 +4188,11 @@ async fn read_bounded_stream<R: AsyncRead + Unpin>(
             }
         };
         if read == 0 {
+            if let Some((watchdog, backend, stream)) = &watchdog
+                && frame_offset < output.len()
+            {
+                observe_received_frame(watchdog, *backend, stream, &output[frame_offset..]);
+            }
             if let Some(usage) = &usage
                 && let Err(error) = usage.observe_line(&output[usage_offset..])
             {
@@ -4181,8 +4201,8 @@ async fn read_bounded_stream<R: AsyncRead + Unpin>(
             }
             return Ok(output);
         }
-        if let Some(ref watchdog) = watchdog {
-            watchdog.record_progress();
+        if let Some((watchdog, _, _)) = &watchdog {
+            watchdog.record_activity();
         }
         if output.len().saturating_add(read) > max_output_bytes {
             abort.cancel();
@@ -4192,6 +4212,13 @@ async fn read_bounded_stream<R: AsyncRead + Unpin>(
             ));
         }
         output.extend_from_slice(&buffer[..read]);
+        if let Some((watchdog, backend, stream)) = &watchdog {
+            while let Some(newline) = output[frame_offset..].iter().position(|b| *b == b'\n') {
+                let end = frame_offset + newline;
+                observe_received_frame(watchdog, *backend, stream, &output[frame_offset..end]);
+                frame_offset = end + 1;
+            }
+        }
         if let Some(usage) = &usage {
             while let Some(newline) = output[usage_offset..].iter().position(|b| *b == b'\n') {
                 let end = usage_offset + newline;
@@ -4634,6 +4661,16 @@ enum ProcessTermination {
     Exited,
     Cancelled,
     TimedOut(TimeoutReason),
+}
+
+fn cli_silence_policy(mut policy: AgentTimeoutPolicy, silence_ms: u64) -> AgentTimeoutPolicy {
+    policy.inactivity_window_ms = silence_ms;
+    policy.reasoning_silence_window_ms = silence_ms.saturating_mul(3);
+    policy.base_timeout_ms = policy
+        .base_timeout_ms
+        .max(silence_ms)
+        .min(policy.max_timeout_ms);
+    policy
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -6651,7 +6688,16 @@ impl TerminalService {
                 workspace,
                 &combined,
                 deadline,
-                request.dispatch.cli_timeout.map(|budget| budget.policy),
+                if let Some(silence_ms) = config.cli_silence_timeout_ms {
+                    let policy = request
+                        .dispatch
+                        .cli_timeout
+                        .map(|budget| budget.policy)
+                        .unwrap_or_else(|| AgentTimeoutPolicy::for_role(agent_role));
+                    Some(cli_silence_policy(policy, silence_ms))
+                } else {
+                    request.dispatch.cli_timeout.map(|budget| budget.policy)
+                },
                 // An observation trial exists to watch a run without limits.
                 observation_trial
                     .is_none()
@@ -9299,6 +9345,8 @@ async fn run_companion_process(
     }
     let (mut child, process_tree) =
         ProcessTreeJob::spawn(&mut command).map_err(std::io::Error::from)?;
+    let diagnostic_call_id =
+        (usage_context.source_kind == "chat_model_call").then(|| usage_context.source_id.clone());
     let usage = host.create_usage_recorder(&usage_path, usage_context, backend)?;
     if let Some(mut stdin) = child.stdin.take() {
         stdin.write_all(&secured.spec.stdin_payload).await?;
@@ -9325,35 +9373,36 @@ async fn run_companion_process(
         stdout,
         abort.clone(),
         MAX_COMPANION_CLI_OUTPUT_BYTES,
-        Some(watchdog.clone()),
+        Some((watchdog.clone(), backend, "stdout")),
         Some(usage.clone()),
     ));
     let stderr_task = tokio::spawn(read_bounded_stream(
         stderr,
         abort.clone(),
         MAX_COMPANION_CLI_OUTPUT_BYTES,
-        Some(watchdog.clone()),
+        Some((watchdog.clone(), backend, "stderr")),
         None,
     ));
     let termination = tokio::select! {
-        status = child.wait() => (ProcessTermination::Exited, Some(status?)),
+        status = child.wait() => (ProcessTermination::Exited, Some(status?), None),
         _ = cancellation.cancelled() => {
             process_tree.terminate();
             let _ = child.kill().await;
             let _ = child.wait().await;
-            (ProcessTermination::Cancelled, None)
+            (ProcessTermination::Cancelled, None, None)
         }
         reason = watchdog.wait_for_timeout() => {
+            let diagnostic = watchdog.diagnostic();
             process_tree.terminate();
             let _ = child.kill().await;
             let _ = child.wait().await;
-            (ProcessTermination::TimedOut(reason), None)
+            (ProcessTermination::TimedOut(reason), None, Some(diagnostic))
         }
         _ = abort.cancelled() => {
             process_tree.terminate();
             let _ = child.kill().await;
             let _ = child.wait().await;
-            (ProcessTermination::Exited, None)
+            (ProcessTermination::Exited, None, None)
         }
     };
     // Drain both readers before settling accounting, including aborts caused by
@@ -9371,11 +9420,35 @@ async fn run_companion_process(
     {
         usage.mark_partial()?;
     }
+    if let (ProcessTermination::TimedOut(reason), Some(call_id), Some(diagnostic)) = (
+        termination.0,
+        diagnostic_call_id.as_deref(),
+        termination.2.as_deref(),
+    ) {
+        // Diagnostics must never replace the original timeout if persistence fails.
+        if let Ok(connection) =
+            Connection::open_with_flags(&usage_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
+        {
+            let _ = connection.busy_timeout(Duration::from_secs(2));
+            let _ = record_companion_timeout_diagnostic(
+                &connection,
+                call_id,
+                reason,
+                detected_cli_version.as_deref(),
+                diagnostic,
+            );
+        }
+    }
     let stdout = stdout?;
     let stderr = stderr?;
     match termination.0 {
         ProcessTermination::Cancelled => return Err(TerminalError::Cancelled),
-        ProcessTermination::TimedOut(_) => return Err(TerminalError::Timeout),
+        ProcessTermination::TimedOut(TimeoutReason::Inactivity) => {
+            return Err(TerminalError::InactivityTimeout);
+        }
+        ProcessTermination::TimedOut(TimeoutReason::MaxCeiling) => {
+            return Err(TerminalError::Timeout);
+        }
         ProcessTermination::Exited => {}
     }
     let status = termination
@@ -9456,6 +9529,24 @@ async fn run_companion_process(
         output_bytes: stdout.len().saturating_add(stderr.text.len()),
         redaction_count: redaction_count.saturating_add(stderr.count),
     })
+}
+
+fn record_companion_timeout_diagnostic(
+    connection: &Connection,
+    call_id: &str,
+    reason: TimeoutReason,
+    version: Option<&str>,
+    diagnostic: &str,
+) -> rusqlite::Result<()> {
+    // Version output comes from an external program. Keep only a bounded numeric version.
+    let version = version.filter(|v| {
+        !v.is_empty() && v.len() <= 32 && v.bytes().all(|b| b.is_ascii_digit() || b == b'.')
+    });
+    connection.execute(
+        "INSERT OR REPLACE INTO companion_timeout_diagnostics(model_call_id,reason,cli_version,watchdog_diagnostic) VALUES(?1,?2,?3,?4)",
+        params![call_id, reason.as_str(), version, diagnostic],
+    )?;
+    Ok(())
 }
 
 fn companion_stream_output(

@@ -210,6 +210,23 @@ impl ProgressWatchdog {
 mod tests {
     use super::*;
 
+    #[tokio::test(start_paused = true)]
+    async fn companion_waits_120_seconds_for_silent_cli_and_keeps_the_call_ceiling() {
+        let mut policy = AgentTimeoutPolicy::companion();
+        policy.max_timeout_ms = 300_000;
+        let watchdog = ProgressWatchdog::new(policy);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(119), watchdog.wait_for_timeout())
+                .await
+                .is_err()
+        );
+        assert_eq!(watchdog.wait_for_timeout().await, TimeoutReason::Inactivity);
+
+        let watchdog = ProgressWatchdog::new(policy);
+        watchdog.record_reasoning();
+        assert_eq!(watchdog.wait_for_timeout().await, TimeoutReason::MaxCeiling);
+    }
+
     #[test]
     fn cli_budget_separates_initial_timeout_from_absolute_ceiling() {
         let before = std::time::Instant::now();
@@ -244,7 +261,7 @@ mod tests {
     fn test_role_default_policies() {
         let feature = AgentTimeoutPolicy::for_role(AgentRole::FeatureAgent);
         assert_eq!(feature.base_timeout_ms, 300_000);
-        assert_eq!(feature.inactivity_window_ms, 90_000);
+        assert_eq!(feature.inactivity_window_ms, 120_000);
         assert_eq!(feature.max_timeout_ms, 900_000);
         assert_eq!(feature.extension_increment_ms, 30_000);
 
@@ -294,8 +311,8 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_reasoning_turn_is_given_a_wider_silence_window_than_a_stuck_process() {
         let policy = AgentTimeoutPolicy::for_role(AgentRole::Integrator);
-        assert_eq!(policy.inactivity_window_ms, 90_000);
-        assert_eq!(policy.reasoning_silence_window_ms, 270_000);
+        assert_eq!(policy.inactivity_window_ms, 120_000);
+        assert_eq!(policy.reasoning_silence_window_ms, 360_000);
 
         // A silence the plain window would have killed survives once the
         // provider says the model is thinking.

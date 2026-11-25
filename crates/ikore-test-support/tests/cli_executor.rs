@@ -88,6 +88,7 @@ fn harness(custom_args: Vec<String>) -> Harness {
             custom_executable: Some(env!("CARGO_BIN_EXE_cli_fixture").into()),
             custom_args: [vec!["--fixture-model".into(), "haiku".into()], custom_args].concat(),
             custom_risk_ack: true,
+            cli_silence_timeout_ms: None,
             expected_version: current.version,
         })
         .unwrap();
@@ -104,6 +105,7 @@ fn harness(custom_args: Vec<String>) -> Harness {
             custom_executable: custom.custom_executable.clone(),
             custom_args: custom.custom_args.clone(),
             custom_risk_ack: true,
+            cli_silence_timeout_ms: None,
             expected_version: custom.version,
         })
         .unwrap();
@@ -398,6 +400,7 @@ async fn official_adapters_capture_and_resume_the_exact_native_session() {
                 custom_executable: None,
                 custom_args: Vec::new(),
                 custom_risk_ack: false,
+                cli_silence_timeout_ms: None,
                 expected_version: current.version,
             })
             .unwrap();
@@ -487,6 +490,7 @@ async fn a_resume_on_another_model_opens_a_new_session_with_the_earlier_answers(
                 custom_executable: None,
                 custom_args: Vec::new(),
                 custom_risk_ack: false,
+                cli_silence_timeout_ms: None,
                 expected_version: current.version,
             })
             .unwrap();
@@ -614,6 +618,7 @@ async fn claude_sonnet_generation_rejects_haiku_output_and_terminates_the_proces
             custom_executable: None,
             custom_args: Vec::new(),
             custom_risk_ack: false,
+            cli_silence_timeout_ms: None,
             expected_version: current.version,
         })
         .unwrap();
@@ -702,6 +707,7 @@ async fn claude_synthetic_auth_error_reports_login_failure_instead_of_model_mism
             custom_executable: None,
             custom_args: Vec::new(),
             custom_risk_ack: false,
+            cli_silence_timeout_ms: None,
             expected_version: current.version,
         })
         .unwrap();
@@ -811,6 +817,7 @@ async fn claude_run_past_its_output_ceiling_is_killed_and_its_partial_usage_reco
             custom_executable: None,
             custom_args: Vec::new(),
             custom_risk_ack: false,
+            cli_silence_timeout_ms: None,
             expected_version: current.version,
         })
         .unwrap();
@@ -875,6 +882,7 @@ async fn authenticated_claude_model_identity_smoke() {
             custom_executable: None,
             custom_args: Vec::new(),
             custom_risk_ack: false,
+            cli_silence_timeout_ms: None,
             expected_version: current.version,
         })
         .unwrap();
@@ -1019,6 +1027,7 @@ async fn authenticated_antigravity_pipeline_smoke() {
             custom_executable: None,
             custom_args: Vec::new(),
             custom_risk_ack: false,
+            cli_silence_timeout_ms: None,
             expected_version: current.version,
         })
         .unwrap();
@@ -1189,6 +1198,7 @@ async fn authenticated_antigravity_accepts_every_registry_payload_schema() {
             custom_executable: None,
             custom_args: Vec::new(),
             custom_risk_ack: false,
+            cli_silence_timeout_ms: None,
             expected_version: current.version,
         })
         .unwrap();
@@ -1309,6 +1319,7 @@ async fn codex_turn_context_probe(harness: &Harness, role: AgentRole, job_chain:
             custom_executable: None,
             custom_args: Vec::new(),
             custom_risk_ack: false,
+            cli_silence_timeout_ms: None,
             expected_version: current.version,
         })
         .unwrap();
@@ -1949,6 +1960,7 @@ async fn feature_discovery_uses_the_official_cli_adapters_with_isolated_context_
                 custom_executable: None,
                 custom_args: vec![],
                 custom_risk_ack: false,
+                cli_silence_timeout_ms: None,
                 expected_version: config.version,
             })
             .unwrap();
@@ -2032,6 +2044,7 @@ async fn notes_scribe_runs_companion_scoped_under_the_notes_origin() {
                     custom_executable: custom.then(|| env!("CARGO_BIN_EXE_cli_fixture").into()),
                     custom_args: vec![],
                     custom_risk_ack: custom,
+                    cli_silence_timeout_ms: None,
                     expected_version: config.version,
                 })
                 .unwrap();
@@ -2136,6 +2149,7 @@ async fn documentation_reconciler_runs_companion_scoped_under_the_reconciliation
                     custom_executable: custom.then(|| env!("CARGO_BIN_EXE_cli_fixture").into()),
                     custom_args: vec![],
                     custom_risk_ack: custom,
+                    cli_silence_timeout_ms: None,
                     expected_version: config.version,
                 })
                 .unwrap();

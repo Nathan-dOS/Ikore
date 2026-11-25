@@ -101,6 +101,7 @@ fn start(selection: impl Fn(AgentRole) -> (&'static str, &'static str)) -> Harne
                         custom_executable: None,
                         custom_args: Vec::new(),
                         custom_risk_ack: false,
+                        cli_silence_timeout_ms: None,
                         expected_version: current.version,
                     })
                     .unwrap_or_else(|error| panic!("{}: {error}", role.as_str()));

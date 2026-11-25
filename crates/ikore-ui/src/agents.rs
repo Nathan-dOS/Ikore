@@ -1936,6 +1936,7 @@ mod tests {
                     custom_executable: None,
                     custom_args: Vec::new(),
                     custom_risk_ack: false,
+                    cli_silence_timeout_ms: None,
                     version: 1,
                     created_at: "2026-01-01T00:00:00Z".into(),
                     updated_at: "2026-01-01T00:00:00Z".into(),

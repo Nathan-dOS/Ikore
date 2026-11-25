@@ -277,6 +277,17 @@ fn role_timeout_budgets_keep_their_existing_absolute_limits() {
         let policy = AgentTimeoutPolicy::for_role(role);
         let silence = if role == AgentRole::Visualizer {
             60_000
+        } else if matches!(
+            role,
+            AgentRole::FeatureAgent
+                | AgentRole::TaskSpecifier
+                | AgentRole::ContractAgent
+                | AgentRole::Integrator
+                | AgentRole::BackendAgent
+                | AgentRole::TestAgent
+                | AgentRole::LearningAgent
+        ) {
+            120_000
         } else {
             90_000
         };
@@ -291,8 +302,12 @@ fn role_timeout_budgets_keep_their_existing_absolute_limits() {
             policy
         );
     }
-    assert_eq!(AgentTimeoutPolicy::companion().base_timeout_ms, 120_000);
-    assert_eq!(AgentTimeoutPolicy::companion().max_timeout_ms, 600_000);
+    assert_eq!(AgentTimeoutPolicy::companion().base_timeout_ms, 300_000);
+    assert_eq!(
+        AgentTimeoutPolicy::companion().inactivity_window_ms,
+        120_000
+    );
+    assert_eq!(AgentTimeoutPolicy::companion().max_timeout_ms, 300_000);
     assert_eq!(AgentTimeoutPolicy::manual().base_timeout_ms, 1_800_000);
     assert_eq!(AgentTimeoutPolicy::manual().max_timeout_ms, 3_600_000);
 }
