@@ -10,12 +10,12 @@ the plan that was approved.
 ![Platform: Windows x64](https://img.shields.io/badge/platform-Windows%20x64-lightgrey)
 ![Status: pre-release](https://img.shields.io/badge/status-pre--release-yellow)
 
-![A pulsation paused at its Test checkpoint](docs/images/review-checkpoint.png)
+![A tour of Ikore: Home, Feature Forge, a pulsation, a review checkpoint, logs, the vault graph and the architecture canvas](docs/images/ikore-tour.gif)
 
-<sub>A pulsation paused at its Test checkpoint. The brief is derived by the
-host from validated records: criteria, the required check that ran, the new
-test file and four trust layers. Nothing reaches the Integrator stage until
-the developer approves, requests a revision or rejects.</sub>
+<sub>A tour of Ikore with the bundled demo data. At a checkpoint, the brief is
+derived by the host from validated records, and nothing moves to the next
+stage until the developer approves, requests a revision or rejects. Each
+screen is described under [Screenshots](#screenshots).</sub>
 
 ## Why
 
@@ -130,17 +130,28 @@ flowchart TB
 
 ## Screenshots
 
-All screenshots use the demo data described in
-[Try it with demo data](#try-it-with-demo-data).
+The tour at the top of this page shows these screens in order. All of them use
+the demo data described in [Try it with demo data](#try-it-with-demo-data);
+each name links to the full-size image.
 
-| | |
-|---|---|
-| ![Pulsation overview](docs/images/pulsation-overview.png) | ![Feature Forge backlog](docs/images/forge-backlog.png) |
-| **Pulsation overview.** The six stages, the trust layers derived by the host and the pulsation report, available from the Integrator checkpoint. | **Feature Forge.** Backlog tasks with their acceptance criteria, and the panel that composes selected tasks into a pulsation. |
-| ![Home dashboard](docs/images/home-dashboard.png) | ![Logs and observability](docs/images/observability-logs.png) |
-| **Home.** The active pulsation, what is waiting on you, the runtime state and token usage. | **Logs.** Every agent run with its model, duration, tokens and structured output. |
-| ![Vault graph](docs/images/vault-graph.png) | ![Architecture canvas](docs/images/architecture-canvas.png) |
-| **Vault.** The project's Markdown knowledge as a wikilink graph, with link and frontmatter checks. | **Canvas.** Native architecture drawings, saved with the project as JSON and SVG. |
+1. [**Home.**](docs/images/home-dashboard.png) The active pulsation, what is
+   waiting on you, the runtime state and token usage.
+2. [**Feature Forge.**](docs/images/forge-backlog.png) Backlog tasks with
+   their acceptance criteria, and the panel that composes selected tasks into
+   a pulsation.
+3. [**Pulsation overview.**](docs/images/pulsation-overview.png) The six
+   stages, the trust layers derived by the host and the pulsation report,
+   available from the Integrator checkpoint.
+4. [**Review checkpoint.**](docs/images/review-checkpoint.png) A pulsation
+   paused at its Test checkpoint: criteria, the required check that ran, the
+   new test file and four trust layers, with Approve, Request revision and
+   Reject.
+5. [**Logs.**](docs/images/observability-logs.png) Every agent run with its
+   model, duration, tokens and structured output.
+6. [**Vault.**](docs/images/vault-graph.png) The project's Markdown knowledge
+   as a wikilink graph, with link and frontmatter checks.
+7. [**Canvas.**](docs/images/architecture-canvas.png) Native architecture
+   drawings, saved with the project as JSON and SVG.
 
 ## Status
 
