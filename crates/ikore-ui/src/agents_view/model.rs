@@ -11,6 +11,7 @@ use ikore_core::terminals::{
 };
 
 use crate::agents::AgentIdentifier;
+use crate::animated_icon::AnimClip;
 use crate::app_model::AppModel;
 use crate::settings::SettingsSnapshot;
 use crate::theme;
@@ -40,6 +41,7 @@ pub(super) struct AgentItem {
     pub(super) id: AgentIdentifier,
     pub(super) label: String,
     pub(super) color: Rgba,
+    pub(super) execution_mode: AgentExecutionMode,
     /// The latest run.
     pub(super) run: Option<TerminalRun>,
     /// `CLI · claude`, or `API · {route}`.
@@ -47,6 +49,17 @@ pub(super) struct AgentItem {
     pub(super) fallbacks: usize,
     /// Composition units running now.
     pub(super) units: usize,
+}
+
+/// Animated icon clip for a canonical role based on its execution mode and pipeline position.
+pub(super) fn canonical_clip(role: AgentRole, mode: AgentExecutionMode) -> AnimClip {
+    if mode == AgentExecutionMode::ApiDirect {
+        AnimClip::AgentsApi
+    } else if PIPELINE.contains(&role) {
+        AnimClip::AgentsTerminal
+    } else {
+        AnimClip::AgentsWand
+    }
 }
 
 impl AgentItem {
@@ -59,6 +72,21 @@ impl AgentItem {
                     TerminalRunStatus::Failed | TerminalRunStatus::AwaitingFallback
                 )
             })
+    }
+
+    pub(super) fn clip(&self) -> AnimClip {
+        match self.id {
+            AgentIdentifier::Canonical(role) => canonical_clip(role, self.execution_mode),
+            AgentIdentifier::FreeForm(_) => {
+                if self.execution_mode == AgentExecutionMode::ApiDirect {
+                    AnimClip::AgentsApi
+                } else {
+                    AnimClip::AgentsWand
+                }
+            }
+            AgentIdentifier::PipelineStep { .. } => AnimClip::AgentsTerminal,
+            AgentIdentifier::StageVerifier(_) => AnimClip::AgentsOracle,
+        }
     }
 }
 
@@ -133,6 +161,7 @@ pub(super) fn agent_items(
             .name
             .to_owned(),
         color: theme::agent_color(config.agent_role),
+        execution_mode: config.execution_mode,
         run: runs.first().cloned(),
         transport: transport(
             config.execution_mode,
@@ -162,6 +191,7 @@ pub(super) fn agent_items(
         id: AgentIdentifier::FreeForm(slot.slot.id.clone()),
         label: slot.slot.label.clone(),
         color: theme::accent(),
+        execution_mode: slot.slot.execution_mode,
         run: slot.recent_runs.first().cloned(),
         transport: transport(
             slot.slot.execution_mode,
@@ -281,5 +311,41 @@ mod tests {
         );
         assert_eq!(stage_route(None, "project", AgentRole::BackendAgent), None);
         assert_eq!(route_name(Some(&settings), "route-2"), None);
+    }
+
+    #[test]
+    fn agent_clips_match_role_and_execution_mode() {
+        assert_eq!(
+            canonical_clip(AgentRole::BackendAgent, AgentExecutionMode::CliProcess),
+            AnimClip::AgentsTerminal
+        );
+        assert_eq!(
+            canonical_clip(AgentRole::BackendAgent, AgentExecutionMode::ApiDirect),
+            AnimClip::AgentsApi
+        );
+        assert_eq!(
+            canonical_clip(AgentRole::FeatureAgent, AgentExecutionMode::CliProcess),
+            AnimClip::AgentsWand
+        );
+        assert_eq!(
+            canonical_clip(AgentRole::FeatureAgent, AgentExecutionMode::ApiDirect),
+            AnimClip::AgentsApi
+        );
+        let free_form_cli = AgentItem {
+            id: AgentIdentifier::FreeForm("slot-1".into()),
+            label: "Free".into(),
+            color: theme::accent(),
+            execution_mode: AgentExecutionMode::CliProcess,
+            run: None,
+            transport: "CLI · claude".into(),
+            fallbacks: 0,
+            units: 0,
+        };
+        assert_eq!(free_form_cli.clip(), AnimClip::AgentsWand);
+        let free_form_api = AgentItem {
+            execution_mode: AgentExecutionMode::ApiDirect,
+            ..free_form_cli
+        };
+        assert_eq!(free_form_api.clip(), AnimClip::AgentsApi);
     }
 }

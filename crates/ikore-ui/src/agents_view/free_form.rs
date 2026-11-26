@@ -589,6 +589,11 @@ pub(super) fn free_form_card(
                 name: slot.label.clone(),
                 subtitle: Some("Free-form".into()),
                 color: theme::accent(),
+                clip: if slot.execution_mode == AgentExecutionMode::ApiDirect {
+                    crate::animated_icon::AnimClip::AgentsApi
+                } else {
+                    crate::animated_icon::AnimClip::AgentsWand
+                },
                 status,
                 status_color: status_color(active_run.map(|run| run.status)),
                 model_chip,
