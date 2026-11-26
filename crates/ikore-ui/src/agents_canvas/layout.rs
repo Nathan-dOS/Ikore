@@ -5,7 +5,7 @@
 use super::constants::{
     BOX_GAP, BOX_PADDING, BOX_TITLE_HEIGHT, DEFAULT_BOX, FOOTER_GAP, FOOTER_HEIGHT, FOOTER_WIDTH,
     LOOSE_COLUMNS, LOOSE_GAP, LOOSE_TOP_GAP, NODE_HEIGHT, NODE_WIDTH, PIPELINE_BOX_MIN_WIDTH,
-    STAGE_GAP,
+    STAGE_GAP, VERIFIER_GAP, VERIFIER_TOP_GAP,
 };
 use super::physics::Vec2;
 
@@ -73,6 +73,8 @@ pub(crate) enum NodeKind {
     /// A step of one of the developer's pipelines, linked to its neighbours
     /// in its own box (feature 25, M2).
     Step,
+    /// A stage verifier attached vertically below a default stage (feature 25, M4).
+    Verifier,
 }
 
 /// How a link is drawn. Only `Line` is drawn for now; the animated wave
@@ -82,6 +84,27 @@ pub(crate) enum EdgeStyle {
     Line,
     #[allow(dead_code)]
     Wave,
+    Dotted,
+}
+
+/// Maps a default stage to its horizontal stage column (`0..6`).
+pub(crate) fn stage_column(stage: ikore_core::persistence_service::PulsationStage) -> usize {
+    use ikore_core::persistence_service::PulsationStage;
+    match stage {
+        PulsationStage::Intake => 0,
+        PulsationStage::Specification => 1,
+        PulsationStage::Contract => 2,
+        PulsationStage::Code => 3,
+        PulsationStage::Test => 4,
+        PulsationStage::Integrator => 5,
+    }
+}
+
+/// A stage verifier attached below one of the default stages.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct VerifierNodeInput {
+    pub(crate) key: String,
+    pub(crate) stage_index: usize,
 }
 
 /// The agents to lay out, in their order.
@@ -89,6 +112,8 @@ pub(crate) enum EdgeStyle {
 pub(crate) struct LayoutInput {
     /// The pipeline's stages, in `STAGES` order, by agent key.
     pub(crate) stages: Vec<String>,
+    /// Stage verifiers attached beneath default stages (in `Stage x Position` order).
+    pub(crate) verifiers: Vec<VerifierNodeInput>,
     /// Support agents, then roles in neither list, then free-form agents by
     /// position, by agent key.
     pub(crate) loose: Vec<String>,
@@ -181,6 +206,54 @@ pub(crate) fn layout(input: &LayoutInput) -> CanvasLayout {
     } else {
         stage_y + NODE_HEIGHT
     };
+    let mut edges = (1..input.stages.len())
+        .map(|to| EdgeLayout {
+            from: to - 1,
+            to,
+            style: EdgeStyle::Line,
+        })
+        .collect::<Vec<_>>();
+    let mut max_verifier_rows = 0usize;
+    if !input.stages.is_empty() && !input.verifiers.is_empty() {
+        let mut per_stage: Vec<Vec<&VerifierNodeInput>> = vec![Vec::new(); input.stages.len()];
+        for verifier in &input.verifiers {
+            if let Some(slot) = per_stage.get_mut(verifier.stage_index) {
+                slot.push(verifier);
+            }
+        }
+        for (stage_index, column_verifiers) in per_stage.into_iter().enumerate() {
+            max_verifier_rows = max_verifier_rows.max(column_verifiers.len());
+            let mut prev_index = stage_index;
+            for (k, verifier) in column_verifiers.into_iter().enumerate() {
+                let y = stage_y
+                    + NODE_HEIGHT
+                    + VERIFIER_TOP_GAP
+                    + k as f32 * (NODE_HEIGHT + VERIFIER_GAP);
+                let home = Rect::new(
+                    BOX_PADDING + stage_index as f32 * (NODE_WIDTH + STAGE_GAP),
+                    y,
+                    NODE_WIDTH,
+                    NODE_HEIGHT,
+                );
+                bottom = bottom.max(home.bottom());
+                let node_index = nodes.len();
+                nodes.push(NodeLayout {
+                    key: verifier.key.clone(),
+                    kind: NodeKind::Verifier,
+                    home,
+                    box_index: 0,
+                    row: 1 + k,
+                    column: stage_index,
+                });
+                edges.push(EdgeLayout {
+                    from: prev_index,
+                    to: node_index,
+                    style: EdgeStyle::Dotted,
+                });
+                prev_index = node_index;
+            }
+        }
+    }
     let loose_y = bottom + LOOSE_TOP_GAP;
     let loose = input
         .loose
@@ -191,7 +264,11 @@ pub(crate) fn layout(input: &LayoutInput) -> CanvasLayout {
                 .ghost
                 .then(|| (super::constants::GHOST_KEY.to_owned(), NodeKind::Ghost)),
         );
-    let first_loose_row = usize::from(!input.stages.is_empty());
+    let first_loose_row = if input.stages.is_empty() {
+        0
+    } else {
+        1 + max_verifier_rows
+    };
     for (index, (key, kind)) in loose.enumerate() {
         let row = index / LOOSE_COLUMNS;
         let column = index % LOOSE_COLUMNS;
@@ -228,14 +305,6 @@ pub(crate) fn layout(input: &LayoutInput) -> CanvasLayout {
         .fold(BOX_PADDING, f32::max);
     let width = widest + BOX_PADDING;
     let rect = Rect::new(0.0, 0.0, width, bottom + BOX_PADDING);
-    let edges = (1..input.stages.len())
-        .map(|to| EdgeLayout {
-            from: to - 1,
-            to,
-            style: EdgeStyle::Line,
-        })
-        .collect::<Vec<_>>();
-    let mut edges = edges;
     let mut boxes = vec![BoxLayout {
         id: DEFAULT_BOX.to_owned(),
         pipeline: false,
@@ -324,14 +393,24 @@ impl CanvasLayout {
                 .min_by_key(|(_, candidate)| candidate.column)
                 .map(|(index, _)| index),
             Direction::Up | Direction::Down => {
-                let row = if direction == Direction::Up {
-                    node.row.checked_sub(1)?
-                } else {
-                    node.row + 1
-                };
-                same_row(row)
-                    .min_by_key(|(_, candidate)| candidate.column.abs_diff(node.column))
-                    .map(|(index, _)| index)
+                let max_row = self.nodes.iter().map(|n| n.row).max().unwrap_or(0);
+                let mut row = node.row;
+                loop {
+                    row = if direction == Direction::Up {
+                        row.checked_sub(1)?
+                    } else {
+                        row + 1
+                    };
+                    if let Some(target) = same_row(row)
+                        .min_by_key(|(_, candidate)| candidate.column.abs_diff(node.column))
+                        .map(|(index, _)| index)
+                    {
+                        return Some(target);
+                    }
+                    if row >= max_row {
+                        return None;
+                    }
+                }
             }
         }
     }

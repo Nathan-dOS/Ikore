@@ -46,6 +46,18 @@ fn failure_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
     let can_grant = failure.pending_scope_request().is_some();
     let allow_retry = checkpoint.allow_retry;
     let allow_revision = checkpoint.allow_revision;
+    let allow_continue_anyway = checkpoint.allow_continue_anyway;
+    let justification_chars = model
+        .failure_override_justification_input
+        .read(cx)
+        .value()
+        .trim()
+        .chars()
+        .count();
+    let justification_over_limit =
+        justification_chars > ikore_core::stage_verifiers::MAX_JUSTIFICATION_CHARS;
+    let verification_findings_card =
+        crate::review_brief_view::verification_findings_card(&failure.verification_findings);
     let show_feedback = failure.show_feedback;
     let detail = failure.detail.clone();
     let detail_loading = failure.detail_loading;
@@ -176,6 +188,7 @@ fn failure_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
                 .when_some(scope_request, |panel, request| {
                     panel.child(crate::scope_request_view::scope_request_card(&request))
                 })
+                .when_some(verification_findings_card, |panel, card| panel.child(card))
                 .child(crate::review_brief_view::failure_choices_card(&checkpoint))
                 .child(failure_facts(&checkpoint))
                 .when_some(
@@ -237,6 +250,64 @@ fn failure_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
                     .text_sm()
                     .text_color(theme::danger())
                     .child(error),
+            )
+        })
+        .when(allow_continue_anyway, |panel| {
+            panel.child(
+                div()
+                    .debug_selector(|| "failure-override-justification".into())
+                    .flex_shrink_0()
+                    .min_w_0()
+                    .p_3()
+                    .border_t_1()
+                    .border_color(theme::border())
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(theme::text_muted())
+                                    .child("Optional justification to continue anyway"),
+                            )
+                            .child(
+                                div()
+                                    .debug_selector(|| {
+                                        "failure-override-justification-count".into()
+                                    })
+                                    .text_xs()
+                                    .text_color(if justification_over_limit {
+                                        theme::danger()
+                                    } else {
+                                        theme::text_muted()
+                                    })
+                                    .child(format!(
+                                        "{justification_chars} / {}",
+                                        ikore_core::stage_verifiers::MAX_JUSTIFICATION_CHARS
+                                    )),
+                            ),
+                    )
+                    .child(crate::sizing::text_area(
+                        model.failure_override_justification_input.clone(),
+                    ))
+                    .when(justification_over_limit, |box_div| {
+                        box_div.child(
+                            div()
+                                .debug_selector(|| "failure-override-justification-error".into())
+                                .text_xs()
+                                .text_color(theme::danger())
+                                .child(format!(
+                                    "Justification must be at most {} characters.",
+                                    ikore_core::stage_verifiers::MAX_JUSTIFICATION_CHARS
+                                )),
+                        )
+                    }),
             )
         })
         .when(show_feedback && allow_revision, |panel| {
@@ -309,6 +380,18 @@ fn failure_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
                 .when(allow_revision && beyond_threshold, |bar| {
                     bar.children(crate::convergence_view::threshold_buttons(
                         can_decide, true, cx,
+                    ))
+                })
+                .when(allow_continue_anyway, |bar| {
+                    bar.child(crate::widgets::btn(
+                        "failure-continue-anyway",
+                        "Continue anyway",
+                        crate::widgets::ButtonVariant::Secondary,
+                        can_decide && !justification_over_limit,
+                        cx,
+                        |model, cx| {
+                            model.resolve_stage_failure(StageFailureDecision::ContinueAnyway, cx);
+                        },
                     ))
                 })
                 .when(allow_revision, |bar| {
@@ -466,11 +549,173 @@ fn rejected_output(detail: &StageFailureDetail) -> AnyElement {
         .into_any_element()
 }
 
+pub(crate) fn verification_error_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
+    use ikore_core::stage_verifiers::VerificationErrorDecision;
+    let pulsations = model.pulsations.read(cx);
+    let Some(checkpoint) = pulsations.active_verification_error_checkpoint() else {
+        return div().into_any_element();
+    };
+    let busy = model.verification_error_busy;
+    let can_decide = !busy;
+    let confirm_abort = model.confirm_verification_error_abort;
+    let error = model.verification_error_error.clone();
+    let stage_name = format!("{:?}", checkpoint.stage);
+    div()
+        .id("verification-error-panel")
+        .debug_selector(|| "verification-error-panel".into())
+        .size_full()
+        .min_w_0()
+        .min_h_0()
+        .overflow_hidden()
+        .flex()
+        .flex_col()
+        .child(
+            div()
+                .flex_shrink_0()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .p_3()
+                .border_b_1()
+                .border_color(theme::border())
+                .bg(theme::danger_soft())
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::danger())
+                        .child("VERIFICATION ERROR"),
+                )
+                .child(
+                    div()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_ellipsis()
+                        .child(format!(
+                            "{stage_name} verifier failed — {}",
+                            checkpoint.verifier_label
+                        )),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_muted())
+                        .child("The stage verifier could not complete cleanly. Retry it, skip this verifier to continue the stage, or abort the pulsation."),
+                ),
+        )
+        .child(
+            div()
+                .id("verification-error-detail")
+                .debug_selector(|| "verification-error-detail".into())
+                .flex_1()
+                .min_w_0()
+                .min_h_0()
+                .overflow_y_scroll()
+                .p_3()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .child(
+                    div()
+                        .p_3()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(theme::border())
+                        .bg(theme::surface_raised())
+                        .text_xs()
+                        .child(checkpoint.error_message),
+                ),
+        )
+        .when_some(error, |panel, error| {
+            panel.child(
+                div()
+                    .flex_shrink_0()
+                    .px_3()
+                    .py_2()
+                    .text_sm()
+                    .text_color(theme::danger())
+                    .child(error),
+            )
+        })
+        .child(
+            div()
+                .debug_selector(|| "verification-error-decision-bar".into())
+                .flex_shrink_0()
+                .min_h(px(54.0))
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap_2()
+                .p_3()
+                .border_t_1()
+                .border_color(theme::border())
+                .child(crate::widgets::btn(
+                    "verification-error-retry",
+                    "Retry verifier",
+                    crate::widgets::ButtonVariant::Primary,
+                    can_decide,
+                    cx,
+                    |model, cx| {
+                        model.resolve_verification_error(
+                            VerificationErrorDecision::RetryVerifier,
+                            cx,
+                        );
+                    },
+                ))
+                .child(crate::widgets::btn(
+                    "verification-error-skip",
+                    "Skip verifier this time",
+                    crate::widgets::ButtonVariant::Secondary,
+                    can_decide,
+                    cx,
+                    |model, cx| {
+                        model.resolve_verification_error(
+                            VerificationErrorDecision::SkipVerifier,
+                            cx,
+                        );
+                    },
+                ))
+                .child(crate::widgets::btn_confirm(
+                    "verification-error-abort",
+                    "Abort",
+                    "Confirm abort",
+                    confirm_abort,
+                    can_decide,
+                    crate::widgets::ButtonVariant::Danger,
+                    cx,
+                    |model, cx| {
+                        model.confirm_verification_error_abort = true;
+                        cx.notify();
+                    },
+                    |model, cx| {
+                        model.confirm_verification_error_abort = false;
+                        model.resolve_verification_error(VerificationErrorDecision::Abort, cx);
+                    },
+                ))
+                .when(busy, |bar| {
+                    bar.child(
+                        div()
+                            .text_sm()
+                            .text_color(theme::accent())
+                            .child("Applying decision…"),
+                    )
+                }),
+        )
+        .into_any_element()
+}
+
 pub(crate) fn review_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
     // A pulsation holds at most one waiting checkpoint, so the failure surface simply
     // takes over the Review tab when that checkpoint is a parked failure.
     if model.pulsations.read(cx).failure.checkpoint.is_some() {
         return failure_panel(model, cx);
+    }
+    if model
+        .pulsations
+        .read(cx)
+        .active_verification_error_checkpoint()
+        .is_some()
+    {
+        return verification_error_panel(model, cx);
     }
     let pulsations = model.pulsations.read(cx);
     let hitl = &pulsations.hitl;
@@ -522,6 +767,7 @@ pub(crate) fn review_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
         .detail()
         .and_then(|detail| detail.layers.clone())
         .zip(pulsations.active().map(|active| active.stage));
+    let verification_findings = hitl.verification_findings.clone();
     let risk_acknowledgement = hitl.risk_acknowledgement_required();
     let beyond_threshold = hitl.beyond_threshold();
     let (confirmed, flagged, open) = hitl.mark_counts();
@@ -584,6 +830,8 @@ pub(crate) fn review_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
     let layers_content = layers
         .filter(|_| showing_brief)
         .and_then(|(layers, stage)| crate::review_brief_view::layers_card(&layers, stage));
+    let verification_findings_content =
+        crate::review_brief_view::verification_findings_card(&verification_findings);
     let round_line = convergence
         .as_ref()
         .and_then(crate::convergence_view::round_line);
@@ -892,6 +1140,9 @@ pub(crate) fn review_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
                     reader.child(div().pb_4().child(content))
                 })
                 .when_some(review_inputs_content, |reader, content| {
+                    reader.child(div().pb_4().child(content))
+                })
+                .when_some(verification_findings_content, |reader, content| {
                     reader.child(div().pb_4().child(content))
                 })
                 .when_some(brief_content, |reader, content| reader.child(content))

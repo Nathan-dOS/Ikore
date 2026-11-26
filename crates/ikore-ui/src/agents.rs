@@ -41,6 +41,8 @@ pub(crate) struct AgentsDashboardSnapshot {
     pub(crate) live_activity: Vec<ikore_core::terminals::AgentActivitySnapshotV1>,
     /// The developer's pipelines, their boxes and recent runs (feature 25).
     pub(crate) pipelines: CustomPipelinesSnapshot,
+    /// Stage verifiers attached after default pipeline stages (feature 25, M4).
+    pub(crate) verifiers: ikore_core::stage_verifiers::StageVerifiersSnapshot,
 }
 
 fn unsupported<T: Send + 'static>() -> AgentsFuture<T> {
@@ -99,6 +101,39 @@ pub(crate) trait AgentsBackend: Send + Sync {
         unsupported()
     }
     fn decide_pipeline_gate(&self, _request: DecidePipelineGateRequest) -> AgentsFuture<()> {
+        unsupported()
+    }
+    /// Stage verifiers behind the default stages (feature 25, M4).
+    fn create_stage_verifier(
+        &self,
+        _project_id: String,
+        _draft: ikore_core::stage_verifiers::StageVerifierDraft,
+    ) -> AgentsFuture<ikore_core::stage_verifiers::SaveStageVerifierOutcome> {
+        unsupported()
+    }
+    fn update_stage_verifier(
+        &self,
+        _project_id: String,
+        _verifier_id: String,
+        _draft: ikore_core::stage_verifiers::StageVerifierDraft,
+    ) -> AgentsFuture<ikore_core::stage_verifiers::SaveStageVerifierOutcome> {
+        unsupported()
+    }
+    fn set_stage_verifier_enabled(
+        &self,
+        _project_id: String,
+        _verifier_id: String,
+        _enabled: bool,
+    ) -> AgentsFuture<ikore_core::stage_verifiers::StageVerifierView> {
+        unsupported()
+    }
+    fn delete_stage_verifier(&self, _project_id: String, _verifier_id: String) -> AgentsFuture<()> {
+        unsupported()
+    }
+    fn stage_verifier_runs(
+        &self,
+        _verifier_id: String,
+    ) -> AgentsFuture<Vec<ikore_core::stage_verifiers::StageVerifierRunView>> {
         unsupported()
     }
     /// Settings › Composition: the automation lane's ceiling.
@@ -287,6 +322,9 @@ fn complete_dashboard_snapshot(
     let pipelines = persistence
         .custom_pipelines_snapshot(&terminals.project_id)
         .map_err(persistence_error)?;
+    let verifiers = persistence
+        .stage_verifiers_snapshot(&terminals.project_id)
+        .map_err(persistence_error)?;
     Ok(AgentsDashboardSnapshot {
         terminals,
         fallbacks,
@@ -295,6 +333,7 @@ fn complete_dashboard_snapshot(
         quota_deltas,
         live_activity,
         pipelines,
+        verifiers,
     })
 }
 
@@ -367,6 +406,57 @@ impl AgentsBackend for CoreAgentsBackend {
         blocking(&self.core, move |core| {
             core.persistence()
                 .resume_custom_pipeline_run(&project_id, &run_id)
+        })
+    }
+
+    fn create_stage_verifier(
+        &self,
+        project_id: String,
+        draft: ikore_core::stage_verifiers::StageVerifierDraft,
+    ) -> AgentsFuture<ikore_core::stage_verifiers::SaveStageVerifierOutcome> {
+        blocking(&self.core, move |core| {
+            core.persistence().create_stage_verifier(&project_id, draft)
+        })
+    }
+
+    fn update_stage_verifier(
+        &self,
+        project_id: String,
+        verifier_id: String,
+        draft: ikore_core::stage_verifiers::StageVerifierDraft,
+    ) -> AgentsFuture<ikore_core::stage_verifiers::SaveStageVerifierOutcome> {
+        blocking(&self.core, move |core| {
+            core.persistence()
+                .update_stage_verifier(&project_id, &verifier_id, draft)
+        })
+    }
+
+    fn set_stage_verifier_enabled(
+        &self,
+        project_id: String,
+        verifier_id: String,
+        enabled: bool,
+    ) -> AgentsFuture<ikore_core::stage_verifiers::StageVerifierView> {
+        blocking(&self.core, move |core| {
+            core.persistence()
+                .set_stage_verifier_enabled(&project_id, &verifier_id, enabled)
+        })
+    }
+
+    fn delete_stage_verifier(&self, project_id: String, verifier_id: String) -> AgentsFuture<()> {
+        blocking(&self.core, move |core| {
+            core.persistence()
+                .delete_stage_verifier(&project_id, &verifier_id)
+        })
+    }
+
+    fn stage_verifier_runs(
+        &self,
+        verifier_id: String,
+    ) -> AgentsFuture<Vec<ikore_core::stage_verifiers::StageVerifierRunView>> {
+        blocking(&self.core, move |core| {
+            core.persistence()
+                .list_stage_verifier_runs_for_verifier(&verifier_id)
         })
     }
 
@@ -856,6 +946,8 @@ pub(crate) enum CliModelPickerTarget {
     Companion,
     /// A step of the pipeline being edited, by its place in the form.
     PipelineStep(usize),
+    /// The stage verifier being created or edited in the side form.
+    StageVerifier,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -953,16 +1045,18 @@ pub(crate) enum AgentIdentifier {
         pipeline_id: String,
         step_id: String,
     },
+    /// A stage verifier attached after a default stage (feature 25, M4).
+    StageVerifier(String),
 }
 
 impl AgentIdentifier {
     /// The routing target of an agent the developer configures here; a
-    /// pipeline step routes by its own step.
+    /// pipeline step or stage verifier routes by its own definition.
     pub(crate) fn target(&self) -> Option<AgentExecutionTarget> {
         match self {
             Self::Canonical(role) => Some(AgentExecutionTarget::canonical(*role)),
             Self::FreeForm(slot_id) => Some(AgentExecutionTarget::free_form(slot_id.clone())),
-            Self::PipelineStep { .. } => None,
+            Self::PipelineStep { .. } | Self::StageVerifier(_) => None,
         }
     }
 
@@ -983,16 +1077,26 @@ impl AgentIdentifier {
         }
     }
 
-    /// The step behind an automation slot, `automation:{project}:{pipeline}:{step}`.
+    /// The step (`automation:{project}:{pipeline}:{step}`) or stage verifier
+    /// (`verifier:{project}:{verifier}`) behind an automation slot.
     pub(crate) fn from_automation_slot(slot_id: &str) -> Option<Self> {
-        let mut parts = slot_id.strip_prefix("automation:")?.split(':');
-        let (_project, pipeline, step) = (parts.next()?, parts.next()?, parts.next()?);
-        (parts.next().is_none() && !pipeline.is_empty() && !step.is_empty()).then(|| {
-            Self::PipelineStep {
-                pipeline_id: pipeline.to_owned(),
-                step_id: step.to_owned(),
-            }
-        })
+        if let Some(rest) = slot_id.strip_prefix("automation:") {
+            let mut parts = rest.split(':');
+            let (_project, pipeline, step) = (parts.next()?, parts.next()?, parts.next()?);
+            return (parts.next().is_none() && !pipeline.is_empty() && !step.is_empty()).then(
+                || Self::PipelineStep {
+                    pipeline_id: pipeline.to_owned(),
+                    step_id: step.to_owned(),
+                },
+            );
+        }
+        if let Some(rest) = slot_id.strip_prefix("verifier:") {
+            let mut parts = rest.split(':');
+            let (project, verifier_id) = (parts.next()?, parts.next()?);
+            return (parts.next().is_none() && !project.is_empty() && !verifier_id.is_empty())
+                .then(|| Self::StageVerifier(verifier_id.to_owned()));
+        }
+        None
     }
 
     /// The agent a terminal run belongs to.
@@ -1077,6 +1181,13 @@ pub(crate) struct AgentsModel {
     pub(crate) selected_pipeline_run: Option<String>,
     /// A pipeline `Delete` waits for its confirmation.
     pub(crate) pending_pipeline_delete: Option<String>,
+    /// Stage verifiers attached behind the default pipeline (feature 25, M4).
+    pub(crate) verifiers: ikore_core::stage_verifiers::StageVerifiersSnapshot,
+    /// A stage verifier `Delete` waits for its confirmation.
+    pub(crate) pending_verifier_delete: Option<String>,
+    /// Cached history runs per stage verifier, loaded on History drawer.
+    pub(crate) verifier_runs:
+        HashMap<String, Vec<ikore_core::stage_verifiers::StageVerifierRunView>>,
     pub(crate) generation: u64,
 }
 
@@ -1126,6 +1237,9 @@ impl Default for AgentsModel {
             editing_pipeline_trigger: None,
             selected_pipeline_run: None,
             pending_pipeline_delete: None,
+            verifiers: ikore_core::stage_verifiers::StageVerifiersSnapshot::default(),
+            pending_verifier_delete: None,
+            verifier_runs: HashMap::new(),
             generation: 0,
         }
     }
@@ -1311,9 +1425,44 @@ impl AgentsModel {
             self.pending_pipeline_cancel = None;
         }
         self.pipelines = snapshot.pipelines;
+        self.verifiers = snapshot.verifiers;
         self.reconcile_selection(&snapshot.terminals);
         self.snapshot = Some(snapshot.terminals);
         true
+    }
+
+    pub(crate) fn verifier(
+        &self,
+        id: &str,
+    ) -> Option<&ikore_core::stage_verifiers::StageVerifierView> {
+        self.verifiers.verifiers.iter().find(|v| v.id == id)
+    }
+
+    /// The terminal slot of a stage verifier, when it ran.
+    pub(crate) fn verifier_slot(
+        &self,
+        verifier_id: &str,
+    ) -> Option<&ikore_core::terminals::FreeFormTerminalSnapshot> {
+        self.snapshot
+            .as_ref()?
+            .automation_slots
+            .iter()
+            .find(|slot| {
+                AgentIdentifier::from_automation_slot(&slot.slot.id)
+                    == Some(AgentIdentifier::StageVerifier(verifier_id.to_owned()))
+            })
+    }
+
+    pub(crate) fn verifier_tab_label(&self, verifier_id: &str) -> String {
+        match self.verifier(verifier_id) {
+            Some(verifier) => {
+                ikore_core::stage_verifiers::verifier_tab_label(&verifier.stage, &verifier.label)
+            }
+            None => self.verifier_slot(verifier_id).map_or_else(
+                || "Stage verifier".to_owned(),
+                |slot| slot.slot.label.clone(),
+            ),
+        }
     }
 
     /// A pipeline the project shows, by id.
@@ -1393,6 +1542,10 @@ impl AgentsModel {
                         .iter()
                         .any(|step| step.id() == step_id)
             }),
+            Some(AgentIdentifier::StageVerifier(id)) => {
+                self.verifiers.enabled_by_labs
+                    && self.verifiers.verifiers.iter().any(|v| &v.id == id)
+            }
             None => true,
         };
         if self.selected_pipeline.as_ref().is_some_and(|id| {
@@ -1982,6 +2135,7 @@ mod tests {
                 quota_deltas: Default::default(),
                 live_activity: Vec::new(),
                 pipelines: Default::default(),
+                verifiers: Default::default(),
             }
         ));
         assert_eq!(
@@ -2010,6 +2164,7 @@ mod tests {
                 quota_deltas: Default::default(),
                 live_activity: Vec::new(),
                 pipelines: Default::default(),
+                verifiers: Default::default(),
             }
         ));
         assert!(!model.in_flight());
@@ -2075,6 +2230,7 @@ mod tests {
                 quota_deltas: Default::default(),
                 live_activity: Vec::new(),
                 pipelines: Default::default(),
+                verifiers: Default::default(),
             }
         ));
         let sequences = model.events_by_run["run-1"]
@@ -2109,6 +2265,7 @@ mod tests {
                 quota_deltas: Default::default(),
                 live_activity: Vec::new(),
                 pipelines: Default::default(),
+                verifiers: Default::default(),
             }
         ));
         assert!(!model.events_by_run.contains_key("run-gone"));

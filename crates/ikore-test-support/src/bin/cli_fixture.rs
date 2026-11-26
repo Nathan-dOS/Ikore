@@ -321,6 +321,18 @@ fn main() {
                 }
             }
             emit_official_text(backend, &args, &reply);
+        } else if let Some(outcome) = stage_verifier_reply(backend, &executable_name, &args, &stdin)
+        {
+            match outcome {
+                VerifierReply::Hang => loop {
+                    thread::sleep(Duration::from_secs(1));
+                },
+                VerifierReply::Crash(msg) => {
+                    eprintln!("{msg}");
+                    std::process::exit(1);
+                }
+                VerifierReply::Text(reply) => emit_official_text(backend, &args, &reply),
+            }
         } else {
             emit_official_success(backend, &args);
         }
@@ -520,22 +532,28 @@ fn emit_official_text(backend: &str, args: &[String], text: &str) {
     let requested_model = value_after(args, "--model").unwrap_or("fixture-model");
     match backend {
         "codex" => {
-            println!(r#"{{"type":"thread.started","thread_id":"fixture-native-session"}}"#);
+            println!(
+                "{}",
+                serde_json::json!({"type":"thread.started","thread_id":"fixture-native-session"})
+            );
             println!(
                 "{}",
                 serde_json::json!({"type":"item.completed","model":requested_model,"item":{"id":"codex-message-1","type":"agent_message","text":text}})
             );
             println!(
-                r#"{{"type":"turn.completed","usage":{{"input_tokens":20,"output_tokens":5,"cached_input_tokens":12}}}}"#
+                "{}",
+                serde_json::json!({"type":"turn.completed","usage":{"input_tokens":20,"output_tokens":5,"cached_input_tokens":12}})
             );
         }
         "claude" => {
             let observed_model = "claude-haiku-4-5-20251001";
             println!(
-                r#"{{"type":"system","subtype":"init","session_id":"fixture-native-session","model":"{requested_model}"}}"#
+                "{}",
+                serde_json::json!({"type":"system","subtype":"init","session_id":"fixture-native-session","model":requested_model})
             );
             println!(
-                r#"{{"type":"stream_event","event":{{"type":"message_start","message":{{"id":"claude-message-1","model":"{observed_model}"}}}}}}"#
+                "{}",
+                serde_json::json!({"type":"stream_event","event":{"type":"message_start","message":{"id":"claude-message-1","model":observed_model}}})
             );
             println!(
                 "{}",
@@ -546,8 +564,376 @@ fn emit_official_text(backend: &str, args: &[String], text: &str) {
                 serde_json::json!({"type":"result","result":text,"session_id":"fixture-native-session","model":observed_model,"modelUsage":{"claude-fixture":{"inputTokens":8,"outputTokens":5,"cacheReadInputTokens":12}}})
             );
         }
-        other => panic!("pipeline steps in the fixture run on codex or claude, not {other}"),
+        "gemini" => {
+            println!(
+                "{}",
+                serde_json::json!({"type":"init","session_id":"fixture-native-session"})
+            );
+            println!(
+                "{}",
+                serde_json::json!({"type":"message","model":requested_model,"content":text})
+            );
+            println!(
+                "{}",
+                serde_json::json!({"type":"result","result":text,"stats":{"models":{"gemini-fixture":{"input_tokens":20,"output_tokens":5,"total_tokens":25,"cached":12}}}})
+            );
+        }
+        "opencode" => {
+            println!(
+                "{}",
+                serde_json::json!({"type":"session.created","sessionID":"fixture-native-session"})
+            );
+            println!(
+                "{}",
+                serde_json::json!({"type":"text","model":requested_model,"part":{"id":"opencode-message-1","text":text}})
+            );
+            println!(
+                "{}",
+                serde_json::json!({"type":"step_finish","part":{"id":"fixture-step","tokens":{"input":8,"output":3,"reasoning":2,"cache":{"read":12,"write":0}}}})
+            );
+            println!(
+                "{}",
+                serde_json::json!({"type":"session.idle","sessionID":"fixture-native-session","result":text})
+            );
+        }
+        "antigravity" => {
+            println!(
+                "{}",
+                serde_json::json!({"event":"init","conversation_id":"fixture-native-session","init":{"model":requested_model,"permission_mode":"request-review"}})
+            );
+            println!(
+                "{}",
+                serde_json::json!({"event":"step_update","step_update":{"conversation_id":"fixture-native-session","step_index":1,"state":"DONE","step_type":"agent_response","text_delta":text,"usage":{"input_tokens":8,"output_tokens":5,"thinking_tokens":0,"cache_read_tokens":12,"total_tokens":13}}})
+            );
+            println!(
+                "{}",
+                serde_json::json!({"event":"result","result":{"conversation_id":"fixture-native-session","status":"SUCCESS","response":text,"num_turns":1,"usage":{"input_tokens":8,"output_tokens":5,"thinking_tokens":0,"cache_read_tokens":12,"total_tokens":13}}})
+            );
+        }
+        other => panic!("unsupported official CLI backend in fixture: {other}"),
     }
+}
+
+enum VerifierReply {
+    Text(String),
+    Hang,
+    Crash(String),
+}
+
+fn collect_json_strings(value: &serde_json::Value, out: &mut Vec<String>) {
+    match value {
+        serde_json::Value::String(s) => out.push(s.clone()),
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_json_strings(item, out);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for item in map.values() {
+                collect_json_strings(item, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn unwrap_official_stdin(backend: &str, stdin: &str) -> String {
+    if backend != "antigravity" {
+        return stdin.to_owned();
+    }
+    let mut parts = Vec::new();
+    for line in stdin.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            collect_json_strings(&value, &mut parts);
+        }
+    }
+    if parts.is_empty() {
+        stdin.to_owned()
+    } else {
+        parts.join("\n")
+    }
+}
+
+fn verdict_pass(findings: &[(&str, &str, &str, &str, u32, &str)]) -> String {
+    let items: Vec<serde_json::Value> = findings
+        .iter()
+        .map(|(id, severity, message, file, line, suggestion)| {
+            serde_json::json!({
+                "id": id,
+                "severity": severity,
+                "message": message,
+                "file": file,
+                "line": line,
+                "suggestion": suggestion
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "verdict": "pass",
+        "summary": if items.is_empty() { "Stage verification passed." } else { "Passed with notes." },
+        "findings": items,
+    })
+    .to_string()
+}
+
+fn verdict_reject(summary: &str, findings: &[(&str, &str, &str, &str, u32, &str)]) -> String {
+    let items: Vec<serde_json::Value> = findings
+        .iter()
+        .map(|(id, severity, message, file, line, suggestion)| {
+            serde_json::json!({
+                "id": id,
+                "severity": severity,
+                "message": message,
+                "file": file,
+                "line": line,
+                "suggestion": suggestion
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "verdict": "reject",
+        "summary": summary,
+        "findings": items,
+    })
+    .to_string()
+}
+
+/// Additive M4 stage-verifier fixture dispatcher: `stage-verifier-fixture:<kind>[:<key>]`.
+fn stage_verifier_reply(
+    backend: &str,
+    executable_name: &str,
+    args: &[String],
+    raw_stdin: &str,
+) -> Option<VerifierReply> {
+    let unwrapped = unwrap_official_stdin(backend, raw_stdin);
+    let marker = "stage-verifier-fixture:";
+    let start = unwrapped.find(marker)? + marker.len();
+    let token = unwrapped[start..]
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == ':' || c == '_'))
+        .next()
+        .unwrap_or_default();
+    let (kind, key) = match token.split_once(':') {
+        Some((k, v)) if !v.is_empty() => (k, v),
+        _ => (token, "default"),
+    };
+    assert!(
+        !key.contains('/') && !key.contains('\\') && !key.contains(".."),
+        "invalid verifier fixture key: {key}"
+    );
+    let exe_path = env::current_exe().ok()?;
+    let count_path = exe_path.with_file_name(format!("{key}.verifier-count"));
+    if let Ok(mut f) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&count_path)
+    {
+        let _ = writeln!(f, "call");
+    }
+    let call_idx = std::fs::read_to_string(&count_path)
+        .map(|s| s.lines().count())
+        .unwrap_or(1);
+    let _ = std::fs::write(
+        exe_path.with_file_name(format!("{key}.prompt-{call_idx}.txt")),
+        &unwrapped,
+    );
+    let _ = std::fs::write(
+        exe_path.with_file_name(format!("{key}.verifier-started-{call_idx}")),
+        b"started",
+    );
+    if let Ok(mut log) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(exe_path.with_file_name(format!("{executable_name}.verifier-log")))
+    {
+        let _ = writeln!(log, "ARGV {}\n{unwrapped}\n=====", args.join(" "));
+    }
+
+    let pass = || {
+        verdict_pass(&[(
+            "n1",
+            "note",
+            "Verified stage invariants.",
+            "src/lib.rs",
+            1,
+            "None.",
+        )])
+    };
+    let reject_valid = || {
+        verdict_reject(
+            "Found a blocking problem in src/lib.rs.",
+            &[(
+                "b1",
+                "blocking",
+                "Blocking defect in src/lib.rs.",
+                "src/lib.rs",
+                1,
+                "Fix src/lib.rs.",
+            )],
+        )
+    };
+    let reject_missing = || {
+        verdict_reject(
+            "Blocked referencing non-existent file.",
+            &[(
+                "b1",
+                "blocking",
+                "Defect referencing absent file.",
+                "missing_nonexistent.rs",
+                9,
+                "Check file path.",
+            )],
+        )
+    };
+
+    if let Some(n_str) = kind
+        .strip_prefix("reject-")
+        .and_then(|rest| rest.strip_suffix("-then-pass"))
+        && let Ok(n) = n_str.parse::<usize>()
+    {
+        return Some(VerifierReply::Text(if call_idx <= n {
+            reject_valid()
+        } else {
+            pass()
+        }));
+    }
+    if let Some(n_str) = kind
+        .strip_prefix("crash-")
+        .and_then(|rest| rest.strip_suffix("-then-pass"))
+        && let Ok(n) = n_str.parse::<usize>()
+    {
+        return Some(if call_idx <= n {
+            VerifierReply::Crash(format!("fixture crash attempt {call_idx}"))
+        } else {
+            VerifierReply::Text(pass())
+        });
+    }
+
+    Some(match kind {
+        "pass" => VerifierReply::Text(pass()),
+        "pass-warnings" => VerifierReply::Text(verdict_pass(&[(
+            "w1",
+            "warning",
+            "Advisory warning from verifier.",
+            "src/lib.rs",
+            1,
+            "Keep clean.",
+        )])),
+        "reject-valid" | "always-reject" => VerifierReply::Text(reject_valid()),
+        "reject-missing-file" => VerifierReply::Text(reject_missing()),
+        "reject-20-advisory-mixed" => {
+            let mut items = Vec::with_capacity(20);
+            for i in 0..5 {
+                items.push(serde_json::json!({
+                    "id": format!("b{i}"),
+                    "severity": "blocking",
+                    "message": format!("Blocking item {i}"),
+                    "file": "src/lib.rs",
+                    "line": 1,
+                    "suggestion": "Fix"
+                }));
+            }
+            for i in 5..20 {
+                items.push(serde_json::json!({
+                    "id": format!("n{i}"),
+                    "severity": if i % 2 == 0 { "warning" } else { "note" },
+                    "message": format!("Mixed advisory item {i}"),
+                    "file": "src/lib.rs",
+                    "line": 1,
+                    "suggestion": null
+                }));
+            }
+            VerifierReply::Text(
+                serde_json::json!({
+                    "verdict": "reject",
+                    "summary": "Mixed severity verdict with 20 findings.",
+                    "findings": items,
+                })
+                .to_string(),
+            )
+        }
+        "reject-until-prev-verdict" => {
+            if unwrapped.contains("## Your previous verdict") {
+                VerifierReply::Text(pass())
+            } else {
+                VerifierReply::Text(reject_valid())
+            }
+        }
+        "invalid-once-then-pass" => {
+            if call_idx <= 1 && !unwrapped.contains("## Your previous answer") {
+                VerifierReply::Text("This is not valid JSON verdict.".to_owned())
+            } else {
+                VerifierReply::Text(pass())
+            }
+        }
+        "invalid-semantic-once-then-pass" => {
+            if call_idx <= 1 && !unwrapped.contains("## Your previous answer") {
+                VerifierReply::Text(
+                    serde_json::json!({
+                        "verdict": "reject",
+                        "summary": "Rejected without blocking finding.",
+                        "findings": [{
+                            "id": "w1",
+                            "severity": "warning",
+                            "message": "Only a warning.",
+                            "file": "src/lib.rs",
+                            "line": 1,
+                            "suggestion": null
+                        }]
+                    })
+                    .to_string(),
+                )
+            } else {
+                VerifierReply::Text(pass())
+            }
+        }
+        "invalid-once-then-reject-missing-file" => {
+            if call_idx <= 1 && !unwrapped.contains("## Your previous answer") {
+                VerifierReply::Text("This is not valid JSON verdict.".to_owned())
+            } else {
+                VerifierReply::Text(reject_missing())
+            }
+        }
+        "invalid-twice" => VerifierReply::Text("Still not valid JSON verdict.".to_owned()),
+        "crash" => VerifierReply::Crash("verifier fixture forced crash".to_owned()),
+        "block-until-release-pass" | "block-until-release-reject" => {
+            let _ = std::fs::write(
+                exe_path.with_file_name(format!("{key}.pid")),
+                std::process::id().to_string(),
+            );
+            let release = exe_path.with_file_name(format!("{key}.release"));
+            while !release.exists() {
+                thread::sleep(Duration::from_millis(25));
+            }
+            if kind.ends_with("-reject") {
+                VerifierReply::Text(reject_valid())
+            } else {
+                VerifierReply::Text(pass())
+            }
+        }
+        "hang" | "hang-twice" => {
+            let _ = std::fs::write(
+                exe_path.with_file_name(format!("{key}.pid")),
+                std::process::id().to_string(),
+            );
+            VerifierReply::Hang
+        }
+        "hang-once-then-pass" => {
+            if call_idx <= 1 {
+                let _ = std::fs::write(
+                    exe_path.with_file_name(format!("{key}.pid")),
+                    std::process::id().to_string(),
+                );
+                VerifierReply::Hang
+            } else {
+                VerifierReply::Text(pass())
+            }
+        }
+        _ => return None,
+    })
 }
 
 fn emit_official_success(backend: &str, args: &[String]) {

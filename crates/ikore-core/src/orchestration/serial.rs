@@ -1006,6 +1006,7 @@ impl PersistenceService {
             root,
         )?;
         tx.commit()?;
+        self.wake_scheduler();
         Ok(())
     }
 
@@ -1194,17 +1195,26 @@ impl PersistenceService {
         }
         match disposition {
             StageDisposition::AwaitArtifactReview => {
-                let updated = Self::transition_pulsation(
+                if !Self::maybe_start_stage_verification_in_tx(
                     tx,
                     current,
-                    PulsationStatus::Checkpoint,
-                    current.stage,
-                    "checkpoint_ready",
-                    Some("Checkpoint ready for HITL review."),
-                )?;
-                Self::open_checkpoint(tx, &updated.id, updated.stage)?;
-                tx.execute("UPDATE checkpoints SET state_version=(SELECT state_version FROM pulsations WHERE id=?1),input_revision=?2,producer_job_id=?3,generation=?4 WHERE pulsation_id=?1 AND status='waiting' AND purpose='artifact_review'",params![pulse,handoff.recipient.input_revision,job.id,handoff.recipient.generation])?;
-                Self::enqueue_visualization(tx, pulse)?;
+                    &job.id,
+                    handoff.recipient.generation,
+                    handoff.recipient.input_revision.unwrap_or(1),
+                    "await_review",
+                )? {
+                    let updated = Self::transition_pulsation(
+                        tx,
+                        current,
+                        PulsationStatus::Checkpoint,
+                        current.stage,
+                        "checkpoint_ready",
+                        Some("Checkpoint ready for HITL review."),
+                    )?;
+                    Self::open_checkpoint(tx, &updated.id, updated.stage)?;
+                    tx.execute("UPDATE checkpoints SET state_version=(SELECT state_version FROM pulsations WHERE id=?1),input_revision=?2,producer_job_id=?3,generation=?4 WHERE pulsation_id=?1 AND status='waiting' AND purpose='artifact_review'",params![pulse,handoff.recipient.input_revision,job.id,handoff.recipient.generation])?;
+                    Self::enqueue_visualization(tx, pulse)?;
+                }
             }
             StageDisposition::Advance(next) => {
                 if current.stage == PulsationStage::Intake
@@ -1237,7 +1247,14 @@ impl PersistenceService {
                     )?;
                     Self::open_checkpoint(tx, &updated.id, updated.stage)?;
                     tx.execute("UPDATE checkpoints SET kind='path_confirmation',purpose='path_confirmation',state_version=(SELECT state_version FROM pulsations WHERE id=?1),input_revision=?2,producer_job_id=?3,generation=?4 WHERE pulsation_id=?1 AND status='waiting' AND purpose='artifact_review'",params![pulse,handoff.recipient.input_revision,job.id,handoff.recipient.generation])?;
-                } else {
+                } else if !Self::maybe_start_stage_verification_in_tx(
+                    tx,
+                    current,
+                    &job.id,
+                    handoff.recipient.generation,
+                    handoff.recipient.input_revision.unwrap_or(1),
+                    &format!("advance:{}", next.as_db_value()),
+                )? {
                     let updated = Self::transition_pulsation(
                         tx,
                         current,
@@ -1374,11 +1391,28 @@ impl PersistenceService {
         if current.stage != PulsationStage::Intake {
             return Err(invalid("Path clarification outside Intake."));
         }
-        let (stored_checkpoint_id, state_version, purpose): (String, u64, String) = tx
+        let (
+            stored_checkpoint_id,
+            state_version,
+            purpose,
+            producer_job_id,
+            generation,
+            input_revision,
+        ): (String, u64, String, Option<String>, Option<u64>, u64) = tx
             .query_row(
-                "SELECT id,state_version,purpose FROM checkpoints WHERE pulsation_id=?1 AND status='waiting'",
+                "SELECT id,state_version,purpose,producer_job_id,generation,input_revision
+                   FROM checkpoints WHERE pulsation_id=?1 AND status='waiting'",
                 [&request.pulsation_id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                    ))
+                },
             )
             .map_err(|_| invalid("Checkpoint missing or ambiguous."))?;
         if stored_checkpoint_id != request.checkpoint_id
@@ -1452,15 +1486,33 @@ impl PersistenceService {
                 feedback: None,
             },
         )?;
-        let updated = Self::transition_pulsation(
-            &tx,
-            &current,
-            PulsationStatus::Planning,
-            PulsationStage::Specification,
-            "path_confirmation_resolved",
-            Some("Path confirmed; Specification queued."),
-        )?;
-        Self::enqueue_stage_job(&tx, &updated.id, updated.stage)?;
+        let started_verifiers =
+            if let (Some(job_id), Some(generation)) = (producer_job_id.as_deref(), generation) {
+                Self::maybe_start_stage_verification_in_tx(
+                    &tx,
+                    &current,
+                    job_id,
+                    generation,
+                    input_revision,
+                    "advance:SPECIFICATION",
+                )?
+            } else {
+                false
+            };
+        let updated = if started_verifiers {
+            Self::find_pulsation_by_id(&tx, &current.id)?.unwrap_or(current)
+        } else {
+            let updated = Self::transition_pulsation(
+                &tx,
+                &current,
+                PulsationStatus::Planning,
+                PulsationStage::Specification,
+                "path_confirmation_resolved",
+                Some("Path confirmed; Specification queued."),
+            )?;
+            Self::enqueue_stage_job(&tx, &updated.id, updated.stage)?;
+            updated
+        };
         tx.commit()?;
         self.wake_scheduler();
         Ok(updated)
@@ -1841,12 +1893,16 @@ impl PersistenceService {
                     )?;
                     tx.execute("UPDATE jobs SET status='failed',cancellation_reason='superseded',last_error=?2 WHERE pulsation_id=?1 AND status='pending'",params![pulse,error.to_string()])?;
                 }
+                let cancelled_verifiers =
+                    Self::cancel_stage_verifiers_in_tx(&tx, &pulse, &Self::now_iso())?;
                 Self::mark_effects_for_review(&tx, &pulse, "publication_conflict")?;
                 tx.commit()?;
+                self.cancel_verifier_tokens(&cancelled_verifiers);
                 return Err(error);
             }
         }
         tx.commit()?;
+        self.wake_scheduler();
         Ok(())
     }
 }

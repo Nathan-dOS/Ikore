@@ -557,6 +557,13 @@ impl PersistenceService {
             preparation.recovery_context =
                 Self::validation_failure_context_for_job(&self.connection()?, &job.id)?;
         }
+        preparation.verification_findings =
+            crate::stage_verifiers::prompt::load_latest_rejected_findings(
+                &self.connection()?,
+                &current.id,
+                stage,
+                fence.generation,
+            )?;
         let sanitization = crate::sanitization::SanitizationStore::new(self.database_path());
         let sanitization_policy = sanitization.policy_for_project(&project.id).map_err(|_| {
             PersistenceServiceError::Validation(
@@ -2418,6 +2425,7 @@ impl PersistenceService {
                 clarification_answers: answers,
                 qualified_recipes: Vec::new(),
                 scope_amendments: Vec::new(),
+                verification_findings: Vec::new(),
             },
             reads,
         ))

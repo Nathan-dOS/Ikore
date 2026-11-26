@@ -596,6 +596,7 @@ mod tests {
                         diagnostic: "Retry available".into(),
                         allow_retry: true,
                         allow_revision: false,
+                        allow_continue_anyway: false,
                         revision_stage: None,
                         attempts: 1,
                         state_version: 1,

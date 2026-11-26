@@ -315,14 +315,14 @@ CREATE TABLE "terminal_runs" (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   slot_kind TEXT NOT NULL DEFAULT 'canonical'
-    CHECK(slot_kind IN ('canonical','free_form','ephemeral')),
+    CHECK(slot_kind IN ('canonical','free_form','ephemeral','automation')),
   agent_role TEXT CHECK(agent_role IS NULL OR agent_role IN (
     'intake_router','task_specifier','contract_agent','backend_agent',
     'test_agent','integrator','learning_agent','feature_agent','visualizer','notes_scribe','documentation_reconciler'
   )),
   free_form_slot_id TEXT,
   free_form_label TEXT,
-  origin TEXT NOT NULL CHECK(origin IN ('pipeline','learning','manual','feature','review','notes','reconciliation')),
+  origin TEXT NOT NULL CHECK(origin IN ('pipeline','learning','manual','feature','review','notes','reconciliation','automation','verification')),
   execution_mode TEXT NOT NULL CHECK(execution_mode IN ('api_direct','cli_process')),
   backend TEXT CHECK(backend IS NULL OR backend IN ('codex','claude','gemini','opencode','antigravity','custom')),
   model TEXT,
@@ -369,6 +369,7 @@ CREATE TABLE "terminal_runs" (
   CHECK(
     (slot_kind IN ('canonical','ephemeral') AND agent_role IS NOT NULL AND free_form_slot_id IS NULL)
     OR (slot_kind='free_form' AND agent_role IS NULL AND free_form_slot_id IS NOT NULL)
+    OR (slot_kind='automation' AND agent_role IS NULL AND free_form_slot_id IS NULL)
   )
 );
 -- V63 (ADR-037 M3)
@@ -402,7 +403,7 @@ CREATE TABLE terminal_snapshot_blobs (
 CREATE TABLE "terminal_slots" (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  kind TEXT NOT NULL CHECK(kind IN ('canonical','free_form','ephemeral')),
+  kind TEXT NOT NULL CHECK(kind IN ('canonical','free_form','ephemeral','automation')),
   agent_role TEXT CHECK(agent_role IS NULL OR agent_role IN (
     'intake_router','task_specifier','contract_agent','backend_agent',
     'test_agent','integrator','learning_agent','feature_agent','visualizer','notes_scribe','documentation_reconciler'
@@ -430,7 +431,7 @@ CREATE TABLE "terminal_slots" (
     CHECK(model_source IN ('default','catalog','manual')),
   CHECK(
     (kind IN ('canonical','ephemeral') AND agent_role IS NOT NULL)
-    OR (kind='free_form' AND agent_role IS NULL)
+    OR (kind IN ('free_form','automation') AND agent_role IS NULL)
   )
 );
 

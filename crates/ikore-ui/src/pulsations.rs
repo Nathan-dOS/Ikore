@@ -133,6 +133,23 @@ pub(crate) trait PulsationsBackend: Send + Sync {
     ) -> PulsationsFuture<Vec<PathBuf>> {
         Box::pin(async { Err("Attestations are not available here.".to_owned()) })
     }
+    /// Stage verifier findings for a pulsation stage (feature 25, M4). Backends
+    /// without one return an empty list.
+    fn checkpoint_verification_findings(
+        &self,
+        _pulsation_id: String,
+        _stage: ikore_core::persistence_service::PulsationStage,
+    ) -> PulsationsFuture<Vec<ikore_core::stage_verifiers::StageVerifierRunView>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+    /// Resolves an open verification-error checkpoint (`Retry verifier`,
+    /// `Skip verifier`, `Abort`).
+    fn resolve_verification_error(
+        &self,
+        _request: ikore_core::stage_verifiers::ResolveVerificationErrorRequest,
+    ) -> PulsationsFuture<ikore_core::stage_verifiers::ResolveVerificationErrorResponse> {
+        Box::pin(async { Err("Verification error decisions are not available here.".to_owned()) })
+    }
 }
 
 /// What the Attestation card asks the host to do (ADR-036 M3).
@@ -236,6 +253,25 @@ fn observed_review_inputs(
 pub(crate) fn has_sanitized_regions(text: &str) -> bool {
     ikore_core::secret_redactor::contains_redaction_marker(text)
         || text.contains(ikore_core::secret_redactor::OMITTED_CONTENT)
+}
+
+fn observed_verification_findings(
+    mut runs: Vec<ikore_core::stage_verifiers::StageVerifierRunView>,
+) -> Vec<ikore_core::stage_verifiers::StageVerifierRunView> {
+    let text = ikore_core::sanitization::sanitized_observation;
+    for run in &mut runs {
+        run.verifier_label = text(&run.verifier_label);
+        run.error = run.error.as_deref().map(text);
+        if let Some(verdict) = run.verdict.as_mut() {
+            verdict.summary = text(&verdict.summary);
+            for finding in &mut verdict.findings {
+                finding.message = text(&finding.message);
+                finding.file = finding.file.as_deref().map(text);
+                finding.suggestion = finding.suggestion.as_deref().map(text);
+            }
+        }
+    }
+    runs
 }
 
 fn observed_brief(
@@ -512,6 +548,42 @@ impl PulsationsBackend for CorePulsationsBackend {
                 })
                 .await
                 .map_err(|e| Self::worker_error("failure detail", e))?
+                .map_err(|e| e.to_string())
+        })
+    }
+    fn checkpoint_verification_findings(
+        &self,
+        pulsation_id: String,
+        stage: ikore_core::persistence_service::PulsationStage,
+    ) -> PulsationsFuture<Vec<ikore_core::stage_verifiers::StageVerifierRunView>> {
+        let core = self.core.clone();
+        let runtime = core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn_blocking(move || {
+                    core.persistence()
+                        .list_checkpoint_verification_findings(&pulsation_id, stage)
+                })
+                .await
+                .map_err(|e| Self::worker_error("verification findings", e))?
+                .map(observed_verification_findings)
+                .map_err(|e| e.to_string())
+        })
+    }
+    fn resolve_verification_error(
+        &self,
+        request: ikore_core::stage_verifiers::ResolveVerificationErrorRequest,
+    ) -> PulsationsFuture<ikore_core::stage_verifiers::ResolveVerificationErrorResponse> {
+        let core = self.core.clone();
+        let runtime = core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn_blocking(move || {
+                    core.persistence()
+                        .resolve_verification_error_checkpoint(request)
+                })
+                .await
+                .map_err(|e| Self::worker_error("verification error decision", e))?
                 .map_err(|e| e.to_string())
         })
     }
@@ -849,6 +921,8 @@ pub struct PulsationsModel {
     pub reconciliation_busy: bool,
     pub hitl_checkpoints: Vec<ikore_core::persistence_service::HitlCheckpoint>,
     pub failure_checkpoints: Vec<ikore_core::persistence_service::StageFailureCheckpoint>,
+    pub verification_error_checkpoints:
+        Vec<ikore_core::stage_verifiers::VerificationErrorCheckpoint>,
     pub project_id: Option<SharedString>,
     pub pulsations: Vec<Pulsation>,
     pub active_pulsation_id: Option<SharedString>,
@@ -943,6 +1017,16 @@ impl PulsationsModel {
             .cloned()
     }
 
+    pub(crate) fn active_verification_error_checkpoint(
+        &self,
+    ) -> Option<ikore_core::stage_verifiers::VerificationErrorCheckpoint> {
+        let active = self.active()?;
+        self.verification_error_checkpoints
+            .iter()
+            .find(|c| c.pulsation_id == active.id)
+            .cloned()
+    }
+
     pub(crate) fn apply_snapshot(
         &mut self,
         project_id: String,
@@ -977,12 +1061,15 @@ impl PulsationsModel {
             self.report = ReportState::default();
             self.attestation = AttestationCardState::default();
         }
-        let had_checkpoint = self.hitl.pulsation_id.is_some() || self.failure.checkpoint.is_some();
+        let had_checkpoint = self.hitl.pulsation_id.is_some()
+            || self.failure.checkpoint.is_some()
+            || self.active_verification_error_checkpoint().is_some();
         self.project_id = Some(project_id.into());
         self.pulsations = snapshot.pulsations;
         self.details = snapshot.details;
         self.hitl_checkpoints = snapshot.hitl_checkpoints;
         self.failure_checkpoints = snapshot.failure_checkpoints;
+        self.verification_error_checkpoints = snapshot.verification_error_checkpoints;
         self.awaiting_hitl = snapshot.hitl_waiting_count;
         self.awaiting_failure = snapshot.failure_waiting_count;
         self.running_jobs = snapshot.main_agents_count + snapshot.background_agents_count;
@@ -1010,7 +1097,9 @@ impl PulsationsModel {
         self.hitl
             .load_checkpoint(checkpoint.as_ref(), expected_checkpoint);
         let failure = self.active_failure_checkpoint();
-        let waiting = checkpoint.is_some() || failure.is_some();
+        let waiting = checkpoint.is_some()
+            || failure.is_some()
+            || self.active_verification_error_checkpoint().is_some();
         self.failure.load_checkpoint(failure);
         // Take the user to Review exactly when a checkpoint newly appears for the active
         // pulsation, or when the active pulsation changed while a checkpoint was already waiting.
@@ -1063,7 +1152,9 @@ impl PulsationsModel {
         self.hitl
             .load_checkpoint(checkpoint.as_ref(), expected_checkpoint);
         let failure = self.active_failure_checkpoint();
-        let waiting = checkpoint.is_some() || failure.is_some();
+        let waiting = checkpoint.is_some()
+            || failure.is_some()
+            || self.active_verification_error_checkpoint().is_some();
         self.failure.load_checkpoint(failure);
         // Selecting a pulsation that is already at a checkpoint takes the user straight to Review
         // (see the UI flow plan Part 1.2).
@@ -1269,6 +1360,7 @@ mod tests {
             background_agents_count: 0,
             hitl_waiting_count: 0,
             failure_checkpoints: Vec::new(),
+            verification_error_checkpoints: Vec::new(),
             failure_waiting_count: 0,
             active_jobs: Vec::new(),
             brownfield_coverage: None,
@@ -1352,6 +1444,7 @@ mod tests {
                 pulsations: vec![pulsation("pulse-1", PulsationStatus::Checkpoint)],
                 hitl_waiting_count: 1,
                 failure_checkpoints: Vec::new(),
+                verification_error_checkpoints: Vec::new(),
                 failure_waiting_count: 0,
                 background_agents_count: 2,
             },
@@ -1391,6 +1484,7 @@ mod tests {
                 pulsations: vec![pulsation("pulse-1", PulsationStatus::Running)],
                 hitl_waiting_count: 0,
                 failure_checkpoints: Vec::new(),
+                verification_error_checkpoints: Vec::new(),
                 failure_waiting_count: 0,
                 background_agents_count: 1,
             },

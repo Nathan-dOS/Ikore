@@ -9,6 +9,9 @@ pub(crate) const NODE_HEIGHT: f32 = 56.0;
 pub(crate) const NODE_RADIUS: f32 = 10.0;
 /// The gap between two stages, where their link runs.
 pub(crate) const STAGE_GAP: f32 = 40.0;
+/// Vertical gap between a stage node and its first verifier node, and between chained verifiers.
+pub(crate) const VERIFIER_TOP_GAP: f32 = 24.0;
+pub(crate) const VERIFIER_GAP: f32 = 12.0;
 /// The gap between two loose nodes, across and down.
 pub(crate) const LOOSE_GAP: f32 = 14.0;
 /// The loose area starts this far below what sits lowest above it.

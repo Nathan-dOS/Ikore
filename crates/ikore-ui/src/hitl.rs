@@ -172,6 +172,8 @@ pub(crate) struct HitlReviewState {
     /// What approving the Specification would grant (ADR-035 M1). Never a
     /// gate: the host derives the same mandate when it approves.
     pub(crate) grants: Option<ikore_core::persistence_service::MandatePreview>,
+    /// Stage verifier findings attached to the checkpoint's stage (feature 25, M4).
+    pub(crate) verification_findings: Vec<ikore_core::stage_verifiers::StageVerifierRunView>,
     pub(crate) busy: bool,
     pub(crate) error: Option<String>,
     load_generation: u64,
@@ -223,6 +225,7 @@ impl HitlReviewState {
             self.convergence = None;
             self.risk = None;
             self.grants = None;
+            self.verification_findings.clear();
             self.error = None;
         }
         self.expected_checkpoint = checkpoint;
@@ -307,6 +310,21 @@ impl HitlReviewState {
             }
         }
         self.brief_cursor = 0;
+        true
+    }
+
+    pub(crate) fn finish_verification_findings(
+        &mut self,
+        generation: u64,
+        checkpoint: &HitlCheckpoint,
+        result: Result<Vec<ikore_core::stage_verifiers::StageVerifierRunView>, String>,
+    ) -> bool {
+        if generation != self.load_generation
+            || !same_checkpoint(self.expected_checkpoint.as_ref(), Some(checkpoint))
+        {
+            return false;
+        }
+        self.verification_findings = result.unwrap_or_default();
         true
     }
 

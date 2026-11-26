@@ -90,6 +90,8 @@ pub struct UnitPromptInputs<'a> {
     /// The Integrator's classified inputs (ADR-032): policy, host evidence,
     /// gaps, base → candidate changes and author claims, already sanitized.
     pub review: Option<&'a super::review_boundary::ReviewBoundary>,
+    /// Rejected stage-verifier findings carried into a stage re-run (P24).
+    pub verification_findings: &'a [crate::stage_verifiers::StageVerificationFinding],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -719,6 +721,16 @@ pub fn render_unit_prompt(
         }
     }
 
+    if !inputs.verification_findings.is_empty() {
+        let _ = writeln!(
+            user,
+            "{}",
+            crate::stage_verifiers::prompt::render_verification_findings_section(
+                inputs.verification_findings
+            )
+        );
+    }
+
     let _ = writeln!(
         user,
         "## Response contract\n\n{}\n\n{}\n\nYour entire reply must be one complete JSON object. If it cannot be closed it is discarded whole; keep prose short and structure complete.",
@@ -1016,6 +1028,7 @@ mod tests {
             extra_instructions: None,
             review: None,
             recovery_context: None,
+            verification_findings: &[],
         };
         let prompt = render_unit_prompt(
             &plan,
@@ -1677,5 +1690,50 @@ mod tests {
                 .user_prompt()
                 .contains("Untrusted diagnostic repeats <REDACTED_SECRET:")
         );
+    }
+
+    #[test]
+    fn verification_findings_section_appears_with_verifier_provenance_before_contract() {
+        let (plan, table, _) = setup();
+        let finding = crate::stage_verifiers::StageVerificationFinding {
+            verifier_label: "Contract gate".into(),
+            summary: "Missing test".into(),
+            findings: vec![crate::stage_verifiers::VerdictFinding {
+                id: "F1".into(),
+                severity: crate::stage_verifiers::FindingSeverity::Blocking,
+                message: "Add negative test case".into(),
+                file: Some("src/lib.rs".into()),
+                line: Some(9),
+                suggestion: None,
+                file_not_found: false,
+            }],
+        };
+        let inputs = UnitPromptInputs {
+            verification_findings: &[finding],
+            ..Default::default()
+        };
+        let prompt = render_unit_prompt(
+            &plan,
+            &plan.units[0],
+            &table,
+            policy_for(ExecutorKind::CodeImplementer),
+            &inputs,
+            SchemaFlavor::Canonical,
+        );
+        let findings_pos = prompt
+            .user
+            .find("## Verification findings")
+            .expect("verification findings section");
+        let contract_pos = prompt
+            .user
+            .find("## Response contract")
+            .expect("response contract section");
+        assert!(findings_pos < contract_pos);
+        assert!(
+            prompt
+                .user
+                .contains("> provenance: agent_output · stage/verifier")
+        );
+        assert!(prompt.user.contains("Add negative test case"));
     }
 }

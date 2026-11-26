@@ -374,6 +374,8 @@ pub enum ExecutionOrigin {
     Reconciliation,
     /// A step of a developer's pipeline (feature 25).
     Automation,
+    /// A stage verifier attached to a default pipeline stage (feature 25 M4).
+    Verification,
 }
 
 impl ExecutionOrigin {
@@ -387,6 +389,7 @@ impl ExecutionOrigin {
             Self::Notes => "notes",
             Self::Reconciliation => "reconciliation",
             Self::Automation => "automation",
+            Self::Verification => "verification",
         }
     }
 
@@ -400,6 +403,7 @@ impl ExecutionOrigin {
             "notes" => Some(Self::Notes),
             "reconciliation" => Some(Self::Reconciliation),
             "automation" => Some(Self::Automation),
+            "verification" => Some(Self::Verification),
             _ => None,
         }
     }
@@ -640,8 +644,10 @@ pub enum SessionSlot {
     FreeForm {
         id: String,
     },
-    /// A step of a developer's pipeline (feature 25): no role, configured by
-    /// the step, read-only. The id is `automation:{project}:{pipeline}:{step}`.
+    /// A step of a developer's pipeline or a stage verifier (feature 25): no
+    /// role, configured by the step or verifier, read-only. The id is
+    /// `automation:{project}:{pipeline}:{step}` or
+    /// `verifier:{project}:{verifier}`.
     Automation {
         id: String,
     },
@@ -1801,9 +1807,14 @@ impl TerminalRepository {
                 "internal run slots do not accept manual actions".into(),
             ));
         }
-        if (slot.kind == "automation") != (request.origin == ExecutionOrigin::Automation) {
+        if (slot.kind == "automation")
+            != matches!(
+                request.origin,
+                ExecutionOrigin::Automation | ExecutionOrigin::Verification
+            )
+        {
             return Err(TerminalError::Validation(
-                "pipeline steps run only on their own slots".into(),
+                "pipeline steps and stage verifiers run only on automation slots".into(),
             ));
         }
         let continuation_reason = request
@@ -4542,22 +4553,24 @@ pub struct TerminalsSnapshot {
     pub discovery: Vec<CliAvailability>,
 }
 
-/// A step of a developer's pipeline run by a CLI (feature 25), with the
-/// pipeline stages' read-only hardening.
+/// A step of a developer's pipeline or a stage verifier run by a CLI
+/// (feature 25), with the pipeline stages' read-only hardening.
 #[derive(Debug, Clone)]
 pub struct AutomationStepRequest {
     pub project_id: String,
-    /// `automation:{project}:{pipeline}:{step}`.
+    /// `automation:{project}:{pipeline}:{step}` or `verifier:{project}:{verifier}`.
     pub slot_id: String,
-    /// `{pipeline} · {step}`.
+    /// `{pipeline} · {step}` or `{Stage} · {verifier}`.
     pub label: String,
+    pub origin: ExecutionOrigin,
+    pub pulsation_id: Option<String>,
     pub backend: CliBackend,
     pub model: Option<String>,
     pub model_profile: Option<String>,
     pub thinking_level: ThinkingLevel,
     pub system_prompt: String,
     pub user_prompt: String,
-    /// A verdict step's schema.
+    /// A verdict step's or stage verifier's schema.
     pub schema: Option<Value>,
     pub deadline: Instant,
 }
@@ -6053,19 +6066,27 @@ impl TerminalService {
         Ok(run)
     }
 
-    /// Runs one step of a developer's pipeline (feature 25) on its own slot,
-    /// with the stages' read-only hardening: adapters, action ledger, pulse,
-    /// deadline and history work as for any CLI run. Official adapters only
-    /// (E1); the answer is the step's text or verdict.
+    /// Runs one step of a developer's pipeline or a stage verifier (feature 25)
+    /// on its own slot, with the stages' read-only hardening: adapters, action
+    /// ledger, pulse, deadline and history work as for any CLI run. Official
+    /// adapters only (E1); the answer is the step's text or verdict.
     pub async fn execute_automation_step(
         self: &Arc<Self>,
         request: AutomationStepRequest,
         cancellation: &CancellationToken,
     ) -> Result<AutomationStepCompletion, TerminalError> {
         let host = self.host.as_ref();
+        if !matches!(
+            request.origin,
+            ExecutionOrigin::Automation | ExecutionOrigin::Verification
+        ) {
+            return Err(TerminalError::Validation(
+                "automation execution requires an automation or verification origin".into(),
+            ));
+        }
         if request.backend == CliBackend::Custom {
             return Err(TerminalError::Validation(
-                "A pipeline step requires an official read-only CLI adapter or API transport"
+                "A pipeline step or verifier requires an official read-only CLI adapter or API transport"
                     .into(),
             ));
         }
@@ -6163,11 +6184,11 @@ impl TerminalService {
                 slot: SessionSlot::Automation {
                     id: request.slot_id.clone(),
                 },
-                origin: ExecutionOrigin::Automation,
+                origin: request.origin,
                 execution_mode: AgentExecutionMode::CliProcess,
                 backend: Some(request.backend),
                 model: request.model.clone(),
-                pulsation_id: None,
+                pulsation_id: request.pulsation_id.clone(),
                 job_id: None,
                 agent_run_id: None,
                 llm_execution_id: None,
@@ -6181,7 +6202,12 @@ impl TerminalService {
         let run = self
             .repository
             .set_adapter_metadata(&run.id, availability.version.as_deref())?;
-        self.record_prepared_cli_input(&run.project_id, None, &run.id, &prepared)?;
+        self.record_prepared_cli_input(
+            &run.project_id,
+            run.pulsation_id.as_deref(),
+            &run.id,
+            &prepared,
+        )?;
         let local_cancellation = CancellationToken::new();
         self.active
             .lock()

@@ -488,6 +488,9 @@ pub(crate) fn failure_choices_card(checkpoint: &StageFailureCheckpoint) -> AnyEl
                     "Grant and retry".to_owned(),
                 ),
                 FailureDecisionKind::Retry => (Icon::RotateCw, theme::accent(), "Retry".to_owned()),
+                FailureDecisionKind::ContinueAnyway => {
+                    (Icon::Check, theme::warning(), "Continue anyway".to_owned())
+                }
                 FailureDecisionKind::Revision => (
                     Icon::Pencil,
                     theme::warning(),
@@ -526,4 +529,158 @@ pub(crate) fn failure_choices_card(checkpoint: &StageFailureCheckpoint) -> AnyEl
         }))
         .child(pill("The buttons below act; this list only explains them."))
         .into_any_element()
+}
+
+/// Stage verifier runs & findings for the open checkpoint (feature 25, M4).
+/// Always wrapped with `min_w_0` so long labels and findings fit narrow panels
+/// without horizontal overflow.
+pub(crate) fn verification_findings_card(
+    runs: &[ikore_core::stage_verifiers::StageVerifierRunView],
+) -> Option<AnyElement> {
+    if runs.is_empty() {
+        return None;
+    }
+    use ikore_core::stage_verifiers::FindingSeverity;
+    let mut card = wide_card("brief-verification-findings")
+        .min_w_0()
+        .child(card_header(
+            Icon::ShieldCheck,
+            theme::purple(),
+            "Verification findings",
+            Some(runs.len()),
+            Provenance::Developer,
+        ));
+    for (run_idx, run) in runs.iter().enumerate() {
+        let mode_label = if run.advisory { "Advisory" } else { "Blocking" };
+        let (glyph, ink, status_word) = match run.status.as_str() {
+            "passed" => (Icon::Check, theme::success(), "Passed"),
+            "rejected" => (Icon::TriangleAlert, theme::danger(), "Rejected"),
+            "overridden" => (Icon::Check, theme::warning(), "Overridden"),
+            "failed" => (Icon::X, theme::danger(), "Verification error"),
+            "skipped" => (Icon::Ban, theme::text_muted(), "Skipped"),
+            "cancelled" => (Icon::X, theme::text_muted(), "Cancelled"),
+            "pending" => (Icon::Clock, theme::text_muted(), "Pending"),
+            "running" => (Icon::Play, theme::accent(), "Running"),
+            other => (Icon::CircleHelp, theme::text_muted(), other),
+        };
+        let stage_display =
+            ikore_core::persistence_service::PulsationStage::from_db_value(&run.stage)
+                .map(stage_name)
+                .unwrap_or(run.stage.as_str());
+        let mut row = div()
+            .id(SharedString::from(format!(
+                "brief-verification-run-{run_idx}"
+            )))
+            .debug_selector(move || format!("brief-verification-run-{run_idx}"))
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .px_3()
+            .py_2()
+            .rounded_md()
+            .border_1()
+            .border_color(theme::border())
+            .bg(theme::canvas())
+            .child(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_sm()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child(format!(
+                                "{stage_display} · {} · {mode_label}",
+                                run.verifier_label
+                            )),
+                    )
+                    .child(badge(glyph, ink, status_word.to_owned())),
+            );
+        if let Some(error) = run.error.as_deref().filter(|s| !s.trim().is_empty()) {
+            row = row.child(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .text_xs()
+                    .text_color(theme::danger())
+                    .child(error.to_owned()),
+            );
+        }
+        if let Some(verdict) = &run.verdict {
+            if !verdict.summary.trim().is_empty() {
+                row = row.child(
+                    div()
+                        .w_full()
+                        .min_w_0()
+                        .text_xs()
+                        .text_color(theme::text())
+                        .child(verdict.summary.clone()),
+                );
+            }
+            for (f_idx, finding) in verdict.findings.iter().enumerate() {
+                let sev_label = match finding.severity {
+                    FindingSeverity::Blocking => "BLOCKING",
+                    FindingSeverity::Warning => "WARNING",
+                    FindingSeverity::Note => "NOTE",
+                };
+                let sev_color = match finding.severity {
+                    FindingSeverity::Blocking => theme::danger(),
+                    FindingSeverity::Warning => theme::warning(),
+                    FindingSeverity::Note => theme::text_muted(),
+                };
+                let location = match (&finding.file, finding.line) {
+                    (Some(file), Some(line)) => format!(" ({file}:{line})"),
+                    (Some(file), None) => format!(" ({file})"),
+                    _ => String::new(),
+                };
+                let mut item = div()
+                    .id(SharedString::from(format!(
+                        "brief-verification-finding-{run_idx}-{f_idx}"
+                    )))
+                    .w_full()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .pt_1()
+                    .border_t_1()
+                    .border_color(theme::border())
+                    .child(
+                        div()
+                            .w_full()
+                            .min_w_0()
+                            .text_xs()
+                            .text_color(sev_color)
+                            .child(format!("[{sev_label}]{location}")),
+                    )
+                    .child(
+                        div()
+                            .w_full()
+                            .min_w_0()
+                            .text_xs()
+                            .text_color(theme::text())
+                            .child(finding.message.clone()),
+                    );
+                if let Some(suggestion) = finding
+                    .suggestion
+                    .as_deref()
+                    .filter(|s| !s.trim().is_empty())
+                {
+                    item = item.child(detail(format!("Suggestion: {suggestion}")));
+                }
+                row = row.child(item);
+            }
+        }
+        card = card.child(row);
+    }
+    Some(card.into_any_element())
 }

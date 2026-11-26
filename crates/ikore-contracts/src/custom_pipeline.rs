@@ -343,6 +343,84 @@ pub fn validate_definition(
     errors
 }
 
+/// Validates a `StepAgent`'s transport, backend, verifiable model or API
+/// route, and thinking level (E1, E2, P9). Shared by custom pipeline agent
+/// steps and stage verifiers.
+pub fn validate_step_agent(
+    agent: &StepAgent,
+    step_id: Option<&str>,
+    subject: &str,
+    errors: &mut Vec<PipelineValidationError>,
+) {
+    if !THINKING_LEVELS.contains(&agent.thinking_level.as_str()) {
+        errors.push(PipelineValidationError::new(
+            "thinking_level_invalid",
+            step_id,
+            "Effort is default, low, medium or high.",
+        ));
+    }
+    match agent.transport {
+        StepTransport::Cli => match agent.backend.as_deref() {
+            None => errors.push(PipelineValidationError::new(
+                "backend_required",
+                step_id,
+                format!("Choose the CLI that runs this {subject}."),
+            )),
+            Some(backend) if backend.trim().is_empty() => {
+                errors.push(PipelineValidationError::new(
+                    "backend_required",
+                    step_id,
+                    format!("Choose the CLI that runs this {subject}."),
+                ));
+            }
+            Some(backend) if backend.trim().eq_ignore_ascii_case("custom") => {
+                errors.push(PipelineValidationError::new(
+                    "backend_not_allowed",
+                    step_id,
+                    format!(
+                        "A {subject} requires an official read-only CLI adapter or API transport."
+                    ),
+                ));
+            }
+            Some(backend) if !ALLOWED_BACKENDS.contains(&backend) => {
+                errors.push(PipelineValidationError::new(
+                    "backend_unknown",
+                    step_id,
+                    format!("\"{backend}\" is not a known CLI."),
+                ));
+            }
+            Some(_) => {
+                // Automatic runs bind a model the host verifies afterwards; a
+                // CLI's own default names none (`require_verifiable_cli_selection`).
+                if agent
+                    .model
+                    .as_deref()
+                    .is_none_or(|model| model.trim().is_empty())
+                {
+                    errors.push(PipelineValidationError::new(
+                        "model_required",
+                        step_id,
+                        "Choose a model: automatic runs need a fixed model the app can verify.",
+                    ));
+                }
+            }
+        },
+        StepTransport::Api => {
+            if agent
+                .api_route_id
+                .as_deref()
+                .is_none_or(|route| route.trim().is_empty())
+            {
+                errors.push(PipelineValidationError::new(
+                    "api_route_required",
+                    step_id,
+                    format!("Choose the API route that runs this {subject}."),
+                ));
+            }
+        }
+    }
+}
+
 fn validate_agent(step: &AgentStep, errors: &mut Vec<PipelineValidationError>) {
     let id = Some(step.id.as_str());
     if step.instructions.trim().is_empty() {
@@ -359,64 +437,7 @@ fn validate_agent(step: &AgentStep, errors: &mut Vec<PipelineValidationError>) {
             "Instructions have at most 16 KiB.",
         ));
     }
-    if !THINKING_LEVELS.contains(&step.agent.thinking_level.as_str()) {
-        errors.push(PipelineValidationError::new(
-            "thinking_level_invalid",
-            id,
-            "Effort is default, low, medium or high.",
-        ));
-    }
-    match step.agent.transport {
-        StepTransport::Cli => match step.agent.backend.as_deref() {
-            None => errors.push(PipelineValidationError::new(
-                "backend_required",
-                id,
-                "Choose the CLI that runs this step.",
-            )),
-            Some("custom") => errors.push(PipelineValidationError::new(
-                "backend_not_allowed",
-                id,
-                "Steps require an official read-only CLI adapter or API transport.",
-            )),
-            Some(backend) if !ALLOWED_BACKENDS.contains(&backend) => {
-                errors.push(PipelineValidationError::new(
-                    "backend_unknown",
-                    id,
-                    format!("`{backend}` is not a known CLI."),
-                ));
-            }
-            Some(_) => {
-                // Automatic runs bind a model the host verifies afterwards; a
-                // CLI's own default names none (`require_verifiable_cli_selection`).
-                if step
-                    .agent
-                    .model
-                    .as_deref()
-                    .is_none_or(|model| model.trim().is_empty())
-                {
-                    errors.push(PipelineValidationError::new(
-                        "model_required",
-                        id,
-                        "Choose a model: automatic runs need a fixed model the app can verify.",
-                    ));
-                }
-            }
-        },
-        StepTransport::Api => {
-            if step
-                .agent
-                .api_route_id
-                .as_deref()
-                .is_none_or(|route| route.trim().is_empty())
-            {
-                errors.push(PipelineValidationError::new(
-                    "api_route_required",
-                    id,
-                    "Choose the API route that runs this step.",
-                ));
-            }
-        }
-    }
+    validate_step_agent(&step.agent, id, "step", errors);
 }
 
 /// A pipeline's name: 1 to 60 characters, and never `Pipeline`.
@@ -506,8 +527,14 @@ fn json_body(raw: &str) -> &str {
 /// Reads and checks a verdict. The error names what is wrong, to show the
 /// model once in a correction.
 pub fn parse_verdict(raw: &str) -> Result<StageVerdictV1, String> {
-    let verdict: StageVerdictV1 = serde_json::from_str(json_body(raw))
-        .map_err(|error| format!("The answer is not a valid verdict: {error}"))?;
+    let mut verdict: StageVerdictV1 = serde_json::from_str(json_body(raw)).map_err(|error| {
+        let detail = error.to_string().replace('`', "\"");
+        format!("The answer is not a valid verdict: {detail}")
+    })?;
+    for finding in &mut verdict.findings {
+        // Host-owned flag: untrusted model output cannot forge a missing-file marker.
+        finding.file_not_found = false;
+    }
     let problems = validate_verdict(&verdict);
     if problems.is_empty() {
         Ok(verdict)
@@ -524,10 +551,10 @@ pub fn validate_verdict(verdict: &StageVerdictV1) -> Vec<String> {
         .any(|finding| finding.severity == FindingSeverity::Blocking);
     match verdict.verdict {
         Verdict::Reject if !blocking => {
-            problems.push("A `reject` needs at least one blocking finding.".to_owned());
+            problems.push("A \"reject\" needs at least one blocking finding.".to_owned());
         }
         Verdict::Pass if blocking => {
-            problems.push("A `pass` cannot have a blocking finding.".to_owned());
+            problems.push("A \"pass\" cannot have a blocking finding.".to_owned());
         }
         _ => {}
     }
@@ -541,8 +568,20 @@ pub fn validate_verdict(verdict: &StageVerdictV1) -> Vec<String> {
     }
     let mut ids = HashSet::new();
     for finding in &verdict.findings {
-        if !ids.insert(finding.id.as_str()) {
-            problems.push(format!("Two findings share the id `{}`.", finding.id));
+        let trimmed_id = finding.id.trim();
+        if trimmed_id.is_empty() {
+            problems.push("Every finding needs a non-empty id.".to_owned());
+        } else if !ids.insert(trimmed_id) {
+            problems.push(format!("Two findings share the id \"{trimmed_id}\"."));
+        }
+        if finding.line == Some(0) {
+            if trimmed_id.is_empty() {
+                problems.push("A finding's line number starts at 1.".to_owned());
+            } else {
+                problems.push(format!(
+                    "Finding \"{trimmed_id}\": line numbers start at 1."
+                ));
+            }
         }
         if finding.message.chars().count() > MAX_FINDING_CHARS
             || finding
@@ -550,10 +589,15 @@ pub fn validate_verdict(verdict: &StageVerdictV1) -> Vec<String> {
                 .as_deref()
                 .is_some_and(|text| text.chars().count() > MAX_FINDING_CHARS)
         {
-            problems.push(format!(
-                "Finding `{}`: message and suggestion have at most {MAX_FINDING_CHARS} characters.",
-                finding.id
-            ));
+            if trimmed_id.is_empty() {
+                problems.push(format!(
+                    "A finding's message and suggestion have at most {MAX_FINDING_CHARS} characters."
+                ));
+            } else {
+                problems.push(format!(
+                    "Finding \"{trimmed_id}\": message and suggestion have at most {MAX_FINDING_CHARS} characters."
+                ));
+            }
         }
     }
     problems
@@ -576,7 +620,7 @@ pub fn stage_verdict_json_schema() -> Value {
                     "additionalProperties": false,
                     "required": ["id", "severity", "message", "file", "line", "suggestion"],
                     "properties": {
-                        "id": { "type": "string" },
+                        "id": { "type": "string", "minLength": 1 },
                         "severity": { "type": "string", "enum": ["blocking", "warning", "note"] },
                         "message": { "type": "string", "maxLength": MAX_FINDING_CHARS },
                         "file": { "type": ["string", "null"] },
@@ -1271,5 +1315,91 @@ mod tests {
             schema["properties"]["verdict"]["enum"],
             json!(["pass", "reject"])
         );
+        assert_eq!(
+            schema["properties"]["findings"]["items"]["properties"]["id"]["minLength"],
+            json!(1)
+        );
+    }
+
+    #[test]
+    fn verdicts_hardening_rejects_empty_ids_line_zero_and_forged_file_not_found() {
+        let blank_id = r#"{"verdict":"pass","summary":"ok","findings":[{"id":"   ","severity":"note","message":"msg","file":null,"line":null,"suggestion":null}]}"#;
+        let err = parse_verdict(blank_id).unwrap_err();
+        assert!(err.contains("non-empty id"));
+        assert!(!err.contains('`'));
+
+        let empty_id = r#"{"verdict":"pass","summary":"ok","findings":[{"id":"","severity":"note","message":"msg","file":null,"line":null,"suggestion":null}]}"#;
+        assert!(parse_verdict(empty_id).is_err());
+
+        let dup_trimmed = r#"{"verdict":"pass","summary":"ok","findings":[{"id":"f1","severity":"note","message":"a","file":null,"line":null,"suggestion":null},{"id":" f1 ","severity":"warning","message":"b","file":null,"line":null,"suggestion":null}]}"#;
+        let err = parse_verdict(dup_trimmed).unwrap_err();
+        assert!(err.contains("share the id"));
+        assert!(!err.contains('`'));
+
+        let line_zero = r#"{"verdict":"pass","summary":"ok","findings":[{"id":"f1","severity":"note","message":"a","file":"src/lib.rs","line":0,"suggestion":null}]}"#;
+        let err = parse_verdict(line_zero).unwrap_err();
+        assert!(err.contains("start at 1"));
+        assert!(!err.contains('`'));
+
+        let line_one = r#"{"verdict":"pass","summary":"ok","findings":[{"id":"f1","severity":"note","message":"a","file":"src/lib.rs","line":1,"suggestion":null}]}"#;
+        assert!(parse_verdict(line_one).is_ok());
+
+        let line_none = r#"{"verdict":"pass","summary":"ok","findings":[{"id":"f1","severity":"note","message":"a","file":"src/lib.rs","line":null,"suggestion":null}]}"#;
+        assert!(parse_verdict(line_none).is_ok());
+
+        // Untrusted model JSON setting fileNotFound is cleared by parse_verdict,
+        // while persisted DB JSON deserialized with serde_json preserves it.
+        let forged = r#"{"verdict":"pass","summary":"ok","findings":[{"id":"f1","severity":"note","message":"a","file":null,"line":null,"suggestion":null,"fileNotFound":true}]}"#;
+        let parsed = parse_verdict(forged).unwrap();
+        assert!(!parsed.findings[0].file_not_found);
+        let persisted: StageVerdictV1 = serde_json::from_str(forged).unwrap();
+        assert!(persisted.findings[0].file_not_found);
+
+        // Zero literal backticks across all validate_verdict error branches.
+        let all_problems = StageVerdictV1 {
+            verdict: Verdict::Pass,
+            summary: "s".repeat(MAX_SUMMARY_CHARS + 1),
+            findings: vec![
+                VerdictFinding {
+                    id: "".into(),
+                    severity: FindingSeverity::Blocking,
+                    message: "m".repeat(MAX_FINDING_CHARS + 1),
+                    file: None,
+                    line: Some(0),
+                    suggestion: None,
+                    file_not_found: false,
+                },
+                VerdictFinding {
+                    id: "dup".into(),
+                    severity: FindingSeverity::Note,
+                    message: "ok".into(),
+                    file: None,
+                    line: Some(0),
+                    suggestion: Some("x".repeat(MAX_FINDING_CHARS + 1)),
+                    file_not_found: false,
+                },
+                VerdictFinding {
+                    id: " dup ".into(),
+                    severity: FindingSeverity::Note,
+                    message: "ok".into(),
+                    file: None,
+                    line: Some(1),
+                    suggestion: None,
+                    file_not_found: false,
+                },
+            ],
+        };
+        let problems = validate_verdict(&all_problems);
+        assert!(problems.len() >= 6);
+        assert!(problems.iter().all(|p| !p.contains('`')));
+
+        let reject_without_blocking = StageVerdictV1 {
+            verdict: Verdict::Reject,
+            summary: "nope".into(),
+            findings: Vec::new(),
+        };
+        let reject_problems = validate_verdict(&reject_without_blocking);
+        assert_eq!(reject_problems.len(), 1);
+        assert!(!reject_problems[0].contains('`'));
     }
 }

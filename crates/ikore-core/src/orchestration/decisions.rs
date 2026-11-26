@@ -16,6 +16,7 @@ pub enum PendingDecisionKind {
     StageFailure,
     ScopeRequest,
     CliFallback,
+    VerificationError,
     ForgeQuestions,
     DescriptionReview,
     BaseReview,
@@ -31,6 +32,9 @@ pub enum PendingDecisionAction {
     Reject,
     AnswerQuestions,
     Retry,
+    ContinueAnyway,
+    RetryVerifier,
+    SkipVerifier,
     Abort,
     GrantScope,
     OpenAgents,
@@ -132,10 +136,12 @@ pub(crate) fn list_pending_decisions_on(
         "SELECT c.id,c.pulsation_id,c.purpose,p.feature_name,p.input_revision,p.state_version,c.stage,
           f.allow_retry,f.allow_revision,f.diagnostic,cf.diagnostic,
           q.id,q.generation,q.conversation_id,q.questions_json,c.producer_job_id,
-          EXISTS(SELECT 1 FROM mandate_scope_requests s WHERE s.checkpoint_id=c.id AND s.state='pending' AND json_array_length(s.accepted_json)>0)
+          EXISTS(SELECT 1 FROM mandate_scope_requests s WHERE s.checkpoint_id=c.id AND s.state='pending' AND json_array_length(s.accepted_json)>0),
+          COALESCE(f.allow_continue_anyway,0),ve.error_message
          FROM checkpoints c JOIN pulsations p ON p.id=c.pulsation_id
          LEFT JOIN stage_failure_requests f ON f.checkpoint_id=c.id AND f.decision IS NULL
          LEFT JOIN cli_fallback_requests cf ON cf.checkpoint_id=c.id AND cf.decision IS NULL
+         LEFT JOIN verification_error_requests ve ON ve.checkpoint_id=c.id AND ve.decision IS NULL
          LEFT JOIN specification_question_sets q ON q.checkpoint_id=c.id AND q.answers_json IS NULL AND q.input_revision=p.input_revision AND q.state_version=p.state_version
          WHERE p.project_id=?1 AND p.status='checkpoint' AND c.status='waiting'
            AND c.input_revision=p.input_revision AND c.state_version=p.state_version
@@ -145,7 +151,8 @@ pub(crate) fn list_pending_decisions_on(
         row.get::<_, String>(0)?,row.get::<_, String>(1)?,row.get::<_, String>(2)?,row.get::<_, String>(3)?,
         row.get::<_, u64>(4)?,row.get::<_, u64>(5)?,row.get::<_, String>(6)?,
         row.get::<_, Option<bool>>(7)?,row.get::<_, Option<bool>>(8)?,row.get::<_, Option<String>>(9)?,row.get::<_, Option<String>>(10)?,
-        row.get::<_, Option<String>>(11)?,row.get::<_, Option<u64>>(12)?,row.get::<_, Option<String>>(13)?,row.get::<_, Option<String>>(14)?,row.get::<_, Option<String>>(15)?,row.get::<_, bool>(16)?
+        row.get::<_, Option<String>>(11)?,row.get::<_, Option<u64>>(12)?,row.get::<_, Option<String>>(13)?,row.get::<_, Option<String>>(14)?,row.get::<_, Option<String>>(15)?,row.get::<_, bool>(16)?,
+        row.get::<_, bool>(17)?,row.get::<_, Option<String>>(18)?
     )))?.collect::<Result<Vec<_>,_>>()?;
     let mut decisions = Vec::new();
     for (
@@ -166,6 +173,8 @@ pub(crate) fn list_pending_decisions_on(
         questions,
         job,
         scope,
+        continue_anyway,
+        verification_error,
     ) in rows
     {
         let (kind, mut description, mut actions) = match purpose.as_str() {
@@ -193,6 +202,9 @@ pub(crate) fn list_pending_decisions_on(
             ),
             "stage_failure" if retry.is_some() => {
                 let mut actions = vec![PendingDecisionAction::Abort];
+                if continue_anyway {
+                    actions.insert(0, PendingDecisionAction::ContinueAnyway);
+                }
                 if retry == Some(true) {
                     actions.insert(0, PendingDecisionAction::Retry);
                 }
@@ -213,6 +225,16 @@ pub(crate) fn list_pending_decisions_on(
                 PendingDecisionKind::CliFallback,
                 fallback.unwrap_or_default(),
                 vec![PendingDecisionAction::OpenAgents],
+            ),
+            "verification_error" if verification_error.is_some() => (
+                PendingDecisionKind::VerificationError,
+                verification_error.unwrap_or_default(),
+                vec![
+                    PendingDecisionAction::RetryVerifier,
+                    PendingDecisionAction::SkipVerifier,
+                    PendingDecisionAction::Abort,
+                    PendingDecisionAction::OpenFullReview,
+                ],
             ),
             _ => continue,
         };

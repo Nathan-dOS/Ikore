@@ -40,6 +40,37 @@ pub struct PulsationReport {
     /// (ADR-036 M3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provenance: Option<ReportProvenance>,
+    /// Stage verifier runs executed during this pulsation (feature 25 M4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verifications: Option<ReportVerifications>,
+}
+
+/// Stage verifier executions recorded for the pulsation (ADR-027, feature 25 M4).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReportVerifications {
+    pub runs: Vec<ReportVerificationRun>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReportVerificationRun {
+    pub stage: String,
+    pub stage_generation: u64,
+    pub attempt: u64,
+    pub verifier_label: String,
+    pub status: String,
+    pub advisory: bool,
+    pub summary: Option<String>,
+    pub findings: Vec<ReportVerificationFinding>,
+    pub error: Option<String>,
+    pub override_justification: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReportVerificationFinding {
+    pub severity: String,
+    pub message: String,
+    pub file: Option<String>,
+    pub line: Option<u32>,
 }
 
 /// The pulsation's attestation. It is the record; the report only repeats
@@ -341,6 +372,9 @@ pub fn render_pulsation_report(report: &PulsationReport) -> String {
     if let Some(provenance) = &report.provenance {
         page.push(&provenance_section(provenance));
     }
+    if let Some(verifications) = &report.verifications {
+        page.push(&verifications_section(verifications));
+    }
     page.push(&run_context(&report.run));
     if !report.rejected_outputs.is_empty() {
         page.push(&rejected_outputs(&report.rejected_outputs));
@@ -448,6 +482,21 @@ fn observed_report(report: &PulsationReport) -> PulsationReport {
         for row in &mut risk.rows {
             text(&mut row.subject);
             text(&mut row.detail);
+        }
+    }
+    if let Some(verifications) = &mut report.verifications {
+        for run in &mut verifications.runs {
+            text(&mut run.stage);
+            text(&mut run.verifier_label);
+            text(&mut run.status);
+            optional(&mut run.summary);
+            optional(&mut run.error);
+            optional(&mut run.override_justification);
+            for finding in &mut run.findings {
+                text(&mut finding.severity);
+                text(&mut finding.message);
+                optional(&mut finding.file);
+            }
         }
     }
     report
@@ -752,6 +801,9 @@ fn navigation(report: &PulsationReport) -> SafeHtml {
     }
     if report.provenance.is_some() {
         html.push_markup("<li><a href=\"#provenance\">Provenance</a></li>");
+    }
+    if report.verifications.is_some() {
+        html.push_markup("<li><a href=\"#verifications\">Verifications</a></li>");
     }
     html.push_markup("<li><a href=\"#run\">Run context</a></li>");
     if !report.rejected_outputs.is_empty() {
@@ -1791,6 +1843,64 @@ fn provenance_section(provenance: &ReportProvenance) -> SafeHtml {
     html
 }
 
+fn verifications_section(verifications: &ReportVerifications) -> SafeHtml {
+    let mut html = SafeHtml::markup(
+        "<section id=\"verifications\" aria-labelledby=\"verifications-h\"><div class=\"sec-head\"><h2 id=\"verifications-h\">Stage verifications</h2><p>Read-only verifiers attached by the developer (findings are agent observations; override justifications are developer input).</p></div>",
+    );
+    for run in &verifications.runs {
+        let mode = if run.advisory { "advisory" } else { "blocking" };
+        html.push_markup("<div class=\"card\"><dl class=\"facts\"><dt>Verifier</dt><dd>")
+            .push_text(&run.verifier_label)
+            .push_markup("</dd><dt>Stage</dt><dd>")
+            .push_text(&format!(
+                "{} · generation {} · attempt {} ({mode})",
+                run.stage, run.stage_generation, run.attempt
+            ))
+            .push_markup("</dd><dt>Status</dt><dd>")
+            .push_text(&run.status)
+            .push_markup("</dd>");
+        if let Some(summary) = &run.summary {
+            html.push_markup("<dt>Summary</dt><dd class=\"wrap-text\">")
+                .push_text(summary)
+                .push_markup("</dd>");
+        }
+        if let Some(error) = &run.error {
+            html.push_markup("<dt>Error</dt><dd class=\"wrap-text\">")
+                .push_text(error)
+                .push_markup("</dd>");
+        }
+        if let Some(justification) = &run.override_justification {
+            html.push_markup("<dt>Override justification</dt><dd class=\"wrap-text\">")
+                .push_text(justification)
+                .push_markup("</dd>");
+        }
+        html.push_markup("</dl>");
+        if !run.findings.is_empty() {
+            html.push_markup(
+                "<div class=\"table-wrap\"><table class=\"wide\"><thead><tr><th>Severity</th><th>Location</th><th>Finding</th></tr></thead><tbody>",
+            );
+            for finding in &run.findings {
+                let loc = match (&finding.file, finding.line) {
+                    (Some(file), Some(line)) => format!("{file}:{line}"),
+                    (Some(file), None) => file.clone(),
+                    (None, _) => "—".to_owned(),
+                };
+                html.push_markup("<tr><td>")
+                    .push_text(&finding.severity)
+                    .push_markup("</td><td class=\"wrap-text\">")
+                    .push_text(&loc)
+                    .push_markup("</td><td class=\"wrap-text\">")
+                    .push_text(&finding.message)
+                    .push_markup("</td></tr>");
+            }
+            html.push_markup("</tbody></table></div>");
+        }
+        html.push_markup("</div>");
+    }
+    html.push_markup("</section>");
+    html
+}
+
 fn footer() -> SafeHtml {
     SafeHtml::markup(
         "<footer><span>Rendered by the host from validated payloads, host receipts and usage records. Same inputs, same bytes. Not a document of record.</span><span>No scripts, no network requests, no external assets. Agent-written text is escaped and labelled.</span></footer>",
@@ -2157,6 +2267,7 @@ mod tests {
                     },
                 ],
             }),
+            verifications: None,
         }
     }
 
@@ -2532,5 +2643,42 @@ mod tests {
         assert_eq!(duration(1420.0), "23 min 40 s");
         assert_eq!(duration(41.4), "41 s");
         assert_eq!(check_duration(2.14), "2.1 s");
+    }
+
+    #[test]
+    fn the_verifications_section_is_omitted_when_none_and_renders_escaped_findings_and_justification()
+     {
+        let mut report = sample();
+        assert!(!render_pulsation_report(&report).contains("id=\"verifications\""));
+        let full_just = format!("Trade-off accepted: {}", "k".repeat(475));
+        assert!(full_just.chars().count() <= 500);
+        report.verifications = Some(ReportVerifications {
+            runs: vec![ReportVerificationRun {
+                stage: "Code".into(),
+                stage_generation: 2,
+                attempt: 1,
+                verifier_label: "Security <script>alert(1)</script>".into(),
+                status: "overridden".into(),
+                advisory: false,
+                summary: Some("Found secret sk-proj-abcdefghijklmnopqrst in output".into()),
+                findings: vec![ReportVerificationFinding {
+                    severity: "blocking".into(),
+                    message: "Avoid <img onerror=alert(1)> unsafe sink".into(),
+                    file: Some("src/main.rs".into()),
+                    line: Some(42),
+                }],
+                error: None,
+                override_justification: Some(full_just.clone()),
+            }],
+        });
+        let html = render_pulsation_report(&report);
+        assert!(html.contains("<a href=\"#verifications\">Verifications</a>"));
+        assert!(html.contains("id=\"verifications\""));
+        assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+        assert!(html.contains("&lt;img onerror=alert(1)&gt;"));
+        assert!(!html.contains("<script>alert(1)</script>"));
+        assert!(!html.contains("sk-proj-abcdefghijklmnopqrst"));
+        assert!(html.contains(&full_just));
+        assert!(html.contains("src/main.rs:42"));
     }
 }

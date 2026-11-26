@@ -27,7 +27,8 @@ use crate::llm::{
     LlmRequest, ResponseFormat,
 };
 use crate::terminals::{
-    AUTOMATION_OUTPUT_TOKENS, AutomationStepRequest, CliBackend, TerminalError, ThinkingLevel,
+    AUTOMATION_OUTPUT_TOKENS, AutomationStepRequest, CliBackend, ExecutionOrigin, TerminalError,
+    ThinkingLevel,
 };
 
 const INTERRUPTED: &str = "The app closed while this step ran.";
@@ -100,9 +101,8 @@ impl StepResult {
 }
 
 /// Model text for the screen and the next step (ADR-030).
-fn sanitized(text: &str) -> Result<String, StepFailure> {
-    crate::llm::adapter::sanitize_model_text(text)
-        .map_err(|error| StepFailure::Failed(error.to_string()))
+fn sanitized(text: &str) -> Result<String, String> {
+    crate::llm::adapter::sanitize_model_text(text).map_err(|error| error.to_string())
 }
 
 /// A path a finding may cite: relative, inside the workspace, and there.
@@ -118,10 +118,10 @@ fn workspace_file(workspace: &Path, file: &str) -> Option<String> {
 
 /// The verdict as the host keeps it: its text sanitized, and a cited path
 /// the workspace lacks dropped and marked (contract `stage-verdict-v1`).
-fn checked_verdict(
+pub(crate) fn checked_verdict(
     mut verdict: StageVerdictV1,
     workspace: &Path,
-) -> Result<StageVerdictV1, StepFailure> {
+) -> Result<StageVerdictV1, String> {
     verdict.summary = sanitized(&verdict.summary)?;
     for finding in &mut verdict.findings {
         finding.message = sanitized(&finding.message)?;
@@ -164,6 +164,26 @@ impl PersistenceService {
                 Ok(Ok(_)) => {}
                 Ok(Err(error)) => eprintln!("pipeline triggers: {error}"),
                 Err(error) => eprintln!("pipeline triggers: {error}"),
+            }
+            // M4: admit pending stage verifiers before custom pipeline steps.
+            loop {
+                let service = self.clone();
+                match tokio::task::spawn_blocking(move || service.claim_next_verifier_run()).await {
+                    Ok(Ok(Some(claim))) => {
+                        let service = self.clone();
+                        let stop = shutdown.clone();
+                        steps.spawn(async move { service.run_verifier_run(claim, stop).await });
+                    }
+                    Ok(Ok(None)) => break,
+                    Ok(Err(error)) => {
+                        eprintln!("stage verifiers lane: {error}");
+                        break;
+                    }
+                    Err(error) => {
+                        eprintln!("stage verifiers lane: {error}");
+                        break;
+                    }
+                }
             }
             loop {
                 let service = self.clone();
@@ -225,6 +245,7 @@ impl PersistenceService {
                                    WHERE t.run_id=s.run_id AND t.step_index=s.step_index))",
             params![now, INTERRUPTED],
         )?;
+        Self::recover_stage_verifiers_in_tx(&tx, &now)?;
         tx.commit()?;
         Ok(())
     }
@@ -419,7 +440,9 @@ impl PersistenceService {
         };
         result.record(&first);
         result.outcome = match claim.step.output {
-            StepOutput::Text => sanitized(&first.raw).map(StepOutcome::Text),
+            StepOutput::Text => sanitized(&first.raw)
+                .map(StepOutcome::Text)
+                .map_err(StepFailure::Failed),
             StepOutput::Verdict => {
                 let verdict = match parse_verdict(&first.raw) {
                     Ok(verdict) => Ok(verdict),
@@ -442,9 +465,11 @@ impl PersistenceService {
                         }
                     }
                 };
-                verdict
-                    .and_then(|verdict| checked_verdict(verdict, &context.workspace))
-                    .map(StepOutcome::Verdict)
+                verdict.and_then(|verdict| {
+                    checked_verdict(verdict, &context.workspace)
+                        .map(StepOutcome::Verdict)
+                        .map_err(StepFailure::Failed)
+                })
             }
         };
         result
@@ -548,6 +573,8 @@ impl PersistenceService {
                             project_id: claim.project_id.clone(),
                             slot_id,
                             label: automation_slot_label(&claim.pipeline_name, &claim.step.label),
+                            origin: ExecutionOrigin::Automation,
+                            pulsation_id: None,
                             backend,
                             model: agent.model.clone(),
                             model_profile: agent.model_profile.clone(),
@@ -775,7 +802,7 @@ mod tests {
                 finding("C:/Windows/win.ini"),
             ],
         };
-        let checked = checked_verdict(verdict, workspace.path()).ok().unwrap();
+        let checked = checked_verdict(verdict, workspace.path()).unwrap();
         assert_eq!(checked.findings[0].file.as_deref(), Some("src/lib.rs"));
         assert_eq!(checked.findings[0].line, Some(3));
         for finding in &checked.findings[1..] {

@@ -67,6 +67,7 @@ pub(crate) fn apply(
                     quota_deltas: Default::default(),
                     live_activity: Vec::new(),
                     pipelines: Default::default(),
+                    verifiers: Default::default(),
                 },
             );
         });

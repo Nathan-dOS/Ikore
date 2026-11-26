@@ -88,6 +88,7 @@ pub(crate) fn fixture(cx: &mut Context<AppModel>) -> AppModel {
                 quota_deltas: Default::default(),
                 live_activity: Vec::new(),
                 pipelines: Default::default(),
+                verifiers: Default::default(),
             },
         );
     });
@@ -1264,6 +1265,7 @@ fn parked_failure_window<'a>(
                 diagnostic: "the provider timed out after 60s".into(),
                 allow_retry: retry,
                 allow_revision: revision,
+                allow_continue_anyway: false,
                 revision_stage: revision.then_some(PulsationStage::Code),
                 attempts: 3,
                 state_version: 1,
@@ -3443,6 +3445,7 @@ fn pulsation_status_transitions_feed_the_activity_list(cx: &mut TestAppContext) 
                 pulsations,
                 hitl_waiting_count: 0,
                 failure_checkpoints: Vec::new(),
+                verification_error_checkpoints: Vec::new(),
                 failure_waiting_count: 0,
                 background_agents_count: 0,
                 active_jobs: Vec::new(),
@@ -6440,6 +6443,7 @@ fn controls_size_to_content_instead_of_the_panel(cx: &mut TestAppContext) {
                     quota_deltas: Default::default(),
                     live_activity: Vec::new(),
                     pipelines: Default::default(),
+                    verifiers: Default::default(),
                 },
             );
         });
@@ -10937,4 +10941,241 @@ fn forge_redesigned_tabs_fit_supported_window_sizes_and_wire_direct_controls(
     model.read_with(visual, |m, cx| {
         assert_eq!(m.forge.wave_limit.read(cx).value(), "4");
     });
+}
+
+#[gpui::test]
+fn stage_verifiers_canvas_labs_toggle_synthesis_width_and_checkpoints(cx: &mut TestAppContext) {
+    use ikore_core::custom_pipelines::{
+        FindingSeverity, StageVerdictV1, StepAgent, StepTransport, Verdict, VerdictFinding,
+    };
+    use ikore_core::persistence_service::{StageFailureCheckpoint, StageFailureDetail};
+    use ikore_core::stage_verifiers::{
+        StageVerifierRunView, StageVerifierView, StageVerifiersSnapshot,
+        VerificationErrorCheckpoint, VerificationErrorDecision,
+    };
+
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.update(|_, cx| crate::failure_checkpoint::register_failure_keybindings(cx));
+    let long_label = "L".repeat(60);
+    let long_finding = "F".repeat(600);
+    let long_summary = "S".repeat(600);
+
+    model.update(visual, |m, cx| {
+        m.agents.update(cx, |agents, _| {
+            agents.verifiers = StageVerifiersSnapshot {
+                project_id: "layout-project".into(),
+                enabled_by_labs: false,
+                verifiers: vec![StageVerifierView {
+                    id: "ver-ui-1".into(),
+                    project_id: "layout-project".into(),
+                    stage: "CODE".into(),
+                    label: long_label.clone(),
+                    position: 0,
+                    enabled: true,
+                    reject_limit: 2,
+                    agent: StepAgent {
+                        transport: StepTransport::Cli,
+                        backend: Some("codex".into()),
+                        model: Some("gpt-5".into()),
+                        model_profile: None,
+                        thinking_level: "default".into(),
+                        api_route_id: None,
+                    },
+                    instructions: "Check invariants cleanly.".into(),
+                    version: 1,
+                    created_at: "now".into(),
+                    updated_at: "now".into(),
+                    run_count: 1,
+                }],
+                runs: vec![StageVerifierRunView {
+                    id: "vrun-1".into(),
+                    verifier_id: "ver-ui-1".into(),
+                    verifier_label: long_label.clone(),
+                    stage: "CODE".into(),
+                    pulsation_id: "pulse-layout".into(),
+                    stage_job_id: "job-code".into(),
+                    stage_generation: 1,
+                    attempt: 1,
+                    recovery_count: 0,
+                    status: "rejected".into(),
+                    reject_limit: 2,
+                    advisory: false,
+                    terminal_run_id: None,
+                    llm_execution_id: None,
+                    verdict: Some(StageVerdictV1 {
+                        verdict: Verdict::Reject,
+                        summary: long_summary.clone(),
+                        findings: vec![VerdictFinding {
+                            id: "f1".into(),
+                            severity: FindingSeverity::Blocking,
+                            message: long_finding.clone(),
+                            file: Some("src/lib.rs".into()),
+                            line: Some(42),
+                            suggestion: Some("Keep it wrapped.".into()),
+                            file_not_found: false,
+                        }],
+                    }),
+                    created_at: "now".into(),
+                    started_at: None,
+                    finished_at: None,
+                    error: None,
+                }],
+            };
+        });
+    });
+
+    // Labs OFF: verifier node and "+ Verifier" trigger are hidden.
+    select(&model, visual, AppView::Agents);
+    assert!(
+        visual
+            .debug_bounds("agents-node:verifier:ver-ui-1")
+            .is_none()
+    );
+    assert!(
+        visual
+            .debug_bounds("agents-stage-add-verifier:code")
+            .is_none()
+    );
+
+    // Labs ON: verifier node and add-verifier triggers appear; synthesis renders within 300 px.
+    model.update(visual, |m, cx| {
+        m.agents.update(cx, |agents, _| {
+            agents.verifiers.enabled_by_labs = true;
+            agents.selected_agent = Some(AgentIdentifier::StageVerifier("ver-ui-1".into()));
+            agents.detail_tab = crate::agents::AgentDetailTab::History;
+        });
+        cx.notify();
+    });
+    visual.simulate_resize(size(px(960.0), px(700.0)));
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds("agents-node:verifier:ver-ui-1")
+            .is_some()
+    );
+    assert!(
+        visual
+            .debug_bounds("agents-stage-add-verifier:code")
+            .is_some()
+    );
+    let synthesis = visual.debug_bounds("verifier-synthesis").unwrap();
+    let history = visual
+        .debug_bounds("agents-drawer:verifier-history")
+        .unwrap();
+    assert!(history.right() <= synthesis.right() + px(1.0));
+    assert!(visual.debug_bounds("verifier-run-now").is_none());
+
+    // Pulsations > Failure checkpoint: Continue anyway optional justification + >500-char block + findings card.
+    let finding_run = model.read_with(visual, |m, cx| m.agents.read(cx).verifiers.runs.clone());
+    model.update(visual, |m, cx| {
+        m.pulsations.update(cx, |pulsations, _| {
+            pulsations.pulsations = vec![Pulsation {
+                terminal_reason: None,
+                id: "pulse-fail".into(),
+                project_id: "layout-project".into(),
+                feature_name: "Verifier rejection test".into(),
+                stage: PulsationStage::Code,
+                status: PulsationStatus::Checkpoint,
+                created_at: "now".into(),
+                updated_at: "now".into(),
+            }];
+            pulsations.active_pulsation_id = Some("pulse-fail".into());
+            pulsations.failure_checkpoints = vec![StageFailureCheckpoint {
+                checkpoint_id: "cp-fail-1".into(),
+                pulsation_id: "pulse-fail".into(),
+                project_id: "layout-project".into(),
+                feature_name: "Verifier rejection test".into(),
+                stage: PulsationStage::Code,
+                failure_class: "verification_rejected".into(),
+                error_code: "verification_rejected".into(),
+                diagnostic: "Blocking verifier rejected the output.".into(),
+                allow_retry: true,
+                allow_revision: true,
+                allow_continue_anyway: true,
+                revision_stage: Some(PulsationStage::Code),
+                attempts: 3,
+                state_version: 1,
+                created_at: "now".into(),
+                allowed_revision_targets: vec![PulsationStage::Code],
+                remaining_extra_invocations: None,
+                stage_execution_id: None,
+                scope_request: None,
+            }];
+            pulsations
+                .failure
+                .load_checkpoint(pulsations.failure_checkpoints.first().cloned());
+            pulsations.failure.detail = Some(StageFailureDetail {
+                checkpoint_id: "cp-fail-1".into(),
+                raw_output: None,
+                validation_error: Some("Blocking verifier rejected the output.".into()),
+                validation_context: None,
+            });
+            pulsations.failure.verification_findings = finding_run;
+            pulsations.detail_section = PulsationDetailSection::Review;
+        });
+        cx.notify();
+    });
+    select(&model, visual, AppView::Pulsations);
+    visual.simulate_resize(size(px(960.0), px(720.0)));
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("failure-continue-anyway").is_some());
+    assert!(
+        visual
+            .debug_bounds("failure-override-justification")
+            .is_some()
+    );
+    let detail = visual.debug_bounds("failure-detail").unwrap();
+    let findings_card = visual.debug_bounds("brief-verification-findings").unwrap();
+    assert!(findings_card.right() <= detail.right() + px(1.0));
+    assert!(
+        visual
+            .debug_bounds("failure-override-justification-error")
+            .is_none()
+    );
+
+    // 501 characters triggers inline error and refuses submission.
+    model.update(visual, |m, cx| {
+        m.failure_override_justification_input
+            .update(cx, |input, cx| input.set_value("J".repeat(501), cx));
+        m.resolve_stage_failure(
+            ikore_core::persistence_service::StageFailureDecision::ContinueAnyway,
+            cx,
+        );
+    });
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds("failure-override-justification-error")
+            .is_some()
+    );
+
+    // Verification error checkpoint shows all three actions.
+    model.update(visual, |m, cx| {
+        m.pulsations.update(cx, |pulsations, _| {
+            pulsations.failure_checkpoints.clear();
+            pulsations.failure.load_checkpoint(None);
+            pulsations.verification_error_checkpoints = vec![VerificationErrorCheckpoint {
+                checkpoint_id: "vcp-err-1".into(),
+                pulsation_id: "pulse-fail".into(),
+                project_id: "layout-project".into(),
+                feature_name: "Verifier error test".into(),
+                verifier_run_id: "vrun-err".into(),
+                verifier_id: "ver-ui-1".into(),
+                verifier_label: long_label,
+                stage: PulsationStage::Code,
+                error_message: "CLI process exited with status 1.".into(),
+                attempt: 1,
+                state_version: 1,
+                created_at: "now".into(),
+            }];
+            pulsations.detail_section = PulsationDetailSection::Review;
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("verification-error-panel").is_some());
+    assert!(visual.debug_bounds("verification-error-retry").is_some());
+    assert!(visual.debug_bounds("verification-error-skip").is_some());
+    assert!(visual.debug_bounds("verification-error-abort").is_some());
+    let _ = VerificationErrorDecision::SkipVerifier;
 }

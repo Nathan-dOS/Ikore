@@ -52,6 +52,8 @@ pub enum FailureClass {
     OwnershipViolation,
     /// A delivered input changed under the execution.
     StaleInput,
+    /// Stage verifiers rejected the candidate past their configured limit (feature 25, M4).
+    VerificationRejected,
 }
 
 impl FailureClass {
@@ -72,6 +74,7 @@ impl FailureClass {
             Self::CapacityExceeded => "capacity_exceeded",
             Self::OwnershipViolation => "ownership_violation",
             Self::StaleInput => "stale_input",
+            Self::VerificationRejected => "verification_rejected",
         }
     }
 
@@ -92,6 +95,7 @@ impl FailureClass {
             "capacity_exceeded" => Self::CapacityExceeded,
             "ownership_violation" => Self::OwnershipViolation,
             "stale_input" => Self::StaleInput,
+            "verification_rejected" => Self::VerificationRejected,
             _ => return None,
         })
     }
@@ -103,7 +107,8 @@ impl FailureClass {
             | Self::ProviderConfiguration
             | Self::ProviderTransport
             | Self::Infrastructure
-            | Self::ExecutorSetup => true,
+            | Self::ExecutorSetup
+            | Self::VerificationRejected => true,
             // The model already produced a durable `stage_acceptances` row, the
             // host rejected its output on a rule a resample would hit again, or
             // the same budget would cut the same answer at the same place.
@@ -133,7 +138,8 @@ impl FailureClass {
             | Self::ModelReportedFailure
             // Feedback is exactly the lever here: it can narrow the scope so
             // the answer fits the budget.
-            | Self::OutputTruncated => true,
+            | Self::OutputTruncated
+            | Self::VerificationRejected => true,
             // The model never produced output; feedback cannot supply an API key.
             Self::ProviderConfiguration
             | Self::ProviderTransport
@@ -262,6 +268,7 @@ pub fn failure_revision_target(stage: PulsationStage) -> Option<PulsationStage> 
 pub struct OfferedDecisionsV4 {
     pub class: FailureClass,
     pub allow_retry: bool,
+    pub allow_continue_anyway: bool,
     pub revision_targets: Vec<PulsationStage>,
 }
 
@@ -289,6 +296,18 @@ pub fn offered_decisions_v4(
     remaining_extra_invocations: u32,
     rejected_answer: bool,
 ) -> Option<OfferedDecisionsV4> {
+    if class == FailureClass::VerificationRejected {
+        let mut revision_targets = vec![stage];
+        if matches!(stage, PulsationStage::Test | PulsationStage::Integrator) {
+            revision_targets.push(PulsationStage::Code);
+        }
+        return Some(OfferedDecisionsV4 {
+            class,
+            allow_retry: true,
+            allow_continue_anyway: true,
+            revision_targets,
+        });
+    }
     let own_answer = rejected_answer
         && matches!(stage, PulsationStage::Test | PulsationStage::Integrator)
         && matches!(
@@ -329,6 +348,7 @@ pub fn offered_decisions_v4(
     Some(OfferedDecisionsV4 {
         class,
         allow_retry,
+        allow_continue_anyway: false,
         revision_targets,
     })
 }
@@ -338,6 +358,7 @@ pub struct OfferedDecisions {
     pub class: FailureClass,
     pub allow_retry: bool,
     pub allow_revision: bool,
+    pub allow_continue_anyway: bool,
     pub revision_stage: Option<PulsationStage>,
 }
 
@@ -345,6 +366,15 @@ pub struct OfferedDecisions {
 /// only. A checkpoint that can only be aborted is a dead end, so the caller must stay
 /// terminal instead of parking the pulsation in `Checkpoint` with no way forward.
 pub fn offered_decisions(class: FailureClass, stage: PulsationStage) -> Option<OfferedDecisions> {
+    if class == FailureClass::VerificationRejected {
+        return Some(OfferedDecisions {
+            class,
+            allow_retry: true,
+            allow_revision: true,
+            allow_continue_anyway: true,
+            revision_stage: Some(stage),
+        });
+    }
     let revision_stage = class
         .offers_revision()
         .then(|| failure_revision_target(stage))
@@ -357,6 +387,7 @@ pub fn offered_decisions(class: FailureClass, stage: PulsationStage) -> Option<O
         class,
         allow_retry,
         allow_revision: revision_stage.is_some(),
+        allow_continue_anyway: false,
         revision_stage,
     })
 }
@@ -509,6 +540,7 @@ mod tests {
             FailureClass::CapacityExceeded,
             FailureClass::OwnershipViolation,
             FailureClass::StaleInput,
+            FailureClass::VerificationRejected,
         ] {
             assert_eq!(
                 FailureClass::from_db_value(class.as_db_value()),

@@ -35,9 +35,10 @@ impl Priority {
     pub(crate) fn of(origin: ikore_core::terminals::ExecutionOrigin) -> Self {
         use ikore_core::terminals::ExecutionOrigin;
         match origin {
-            ExecutionOrigin::Pipeline | ExecutionOrigin::Feature | ExecutionOrigin::Review => {
-                Self::Pipeline
-            }
+            ExecutionOrigin::Pipeline
+            | ExecutionOrigin::Verification
+            | ExecutionOrigin::Feature
+            | ExecutionOrigin::Review => Self::Pipeline,
             ExecutionOrigin::Manual => Self::Interactive,
             ExecutionOrigin::Automation => Self::Automation,
             ExecutionOrigin::Learning
@@ -624,6 +625,10 @@ mod tests {
             Priority::of(ikore_core::terminals::ExecutionOrigin::Automation),
             Priority::Automation
         );
+        assert_eq!(
+            Priority::of(ikore_core::terminals::ExecutionOrigin::Verification),
+            Priority::Pipeline
+        );
 
         // A step never takes the dock from a running stage.
         let clock = Clock(Instant::now());
@@ -742,5 +747,34 @@ mod tests {
         state.apply(FollowInput::Pin(backend.clone()));
         assert!(state.apply(FollowInput::ResumeFollowing));
         assert_eq!(state.current.as_ref(), Some(&spec));
+    }
+
+    #[test]
+    fn stage_verifier_follows_at_pipeline_priority_above_manual() {
+        let clock = Clock(Instant::now());
+        let manual = agent(AgentRole::TaskSpecifier);
+        let verifier = AgentIdentifier::StageVerifier("ver-code-1".into());
+        assert_eq!(
+            Priority::of(ikore_core::terminals::ExecutionOrigin::Verification),
+            Priority::Pipeline
+        );
+        let mut state = FollowState::default();
+        start(
+            &mut state,
+            &manual,
+            "m1",
+            Priority::Interactive,
+            clock.at(0),
+        );
+        tick(&mut state, &clock, 0, 100);
+        start(
+            &mut state,
+            &verifier,
+            "v1",
+            Priority::of(ikore_core::terminals::ExecutionOrigin::Verification),
+            clock.at(200),
+        );
+        tick(&mut state, &clock, 200, 1_800);
+        assert_eq!(state.current.as_ref(), Some(&verifier));
     }
 }
