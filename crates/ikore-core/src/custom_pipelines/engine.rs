@@ -46,12 +46,12 @@ fn now() -> String {
 pub(super) struct AutomationClaim {
     token: String,
     pub(super) run_id: String,
-    step_index: u32,
-    attempt: u32,
+    pub(super) step_index: u32,
+    pub(super) attempt: u32,
     pub(super) project_id: String,
     pipeline_id: String,
-    pipeline_name: String,
-    definition: CustomPipelineDefinitionV1,
+    pub(super) pipeline_name: String,
+    pub(super) definition: CustomPipelineDefinitionV1,
     step: PipelineStep,
 }
 
@@ -75,27 +75,45 @@ struct StepCall {
     llm_execution_id: Option<String>,
 }
 
-enum StepOutcome {
+pub(super) enum StepOutcome {
     Text(String),
     Verdict(StageVerdictV1),
 }
 
-enum StepFailure {
+pub(super) enum StepFailure {
     Cancelled,
     Failed(String),
 }
 
-struct StepResult {
-    outcome: Result<StepOutcome, StepFailure>,
-    terminal_run_id: Option<String>,
-    llm_execution_id: Option<String>,
-    git_operation_id: Option<String>,
+pub(super) struct StepResult {
+    pub(super) outcome: Result<StepOutcome, StepFailure>,
+    pub(super) terminal_run_id: Option<String>,
+    pub(super) llm_execution_id: Option<String>,
+    pub(super) git_operation_id: Option<String>,
 }
 
 impl StepResult {
-    fn failed(message: impl Into<String>) -> Self {
+    pub(super) fn failed(message: impl Into<String>) -> Self {
         Self {
             outcome: Err(StepFailure::Failed(message.into())),
+            terminal_run_id: None,
+            llm_execution_id: None,
+            git_operation_id: None,
+        }
+    }
+
+    pub(super) fn cancelled() -> Self {
+        Self {
+            outcome: Err(StepFailure::Cancelled),
+            terminal_run_id: None,
+            llm_execution_id: None,
+            git_operation_id: None,
+        }
+    }
+
+    pub(super) fn with_failure(failure: StepFailure) -> Self {
+        Self {
+            outcome: Err(failure),
             terminal_run_id: None,
             llm_execution_id: None,
             git_operation_id: None,
@@ -176,6 +194,13 @@ impl PersistenceService {
                 Ok(Ok(_)) => {}
                 Ok(Err(error)) => eprintln!("pipeline triggers: {error}"),
                 Err(error) => eprintln!("pipeline triggers: {error}"),
+            }
+            // Feature 27 (Camada C): domain events become runs before admission.
+            let service = self.clone();
+            match tokio::task::spawn_blocking(move || service.dispatch_domain_triggers()).await {
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) => eprintln!("domain triggers: {error}"),
+                Err(error) => eprintln!("domain triggers: {error}"),
             }
             // M4: admit pending stage verifiers before custom pipeline steps.
             loop {
@@ -282,7 +307,7 @@ impl PersistenceService {
                    FROM custom_pipeline_step_runs s
                    JOIN custom_pipeline_runs r ON r.id=s.run_id
                    JOIN custom_pipelines p ON p.id=r.pipeline_id
-                  WHERE s.status='queued' AND s.kind IN ('agent','host_tool')
+                  WHERE s.status='queued' AND s.kind IN ('agent','host_tool','canonical')
                     AND r.status IN ('queued','running') AND s.step_index=r.current_step
                     AND NOT EXISTS(SELECT 1 FROM automation_slots a
                                     WHERE a.project_id=r.project_id AND a.class='custom_step')
@@ -451,6 +476,9 @@ impl PersistenceService {
             PipelineStep::Agent(agent) => self.execute_agent_step(claim, agent, token).await,
             PipelineStep::HostTool(tool_step) => {
                 self.execute_host_tool_step(claim, tool_step, token).await
+            }
+            PipelineStep::Canonical(canonical) => {
+                self.execute_canonical_step(claim, canonical, token).await
             }
             PipelineStep::Gate(_) => StepResult::failed("Gate steps wait for human approval."),
         }
@@ -825,6 +853,15 @@ impl PersistenceService {
                         });
                     break;
                 }
+                Some(PipelineStep::Canonical(canonical)) => {
+                    previous = latest(index).and_then(|run| {
+                        run.output_text.as_ref().map(|text| PreviousOutput {
+                            label: canonical.label.clone(),
+                            text: text.clone(),
+                        })
+                    });
+                    break;
+                }
                 Some(PipelineStep::HostTool(_)) | None => {}
             }
         }
@@ -834,10 +871,10 @@ impl PersistenceService {
             [&claim.run_id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        let trigger = if trigger_kind == "default_event" {
-            prompt::event_trigger(&payload)
-        } else {
-            prompt::manual_trigger()
+        let trigger = match trigger_kind.as_str() {
+            "default_event" => prompt::event_trigger(&payload),
+            "domain_event" => prompt::domain_event_trigger(&payload),
+            _ => prompt::manual_trigger(),
         };
         Ok(StepContext {
             system: prompt::system_prompt(&claim.pipeline_name, agent),

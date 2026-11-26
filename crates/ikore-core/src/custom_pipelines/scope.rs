@@ -42,6 +42,7 @@ pub(super) struct PipelineRow {
     pub(super) current_version: u32,
     pub(super) archived: bool,
     pub(super) name: String,
+    pub(super) template_key: Option<String>,
 }
 
 pub(super) fn pipeline_row(
@@ -49,7 +50,7 @@ pub(super) fn pipeline_row(
     pipeline_id: &str,
 ) -> Result<PipelineRow, PersistenceServiceError> {
     tx.query_row(
-        "SELECT scope,project_id,parent_pipeline_id,current_version,archived,name
+        "SELECT scope,project_id,parent_pipeline_id,current_version,archived,name,template_key
            FROM custom_pipelines WHERE id=?1",
         [pipeline_id],
         |row| {
@@ -60,6 +61,7 @@ pub(super) fn pipeline_row(
                 current_version: row.get(3)?,
                 archived: row.get(4)?,
                 name: row.get(5)?,
+                template_key: row.get(6)?,
             })
         },
     )
@@ -214,6 +216,12 @@ impl PersistenceService {
         let row = pipeline_row(&tx, pipeline_id)?;
         if row.scope != "global" {
             return Err(PersistenceServiceError::NotFound("global pipeline".into()));
+        }
+        if row.template_key.is_some() {
+            return Ok(refused(
+                "builtin_immutable",
+                "Default agent pipelines stay global. Create a child pipeline instead.",
+            ));
         }
         let elsewhere: u32 = tx.query_row(
             "SELECT count(*) FROM custom_pipeline_activations WHERE pipeline_id=?1 AND project_id<>?2",

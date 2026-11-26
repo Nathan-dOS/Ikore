@@ -176,11 +176,18 @@ pub struct CustomPipelineView {
     /// definition's when `None`.
     #[serde(default)]
     pub trigger_override: Option<PipelineTrigger>,
+    /// Set on built-in default templates (Feature 27, Camada A).
+    #[serde(default)]
+    pub template_key: Option<String>,
 }
 
 impl CustomPipelineView {
     pub fn is_global(&self) -> bool {
         self.scope == "global"
+    }
+
+    pub fn is_builtin(&self) -> bool {
+        self.template_key.is_some()
     }
 
     /// A newer version of the pipeline or of its parent waits for this
@@ -206,6 +213,8 @@ pub struct GlobalPipelineSummary {
     pub description: String,
     pub current_version: u32,
     pub parent_name: Option<String>,
+    #[serde(default)]
+    pub is_builtin: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -322,6 +331,11 @@ pub fn trigger_label(trigger: &PipelineTrigger) -> String {
             "Stage passed \u{b7} {}",
             trigger_stage_label(stage.as_deref().unwrap_or_default())
         ),
+        PipelineTrigger::DomainEvent {
+            event: DomainEvent::CheckpointReady,
+            stage: Some(stage),
+        } => format!("Checkpoint ready \u{b7} {}", trigger_stage_label(stage)),
+        PipelineTrigger::DomainEvent { event, .. } => event.label().into(),
     }
 }
 

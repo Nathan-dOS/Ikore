@@ -112,6 +112,7 @@ pub(crate) fn step_transport(model: &AppModel, step: &PipelineStep, cx: &gpui::A
         },
         PipelineStep::Gate(_) => "Gate".into(),
         PipelineStep::HostTool(tool) => tool.tool.as_str().into(),
+        PipelineStep::Canonical(canonical) => format!("Canonical · {}", canonical.role.label()),
     }
 }
 
@@ -155,6 +156,7 @@ pub(super) fn canvas_pipelines(model: &AppModel, cx: &gpui::App) -> Vec<CanvasPi
                             PipelineStep::Agent(_) => theme::accent(),
                             PipelineStep::Gate(_) => theme::warning(),
                             PipelineStep::HostTool(_) => theme::text_muted(),
+                            PipelineStep::Canonical(_) => theme::accent(),
                         },
                         state,
                         status,
@@ -725,7 +727,14 @@ pub(super) fn pipeline_synthesis(
             .pipeline(parent)
             .is_some_and(|parent| !parent.is_global())
     });
-    let scope_actions = if pipeline.is_global() {
+    let scope_actions = if pipeline.is_builtin() {
+        vec![(
+            "pipeline-remove",
+            "Remove from this project",
+            crate::agents::PipelineScopeAction::Remove,
+            !active,
+        )]
+    } else if pipeline.is_global() {
         vec![
             (
                 "pipeline-move-to-project",
@@ -751,6 +760,9 @@ pub(super) fn pipeline_synthesis(
         Vec::new()
     };
     let mut badges = Vec::new();
+    if pipeline.is_builtin() {
+        badges.push("Default".to_owned());
+    }
     if pipeline.is_global() {
         badges.push(match pipeline.projects {
             0 | 1 => "Global".to_owned(),
@@ -835,14 +847,16 @@ pub(super) fn pipeline_synthesis(
                     cx,
                     move |model, cx| model.start_pipeline_run(run_id.clone(), cx),
                 ))
-                .child(action_button(
-                    "pipeline-edit".into(),
-                    "Edit".into(),
-                    !busy,
-                    false,
-                    cx,
-                    move |model, cx| model.edit_pipeline(edit_id.clone(), cx),
-                ))
+                .when(!pipeline.is_builtin(), |row| {
+                    row.child(action_button(
+                        "pipeline-edit".into(),
+                        "Edit".into(),
+                        !busy,
+                        false,
+                        cx,
+                        move |model, cx| model.edit_pipeline(edit_id.clone(), cx),
+                    ))
+                })
                 .child(action_button(
                     "pipeline-archive".into(),
                     "Archive".into(),
@@ -879,7 +893,7 @@ pub(super) fn pipeline_synthesis(
                     )
                     .into_any_element(),
                 })
-                .when(pipeline.run_count == 0, |row| {
+                .when(pipeline.run_count == 0 && !pipeline.is_builtin(), |row| {
                     row.child(action_button(
                         "pipeline-delete".into(),
                         if confirming_delete {
@@ -981,11 +995,15 @@ pub(super) fn step_synthesis(
         }
         PipelineStep::Gate(_) => "Gate · a human approval".into(),
         PipelineStep::HostTool(tool) => format!("Host tool · {}", tool.tool.as_str()),
+        PipelineStep::Canonical(canonical) => {
+            format!("Canonical role · {}", canonical.role.label())
+        }
     };
     let instructions = match step {
         PipelineStep::Agent(agent) => agent.instructions.clone(),
         PipelineStep::Gate(gate) => gate.prompt.clone(),
         PipelineStep::HostTool(_) => String::new(),
+        PipelineStep::Canonical(canonical) => canonical.instructions_append.clone(),
     };
     panel("agents-step-synthesis")
         .child(panel_header(
@@ -1086,8 +1104,18 @@ pub(super) fn global_pipelines(
                 .border_color(theme::border())
                 .child(
                     div()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(global.name.clone()),
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex_1()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(global.name.clone()),
+                        )
+                        .when(global.is_builtin, |row| {
+                            row.child(crate::widgets::chip("Default", theme::accent()))
+                        }),
                 )
                 .child(muted(match &global.parent_name {
                     Some(parent) => format!("v{} \u{b7} Based on {parent}", global.current_version),

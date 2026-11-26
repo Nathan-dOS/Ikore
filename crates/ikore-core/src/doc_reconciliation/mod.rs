@@ -11,7 +11,7 @@
 pub(crate) mod contract;
 pub mod links;
 mod runtime;
-mod store;
+pub(crate) mod store;
 #[cfg(test)]
 mod tests;
 

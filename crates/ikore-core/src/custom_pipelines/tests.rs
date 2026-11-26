@@ -778,8 +778,21 @@ fn a_global_pipeline_serves_each_project_that_adds_it_and_is_adopted_when_it_ope
     );
     let offered = f.service.custom_pipelines_snapshot(&other).unwrap();
     assert!(offered.pipelines.is_empty());
-    assert_eq!(offered.available_globals.len(), 1);
-    assert_eq!(offered.available_globals[0].id, global.id);
+    let offered_user_globals: Vec<_> = offered
+        .available_globals
+        .iter()
+        .filter(|g| !g.is_builtin)
+        .collect();
+    assert_eq!(offered_user_globals.len(), 1);
+    assert_eq!(offered_user_globals[0].id, global.id);
+    assert!(
+        offered
+            .available_globals
+            .iter()
+            .filter(|g| g.is_builtin)
+            .count()
+            == 5
+    );
     let added = saved(
         f.service
             .activate_custom_pipeline(&other, &global.id)
@@ -791,6 +804,9 @@ fn a_global_pipeline_serves_each_project_that_adds_it_and_is_adopted_when_it_ope
             .custom_pipelines_snapshot(&other)
             .unwrap()
             .available_globals
+            .into_iter()
+            .filter(|g| !g.is_builtin)
+            .collect::<Vec<_>>()
             .is_empty()
     );
     // A run in the other project before it adopts the edit follows v1 (T4).
@@ -1051,11 +1067,14 @@ fn global_limits_scope_moves_and_project_parents_are_enforced() {
     // At most seven boxes in a project: three of its own and four globals
     // besides `Own`.
     f.create("Extra", vec![agent("a")]);
-    let globals = f
+    let globals: Vec<_> = f
         .service
         .custom_pipelines_snapshot(&f.project)
         .unwrap()
-        .available_globals;
+        .available_globals
+        .into_iter()
+        .filter(|g| !g.is_builtin)
+        .collect();
     assert_eq!(globals.len(), MAX_GLOBAL_PIPELINES - 1);
     for global in &globals {
         saved(
@@ -1474,4 +1493,400 @@ async fn host_tool_pull_step_ignores_its_own_automation_slot_and_fast_forwards()
         run_git_test_cmd(repo.path(), &["rev-parse", "HEAD"]),
         expected_head
     );
+}
+
+#[test]
+fn builtin_default_pipelines_seed_idempotently_and_keep_user_global_quota() {
+    let f = fixture();
+    let snapshot = f.service.custom_pipelines_snapshot(&f.project).unwrap();
+    let builtins: Vec<_> = snapshot
+        .available_globals
+        .iter()
+        .filter(|g| g.is_builtin)
+        .collect();
+    assert_eq!(builtins.len(), 5);
+    assert!(
+        snapshot
+            .available_globals
+            .iter()
+            .take(5)
+            .all(|g| g.is_builtin)
+    );
+
+    // Reopening leaves the five templates unique and preserves zero user global count.
+    drop(snapshot);
+    let _reopened = PersistenceService::initialize(f._data.path()).unwrap();
+    let db = f.db();
+    let template_count: i64 = db
+        .query_row(
+            "SELECT count(*) FROM custom_pipelines WHERE template_key IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(template_count, 5);
+
+    // User can still create all MAX_GLOBAL_PIPELINES user global pipelines.
+    for idx in 0..MAX_GLOBAL_PIPELINES {
+        let out = f.create_in(
+            &f.project,
+            &format!("User Global {idx}"),
+            "global",
+            None,
+            vec![agent("a")],
+        );
+        assert!(
+            matches!(out, SaveCustomPipelineOutcome::Saved { .. }),
+            "idx={idx}"
+        );
+    }
+    assert_eq!(
+        codes(f.create_in(&f.project, "One too many", "global", None, vec![agent("a")])),
+        ["global_limit"]
+    );
+}
+
+#[test]
+fn builtin_templates_are_immutable_but_support_activate_trigger_override_archive_and_children() {
+    let f = fixture();
+    let activated = saved(
+        f.service
+            .activate_custom_pipeline(&f.project, "builtin-companion-notes")
+            .unwrap(),
+    );
+    assert!(activated.is_builtin());
+    assert!(activated.is_global());
+
+    // Direct edits, deletes, and move-to-project are refused with builtin_immutable / error.
+    let edit_err = f
+        .service
+        .save_custom_pipeline(SaveCustomPipelineRequest {
+            project_id: f.project.clone(),
+            pipeline_id: Some(activated.id.clone()),
+            expected_version: Some(activated.current_version),
+            name: "Renamed".into(),
+            description: String::new(),
+            definition: activated.definition.clone(),
+            scope: None,
+            parent_pipeline_id: None,
+        })
+        .unwrap();
+    assert_eq!(codes(edit_err), ["builtin_immutable"]);
+
+    let move_err = f
+        .service
+        .move_custom_pipeline_to_project(&f.project, &activated.id)
+        .unwrap();
+    assert_eq!(codes(move_err), ["builtin_immutable"]);
+
+    assert!(
+        f.service
+            .delete_custom_pipeline(&f.project, &activated.id)
+            .is_err()
+    );
+
+    // Per-project trigger override, archive/restore, and creating an editable child work.
+    let overridden = saved(
+        f.service
+            .set_custom_pipeline_trigger(crate::custom_pipelines::SetPipelineTriggerRequest {
+                project_id: f.project.clone(),
+                pipeline_id: activated.id.clone(),
+                trigger: Some(PipelineTrigger::DomainEvent {
+                    event: crate::custom_pipelines::DomainEvent::FeatureApproved,
+                    stage: None,
+                }),
+            })
+            .unwrap(),
+    );
+    assert_eq!(
+        overridden.trigger_override,
+        Some(PipelineTrigger::DomainEvent {
+            event: crate::custom_pipelines::DomainEvent::FeatureApproved,
+            stage: None,
+        })
+    );
+    let archived = saved(
+        f.service
+            .set_custom_pipeline_archived(&f.project, &activated.id, true)
+            .unwrap(),
+    );
+    assert!(archived.archived);
+    let restored = saved(
+        f.service
+            .set_custom_pipeline_archived(&f.project, &activated.id, false)
+            .unwrap(),
+    );
+    assert!(!restored.archived);
+
+    let mut child_def = activated.definition.clone();
+    if let PipelineStep::Canonical(c) = &mut child_def.steps[0] {
+        c.instructions_append = "Keep bullet summary under five items.".into();
+    }
+    let child = saved(f.create_in(
+        &f.project,
+        "My Companion Notes",
+        "project",
+        Some(&activated.id),
+        child_def.steps,
+    ));
+    assert!(!child.is_builtin());
+    assert_eq!(
+        child.parent_pipeline_id.as_deref(),
+        Some(activated.id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn canonical_pipeline_step_builds_hardened_context_and_refuses_custom_cli_backend() {
+    let f = fixture();
+    let activated = saved(
+        f.service
+            .activate_custom_pipeline(&f.project, "builtin-companion-notes")
+            .unwrap(),
+    );
+    let run_id = f
+        .service
+        .start_custom_pipeline_run(&f.project, &activated.id)
+        .unwrap();
+    let claim = f.service.claim_next_automation_step().unwrap().unwrap();
+    assert_eq!(claim.run_id, run_id);
+
+    // Inspect hardened no-tools context for NotesScribe.
+    let PipelineStep::Canonical(ref canon) = activated.definition.steps[0] else {
+        panic!("expected canonical step");
+    };
+    let (system, user) = f.service.canonical_step_context(&claim, canon).unwrap();
+    assert!(system.contains("strict isolation"));
+    assert!(system.contains("All tools, filesystem access, and commands are disabled"));
+    assert!(user.contains("## Trigger"));
+
+    // Configure custom CLI backend for notes_scribe and ensure execution fails cleanly.
+    f.db()
+        .execute(
+            "INSERT INTO cli_agent_configs(project_id,agent_role,execution_mode,backend,custom_executable,created_at,updated_at)
+             VALUES(?1,'notes_scribe','cli_process','custom','/bin/echo','2026-11-26T00:00:00Z','2026-11-26T00:00:00Z')",
+            [&f.project],
+        )
+        .unwrap();
+    f.service
+        .run_automation_step(claim, tokio_util::sync::CancellationToken::new())
+        .await;
+    let run = f.service.custom_pipeline_run(&f.project, &run_id).unwrap();
+    assert_eq!(run.status, PipelineRunStatus::Failed);
+    assert!(
+        run.step(0)
+            .unwrap()
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("refuses the custom CLI backend"))
+    );
+}
+
+#[test]
+fn domain_trigger_outbox_fires_on_all_four_events_and_dispatches_idempotently() {
+    use crate::companion_notes::{CaptureNoteRequest, NoteScribeRuntime, NoteSource};
+    use crate::custom_pipelines::DomainEvent;
+    use crate::doc_reconciliation::DriftOrigin;
+    use crate::doc_reconciliation::store::record_signal;
+    use crate::feature_forge::{
+        AcceptanceCriterion, CreateFeatureRequest, FeatureBrief, FeatureForgeService, TaskDraft,
+        TaskKind,
+    };
+
+    let f = fixture();
+    // Activate all four domain-event built-in pipelines in this project.
+    for id in [
+        "builtin-companion-notes",
+        "builtin-docs-reconciliation",
+        "builtin-checkpoint-visualizer",
+        "builtin-feature-handoff",
+    ] {
+        saved(f.service.activate_custom_pipeline(&f.project, id).unwrap());
+    }
+
+    // 1. FeatureApproved via FeatureForgeService::approve
+    let forge = FeatureForgeService::new(f.service.clone());
+    let created = forge
+        .create(CreateFeatureRequest {
+            project_id: f.project.clone(),
+            request_id: uuid::Uuid::new_v4().to_string(),
+            title: "Approve trigger check".into(),
+            idea: "Add domain trigger support with explicit verification".into(),
+        })
+        .unwrap();
+    let brief = FeatureBrief {
+        objective: "Ship domain triggers cleanly".into(),
+        audience: "Project developers".into(),
+        behavior: "Emit domain event inside transaction".into(),
+        scope: "Bounded workflow".into(),
+        criteria: vec![AcceptanceCriterion {
+            id: "ac-1".into(),
+            description: "Fires once per approval".into(),
+        }],
+        tasks: vec![TaskDraft {
+            title: "Wire emitter".into(),
+            kind: TaskKind::Bug,
+            description: "When approved, queue FeatureApproved event cleanly".into(),
+            criteria: vec![AcceptanceCriterion {
+                id: "ac-1".into(),
+                description: "Fires once per approval".into(),
+            }],
+            dependencies: vec![],
+            feature_id: None,
+        }],
+        coverage: "unavailable".into(),
+        ..Default::default()
+    };
+    let revised = forge
+        .revise(&f.project, &created.id, created.revision, brief)
+        .unwrap();
+    forge
+        .approve(&f.project, &revised.id, revised.revision)
+        .unwrap();
+
+    // 2. DocsStale via doc_reconciliation::store::record_signal
+    let db = f.db();
+    record_signal(
+        &db,
+        &f.project,
+        "Vault/architecture.md",
+        "src/lib.rs",
+        Some("old"),
+        Some("new"),
+        DriftOrigin::Watcher,
+        None,
+    )
+    .unwrap();
+
+    // 3. CheckpointReady (Integrator) via PersistenceService::open_checkpoint
+    db.execute(
+        "INSERT INTO pulsations(id,project_id,feature_name,status,stage,queue_sequence,created_at,updated_at)
+         VALUES('pulse-dom',?1,'Feature X','running','Integrator',1,'2026-11-26T00:00:00Z','2026-11-26T00:00:00Z')",
+        [&f.project],
+    )
+    .unwrap();
+    PersistenceService::open_checkpoint(
+        &db,
+        "pulse-dom",
+        ikore_contracts::stages::PulsationStage::Integrator,
+    )
+    .unwrap();
+    drop(db);
+
+    // 4. NoteCaptured via NoteScribeRuntime::capture
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let bus = std::sync::Arc::new(crate::AppEventBus::default());
+    let scribe = std::sync::Arc::new(
+        NoteScribeRuntime::new(f.service.clone(), bus, rt.handle().clone()).unwrap(),
+    );
+    scribe
+        .capture(CaptureNoteRequest {
+            project_id: f.project.clone(),
+            request_id: "req-note-cap".into(),
+            source_type: NoteSource::Text,
+            raw_input: "Remember to wire domain triggers cleanly.".into(),
+        })
+        .unwrap();
+
+    let outbox_count: i64 = f
+        .db()
+        .query_row(
+            "SELECT count(*) FROM domain_trigger_outbox WHERE project_id=?1 AND state='pending'",
+            [&f.project],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(outbox_count, 4);
+
+    // First dispatch creates 4 runs (1 per listener); second dispatch is idempotent (0).
+    let started_first = f.service.dispatch_domain_triggers().unwrap();
+    assert_eq!(started_first, 4);
+    assert_eq!(f.service.dispatch_domain_triggers().unwrap(), 0);
+
+    let runs = f
+        .service
+        .custom_pipelines_snapshot(&f.project)
+        .unwrap()
+        .runs;
+    assert_eq!(runs.len(), 4);
+    assert!(runs.iter().all(|r| r.trigger_kind == "domain_event"));
+    assert!(
+        runs.iter()
+            .any(|r| r.trigger_label.as_deref() == Some("Feature approved"))
+    );
+    assert!(
+        runs.iter()
+            .any(|r| r.trigger_label.as_deref() == Some("Note captured"))
+    );
+    assert!(
+        runs.iter()
+            .any(|r| r.trigger_label.as_deref() == Some("Docs stale"))
+    );
+    assert!(
+        runs.iter()
+            .any(|r| r.trigger_label.as_deref() == Some("Checkpoint ready \u{b7} Integrator"))
+    );
+
+    // Non-Integrator checkpoint opens no outbox event when listener asks for Integrator only.
+    let db = f.db();
+    let emitted_code = PersistenceService::record_domain_event_in_tx(
+        &db,
+        &f.project,
+        DomainEvent::CheckpointReady,
+        Some("Code"),
+        Some("cp-code"),
+        serde_json::json!({"event":"checkpoint_ready","stage":"Code"}),
+        "2026-11-26T00:00:00Z",
+    )
+    .unwrap();
+    assert!(!emitted_code);
+}
+
+#[test]
+fn deleting_a_project_purges_domain_trigger_outbox_and_keeps_builtins() {
+    let f = fixture();
+    let (_other_ws, other) = second_project(&f, "Temp Outbox");
+    saved(
+        f.service
+            .activate_custom_pipeline(&other, "builtin-feature-handoff")
+            .unwrap(),
+    );
+    let db = f.db();
+    PersistenceService::record_domain_event_in_tx(
+        &db,
+        &other,
+        crate::custom_pipelines::DomainEvent::FeatureApproved,
+        None,
+        Some("feat-temp"),
+        serde_json::json!({"kind":"domain_event","event":"feature_approved"}),
+        "2026-11-26T00:00:00Z",
+    )
+    .unwrap();
+    drop(db);
+    assert_eq!(f.service.dispatch_domain_triggers().unwrap(), 1);
+
+    f.service
+        .delete_project_permanently(&other, "Temp Outbox")
+        .unwrap();
+
+    let remaining_outbox: i64 = f
+        .db()
+        .query_row(
+            "SELECT count(*) FROM domain_trigger_outbox WHERE project_id=?1",
+            [&other],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(remaining_outbox, 0);
+
+    let remaining_builtins: i64 = f
+        .db()
+        .query_row(
+            "SELECT count(*) FROM custom_pipelines WHERE template_key IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(remaining_builtins, 5);
 }

@@ -142,12 +142,18 @@ pub use preimages::{PublishedBefore, PublishedChange};
 #[path = "orchestration/supervisor.rs"]
 mod supervisor;
 // Feature 25: the developer's pipelines and the automation lane.
+#[path = "custom_pipelines/canonical.rs"]
+mod custom_pipeline_canonical;
+#[path = "custom_pipelines/domain_triggers.rs"]
+mod custom_pipeline_domain_triggers;
 #[path = "custom_pipelines/engine.rs"]
 mod custom_pipeline_engine;
 #[path = "custom_pipelines/scope.rs"]
 mod custom_pipeline_scope;
 #[path = "custom_pipelines/store.rs"]
 mod custom_pipeline_store;
+#[path = "custom_pipelines/templates.rs"]
+mod custom_pipeline_templates;
 #[cfg(test)]
 #[path = "custom_pipelines/tests.rs"]
 mod custom_pipeline_tests;
@@ -1660,6 +1666,7 @@ impl PersistenceService {
             eprintln!("pulsation report cleanup deferred: {error}");
         }
         crate::orchestration::upgrade::adapt_legacy(&mut connection)?;
+        Self::ensure_builtin_templates(&mut connection)?;
 
         let llm_repository = SqliteLlmRepository::new(&db_path);
         llm_repository.ensure_legacy_configuration()?;
@@ -2667,8 +2674,36 @@ impl PersistenceService {
                 now
             ],
         )?;
+        if let Some(project_id) = connection
+            .query_row(
+                "SELECT project_id FROM pulsations WHERE id=?1",
+                [pulsation_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+        {
+            Self::record_domain_event_in_tx(
+                connection,
+                &project_id,
+                crate::custom_pipelines::DomainEvent::CheckpointReady,
+                Some(stage.as_db_value()),
+                Some(&checkpoint_id),
+                serde_json::json!({
+                    "kind": "domain_event",
+                    "event": "checkpoint_ready",
+                    "stage": stage.as_db_value(),
+                    "pulsationId": pulsation_id,
+                    "checkpointId": checkpoint_id,
+                }),
+                &now,
+            )?;
+        }
 
         Ok(())
+    }
+
+    pub(crate) fn notify_automation_wakeup(&self) {
+        self.runtime_control.wakeup.notify_waiters();
     }
 
     fn find_project_by_id(

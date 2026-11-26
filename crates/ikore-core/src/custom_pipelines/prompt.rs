@@ -3,7 +3,7 @@
 //! trigger as host text or, for an event of the Ikore pipeline, as host data,
 //! and the previous step's output as data (ADR-037).
 
-use ikore_contracts::custom_pipeline::{AgentStep, StageVerdictV1, StepOutput};
+use ikore_contracts::custom_pipeline::{AgentStep, CanonicalStep, StageVerdictV1, StepOutput};
 use ikore_contracts::exchange::{
     AgentProducer, ExchangeItemV1, ExchangeKind, HostComponent, HumanSource, Producer,
 };
@@ -80,6 +80,78 @@ pub(crate) fn event_trigger(payload: &str) -> String {
         "{}The Ikore pipeline's event above started this run. File contents are not included: read the listed paths in the workspace with your read tools.\n",
         render_for_model(&item, "## Trigger", &body).text
     )
+}
+
+/// The `## Trigger` section of a run started by a domain event (Feature 27, Camada C).
+pub(crate) fn domain_event_trigger(payload: &str) -> String {
+    let body = serde_json::from_str::<serde_json::Value>(payload)
+        .and_then(|value| serde_json::to_string_pretty(&value))
+        .unwrap_or_else(|_| payload.to_owned());
+    let item = ExchangeItemV1::new(
+        ExchangeKind::PulsationDigest,
+        Producer::Host(HostComponent::PipelineState),
+    );
+    format!(
+        "{}The domain event above started this run.\n",
+        render_for_model(&item, "## Trigger", &body).text
+    )
+}
+
+pub(crate) fn canonical_user_prompt(
+    step: &CanonicalStep,
+    trigger: &str,
+    previous: Option<&PreviousOutput>,
+    notes: &[GateNote],
+) -> String {
+    let mut prompt = String::new();
+    if !step.instructions_append.trim().is_empty() {
+        let instructions = ExchangeItemV1::new(
+            ExchangeKind::DeveloperInstructions,
+            Producer::Human(HumanSource::PipelineDefinition),
+        );
+        prompt.push_str(
+            &render_for_model(
+                &instructions,
+                "## Developer instructions",
+                &step.instructions_append,
+            )
+            .text,
+        );
+        prompt.push('\n');
+    }
+    prompt.push_str(trigger.trim_end());
+    prompt.push('\n');
+    for note in notes {
+        let item = ExchangeItemV1::new(
+            ExchangeKind::DeveloperInstructions,
+            Producer::Human(HumanSource::CheckpointFeedback),
+        );
+        prompt.push('\n');
+        prompt.push_str(
+            &render_for_model(
+                &item,
+                &format!("## Gate note: {}", quoted_name(&note.label)),
+                &note.note,
+            )
+            .text,
+        );
+    }
+    if let Some(previous) = previous {
+        let item = ExchangeItemV1::new(
+            ExchangeKind::DependencyOutput,
+            Producer::agent(AgentProducer::PipelineStep),
+        );
+        prompt.push('\n');
+        prompt.push_str(
+            &render_for_model(
+                &item,
+                &format!("## Previous step output: {}", quoted_name(&previous.label)),
+                &previous.text,
+            )
+            .text,
+        );
+    }
+    prompt
 }
 
 pub(crate) fn user_prompt(

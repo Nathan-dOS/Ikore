@@ -64,7 +64,7 @@ impl TriggerEvent {
     /// Whether a pipeline with this trigger listens to the event.
     pub(crate) fn starts(self, trigger: &PipelineTrigger) -> bool {
         match trigger {
-            PipelineTrigger::Manual => false,
+            PipelineTrigger::Manual | PipelineTrigger::DomainEvent { .. } => false,
             PipelineTrigger::DefaultEvent { event, stage } => {
                 *event == self.event
                     && stage.as_deref() == self.stage.map(PulsationStage::as_db_value)
@@ -116,7 +116,7 @@ pub(super) fn effective_trigger(
 /// The ready, visible boxes of a project and the trigger each follows. A box
 /// whose definition cannot be read listens to nothing: a trigger never
 /// breaks the Ikore pipeline's transition.
-fn listeners(
+pub(super) fn listeners(
     db: &Connection,
     project_id: &str,
 ) -> Result<Vec<(String, PipelineTrigger)>, PersistenceServiceError> {

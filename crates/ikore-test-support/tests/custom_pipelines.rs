@@ -854,3 +854,74 @@ fn the_ikore_pipeline_starts_the_pipelines_that_listen_to_its_events() {
     assert!(prompt.contains("\"src/auth.rs\""), "{prompt}");
     composition.stop();
 }
+
+#[test]
+fn canonical_step_runs_via_role_routing_with_hardened_prompt() {
+    use ikore_core::custom_pipelines::{CanonicalPipelineRole, CanonicalStep};
+
+    let server = ScriptedHttpServer::respond_with(|request| {
+        let body: serde_json::Value = serde_json::from_str(&request.body).unwrap_or_default();
+        let system = body["messages"][0]["content"].as_str().unwrap_or_default();
+        let user = body["messages"][1]["content"].as_str().unwrap_or_default();
+        if !system.contains("strict isolation") || !user.contains("Keep bullets concise") {
+            return ScriptedResponse::json(400, r#"{"error":"unexpected canonical prompt"}"#);
+        }
+        if body["stream"].as_bool() == Some(true) {
+            ScriptedResponse::sse([
+                format!(
+                    "data: {}\n\n",
+                    json!({"model":"gpt-4.1-mini","choices":[{"delta":{"content":"- Clean structured note."}}]})
+                ),
+                format!(
+                    "data: {}\n\ndata: [DONE]\n\n",
+                    json!({"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":5,"total_tokens":17}})
+                ),
+            ])
+        } else {
+            ScriptedResponse::json(
+                200,
+                json!({
+                    "model": body["model"].as_str().unwrap_or("gpt-4.1-mini"),
+                    "choices": [{"message": {"role": "assistant", "content": "- Clean structured note."}}],
+                    "usage": {"prompt_tokens": 12, "completion_tokens": 5, "total_tokens": 17}
+                })
+                .to_string(),
+            )
+        }
+    });
+    let mut h = Harness::start();
+    configure_loopback(&h.service, &server);
+    h.db()
+        .execute(
+            "INSERT INTO cli_agent_configs(project_id,agent_role,execution_mode,backend,created_at,updated_at)
+             VALUES(?1,'notes_scribe','api_direct','codex','2026-11-26T00:00:00Z','2026-11-26T00:00:00Z')
+             ON CONFLICT(project_id,agent_role) DO UPDATE SET execution_mode='api_direct'",
+            [&h.project],
+        )
+        .unwrap();
+    let step = PipelineStep::Canonical(CanonicalStep {
+        id: "scribe-canonical".into(),
+        label: "Notes Scribe".into(),
+        role: CanonicalPipelineRole::NotesScribe,
+        instructions_append: "Keep bullets concise.".into(),
+    });
+    let pipeline = h.create("Canonical Scribe", vec![step]);
+    let run = h.run(&pipeline);
+    let done = h.wait_status(&run, PipelineRunStatus::Done);
+    let step_run = done.step(0).unwrap();
+    assert_eq!(
+        step_run.output_text.as_deref(),
+        Some("- Clean structured note.")
+    );
+    let execution = step_run.llm_execution_id.clone().unwrap();
+    let role: Option<String> = h
+        .db()
+        .query_row(
+            "SELECT agent_role FROM llm_route_executions WHERE id=?1",
+            [&execution],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(role.as_deref(), Some("notes_scribe"));
+    h.shut_down();
+}

@@ -475,6 +475,7 @@ impl FeatureForgeService {
         editable_feature(&tx, &f, expected)?;
         let result = apply_approval(&tx, project, &f, expected)?;
         tx.commit()?;
+        self.persistence.notify_automation_wakeup();
         self.reconcile_plan_publications(project)?;
         Ok(result)
     }
@@ -980,6 +981,20 @@ pub(crate) fn apply_approval(
     )?;
     let result = feature(db, project, feature_id)?;
     super::publication::queue_plan(db, &result)?;
+    crate::persistence_service::PersistenceService::record_domain_event_in_tx(
+        db,
+        project,
+        crate::custom_pipelines::DomainEvent::FeatureApproved,
+        None,
+        Some(feature_id),
+        serde_json::json!({
+            "kind": "domain_event",
+            "event": "feature_approved",
+            "featureId": feature_id,
+            "title": result.title,
+        }),
+        &now(),
+    )?;
     Ok(result)
 }
 

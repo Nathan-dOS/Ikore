@@ -10337,6 +10337,7 @@ fn global_and_child_pipelines_show_their_badges_and_actions(cx: &mut TestAppCont
         children: 0,
         projects: 2,
         trigger_override: None,
+        template_key: None,
     };
     model.update(visual, |model, cx| {
         model.agents.update(cx, |agents, _| {
@@ -10348,6 +10349,7 @@ fn global_and_child_pipelines_show_their_badges_and_actions(cx: &mut TestAppCont
                 description: "Drafts the notes.".into(),
                 current_version: 1,
                 parent_name: None,
+                is_builtin: false,
             }];
         });
         model.select_canvas_pipeline("child".into(), cx);
@@ -10429,6 +10431,7 @@ fn pipeline_triggers_show_in_the_editor_the_synthesis_and_the_runs(cx: &mut Test
         children: 0,
         projects: 2,
         trigger_override: Some(done.clone()),
+        template_key: None,
     };
     let run = PipelineRunView {
         id: "run-1".into(),
@@ -10574,6 +10577,125 @@ fn pipeline_triggers_show_in_the_editor_the_synthesis_and_the_runs(cx: &mut Test
             .is_some_and(|step| {
                 step.kind == crate::agents_view::pipeline_editor::DraftKind::HostTool
                     && step.host_tool == ikore_core::custom_pipelines::HostTool::GitPush
+            })
+    }));
+}
+
+/// Feature 27: built-in Default pipelines show their Default badge, hide direct
+/// Edit/Delete/Move actions while keeping Create child, and the editor supports
+/// Canonical steps and Domain event triggers.
+#[gpui::test]
+fn feature_27_default_pipelines_canonical_steps_and_domain_triggers_render(
+    cx: &mut TestAppContext,
+) {
+    use ikore_core::custom_pipelines::{
+        CanonicalPipelineRole, CanonicalStep, CustomPipelineDefinitionV1, CustomPipelineView,
+        DomainEvent, GlobalPipelineSummary, PipelineStep, PipelineTrigger,
+    };
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(1440.0), px(1400.0)));
+    select(&model, visual, AppView::Agents);
+    let builtin = CustomPipelineView {
+        id: "builtin-companion-notes".into(),
+        scope: "global".into(),
+        project_id: None,
+        name: "Companion notes".into(),
+        description: "Structures newly captured notes.".into(),
+        current_version: 1,
+        adopted_version: 1,
+        position: 0,
+        ready: true,
+        needs_edit_reason: None,
+        archived: false,
+        definition: CustomPipelineDefinitionV1 {
+            schema_version: 1,
+            trigger: PipelineTrigger::DomainEvent {
+                event: DomainEvent::NoteCaptured,
+                stage: None,
+            },
+            steps: vec![PipelineStep::Canonical(CanonicalStep {
+                id: "structure-note".into(),
+                label: "Notes Scribe".into(),
+                role: CanonicalPipelineRole::NotesScribe,
+                instructions_append: String::new(),
+            })],
+        },
+        run_count: 0,
+        updated_at: "now".into(),
+        parent_pipeline_id: None,
+        parent_name: None,
+        adopted_parent_version: None,
+        children: 0,
+        projects: 1,
+        trigger_override: None,
+        template_key: Some("builtin:companion-notes".into()),
+    };
+    model.update(visual, |model, cx| {
+        model.agents.update(cx, |agents, _| {
+            agents.pipelines.project_id = "layout-project".into();
+            agents.pipelines.pipelines = vec![builtin.clone()];
+            agents.pipelines.available_globals = vec![GlobalPipelineSummary {
+                id: "builtin-feature-handoff".into(),
+                name: "Feature handoff review".into(),
+                description: "Readiness checklist.".into(),
+                current_version: 1,
+                parent_name: None,
+                is_builtin: true,
+            }];
+        });
+        model.select_canvas_pipeline("builtin-companion-notes".into(), cx);
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("agents-pipeline-badges").is_some());
+    assert!(visual.debug_bounds("pipeline-create-child").is_some());
+    assert!(visual.debug_bounds("pipeline-remove").is_some());
+    assert!(visual.debug_bounds("pipeline-edit").is_none());
+    assert!(visual.debug_bounds("pipeline-delete").is_none());
+    assert!(visual.debug_bounds("pipeline-move-to-project").is_none());
+
+    // Open New Pipeline editor, pick Domain event trigger and add a Canonical step.
+    visual.simulate_resize(size(px(1440.0), px(2400.0)));
+    visual.run_until_parked();
+    click(visual, "agents-new-pipeline");
+    for selector in [
+        "pipeline-editor-trigger-domain-event",
+        "pipeline-editor-canonical",
+    ] {
+        assert!(visual.debug_bounds(selector).is_some(), "{selector}");
+    }
+    click(visual, "pipeline-editor-trigger-domain-event");
+    click(visual, "pipeline-editor-trigger-domain:checkpoint_ready");
+    assert!(
+        visual
+            .debug_bounds("pipeline-editor-trigger-domain-stage:Integrator")
+            .is_some()
+    );
+    click(visual, "pipeline-editor-trigger-domain-stage:Integrator");
+    assert!(model.read_with(visual, |model, _| {
+        model
+            .pipeline_editor
+            .as_ref()
+            .map(|editor| editor.trigger.clone())
+            == Some(PipelineTrigger::DomainEvent {
+                event: DomainEvent::CheckpointReady,
+                stage: Some("Integrator".into()),
+            })
+    }));
+    click(visual, "pipeline-editor-canonical");
+    assert!(
+        visual
+            .debug_bounds("pipeline-editor-role:1:visualizer")
+            .is_some()
+    );
+    click(visual, "pipeline-editor-role:1:visualizer");
+    assert!(model.read_with(visual, |model, _| {
+        model
+            .pipeline_editor
+            .as_ref()
+            .and_then(|editor| editor.steps.get(1))
+            .is_some_and(|step| {
+                step.kind == crate::agents_view::pipeline_editor::DraftKind::Canonical
+                    && step.canonical_role == CanonicalPipelineRole::Visualizer
             })
     }));
 }
