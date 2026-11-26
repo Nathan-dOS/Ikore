@@ -452,6 +452,19 @@ fn run_step(
             format!("pipeline-verdict:{}", step.id()),
         ));
     }
+    if let Some(op_id) = &state.git_operation_id {
+        let short: String = op_id.chars().take(8).collect();
+        item = item.child(
+            div()
+                .debug_selector({
+                    let id = step.id().to_owned();
+                    move || format!("pipeline-git-op:{id}")
+                })
+                .text_xs()
+                .text_color(theme::text_muted())
+                .child(format!("Git operation {short}")),
+        );
+    }
     if let Some(output) = &state.output_text {
         item = item.child(
             div()

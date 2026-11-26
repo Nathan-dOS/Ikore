@@ -27,7 +27,7 @@ fn latest_migration_version() -> i64 {
 /// (no rebuild, no row rewritten), but SQLite writes it into the table's
 /// stored definition: a test of an earlier migration compares the table as
 /// that migration left it.
-const LATER_COLUMNS: [(&str, &str); 2] = [
+const LATER_COLUMNS: [(&str, &str); 3] = [
     (
         "CREATE TABLE terminal_events (",
         // V67, ADR-040 M1.
@@ -37,6 +37,11 @@ const LATER_COLUMNS: [(&str, &str); 2] = [
         "CREATE TABLE \"cli_agent_configs\" (",
         // V74, configurable CLI silence timeout.
         ", cli_silence_timeout_ms INTEGER\n  CHECK(cli_silence_timeout_ms IS NULL OR cli_silence_timeout_ms BETWEEN 30000 AND 900000)",
+    ),
+    (
+        "CREATE TABLE custom_pipeline_step_runs (",
+        // V78, Feature 25 M5.
+        ", git_operation_id TEXT REFERENCES git_operations(id) ON DELETE SET NULL",
     ),
 ];
 
@@ -3733,8 +3738,11 @@ fn v74_to_v75_rebuilds_checkpoint_tables_and_adds_stage_verifiers() {
         .iter()
         .filter(|(name, _)| !REBUILT_BY_V75.contains(&name.as_str()))
     {
+        let expected_sql = without_later_columns(&table.1);
         assert!(
-            after.contains(table),
+            after
+                .iter()
+                .any(|(name, sql)| name == &table.0 && without_later_columns(sql) == expected_sql),
             "V75 must not rebuild table: {:?}",
             table.0
         );
@@ -4267,4 +4275,42 @@ fn v76_to_v77_adds_git_operations_and_commit_state() {
         .unwrap();
     assert_eq!(remaining_ops, 0);
     assert_eq!(remaining_state, 0);
+}
+
+#[test]
+fn v77_to_v78_adds_step_run_git_operation_id() {
+    let root = tempfile::tempdir().unwrap();
+    let db_path = root.path().join("ikore.db");
+    let mut db = Connection::open(&db_path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    cli_migrations::migrations::runner()
+        .set_target(refinery::Target::Version(77))
+        .run(&mut db)
+        .unwrap();
+    drop(db);
+
+    PersistenceService::initialize(root.path()).unwrap();
+    let db = Connection::open(&db_path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    let max_version: i64 = db
+        .query_row(
+            "SELECT MAX(version) FROM refinery_schema_history",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(max_version, latest_migration_version());
+    assert!(max_version >= 78);
+
+    let has_col: bool = db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('custom_pipeline_step_runs') WHERE name='git_operation_id')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        has_col,
+        "custom_pipeline_step_runs.git_operation_id must exist after V78"
+    );
 }

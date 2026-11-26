@@ -337,7 +337,23 @@ pub fn validate_definition(
                     "Available after the commit tool ships.",
                 ));
             }
-            PipelineStep::HostTool(_) => {}
+            PipelineStep::HostTool(tool_step) => {
+                if tool_step.tool == HostTool::GitCommit
+                    && !matches!(
+                        definition.trigger,
+                        PipelineTrigger::DefaultEvent {
+                            event: DefaultEvent::PulsationDone,
+                            stage: None
+                        }
+                    )
+                {
+                    errors.push(PipelineValidationError::new(
+                        "git_commit_requires_pulsation_done",
+                        Some(id),
+                        "A git.commit step requires the Pulsation done trigger.",
+                    ));
+                }
+            }
         }
     }
     errors
@@ -1258,7 +1274,28 @@ mod tests {
         let found = codes(&errors);
         assert!(found.contains(&"backend_not_allowed"));
         assert!(found.contains(&"host_tool_unavailable"));
-        assert!(!codes(&validate_definition(&definition, true)).contains(&"host_tool_unavailable"));
+        let enabled_errors = validate_definition(&definition, true);
+        let enabled_found = codes(&enabled_errors);
+        assert!(!enabled_found.contains(&"host_tool_unavailable"));
+        assert!(enabled_found.contains(&"git_commit_requires_pulsation_done"));
+
+        definition.trigger = PipelineTrigger::DefaultEvent {
+            event: DefaultEvent::PulsationDone,
+            stage: None,
+        };
+        let valid_commit = CustomPipelineDefinitionV1 {
+            schema_version: CUSTOM_PIPELINE_SCHEMA_VERSION,
+            trigger: PipelineTrigger::DefaultEvent {
+                event: DefaultEvent::PulsationDone,
+                stage: None,
+            },
+            steps: vec![PipelineStep::HostTool(HostToolStep {
+                id: "commit".into(),
+                label: "Commit".into(),
+                tool: HostTool::GitCommit,
+            })],
+        };
+        assert!(validate_definition(&valid_commit, true).is_empty());
     }
 
     #[test]

@@ -10553,6 +10553,29 @@ fn pipeline_triggers_show_in_the_editor_the_synthesis_and_the_runs(cx: &mut Test
                 .map(|editor| editor.trigger.clone())
         }) == Some(done)
     );
+
+    // M5: Host tool steps can be added and switched between git.commit, git.push, and git.pull.
+    visual.simulate_resize(size(px(1440.0), px(1400.0)));
+    visual.run_until_parked();
+    click(visual, "pipeline-editor-host-tool");
+    for selector in [
+        "pipeline-editor-tool-commit:1",
+        "pipeline-editor-tool-push:1",
+        "pipeline-editor-tool-pull:1",
+    ] {
+        assert!(visual.debug_bounds(selector).is_some(), "{selector}");
+    }
+    click(visual, "pipeline-editor-tool-push:1");
+    assert!(model.read_with(visual, |model, _| {
+        model
+            .pipeline_editor
+            .as_ref()
+            .and_then(|editor| editor.steps.get(1))
+            .is_some_and(|step| {
+                step.kind == crate::agents_view::pipeline_editor::DraftKind::HostTool
+                    && step.host_tool == ikore_core::custom_pipelines::HostTool::GitPush
+            })
+    }));
 }
 
 #[gpui::test]

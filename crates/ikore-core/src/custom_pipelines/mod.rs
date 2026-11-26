@@ -259,6 +259,8 @@ pub struct PipelineStepRunView {
     pub status: StepRunStatus,
     pub terminal_run_id: Option<String>,
     pub llm_execution_id: Option<String>,
+    #[serde(default)]
+    pub git_operation_id: Option<String>,
     pub output_text: Option<String>,
     pub verdict: Option<StageVerdictV1>,
     pub gate_decision: Option<String>,

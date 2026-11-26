@@ -9,9 +9,9 @@
 use gpui::{AnyElement, Context, Entity, FontWeight, IntoElement, SharedString, div, prelude::*};
 use ikore_core::custom_pipelines::{
     AgentStep, CUSTOM_PIPELINE_SCHEMA_VERSION, CustomPipelineDefinitionV1, CustomPipelineView,
-    DecidePipelineGateRequest, DefaultEvent, GateStep, MAX_STEPS, PipelineStep, PipelineTrigger,
-    PipelineValidationError, SaveCustomPipelineOutcome, SaveCustomPipelineRequest, StepAgent,
-    StepOutput, StepTransport,
+    DecidePipelineGateRequest, DefaultEvent, GateStep, HostTool, HostToolStep, MAX_STEPS,
+    PipelineStep, PipelineTrigger, PipelineValidationError, SaveCustomPipelineOutcome,
+    SaveCustomPipelineRequest, StepAgent, StepOutput, StepTransport,
 };
 use ikore_core::terminals::{CliBackend, ThinkingLevel};
 
@@ -43,6 +43,7 @@ const EFFORTS: [ThinkingLevel; 4] = [
 pub(crate) enum DraftKind {
     Agent,
     Gate,
+    HostTool,
 }
 
 /// One step of the form.
@@ -60,6 +61,7 @@ pub(crate) struct StepDraft {
     pub(crate) thinking: ThinkingLevel,
     pub(crate) route_id: Option<String>,
     pub(crate) output: StepOutput,
+    pub(crate) host_tool: HostTool,
 }
 
 /// The form, while it is open.
@@ -145,6 +147,11 @@ impl PipelineEditor {
                             id: draft.id.clone(),
                             label,
                             prompt: text,
+                        }),
+                        DraftKind::HostTool => PipelineStep::HostTool(HostToolStep {
+                            id: draft.id.clone(),
+                            label,
+                            tool: draft.host_tool,
                         }),
                         DraftKind::Agent => PipelineStep::Agent(AgentStep {
                             id: draft.id.clone(),
@@ -336,6 +343,7 @@ fn step_card(
                             match draft.kind {
                                 DraftKind::Agent => "Agent",
                                 DraftKind::Gate => "Gate",
+                                DraftKind::HostTool => "Host tool",
                             }
                         )),
                 )
@@ -374,6 +382,63 @@ fn step_card(
             crate::sizing::INPUT_MEDIUM,
         ));
     match draft.kind {
+        DraftKind::HostTool => {
+            let selected_tool = draft.host_tool;
+            card = card
+                .child(label("HOST TOOL"))
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap_1()
+                        .child(choice(
+                            format!("pipeline-editor-tool-commit:{index}"),
+                            "git.commit",
+                            selected_tool == HostTool::GitCommit,
+                            true,
+                            cx,
+                            move |model, cx| {
+                                model.set_pipeline_step_host_tool(index, HostTool::GitCommit, cx)
+                            },
+                        ))
+                        .child(choice(
+                            format!("pipeline-editor-tool-push:{index}"),
+                            "git.push",
+                            selected_tool == HostTool::GitPush,
+                            true,
+                            cx,
+                            move |model, cx| {
+                                model.set_pipeline_step_host_tool(index, HostTool::GitPush, cx)
+                            },
+                        ))
+                        .child(choice(
+                            format!("pipeline-editor-tool-pull:{index}"),
+                            "git.pull",
+                            selected_tool == HostTool::GitPull,
+                            true,
+                            cx,
+                            move |model, cx| {
+                                model.set_pipeline_step_host_tool(index, HostTool::GitPull, cx)
+                            },
+                        )),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_muted())
+                        .child(match selected_tool {
+                            HostTool::GitCommit => {
+                                "Commits pending done pulsations under project git rules. Requires Pulsation done trigger."
+                            }
+                            HostTool::GitPush => {
+                                "Pushes the active non-protected branch using project git rules."
+                            }
+                            HostTool::GitPull => {
+                                "Pulls with fast-forward only when no pulsation is active."
+                            }
+                        }),
+                );
+        }
         DraftKind::Gate => {
             card = card
                 .child(label("TEXT"))
@@ -808,27 +873,14 @@ pub(super) fn pipeline_editor_panel(model: &AppModel, cx: &mut Context<AppModel>
                     cx,
                     |model, cx| model.add_pipeline_step(DraftKind::Gate, cx),
                 ))
-                .child(
-                    div()
-                        .id("pipeline-editor-add-host-tool")
-                        .debug_selector(|| "pipeline-editor-add-host-tool".into())
-                        .tooltip(|_, cx| {
-                            cx.new(|_| {
-                                crate::widgets::Tooltip::new(
-                                    "Available after the commit tool ships",
-                                )
-                            })
-                            .into()
-                        })
-                        .child(action_button(
-                            "pipeline-editor-host-tool".into(),
-                            "Host tool".into(),
-                            false,
-                            false,
-                            cx,
-                            |_, _| {},
-                        )),
-                ),
+                .child(action_button(
+                    "pipeline-editor-host-tool".into(),
+                    "Host tool".into(),
+                    !full,
+                    false,
+                    cx,
+                    |model, cx| model.add_pipeline_step(DraftKind::HostTool, cx),
+                )),
         )
         .child(
             div()
@@ -942,6 +994,7 @@ impl AppModel {
                 match kind {
                     DraftKind::Agent => "Review",
                     DraftKind::Gate => "Approve",
+                    DraftKind::HostTool => "Commit changes",
                 },
                 false,
                 cx,
@@ -950,6 +1003,7 @@ impl AppModel {
                 match kind {
                     DraftKind::Agent => "What the agent should do",
                     DraftKind::Gate => "What the developer should check",
+                    DraftKind::HostTool => "",
                 },
                 "",
                 true,
@@ -964,6 +1018,7 @@ impl AppModel {
             thinking: ThinkingLevel::Default,
             route_id: None,
             output: StepOutput::Text,
+            host_tool: HostTool::GitCommit,
         }
     }
 
@@ -1012,8 +1067,8 @@ impl AppModel {
             .definition
             .steps
             .iter()
-            .filter_map(|step| match step {
-                PipelineStep::Agent(agent) => Some(StepDraft {
+            .map(|step| match step {
+                PipelineStep::Agent(agent) => StepDraft {
                     id: agent.id.clone(),
                     kind: DraftKind::Agent,
                     label: input("Step label", &agent.label, false, cx),
@@ -1031,8 +1086,9 @@ impl AppModel {
                         .unwrap_or(ThinkingLevel::Default),
                     route_id: agent.agent.api_route_id.clone(),
                     output: agent.output,
-                }),
-                PipelineStep::Gate(gate) => Some(StepDraft {
+                    host_tool: HostTool::GitCommit,
+                },
+                PipelineStep::Gate(gate) => StepDraft {
                     id: gate.id.clone(),
                     kind: DraftKind::Gate,
                     label: input("Step label", &gate.label, false, cx),
@@ -1044,9 +1100,22 @@ impl AppModel {
                     thinking: ThinkingLevel::Default,
                     route_id: None,
                     output: StepOutput::Text,
-                }),
-                // Not offered until M5.
-                PipelineStep::HostTool(_) => None,
+                    host_tool: HostTool::GitCommit,
+                },
+                PipelineStep::HostTool(tool_step) => StepDraft {
+                    id: tool_step.id.clone(),
+                    kind: DraftKind::HostTool,
+                    label: input("Step label", &tool_step.label, false, cx),
+                    text: input("", "", false, cx),
+                    transport: StepTransport::Cli,
+                    backend: CliBackend::Codex,
+                    model: None,
+                    model_profile: None,
+                    thinking: ThinkingLevel::Default,
+                    route_id: None,
+                    output: StepOutput::Text,
+                    host_tool: tool_step.tool,
+                },
             })
             .collect()
     }
@@ -1245,6 +1314,16 @@ impl AppModel {
         cx: &mut Context<Self>,
     ) {
         self.with_step(index, |step| step.output = output);
+        cx.notify();
+    }
+
+    pub(crate) fn set_pipeline_step_host_tool(
+        &mut self,
+        index: usize,
+        tool: HostTool,
+        cx: &mut Context<Self>,
+    ) {
+        self.with_step(index, |step| step.host_tool = tool);
         cx.notify();
     }
 

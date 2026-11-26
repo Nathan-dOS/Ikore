@@ -184,13 +184,14 @@ pub(super) fn load_step_runs(
 ) -> Result<Vec<PipelineStepRunView>, PersistenceServiceError> {
     let mut statement = db.prepare_cached(
         "SELECT step_index,attempt,step_id,kind,status,terminal_run_id,llm_execution_id,
-                output_text,verdict_json,gate_decision,gate_feedback,started_at,finished_at,error
+                git_operation_id,output_text,verdict_json,gate_decision,gate_feedback,
+                started_at,finished_at,error
            FROM custom_pipeline_step_runs WHERE run_id=?1 ORDER BY step_index,attempt",
     )?;
     let rows = statement
         .query_map([run_id], |row| {
             let status: String = row.get(4)?;
-            let verdict: Option<String> = row.get(8)?;
+            let verdict: Option<String> = row.get(9)?;
             Ok(PipelineStepRunView {
                 step_index: row.get(0)?,
                 attempt: row.get(1)?,
@@ -199,13 +200,14 @@ pub(super) fn load_step_runs(
                 status: StepRunStatus::parse(&status).ok_or_else(|| bad_column(4, &status))?,
                 terminal_run_id: row.get(5)?,
                 llm_execution_id: row.get(6)?,
-                output_text: row.get(7)?,
+                git_operation_id: row.get(7)?,
+                output_text: row.get(8)?,
                 verdict: verdict.and_then(|json| serde_json::from_str(&json).ok()),
-                gate_decision: row.get(9)?,
-                gate_feedback: row.get(10)?,
-                started_at: row.get(11)?,
-                finished_at: row.get(12)?,
-                error: row.get(13)?,
+                gate_decision: row.get(10)?,
+                gate_feedback: row.get(11)?,
+                started_at: row.get(12)?,
+                finished_at: row.get(13)?,
+                error: row.get(14)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -444,13 +446,12 @@ pub(super) fn name_taken_error() -> PipelineValidationError {
     )
 }
 
-/// Everything a definition must satisfy to be saved or run. Its trigger is
-/// `Manual` or an event of the Ikore pipeline (M3); host tools wait for M5.
+/// Everything a definition must satisfy to be saved or run (Feature 25 M5 enables host tools).
 pub(super) fn definition_errors(
     tx: &Transaction<'_>,
     definition: &CustomPipelineDefinitionV1,
 ) -> Result<Vec<PipelineValidationError>, PersistenceServiceError> {
-    let mut errors = validate_definition(definition, false);
+    let mut errors = validate_definition(definition, true);
     for step in &definition.steps {
         let PipelineStep::Agent(agent) = step else {
             continue;
@@ -533,20 +534,11 @@ pub(super) fn open_next_step(
         return Ok(());
     };
     let (step_status, run_status) = match step {
-        PipelineStep::Agent(_) => (StepRunStatus::Queued, None),
+        PipelineStep::Agent(_) | PipelineStep::HostTool(_) => (StepRunStatus::Queued, None),
         PipelineStep::Gate(_) => (
             StepRunStatus::WaitingGate,
             Some(PipelineRunStatus::WaitingGate),
         ),
-        PipelineStep::HostTool(_) => {
-            // Refused by validation until M5; a stored run cannot reach one.
-            tx.execute(
-                "UPDATE custom_pipeline_runs SET status='failed',error=?2,finished_at=?3,updated_at=?3
-                  WHERE id=?1",
-                params![run_id, "Host tools are not available yet.", now],
-            )?;
-            return Ok(());
-        }
     };
     let attempt: u32 = tx.query_row(
         "SELECT COALESCE(max(attempt),0)+1 FROM custom_pipeline_step_runs
@@ -1249,6 +1241,17 @@ impl PersistenceService {
                 "pipeline_archived",
                 "Restore the pipeline before changing its trigger.",
             );
+        }
+        let view = load_view(&tx, project_id, pipeline_id)?;
+        let effective_trigger = request
+            .trigger
+            .clone()
+            .unwrap_or_else(|| view.definition.trigger.clone());
+        let mut temp_def = view.definition;
+        temp_def.trigger = effective_trigger;
+        let def_errs = validate_definition(&temp_def, true);
+        if !def_errs.is_empty() {
+            return Ok(SaveCustomPipelineOutcome::Invalid { errors: def_errs });
         }
         let json = request
             .trigger

@@ -283,7 +283,7 @@ fn refused_definitions_report_every_problem() {
             "api_route_unknown",
             "backend_not_allowed",
             "description_too_long",
-            "host_tool_unavailable",
+            "git_commit_requires_pulsation_done",
             "model_required",
             "stage_unknown"
         ]
@@ -1110,4 +1110,368 @@ fn deleting_a_project_keeps_the_global_pipelines_it_used() {
         )
         .unwrap();
     assert_eq!(remaining, 0);
+}
+
+fn run_git_test_cmd(repo: &std::path::Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .expect("git command");
+    assert!(
+        out.status.success(),
+        "git {:?} failed: stdout={}, stderr={}",
+        args,
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_owned()
+}
+
+fn sha256_hex_str(raw: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(raw.as_bytes());
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn seed_done_pulsation_for_pipeline(
+    service: &PersistenceService,
+    project_id: &str,
+    repo: &std::path::Path,
+    pulsation_id: &str,
+    completed_at: &str,
+    file_rel: &str,
+    file_content: &str,
+    test_rel: &str,
+    test_content: &str,
+) {
+    let db = service.connection().unwrap();
+    db.execute(
+        "INSERT INTO pulsations(id, project_id, feature_name, stage, status, created_at, updated_at, queue_sequence)
+         VALUES (?1, ?2, ?3, 'Integrator', 'done', ?4, ?4, (SELECT COALESCE(MAX(queue_sequence),0)+1 FROM pulsations WHERE project_id=?2))",
+        params![pulsation_id, project_id, format!("Feature {pulsation_id}"), completed_at],
+    )
+    .unwrap();
+    let job_code = format!("job-code-{pulsation_id}");
+    let job_test = format!("job-test-{pulsation_id}");
+    for (jid, stage) in [(&job_code, "Code"), (&job_test, "Test")] {
+        db.execute(
+            "INSERT INTO jobs(id, pulsation_id, kind, status, created_at, updated_at, project_id, input_revision, generation, state_version, job_class, idempotency_key)
+             VALUES (?1, ?2, 'stage_run', 'done', ?3, ?3, ?4, 1, 1, 1, 'main', ?5)",
+            params![jid, pulsation_id, completed_at, project_id, format!("idem:{jid}")],
+        )
+        .unwrap();
+        let _ = stage;
+    }
+    let items = [
+        (
+            format!("art-c-{pulsation_id}"),
+            file_rel,
+            file_content,
+            "Code",
+            job_code,
+        ),
+        (
+            format!("art-t-{pulsation_id}"),
+            test_rel,
+            test_content,
+            "Test",
+            job_test,
+        ),
+    ];
+    for (aid, rel, content, stage, jid) in items {
+        let sha = sha256_hex_str(content);
+        db.execute(
+            "INSERT INTO artifacts(
+                id, pulsation_id, name, kind, relative_path, content_sha256, created_at, updated_at,
+                content, producer_job_id, producer_stage, generation, input_revision,
+                producer_state_version, output_position, acceptance, publication_state
+             ) VALUES (?1, ?2, ?3, 'file', ?3, ?4, ?5, ?5, ?6, ?7, ?8, 1, 1, 1, 0, 'accepted', 'applied')",
+            params![aid, pulsation_id, rel, sha, completed_at, content, jid, stage],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO artifact_publications(
+                artifact_id, project_id, pulsation_id, relative_path, expected_sha256, desired_sha256, state, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, NULL, ?5, 'applied', ?6)",
+            params![aid, project_id, pulsation_id, rel, sha, completed_at],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO pulsation_file_bases(
+                pulsation_id, path_key, relative_path, state, content_sha256, content, first_artifact_id, captured_at
+             ) VALUES (?1, ?2, ?3, 'absent', NULL, NULL, ?4, ?5)",
+            params![pulsation_id, rel.to_ascii_lowercase(), rel, aid, completed_at],
+        )
+        .unwrap();
+        let full = repo.join(rel);
+        if let Some(parent) = full.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&full, content).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn host_tool_commit_and_push_pipeline_runs_in_automation_lane_and_links_git_operation() {
+    let bare = tempfile::tempdir().unwrap();
+    run_git_test_cmd(bare.path(), &["init", "--bare", "-b", "main"]);
+    let bare_str = bare.path().to_string_lossy().replace('\\', "/");
+
+    let repo = tempfile::tempdir().unwrap();
+    run_git_test_cmd(repo.path(), &["init", "-b", "main"]);
+    run_git_test_cmd(repo.path(), &["config", "user.name", "Pipeline Tester"]);
+    run_git_test_cmd(repo.path(), &["config", "user.email", "pipe@example.com"]);
+    run_git_test_cmd(repo.path(), &["config", "core.autocrlf", "false"]);
+    std::fs::write(repo.path().join("README.md"), "# Init\n").unwrap();
+    run_git_test_cmd(repo.path(), &["add", "--all"]);
+    run_git_test_cmd(repo.path(), &["commit", "-m", "chore: init"]);
+    run_git_test_cmd(repo.path(), &["remote", "add", "origin", &bare_str]);
+    run_git_test_cmd(repo.path(), &["push", "-u", "origin", "main"]);
+
+    let data = tempfile::tempdir().unwrap();
+    let service = PersistenceService::initialize(data.path()).unwrap();
+    let project = service
+        .create_project(CreateProjectRequest {
+            workspace_path: repo.path().to_string_lossy().into_owned(),
+            name: Some("HostTool M5".into()),
+        })
+        .unwrap()
+        .project
+        .id;
+
+    // Enable git tool for the project.
+    let outcome = service
+        .save_project_git_rules(crate::git_tool::SaveProjectGitRulesRequest {
+            project_id: project.clone(),
+            enabled: true,
+            rules: crate::git_tool::CommitRulesV1::default(),
+        })
+        .unwrap();
+    assert!(matches!(
+        outcome,
+        crate::git_tool::SaveProjectGitRulesOutcome::Saved(_)
+    ));
+
+    // Seed two done pulsations in completion order (P8 test).
+    seed_done_pulsation_for_pipeline(
+        &service,
+        &project,
+        repo.path(),
+        "pulse-stack-1",
+        "2026-11-26T00:01:00Z",
+        "src/one.rs",
+        "pub fn one() {}\n",
+        "tests/one_test.rs",
+        "#[test] fn one_ok() {}\n",
+    );
+    seed_done_pulsation_for_pipeline(
+        &service,
+        &project,
+        repo.path(),
+        "pulse-stack-2",
+        "2026-11-26T00:02:00Z",
+        "src/two.rs",
+        "pub fn two() {}\n",
+        "tests/two_test.rs",
+        "#[test] fn two_ok() {}\n",
+    );
+
+    let done_def = CustomPipelineDefinitionV1 {
+        schema_version: 1,
+        trigger: PipelineTrigger::DefaultEvent {
+            event: crate::custom_pipelines::DefaultEvent::PulsationDone,
+            stage: None,
+        },
+        steps: vec![
+            PipelineStep::HostTool(HostToolStep {
+                id: "commit-step".into(),
+                label: "Commit".into(),
+                tool: HostTool::GitCommit,
+            }),
+            PipelineStep::HostTool(HostToolStep {
+                id: "push-step".into(),
+                label: "Push".into(),
+                tool: HostTool::GitPush,
+            }),
+        ],
+    };
+    let saved_pipe = match service
+        .save_custom_pipeline(SaveCustomPipelineRequest {
+            project_id: project.clone(),
+            pipeline_id: None,
+            expected_version: None,
+            scope: Some("global".into()),
+            parent_pipeline_id: None,
+            name: "Commit and push".into(),
+            description: String::new(),
+            definition: done_def,
+        })
+        .unwrap()
+    {
+        SaveCustomPipelineOutcome::Saved { pipeline } => *pipeline,
+        SaveCustomPipelineOutcome::Invalid { errors } => panic!("{errors:?}"),
+    };
+
+    // Global pipeline with git.commit cannot be overridden to Manual trigger.
+    let bad_override = service
+        .set_custom_pipeline_trigger(crate::custom_pipelines::SetPipelineTriggerRequest {
+            project_id: project.clone(),
+            pipeline_id: saved_pipe.id.clone(),
+            trigger: Some(PipelineTrigger::Manual),
+        })
+        .unwrap();
+    assert_eq!(codes(bad_override), ["git_commit_requires_pulsation_done"]);
+
+    // Enqueue a PulsationDone outbox event for pulse-stack-2 and dispatch.
+    {
+        let db = service.connection().unwrap();
+        db.execute(
+            "INSERT INTO pipeline_trigger_outbox(id,project_id,pulsation_id,event,stage,state_version,state,created_at)
+             VALUES('outbox-m5',?1,'pulse-stack-2','pulsation_done',NULL,1,'pending','2026-11-26T00:02:01Z')",
+            [&project],
+        )
+        .unwrap();
+    }
+    service.dispatch_pipeline_triggers().unwrap();
+
+    let runs = service.custom_pipelines_snapshot(&project).unwrap().runs;
+    assert_eq!(runs.len(), 1);
+    let run_id = runs[0].id.clone();
+
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    // Execute step 0: GitCommit (must commit pulse-stack-1 first, then pulse-stack-2 stacked).
+    let claim0 = service.claim_next_automation_step().unwrap().unwrap();
+    service.run_automation_step(claim0, shutdown.clone()).await;
+    // Execute step 1: GitPush.
+    let claim1 = service.claim_next_automation_step().unwrap().unwrap();
+    service.run_automation_step(claim1, shutdown).await;
+
+    let run = service.custom_pipeline_run(&project, &run_id).unwrap();
+    assert_eq!(
+        run.status,
+        PipelineRunStatus::Done,
+        "run error: {:?}",
+        run.error
+    );
+    let s0 = run.step(0).unwrap();
+    let s1 = run.step(1).unwrap();
+    assert_eq!(s0.status, StepRunStatus::Done);
+    assert!(s0.git_operation_id.is_some());
+    assert_eq!(s1.status, StepRunStatus::Done);
+    assert!(s1.git_operation_id.is_some());
+
+    // Queue entries are committed and remote bare repo received the second branch.
+    let queue = service.list_pulsation_commit_queue(&project).unwrap();
+    assert_eq!(queue.len(), 2);
+    assert_eq!(
+        queue[0].state,
+        crate::git_tool::PulsationCommitQueueState::Committed
+    );
+    assert_eq!(
+        queue[1].state,
+        crate::git_tool::PulsationCommitQueueState::Committed
+    );
+    let remote_heads = run_git_test_cmd(
+        bare.path(),
+        &["for-each-ref", "refs/heads", "--format=%(refname:short)"],
+    );
+    let p2_branch = queue[1].branch.as_deref().unwrap();
+    assert!(remote_heads.lines().any(|b| b == p2_branch));
+}
+
+#[tokio::test]
+async fn host_tool_pull_step_ignores_its_own_automation_slot_and_fast_forwards() {
+    let bare = tempfile::tempdir().unwrap();
+    run_git_test_cmd(bare.path(), &["init", "--bare", "-b", "main"]);
+    let bare_str = bare.path().to_string_lossy().replace('\\', "/");
+
+    let repo = tempfile::tempdir().unwrap();
+    run_git_test_cmd(repo.path(), &["init", "-b", "main"]);
+    run_git_test_cmd(repo.path(), &["config", "user.name", "Pull Step Tester"]);
+    run_git_test_cmd(repo.path(), &["config", "user.email", "pull@example.com"]);
+    std::fs::write(repo.path().join("file.txt"), "one\n").unwrap();
+    run_git_test_cmd(repo.path(), &["add", "--all"]);
+    run_git_test_cmd(repo.path(), &["commit", "-m", "chore: initial"]);
+    run_git_test_cmd(repo.path(), &["remote", "add", "origin", &bare_str]);
+    run_git_test_cmd(repo.path(), &["switch", "-c", "feat/sync"]);
+    run_git_test_cmd(repo.path(), &["push", "-u", "origin", "feat/sync"]);
+
+    let writer = tempfile::tempdir().unwrap();
+    run_git_test_cmd(writer.path(), &["clone", "-b", "feat/sync", &bare_str, "."]);
+    run_git_test_cmd(writer.path(), &["config", "user.name", "Writer"]);
+    run_git_test_cmd(
+        writer.path(),
+        &["config", "user.email", "writer@example.com"],
+    );
+    std::fs::write(writer.path().join("file.txt"), "two\n").unwrap();
+    run_git_test_cmd(writer.path(), &["add", "--all"]);
+    run_git_test_cmd(writer.path(), &["commit", "-m", "feat: upstream change"]);
+    run_git_test_cmd(writer.path(), &["push", "origin", "feat/sync"]);
+    let expected_head = run_git_test_cmd(writer.path(), &["rev-parse", "HEAD"]);
+
+    let data = tempfile::tempdir().unwrap();
+    let service = PersistenceService::initialize(data.path()).unwrap();
+    let project = service
+        .create_project(CreateProjectRequest {
+            workspace_path: repo.path().to_string_lossy().into_owned(),
+            name: Some("Pull Step M5".into()),
+        })
+        .unwrap()
+        .project
+        .id;
+    service
+        .save_project_git_rules(crate::git_tool::SaveProjectGitRulesRequest {
+            project_id: project.clone(),
+            enabled: true,
+            rules: crate::git_tool::CommitRulesV1::default(),
+        })
+        .unwrap();
+
+    let saved = match service
+        .save_custom_pipeline(SaveCustomPipelineRequest {
+            project_id: project.clone(),
+            pipeline_id: None,
+            expected_version: None,
+            scope: Some("project".into()),
+            parent_pipeline_id: None,
+            name: "Sync pull".into(),
+            description: String::new(),
+            definition: CustomPipelineDefinitionV1 {
+                schema_version: 1,
+                trigger: PipelineTrigger::Manual,
+                steps: vec![PipelineStep::HostTool(HostToolStep {
+                    id: "pull-step".into(),
+                    label: "Pull".into(),
+                    tool: HostTool::GitPull,
+                })],
+            },
+        })
+        .unwrap()
+    {
+        SaveCustomPipelineOutcome::Saved { pipeline } => *pipeline,
+        SaveCustomPipelineOutcome::Invalid { errors } => panic!("{errors:?}"),
+    };
+
+    let run_id = service
+        .start_custom_pipeline_run(&project, &saved.id)
+        .unwrap();
+    let claim = service.claim_next_automation_step().unwrap().unwrap();
+    service
+        .run_automation_step(claim, tokio_util::sync::CancellationToken::new())
+        .await;
+
+    let run = service.custom_pipeline_run(&project, &run_id).unwrap();
+    assert_eq!(
+        run.status,
+        PipelineRunStatus::Done,
+        "run error: {:?}",
+        run.error
+    );
+    assert!(run.step(0).unwrap().git_operation_id.is_some());
+    assert_eq!(
+        run_git_test_cmd(repo.path(), &["rev-parse", "HEAD"]),
+        expected_head
+    );
 }
