@@ -287,7 +287,6 @@ pub struct AppCore {
     terminals: Arc<TerminalService>,
     /// The store MCP server variables live in (ADR-043).
     credentials: Arc<dyn CredentialStore>,
-    git_locks: crate::git_tool::GitProjectLocks,
     workspace: Mutex<WorkspaceContext>,
     worker_cancellation: CancellationToken,
     worker_task: Mutex<Option<JoinHandle<()>>>,
@@ -421,13 +420,13 @@ impl AppCore {
             voice,
             terminals,
             credentials,
-            git_locks: crate::git_tool::GitProjectLocks::default(),
             workspace: Mutex::new(WorkspaceContext::default()),
             worker_cancellation,
             worker_task: Mutex::new(None),
             _exchange_doorbell: exchange_doorbell,
         });
 
+        core.persistence.set_git_event_bus((*core.events).clone());
         let worker = core.persistence.clone();
         let cancellation = core.worker_cancellation.clone();
         let task = runtime.spawn(async move {
@@ -830,7 +829,7 @@ impl AppCore {
     }
 
     pub fn git_locks(&self) -> &crate::git_tool::GitProjectLocks {
-        &self.git_locks
+        self.persistence.git_locks()
     }
 
     pub fn list_pulsation_commit_queue(
@@ -880,12 +879,43 @@ impl AppCore {
     ) -> Result<crate::git_tool::CommitExecutionOutcomeV1, PersistenceCommandError> {
         crate::git_tool::execute_commit_for_pulsation(
             &self.persistence,
-            &self.git_locks,
-            &self.events,
+            self.persistence.git_locks(),
+            Some(&self.events),
             project_id,
             pulsation_id,
             None,
             external_plan,
+        )
+        .await
+        .map_err(PersistenceCommandError::from)
+    }
+
+    pub async fn execute_git_push(
+        &self,
+        project_id: &str,
+    ) -> Result<crate::git_tool::PushExecutionOutcomeV1, PersistenceCommandError> {
+        crate::git_tool::execute_push_for_project(
+            &self.persistence,
+            self.persistence.git_locks(),
+            Some(&self.events),
+            project_id,
+            None,
+        )
+        .await
+        .map_err(PersistenceCommandError::from)
+    }
+
+    pub async fn execute_git_pull(
+        &self,
+        project_id: &str,
+    ) -> Result<crate::git_tool::PullExecutionOutcomeV1, PersistenceCommandError> {
+        crate::git_tool::execute_pull_for_project(
+            &self.persistence,
+            self.persistence.git_locks(),
+            Some(&self.events),
+            project_id,
+            None,
+            None,
         )
         .await
         .map_err(PersistenceCommandError::from)

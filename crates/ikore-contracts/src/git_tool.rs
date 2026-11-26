@@ -98,6 +98,7 @@ pub mod violation_codes {
     pub const PULSATION_ACTIVE: &str = "pulsation_active";
     pub const AUTOMATION_RUNNING: &str = "automation_running";
     pub const LOCAL_CHANGES_WOULD_BE_OVERWRITTEN: &str = "local_changes_would_be_overwritten";
+    pub const NON_FAST_FORWARD: &str = "non_fast_forward";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -925,6 +926,25 @@ pub struct CommitExecutionOutcomeV1 {
     pub receipt: Option<CommitReceiptV1>,
     pub violations: Vec<RuleViolation>,
     pub skipped_already_in_head: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PushExecutionOutcomeV1 {
+    pub operation_id: String,
+    pub status: GitOperationStatus,
+    pub receipt: Option<PushReceiptV1>,
+    pub violations: Vec<RuleViolation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PullExecutionOutcomeV1 {
+    pub operation_id: String,
+    pub status: GitOperationStatus,
+    pub receipt: Option<PullReceiptV1>,
+    pub violations: Vec<RuleViolation>,
+    pub changed_paths: Vec<String>,
 }
 
 /// Converts a feature title or scope into lowercase ASCII kebab-case bounded to `max_len`.

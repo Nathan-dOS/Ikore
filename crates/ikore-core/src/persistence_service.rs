@@ -1590,6 +1590,8 @@ pub struct PersistenceService {
     /// ADR-037 M4: pulsations whose digest failed in this process. The
     /// background lane skips them until the app restarts.
     digest_failures: Arc<Mutex<HashSet<String>>>,
+    git_locks: Arc<crate::git_tool::GitProjectLocks>,
+    git_events: Arc<Mutex<Option<crate::events::AppEventBus>>>,
 }
 
 impl PersistenceService {
@@ -1686,7 +1688,27 @@ impl PersistenceService {
             document_cache: Default::default(),
             clock,
             digest_failures: Default::default(),
+            git_locks: Arc::new(crate::git_tool::GitProjectLocks::default()),
+            git_events: Arc::new(Mutex::new(None)),
         })
+    }
+
+    pub fn git_locks(&self) -> &crate::git_tool::GitProjectLocks {
+        &self.git_locks
+    }
+
+    pub fn set_git_event_bus(&self, events: crate::events::AppEventBus) {
+        *self
+            .git_events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(events);
+    }
+
+    pub fn git_event_bus(&self) -> Option<crate::events::AppEventBus> {
+        self.git_events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// ADR-037 M4: derives the digest of the newest finished pulsation that

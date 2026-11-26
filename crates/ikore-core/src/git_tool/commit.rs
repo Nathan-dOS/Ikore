@@ -105,18 +105,20 @@ async fn run_git_with_index_and_input(
 }
 
 fn emit_git_event(
-    events: &AppEventBus,
+    events: Option<&AppEventBus>,
     project_id: &str,
     operation_id: &str,
     kind: GitOperationKind,
     status: GitOperationStatus,
 ) {
-    events.publish(AppEvent::GitOperation(GitOperationEvent {
-        project_id: project_id.to_owned(),
-        operation_id: operation_id.to_owned(),
-        kind,
-        status,
-    }));
+    if let Some(bus) = events {
+        bus.publish(AppEvent::GitOperation(GitOperationEvent {
+            project_id: project_id.to_owned(),
+            operation_id: operation_id.to_owned(),
+            kind,
+            status,
+        }));
+    }
 }
 
 async fn wait_for_index_lock_clear(git_dir: &Path) -> bool {
@@ -140,7 +142,7 @@ async fn wait_for_index_lock_clear(git_dir: &Path) -> bool {
 pub async fn execute_commit_for_pulsation(
     persistence: &PersistenceService,
     locks: &GitProjectLocks,
-    events: &AppEventBus,
+    events: Option<&AppEventBus>,
     project_id: &str,
     pulsation_id: &str,
     git_override: Option<&Path>,
@@ -210,7 +212,7 @@ pub async fn execute_commit_for_pulsation(
 #[allow(clippy::too_many_arguments)]
 async fn execute_commit_locked(
     persistence: &PersistenceService,
-    events: &AppEventBus,
+    events: Option<&AppEventBus>,
     op_id: &str,
     project_id: &str,
     pulsation_id: &str,

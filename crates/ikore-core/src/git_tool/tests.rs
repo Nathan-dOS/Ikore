@@ -1022,3 +1022,262 @@ async fn p5_backfill_p6_already_in_head_p7_skip_and_g3_user_staged_preserved() {
         Some("Landed manually upstream")
     );
 }
+
+#[tokio::test]
+async fn push_succeeds_with_upstream_blocks_protected_and_diverged_and_classifies_auth() {
+    let bare = TempDir::new().unwrap();
+    run_git_cmd(bare.path(), &["init", "--bare", "-b", "main"]);
+
+    let repo = init_real_repo_with_initial_files(&[("README.md", "# Remote test\n")]);
+    let bare_str = bare.path().to_string_lossy().replace('\\', "/");
+    run_git_cmd(repo.path(), &["remote", "add", "origin", &bare_str]);
+    run_git_cmd(repo.path(), &["push", "-u", "origin", "main"]);
+
+    let (_dir, core) = init_test_core();
+    let project = create_test_project(&core, "Push M3 Demo", repo.path());
+    core.save_project_git_rules(SaveProjectGitRulesRequest {
+        project_id: project.id.clone(),
+        enabled: true,
+        rules: CommitRulesV1::default(),
+    })
+    .unwrap();
+
+    // Pushing from protected "main" is blocked.
+    let blocked_main = core.execute_git_push(&project.id).await.unwrap();
+    assert_eq!(blocked_main.status, super::GitOperationStatus::Blocked);
+    assert!(
+        blocked_main
+            .violations
+            .iter()
+            .any(|v| v.code == super::violation_codes::PROTECTED_BRANCH)
+    );
+
+    // Switch to non-protected branch and push cleanly with upstream.
+    run_git_cmd(repo.path(), &["switch", "-c", "feat/m3-push"]);
+    std::fs::write(repo.path().join("README.md"), "# Feature push\n").unwrap();
+    run_git_cmd(repo.path(), &["add", "README.md"]);
+    run_git_cmd(repo.path(), &["commit", "-m", "feat: update readme"]);
+
+    let ok_push = core.execute_git_push(&project.id).await.unwrap();
+    assert_eq!(ok_push.status, super::GitOperationStatus::Succeeded);
+    let receipt = ok_push.receipt.expect("push receipt");
+    assert_eq!(receipt.branch, "feat/m3-push");
+    assert!(receipt.set_upstream);
+    let upstream = run_git_cmd(
+        repo.path(),
+        &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+    );
+    assert_eq!(upstream, "origin/feat/m3-push");
+
+    // Advance origin/feat/m3-push from a second clone so local push is non-fast-forward.
+    let writer = TempDir::new().unwrap();
+    run_git_cmd(
+        writer.path(),
+        &["clone", "-b", "feat/m3-push", &bare_str, "."],
+    );
+    run_git_cmd(writer.path(), &["config", "user.name", "Other Dev"]);
+    run_git_cmd(
+        writer.path(),
+        &["config", "user.email", "other@example.com"],
+    );
+    std::fs::write(writer.path().join("remote.txt"), "from remote\n").unwrap();
+    run_git_cmd(writer.path(), &["add", "remote.txt"]);
+    run_git_cmd(writer.path(), &["commit", "-m", "chore: remote commit"]);
+    run_git_cmd(writer.path(), &["push", "origin", "feat/m3-push"]);
+
+    std::fs::write(repo.path().join("local.txt"), "from local\n").unwrap();
+    run_git_cmd(repo.path(), &["add", "local.txt"]);
+    run_git_cmd(repo.path(), &["commit", "-m", "chore: local commit"]);
+
+    let rejected = core.execute_git_push(&project.id).await.unwrap();
+    assert_eq!(rejected.status, super::GitOperationStatus::Blocked);
+    assert!(
+        rejected
+            .violations
+            .iter()
+            .any(|v| v.code == super::violation_codes::PUSH_REJECTED)
+    );
+
+    // Missing remote classification.
+    run_git_cmd(repo.path(), &["remote", "remove", "origin"]);
+    let no_remote = core.execute_git_push(&project.id).await.unwrap();
+    assert_eq!(no_remote.status, super::GitOperationStatus::Blocked);
+    assert!(
+        no_remote
+            .violations
+            .iter()
+            .any(|v| v.code == super::violation_codes::REMOTE_MISSING)
+    );
+
+    // Auth failure classifier unit assertions.
+    assert!(super::push::is_auth_failure(
+        "fatal: authentication failed for 'https://github.com/org/repo.git'"
+    ));
+    assert!(super::push::is_auth_failure(
+        "fatal: could not read username for 'https://github.com': terminal prompts disabled"
+    ));
+}
+
+#[tokio::test]
+async fn pull_ff_only_enforces_guards_updates_baselines_and_reports_local_conflicts() {
+    let bare = TempDir::new().unwrap();
+    run_git_cmd(bare.path(), &["init", "--bare", "-b", "main"]);
+    let bare_str = bare.path().to_string_lossy().replace('\\', "/");
+
+    let repo = init_real_repo_with_initial_files(&[("tracked.txt", "v1\n")]);
+    run_git_cmd(repo.path(), &["remote", "add", "origin", &bare_str]);
+    run_git_cmd(repo.path(), &["switch", "-c", "feat/m3-pull"]);
+    run_git_cmd(repo.path(), &["push", "-u", "origin", "feat/m3-pull"]);
+
+    // Second clone advances feat/m3-pull with updated tracked.txt + added incoming.txt.
+    let upstream = TempDir::new().unwrap();
+    run_git_cmd(
+        upstream.path(),
+        &["clone", "-b", "feat/m3-pull", &bare_str, "."],
+    );
+    run_git_cmd(upstream.path(), &["config", "user.name", "Remote Dev"]);
+    run_git_cmd(
+        upstream.path(),
+        &["config", "user.email", "remote@example.com"],
+    );
+    std::fs::write(upstream.path().join("tracked.txt"), "v2\n").unwrap();
+    std::fs::write(upstream.path().join("incoming.txt"), "hello remote\n").unwrap();
+    run_git_cmd(upstream.path(), &["add", "--all"]);
+    run_git_cmd(upstream.path(), &["commit", "-m", "feat: incoming changes"]);
+    run_git_cmd(upstream.path(), &["push", "origin", "feat/m3-pull"]);
+    let remote_head = run_git_cmd(upstream.path(), &["rev-parse", "HEAD"]);
+
+    let (_dir, core) = init_test_core();
+    let project = create_test_project(&core, "Pull M3 Demo", repo.path());
+    core.save_project_git_rules(SaveProjectGitRulesRequest {
+        project_id: project.id.clone(),
+        enabled: true,
+        rules: CommitRulesV1::default(),
+    })
+    .unwrap();
+
+    // Guard 1: active pulsation blocks pull.
+    {
+        let db = core.persistence().connection().unwrap();
+        db.execute(
+            "INSERT INTO pulsations(id, project_id, feature_name, stage, status, created_at, updated_at, queue_sequence)
+             VALUES('p-active', ?1, 'Running pulse', 'Code', 'running', '2026-11-26T00:00:00Z', '2026-11-26T00:00:00Z', 1)",
+            [&project.id],
+        )
+        .unwrap();
+    }
+    let blocked_pulse = core.execute_git_pull(&project.id).await.unwrap();
+    assert_eq!(blocked_pulse.status, super::GitOperationStatus::Blocked);
+    assert!(
+        blocked_pulse
+            .violations
+            .iter()
+            .any(|v| v.code == super::violation_codes::PULSATION_ACTIVE)
+    );
+    {
+        let db = core.persistence().connection().unwrap();
+        db.execute(
+            "UPDATE pulsations SET status='done' WHERE id='p-active'",
+            [],
+        )
+        .unwrap();
+    }
+
+    // Guard 2: another automation slot blocks pull unless ignore_slot_owner_id matches.
+    {
+        let db = core.persistence().connection().unwrap();
+        db.execute(
+            "INSERT INTO automation_slots(token, class, project_id, owner_id, acquired_at)
+             VALUES('tok-pull', 'custom_step', ?1, 'run-step-1', '2026-11-26T00:00:00Z')",
+            [&project.id],
+        )
+        .unwrap();
+    }
+    let blocked_auto = core.execute_git_pull(&project.id).await.unwrap();
+    assert_eq!(blocked_auto.status, super::GitOperationStatus::Blocked);
+    assert!(
+        blocked_auto
+            .violations
+            .iter()
+            .any(|v| v.code == super::violation_codes::AUTOMATION_RUNNING)
+    );
+
+    // Local dirty edit on tracked.txt blocks pull with affected path when self-authorized.
+    std::fs::write(repo.path().join("tracked.txt"), "local uncommitted edit\n").unwrap();
+    let conflict = super::execute_pull_for_project(
+        core.persistence(),
+        core.git_locks(),
+        None,
+        &project.id,
+        Some("run-step-1"),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(conflict.status, super::GitOperationStatus::Blocked);
+    assert!(conflict.violations.iter().any(|v| v.code
+        == super::violation_codes::LOCAL_CHANGES_WOULD_BE_OVERWRITTEN
+        && v.path.as_deref() == Some("tracked.txt")));
+
+    // Restore clean working tree; self-authorized pull succeeds (--ff-only) and updates baselines + logs.
+    run_git_cmd(repo.path(), &["checkout", "--", "tracked.txt"]);
+    let ok_pull = super::execute_pull_for_project(
+        core.persistence(),
+        core.git_locks(),
+        None,
+        &project.id,
+        Some("run-step-1"),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(ok_pull.status, super::GitOperationStatus::Succeeded);
+    let receipt = ok_pull.receipt.expect("pull receipt");
+    assert!(receipt.fast_forwarded);
+    assert_eq!(
+        run_git_cmd(repo.path(), &["rev-parse", "HEAD"]),
+        remote_head
+    );
+    assert!(ok_pull.changed_paths.contains(&"tracked.txt".to_owned()));
+    assert!(ok_pull.changed_paths.contains(&"incoming.txt".to_owned()));
+
+    {
+        let db = core.persistence().connection().unwrap();
+        let baseline_sha: String = db
+            .query_row(
+                "SELECT content_sha256 FROM project_file_baselines WHERE project_id=?1 AND relative_path='incoming.txt'",
+                [&project.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(baseline_sha, sha256_str("hello remote\n"));
+        let log_count: i64 = db
+            .query_row(
+                "SELECT count(*) FROM logs WHERE project_id=?1",
+                [&project.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(log_count >= 1);
+        db.execute("DELETE FROM automation_slots WHERE token='tok-pull'", [])
+            .unwrap();
+    }
+
+    // Diverged commit on local vs remote triggers non_fast_forward.
+    std::fs::write(upstream.path().join("remote-only.txt"), "r\n").unwrap();
+    run_git_cmd(upstream.path(), &["add", "--all"]);
+    run_git_cmd(upstream.path(), &["commit", "-m", "chore: diverge remote"]);
+    run_git_cmd(upstream.path(), &["push", "origin", "feat/m3-pull"]);
+
+    std::fs::write(repo.path().join("local-only.txt"), "l\n").unwrap();
+    run_git_cmd(repo.path(), &["add", "--all"]);
+    run_git_cmd(repo.path(), &["commit", "-m", "chore: diverge local"]);
+
+    let nff = core.execute_git_pull(&project.id).await.unwrap();
+    assert_eq!(nff.status, super::GitOperationStatus::Blocked);
+    assert!(
+        nff.violations
+            .iter()
+            .any(|v| v.code == super::violation_codes::NON_FAST_FORWARD)
+    );
+}
