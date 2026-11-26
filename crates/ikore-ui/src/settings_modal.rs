@@ -111,6 +111,9 @@ impl AppModel {
                 .search
                 .update(cx, |input, cx| input.clear(cx));
         }
+        if self.settings.read(cx).page == SettingsPage::Git {
+            self.refresh_git_settings(cx);
+        }
         self.refresh_settings(cx);
         cx.notify();
     }
@@ -166,6 +169,9 @@ impl AppModel {
         }
         if page == SettingsPage::Connections && previous != page && self.settings_modal.open {
             self.refresh_cli_connections(false, cx);
+        }
+        if page == SettingsPage::Git && previous != page && self.settings_modal.open {
+            self.refresh_git_settings(cx);
         }
         cx.notify();
     }

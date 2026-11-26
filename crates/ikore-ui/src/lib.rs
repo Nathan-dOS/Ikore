@@ -39,6 +39,7 @@ mod file_tree;
 mod flow;
 mod forge;
 mod forge_view;
+mod git_settings_ui;
 mod hitl;
 mod home_charts;
 mod home_stats;

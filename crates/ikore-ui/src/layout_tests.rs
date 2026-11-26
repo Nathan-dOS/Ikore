@@ -11179,3 +11179,80 @@ fn stage_verifiers_canvas_labs_toggle_synthesis_width_and_checkpoints(cx: &mut T
     assert!(visual.debug_bounds("verification-error-abort").is_some());
     let _ = VerificationErrorDecision::SkipVerifier;
 }
+
+#[gpui::test]
+fn settings_git_page_renders_status_rules_errors_and_fixed_guardrails(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| {
+        let mut model = fixture(cx);
+        with_settings_items(&mut model, cx);
+        model
+    });
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    open_settings(&model, visual, Some(SettingsPage::Git));
+
+    for selector in [
+        "settings-row:git-tool-enabled",
+        "settings-row:git-status",
+        "settings-row:git-commit-rules",
+        "settings-row:git-push-pull-rules",
+        "settings-row:git-fixed-rules",
+        "git-refresh-status",
+        "git-rules-save",
+        "git-rules-restore",
+    ] {
+        assert!(
+            visual.debug_bounds(selector).is_some(),
+            "missing Settings > Git selector {selector}"
+        );
+    }
+
+    // Invalid integer in subject max chars blocks save locally and displays field error.
+    model.update(visual, |m, cx| {
+        let subject_max = m
+            .settings
+            .read(cx)
+            .git
+            .form
+            .as_ref()
+            .expect("git form initialized")
+            .subject_max_chars
+            .clone();
+        subject_max.update(cx, |input, cx| input.set_value("not-a-number", cx));
+        m.save_git_rules(cx);
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("git-rules-error").is_some());
+    assert!(visual.debug_bounds("git-validation-summary").is_some());
+    assert!(
+        visual
+            .debug_bounds("git-field-error:message.subjectMaxChars")
+            .is_some()
+    );
+
+    // Zero literal backticks inside git_settings_ui.rs strings/source.
+    assert!(
+        !include_str!("git_settings_ui.rs").contains('`'),
+        "git_settings_ui.rs must never contain literal backticks"
+    );
+
+    // Without an active project, Settings > Git displays a plain project prompt cleanly.
+    let (no_proj_model, no_proj_visual) = cx.add_window_view(|_, cx| {
+        let model = fixture(cx);
+        model
+            .workspace
+            .update(cx, |workspace, _| workspace.project_id = None);
+        model
+    });
+    no_proj_visual.simulate_resize(size(px(1280.0), px(800.0)));
+    open_settings(&no_proj_model, no_proj_visual, Some(SettingsPage::Git));
+    assert!(
+        no_proj_visual
+            .debug_bounds("settings-section:Project")
+            .is_some()
+    );
+    assert!(
+        no_proj_visual
+            .debug_bounds("settings-row:git-commit-rules")
+            .is_none()
+    );
+}

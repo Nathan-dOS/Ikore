@@ -3707,7 +3707,7 @@ fn v74_to_v75_rebuilds_checkpoint_tables_and_adds_stage_verifiers() {
         )
         .unwrap();
     assert_eq!(max_version, latest_migration_version());
-    assert_eq!(max_version, 75);
+    assert!(max_version >= 75);
     let v75_count: i64 = db
         .query_row(
             "SELECT COUNT(*) FROM refinery_schema_history WHERE version=75",
@@ -4128,4 +4128,69 @@ fn v74_to_v75_rebuilds_checkpoint_tables_and_adds_stage_verifiers() {
         })
         .unwrap();
     assert_eq!(final_fk_errors, 0);
+}
+
+#[test]
+fn v75_to_v76_adds_project_git_rules() {
+    let root = tempfile::tempdir().unwrap();
+    let db_path = root.path().join("ikore.db");
+    let mut db = Connection::open(&db_path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    cli_migrations::migrations::runner()
+        .set_target(refinery::Target::Version(75))
+        .run(&mut db)
+        .unwrap();
+
+    db.execute(
+        "INSERT INTO projects(id,name,workspace_path,is_archived,created_at,updated_at)
+         VALUES('proj75','Repo','/tmp/repo',0,'2026-11-25T00:00:00Z','2026-11-25T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    drop(db);
+
+    PersistenceService::initialize(root.path()).unwrap();
+    let db = Connection::open(&db_path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    let max_version: i64 = db
+        .query_row(
+            "SELECT MAX(version) FROM refinery_schema_history",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(max_version, latest_migration_version());
+    assert_eq!(max_version, 76);
+
+    let sha = "a".repeat(64);
+    db.execute(
+        "INSERT INTO project_git_rules(project_id,version,enabled,rules_json,rules_sha256,created_at)
+         VALUES('proj75',1,0,'{}',?1,'2026-11-25T00:00:00Z')",
+        [&sha],
+    )
+    .expect("valid project_git_rules row inserts after V76");
+
+    db.execute(
+        "INSERT INTO project_git_rules(project_id,version,enabled,rules_json,rules_sha256,created_at)
+         VALUES('proj75',0,0,'{}',?1,'2026-11-25T00:00:00Z')",
+        [&sha],
+    )
+    .expect_err("version 0 must fail CHECK");
+
+    db.execute("DELETE FROM projects WHERE id='proj75'", [])
+        .unwrap();
+    let remaining: i64 = db
+        .query_row(
+            "SELECT count(*) FROM project_git_rules WHERE project_id='proj75'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(remaining, 0);
+    let fk_errors: i64 = db
+        .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(fk_errors, 0);
 }

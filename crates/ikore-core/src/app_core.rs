@@ -783,6 +783,50 @@ impl AppCore {
             .ok_or_else(|| WorkspaceCommandError::from(WorkspaceServiceError::WorkspaceNotOpen))
     }
 
+    pub fn get_project_git_rules(
+        &self,
+        project_id: &str,
+    ) -> Result<crate::git_tool::ProjectGitRulesRecord, PersistenceCommandError> {
+        self.persistence
+            .get_project_git_rules(project_id)
+            .map_err(PersistenceCommandError::from)
+    }
+
+    pub fn save_project_git_rules(
+        &self,
+        request: crate::git_tool::SaveProjectGitRulesRequest,
+    ) -> Result<crate::git_tool::SaveProjectGitRulesOutcome, PersistenceCommandError> {
+        self.persistence
+            .save_project_git_rules(request)
+            .map_err(PersistenceCommandError::from)
+    }
+
+    pub fn restore_default_project_git_rules(
+        &self,
+        project_id: &str,
+    ) -> Result<crate::git_tool::ProjectGitRulesRecord, PersistenceCommandError> {
+        self.persistence
+            .restore_default_project_git_rules(project_id)
+            .map_err(PersistenceCommandError::from)
+    }
+
+    pub async fn inspect_git_status(
+        &self,
+        project_id: &str,
+    ) -> Result<crate::git_tool::GitStatusV1, PersistenceCommandError> {
+        let project = self
+            .persistence
+            .active_project_by_id(project_id)
+            .map_err(PersistenceCommandError::from)?;
+        let record = self
+            .persistence
+            .get_project_git_rules(&project.id)
+            .map_err(PersistenceCommandError::from)?;
+        let workspace = PathBuf::from(&project.workspace_path);
+        let remote = record.rules.push.remote.clone();
+        Ok(crate::git_tool::inspect_git_status_for_path(&workspace, &remote).await)
+    }
+
     pub fn is_shutting_down(&self) -> bool {
         self.worker_cancellation.is_cancelled()
     }
