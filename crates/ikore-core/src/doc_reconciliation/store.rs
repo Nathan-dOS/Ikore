@@ -343,7 +343,7 @@ pub(crate) fn observe_file(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn record_signal(
+pub(crate) fn record_signal(
     db: &Connection,
     project: &str,
     note: &str,
@@ -362,9 +362,25 @@ fn record_signal(
         params![project, note, code, current, origin.as_str(), pulsation, at],
     )?;
     if updated == 0 {
+        let signal_id = id();
         db.execute(
             "INSERT INTO doc_drift_signals(id,project_id,note_path,code_path,base_sha256,current_sha256,origin,pulsation_id,state,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'open',?9,?9)",
-            params![id(), project, note, code, base, current, origin.as_str(), pulsation, at],
+            params![signal_id, project, note, code, base, current, origin.as_str(), pulsation, at],
+        )?;
+        crate::persistence_service::PersistenceService::record_domain_event_in_tx(
+            db,
+            project,
+            crate::custom_pipelines::DomainEvent::DocsStale,
+            None,
+            Some(&signal_id),
+            serde_json::json!({
+                "kind": "domain_event",
+                "event": "docs_stale",
+                "signalId": signal_id,
+                "notePath": note,
+                "codePath": code,
+            }),
+            &at,
         )?;
     }
     Ok(())

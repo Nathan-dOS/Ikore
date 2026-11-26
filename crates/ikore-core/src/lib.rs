@@ -20,6 +20,7 @@ pub mod embedding_service;
 pub mod events;
 pub mod exchange;
 pub mod feature_forge;
+pub mod git_tool;
 pub mod llm;
 pub mod mcp;
 pub mod orchestration;

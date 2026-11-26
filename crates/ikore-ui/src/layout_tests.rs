@@ -10337,6 +10337,7 @@ fn global_and_child_pipelines_show_their_badges_and_actions(cx: &mut TestAppCont
         children: 0,
         projects: 2,
         trigger_override: None,
+        template_key: None,
     };
     model.update(visual, |model, cx| {
         model.agents.update(cx, |agents, _| {
@@ -10348,6 +10349,7 @@ fn global_and_child_pipelines_show_their_badges_and_actions(cx: &mut TestAppCont
                 description: "Drafts the notes.".into(),
                 current_version: 1,
                 parent_name: None,
+                is_builtin: false,
             }];
         });
         model.select_canvas_pipeline("child".into(), cx);
@@ -10429,6 +10431,7 @@ fn pipeline_triggers_show_in_the_editor_the_synthesis_and_the_runs(cx: &mut Test
         children: 0,
         projects: 2,
         trigger_override: Some(done.clone()),
+        template_key: None,
     };
     let run = PipelineRunView {
         id: "run-1".into(),
@@ -10553,6 +10556,148 @@ fn pipeline_triggers_show_in_the_editor_the_synthesis_and_the_runs(cx: &mut Test
                 .map(|editor| editor.trigger.clone())
         }) == Some(done)
     );
+
+    // M5: Host tool steps can be added and switched between git.commit, git.push, and git.pull.
+    visual.simulate_resize(size(px(1440.0), px(1400.0)));
+    visual.run_until_parked();
+    click(visual, "pipeline-editor-host-tool");
+    for selector in [
+        "pipeline-editor-tool-commit:1",
+        "pipeline-editor-tool-push:1",
+        "pipeline-editor-tool-pull:1",
+    ] {
+        assert!(visual.debug_bounds(selector).is_some(), "{selector}");
+    }
+    click(visual, "pipeline-editor-tool-push:1");
+    assert!(model.read_with(visual, |model, _| {
+        model
+            .pipeline_editor
+            .as_ref()
+            .and_then(|editor| editor.steps.get(1))
+            .is_some_and(|step| {
+                step.kind == crate::agents_view::pipeline_editor::DraftKind::HostTool
+                    && step.host_tool == ikore_core::custom_pipelines::HostTool::GitPush
+            })
+    }));
+}
+
+/// Feature 27: built-in Default pipelines show their Default badge, hide direct
+/// Edit/Delete/Move actions while keeping Create child, and the editor supports
+/// Canonical steps and Domain event triggers.
+#[gpui::test]
+fn feature_27_default_pipelines_canonical_steps_and_domain_triggers_render(
+    cx: &mut TestAppContext,
+) {
+    use ikore_core::custom_pipelines::{
+        CanonicalPipelineRole, CanonicalStep, CustomPipelineDefinitionV1, CustomPipelineView,
+        DomainEvent, GlobalPipelineSummary, PipelineStep, PipelineTrigger,
+    };
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(1440.0), px(1400.0)));
+    select(&model, visual, AppView::Agents);
+    let builtin = CustomPipelineView {
+        id: "builtin-companion-notes".into(),
+        scope: "global".into(),
+        project_id: None,
+        name: "Companion notes".into(),
+        description: "Structures newly captured notes.".into(),
+        current_version: 1,
+        adopted_version: 1,
+        position: 0,
+        ready: true,
+        needs_edit_reason: None,
+        archived: false,
+        definition: CustomPipelineDefinitionV1 {
+            schema_version: 1,
+            trigger: PipelineTrigger::DomainEvent {
+                event: DomainEvent::NoteCaptured,
+                stage: None,
+            },
+            steps: vec![PipelineStep::Canonical(CanonicalStep {
+                id: "structure-note".into(),
+                label: "Notes Scribe".into(),
+                role: CanonicalPipelineRole::NotesScribe,
+                instructions_append: String::new(),
+            })],
+        },
+        run_count: 0,
+        updated_at: "now".into(),
+        parent_pipeline_id: None,
+        parent_name: None,
+        adopted_parent_version: None,
+        children: 0,
+        projects: 1,
+        trigger_override: None,
+        template_key: Some("builtin:companion-notes".into()),
+    };
+    model.update(visual, |model, cx| {
+        model.agents.update(cx, |agents, _| {
+            agents.pipelines.project_id = "layout-project".into();
+            agents.pipelines.pipelines = vec![builtin.clone()];
+            agents.pipelines.available_globals = vec![GlobalPipelineSummary {
+                id: "builtin-feature-handoff".into(),
+                name: "Feature handoff review".into(),
+                description: "Readiness checklist.".into(),
+                current_version: 1,
+                parent_name: None,
+                is_builtin: true,
+            }];
+        });
+        model.select_canvas_pipeline("builtin-companion-notes".into(), cx);
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("agents-pipeline-badges").is_some());
+    assert!(visual.debug_bounds("pipeline-create-child").is_some());
+    assert!(visual.debug_bounds("pipeline-remove").is_some());
+    assert!(visual.debug_bounds("pipeline-edit").is_none());
+    assert!(visual.debug_bounds("pipeline-delete").is_none());
+    assert!(visual.debug_bounds("pipeline-move-to-project").is_none());
+
+    // Open New Pipeline editor, pick Domain event trigger and add a Canonical step.
+    visual.simulate_resize(size(px(1440.0), px(2400.0)));
+    visual.run_until_parked();
+    click(visual, "agents-new-pipeline");
+    for selector in [
+        "pipeline-editor-trigger-domain-event",
+        "pipeline-editor-canonical",
+    ] {
+        assert!(visual.debug_bounds(selector).is_some(), "{selector}");
+    }
+    click(visual, "pipeline-editor-trigger-domain-event");
+    click(visual, "pipeline-editor-trigger-domain:checkpoint_ready");
+    assert!(
+        visual
+            .debug_bounds("pipeline-editor-trigger-domain-stage:Integrator")
+            .is_some()
+    );
+    click(visual, "pipeline-editor-trigger-domain-stage:Integrator");
+    assert!(model.read_with(visual, |model, _| {
+        model
+            .pipeline_editor
+            .as_ref()
+            .map(|editor| editor.trigger.clone())
+            == Some(PipelineTrigger::DomainEvent {
+                event: DomainEvent::CheckpointReady,
+                stage: Some("Integrator".into()),
+            })
+    }));
+    click(visual, "pipeline-editor-canonical");
+    assert!(
+        visual
+            .debug_bounds("pipeline-editor-role:1:visualizer")
+            .is_some()
+    );
+    click(visual, "pipeline-editor-role:1:visualizer");
+    assert!(model.read_with(visual, |model, _| {
+        model
+            .pipeline_editor
+            .as_ref()
+            .and_then(|editor| editor.steps.get(1))
+            .is_some_and(|step| {
+                step.kind == crate::agents_view::pipeline_editor::DraftKind::Canonical
+                    && step.canonical_role == CanonicalPipelineRole::Visualizer
+            })
+    }));
 }
 
 #[gpui::test]
@@ -11178,4 +11323,152 @@ fn stage_verifiers_canvas_labs_toggle_synthesis_width_and_checkpoints(cx: &mut T
     assert!(visual.debug_bounds("verification-error-skip").is_some());
     assert!(visual.debug_bounds("verification-error-abort").is_some());
     let _ = VerificationErrorDecision::SkipVerifier;
+}
+
+#[gpui::test]
+fn settings_git_page_renders_status_rules_errors_and_fixed_guardrails(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| {
+        let mut model = fixture(cx);
+        with_settings_items(&mut model, cx);
+        model
+    });
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    open_settings(&model, visual, Some(SettingsPage::Git));
+
+    for selector in [
+        "settings-row:git-tool-enabled",
+        "settings-row:git-status",
+        "settings-row:git-preview",
+        "settings-row:git-commit-rules",
+        "settings-row:git-push-pull-rules",
+        "settings-row:git-fixed-rules",
+        "git-refresh-status",
+        "git-preview-refresh",
+        "git-rules-save",
+        "git-rules-restore",
+    ] {
+        assert!(
+            visual.debug_bounds(selector).is_some(),
+            "missing Settings > Git selector {selector}"
+        );
+    }
+
+    // Dry-run commit preview and queue entries render without any commit execution button.
+    model.update(visual, |m, cx| {
+        use ikore_contracts::git_tool::{
+            CommitPlanGroupV1, CommitPlanV1, GitCommitPreviewV1, PulsationCommitQueueEntryV1,
+            PulsationCommitQueueState, RuleViolation,
+        };
+        m.settings.update(cx, |settings, _| {
+            settings.git.queue = vec![PulsationCommitQueueEntryV1 {
+                pulsation_id: "pulse-qa-1".into(),
+                project_id: "layout-project".into(),
+                feature_name: "Preview QA feature".into(),
+                completed_at: "2026-11-26T00:00:00Z".into(),
+                state: PulsationCommitQueueState::Pending,
+                skip_reason: None,
+                branch: None,
+                head_commit: None,
+                updated_at: "2026-11-26T00:00:00Z".into(),
+            }];
+            settings.git.selected_preview_pulsation_id = Some("pulse-qa-1".into());
+            settings.git.preview = Some(GitCommitPreviewV1 {
+                project_id: "layout-project".into(),
+                pulsation_id: "pulse-qa-1".into(),
+                feature_name: "Preview QA feature".into(),
+                queue_state: Some(PulsationCommitQueueState::Pending),
+                already_in_head: false,
+                plan: CommitPlanV1 {
+                    project_id: "layout-project".into(),
+                    pulsation_id: "pulse-qa-1".into(),
+                    branch: "ikore/preview-qa".into(),
+                    base_head: "abc123456789".into(),
+                    groups: vec![CommitPlanGroupV1 {
+                        task_ids: vec!["task-1".into()],
+                        commit_type: "feat".into(),
+                        scope: Some("preview-qa".into()),
+                        subject: "implement preview widget".into(),
+                        body: "Dry run preview body.".into(),
+                        trailers: vec!["Ikore-Pulsation: pulse-qa-1".into()],
+                        paths: vec!["src/lib.rs".into()],
+                        counted_files: 1,
+                        counted_lines: 12,
+                    }],
+                    warnings: vec![],
+                    blocking_violations: vec![RuleViolation {
+                        code: "missing_tests".into(),
+                        path: Some("src/lib.rs".into()),
+                        task_id: Some("task-1".into()),
+                        message: "Code changed without test updates.".into(),
+                    }],
+                },
+                rules_version: 1,
+                rules_sha256: "deadbeef".into(),
+            });
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    for selector in [
+        "git-queue-entry-pulse-qa-1",
+        "git-preview-select-pulse-qa-1",
+        "git-preview-skip-pulse-qa-1",
+        "git-preview-plan",
+        "git-preview-group-0",
+    ] {
+        assert!(
+            visual.debug_bounds(selector).is_some(),
+            "missing Settings > Git preview selector {selector}"
+        );
+    }
+
+    // Invalid integer in subject max chars blocks save locally and displays field error.
+    model.update(visual, |m, cx| {
+        let subject_max = m
+            .settings
+            .read(cx)
+            .git
+            .form
+            .as_ref()
+            .expect("git form initialized")
+            .subject_max_chars
+            .clone();
+        subject_max.update(cx, |input, cx| input.set_value("not-a-number", cx));
+        m.save_git_rules(cx);
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("git-rules-error").is_some());
+    assert!(visual.debug_bounds("git-validation-summary").is_some());
+    assert!(
+        visual
+            .debug_bounds("git-field-error:message.subjectMaxChars")
+            .is_some()
+    );
+
+    // Zero literal backticks inside git_settings_ui.rs strings/source.
+    assert!(
+        !include_str!("git_settings_ui.rs").contains('`'),
+        "git_settings_ui.rs must never contain literal backticks"
+    );
+
+    // Without an active project, Settings > Git displays a plain project prompt cleanly.
+    let (no_proj_model, no_proj_visual) = cx.add_window_view(|_, cx| {
+        let model = fixture(cx);
+        model
+            .workspace
+            .update(cx, |workspace, _| workspace.project_id = None);
+        model
+    });
+    no_proj_visual.simulate_resize(size(px(1280.0), px(800.0)));
+    open_settings(&no_proj_model, no_proj_visual, Some(SettingsPage::Git));
+    assert!(
+        no_proj_visual
+            .debug_bounds("settings-section:Project")
+            .is_some()
+    );
+    assert!(
+        no_proj_visual
+            .debug_bounds("settings-row:git-commit-rules")
+            .is_none()
+    );
 }

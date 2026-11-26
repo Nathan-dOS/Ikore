@@ -18,9 +18,13 @@ use super::custom_pipeline_store::{
 use super::{PersistenceService, PersistenceServiceError, sleep};
 use crate::custom_pipelines::prompt::{self, GateNote, PreviousOutput};
 use crate::custom_pipelines::{
-    AgentStep, CustomPipelineDefinitionV1, PipelineStep, StageVerdictV1, StepOutput, StepTransport,
-    Verdict, automation_slot_id, automation_slot_label, parse_definition, parse_verdict,
-    stage_verdict_json_schema,
+    AgentStep, CustomPipelineDefinitionV1, HostTool, HostToolStep, PipelineStep, StageVerdictV1,
+    StepOutput, StepTransport, Verdict, automation_slot_id, automation_slot_label,
+    parse_definition, parse_verdict, stage_verdict_json_schema,
+};
+use crate::git_tool::{
+    CommitPlanV1, GitOperationStatus, PulsationCommitQueueState, RuleViolation,
+    execute_commit_for_pulsation, execute_pull_for_project, execute_push_for_project,
 };
 use crate::llm::{
     AgentExecutionTarget, DispatchPolicy, ExecutionId, GenerationId, LlmErrorKind, LlmGateway,
@@ -42,13 +46,19 @@ fn now() -> String {
 pub(super) struct AutomationClaim {
     token: String,
     pub(super) run_id: String,
-    step_index: u32,
-    attempt: u32,
+    pub(super) step_index: u32,
+    pub(super) attempt: u32,
     pub(super) project_id: String,
     pipeline_id: String,
-    pipeline_name: String,
-    definition: CustomPipelineDefinitionV1,
-    step: AgentStep,
+    pub(super) pipeline_name: String,
+    pub(super) definition: CustomPipelineDefinitionV1,
+    step: PipelineStep,
+}
+
+impl AutomationClaim {
+    pub(super) fn slot_owner_id(&self) -> String {
+        format!("{}:{}:{}", self.run_id, self.step_index, self.attempt)
+    }
 }
 
 /// What the step's agent reads, and the workspace its findings cite.
@@ -65,28 +75,48 @@ struct StepCall {
     llm_execution_id: Option<String>,
 }
 
-enum StepOutcome {
+pub(super) enum StepOutcome {
     Text(String),
     Verdict(StageVerdictV1),
 }
 
-enum StepFailure {
+pub(super) enum StepFailure {
     Cancelled,
     Failed(String),
 }
 
-struct StepResult {
-    outcome: Result<StepOutcome, StepFailure>,
-    terminal_run_id: Option<String>,
-    llm_execution_id: Option<String>,
+pub(super) struct StepResult {
+    pub(super) outcome: Result<StepOutcome, StepFailure>,
+    pub(super) terminal_run_id: Option<String>,
+    pub(super) llm_execution_id: Option<String>,
+    pub(super) git_operation_id: Option<String>,
 }
 
 impl StepResult {
-    fn failed(message: impl Into<String>) -> Self {
+    pub(super) fn failed(message: impl Into<String>) -> Self {
         Self {
             outcome: Err(StepFailure::Failed(message.into())),
             terminal_run_id: None,
             llm_execution_id: None,
+            git_operation_id: None,
+        }
+    }
+
+    pub(super) fn cancelled() -> Self {
+        Self {
+            outcome: Err(StepFailure::Cancelled),
+            terminal_run_id: None,
+            llm_execution_id: None,
+            git_operation_id: None,
+        }
+    }
+
+    pub(super) fn with_failure(failure: StepFailure) -> Self {
+        Self {
+            outcome: Err(failure),
+            terminal_run_id: None,
+            llm_execution_id: None,
+            git_operation_id: None,
         }
     }
 
@@ -164,6 +194,13 @@ impl PersistenceService {
                 Ok(Ok(_)) => {}
                 Ok(Err(error)) => eprintln!("pipeline triggers: {error}"),
                 Err(error) => eprintln!("pipeline triggers: {error}"),
+            }
+            // Feature 27 (Camada C): domain events become runs before admission.
+            let service = self.clone();
+            match tokio::task::spawn_blocking(move || service.dispatch_domain_triggers()).await {
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) => eprintln!("domain triggers: {error}"),
+                Err(error) => eprintln!("domain triggers: {error}"),
             }
             // M4: admit pending stage verifiers before custom pipeline steps.
             loop {
@@ -270,7 +307,7 @@ impl PersistenceService {
                    FROM custom_pipeline_step_runs s
                    JOIN custom_pipeline_runs r ON r.id=s.run_id
                    JOIN custom_pipelines p ON p.id=r.pipeline_id
-                  WHERE s.status='queued' AND s.kind='agent'
+                  WHERE s.status='queued' AND s.kind IN ('agent','host_tool','canonical')
                     AND r.status IN ('queued','running') AND s.step_index=r.current_step
                     AND NOT EXISTS(SELECT 1 FROM automation_slots a
                                     WHERE a.project_id=r.project_id AND a.class='custom_step')
@@ -298,8 +335,7 @@ impl PersistenceService {
         let now = now();
         let definition = parse_definition(&json)
             .map_err(|error| PersistenceServiceError::Runtime(error.to_string()))?;
-        let Some(PipelineStep::Agent(step)) = definition.steps.get(step_index as usize).cloned()
-        else {
+        let Some(step) = definition.steps.get(step_index as usize).cloned() else {
             // The stored run disagrees with its own definition: end it.
             tx.execute(
                 "UPDATE custom_pipeline_step_runs SET status='failed',error=?4,finished_at=?5
@@ -308,18 +344,38 @@ impl PersistenceService {
                     run_id,
                     step_index,
                     attempt,
-                    "The step is not an agent step.",
+                    "The step is missing from the stored definition.",
                     now
                 ],
             )?;
             tx.execute(
                 "UPDATE custom_pipeline_runs SET status='failed',error=?2,finished_at=?3,updated_at=?3
                   WHERE id=?1",
-                params![run_id, "The run's definition has no agent at this step.", now],
+                params![run_id, "The run's definition has no runnable step here.", now],
             )?;
             tx.commit()?;
             return Ok(None);
         };
+        if matches!(step, PipelineStep::Gate(_)) {
+            tx.execute(
+                "UPDATE custom_pipeline_step_runs SET status='failed',error=?4,finished_at=?5
+                  WHERE run_id=?1 AND step_index=?2 AND attempt=?3",
+                params![
+                    run_id,
+                    step_index,
+                    attempt,
+                    "A gate step cannot be queued for worker execution.",
+                    now
+                ],
+            )?;
+            tx.execute(
+                "UPDATE custom_pipeline_runs SET status='failed',error=?2,finished_at=?3,updated_at=?3
+                  WHERE id=?1",
+                params![run_id, "The run's definition has a gate at this step.", now],
+            )?;
+            tx.commit()?;
+            return Ok(None);
+        }
         let token = Uuid::new_v4().to_string();
         tx.execute(
             "INSERT INTO automation_slots(token,class,project_id,owner_id,acquired_at)
@@ -354,7 +410,11 @@ impl PersistenceService {
         }))
     }
 
-    async fn run_automation_step(&self, claim: AutomationClaim, shutdown: CancellationToken) {
+    pub(super) async fn run_automation_step(
+        &self,
+        claim: AutomationClaim,
+        shutdown: CancellationToken,
+    ) {
         let key = automation_cancellation_key(&claim.run_id);
         let token = CancellationToken::new();
         self.register_job_cancellation(&key, token.clone());
@@ -412,10 +472,29 @@ impl PersistenceService {
         claim: &AutomationClaim,
         token: &CancellationToken,
     ) -> StepResult {
+        match &claim.step {
+            PipelineStep::Agent(agent) => self.execute_agent_step(claim, agent, token).await,
+            PipelineStep::HostTool(tool_step) => {
+                self.execute_host_tool_step(claim, tool_step, token).await
+            }
+            PipelineStep::Canonical(canonical) => {
+                self.execute_canonical_step(claim, canonical, token).await
+            }
+            PipelineStep::Gate(_) => StepResult::failed("Gate steps wait for human approval."),
+        }
+    }
+
+    async fn execute_agent_step(
+        &self,
+        claim: &AutomationClaim,
+        agent: &AgentStep,
+        token: &CancellationToken,
+    ) -> StepResult {
         let service = self.clone();
         let owned = claim.clone();
+        let agent_owned = agent.clone();
         let context = match tokio::task::spawn_blocking(move || {
-            service.automation_step_context(&owned)
+            service.automation_step_context(&owned, &agent_owned)
         })
         .await
         {
@@ -427,9 +506,10 @@ impl PersistenceService {
             outcome: Err(StepFailure::Cancelled),
             terminal_run_id: None,
             llm_execution_id: None,
+            git_operation_id: None,
         };
         let first = match self
-            .call_step_agent(claim, &context.system, &context.user, 1, token)
+            .call_step_agent(claim, agent, &context.system, &context.user, 1, token)
             .await
         {
             Ok(call) => call,
@@ -439,7 +519,7 @@ impl PersistenceService {
             }
         };
         result.record(&first);
-        result.outcome = match claim.step.output {
+        result.outcome = match agent.output {
             StepOutput::Text => sanitized(&first.raw)
                 .map(StepOutcome::Text)
                 .map_err(StepFailure::Failed),
@@ -450,7 +530,7 @@ impl PersistenceService {
                     Err(problem) => {
                         let user = prompt::correction_prompt(&context.user, &first.raw, &problem);
                         match self
-                            .call_step_agent(claim, &context.system, &user, 2, token)
+                            .call_step_agent(claim, agent, &context.system, &user, 2, token)
                             .await
                         {
                             Ok(second) => {
@@ -475,11 +555,265 @@ impl PersistenceService {
         result
     }
 
+    async fn execute_host_tool_step(
+        &self,
+        claim: &AutomationClaim,
+        tool_step: &HostToolStep,
+        token: &CancellationToken,
+    ) -> StepResult {
+        if token.is_cancelled() {
+            return StepResult {
+                outcome: Err(StepFailure::Cancelled),
+                terminal_run_id: None,
+                llm_execution_id: None,
+                git_operation_id: None,
+            };
+        }
+        let mut result = StepResult {
+            outcome: Err(StepFailure::Failed("Host tool did not run.".into())),
+            terminal_run_id: None,
+            llm_execution_id: None,
+            git_operation_id: None,
+        };
+        let events = self.git_event_bus();
+        match tool_step.tool {
+            HostTool::GitCommit => {
+                let target_pulsation_id = match self.source_pulsation_for_run(&claim.run_id) {
+                    Ok(Some(pid)) => pid,
+                    Ok(None) => {
+                        result.outcome = Err(StepFailure::Failed(
+                            "git.commit requires a source pulsation from a Pulsation done trigger."
+                                .into(),
+                        ));
+                        return result;
+                    }
+                    Err(error) => return StepResult::failed(error.to_string()),
+                };
+
+                // Check if the immediately preceding step is an Agent step proposing a CommitPlanV1.
+                let prev_agent_and_text = self.preceding_agent_plan_proposal(claim);
+                let mut proposed_plan = prev_agent_and_text
+                    .as_ref()
+                    .and_then(|(_, _, raw)| parse_optional_commit_plan(raw));
+
+                // EnsureDone queue backfilled & fetch pending entries up through target_pulsation_id (P8).
+                let queue = match self.list_pulsation_commit_queue(&claim.project_id) {
+                    Ok(q) => q,
+                    Err(error) => return StepResult::failed(error.to_string()),
+                };
+                let target_pos = queue
+                    .iter()
+                    .position(|entry| entry.pulsation_id == target_pulsation_id);
+                let to_commit: Vec<String> = match target_pos {
+                    Some(idx) => queue[..=idx]
+                        .iter()
+                        .filter(|entry| entry.state == PulsationCommitQueueState::Pending)
+                        .map(|entry| entry.pulsation_id.clone())
+                        .collect(),
+                    None => vec![target_pulsation_id.clone()],
+                };
+                if to_commit.is_empty() {
+                    result.outcome = Ok(StepOutcome::Text(format!(
+                        "No pending commits remained for pulsation {target_pulsation_id}."
+                    )));
+                    return result;
+                }
+
+                let mut summaries = Vec::with_capacity(to_commit.len());
+                for pid in to_commit {
+                    let is_target = pid == target_pulsation_id;
+                    let ext_plan = if is_target {
+                        proposed_plan.as_ref()
+                    } else {
+                        None
+                    };
+                    let mut outcome = match execute_commit_for_pulsation(
+                        self,
+                        self.git_locks(),
+                        events.as_ref(),
+                        &claim.project_id,
+                        &pid,
+                        None,
+                        ext_plan,
+                    )
+                    .await
+                    {
+                        Ok(out) => out,
+                        Err(error) => return StepResult::failed(error.to_string()),
+                    };
+
+                    // If an agent step proposed a CommitPlanV1 and it failed host validation,
+                    // ask that agent for one correction and retry once (08 §Uso por agentes).
+                    if is_target
+                        && outcome.status == GitOperationStatus::Blocked
+                        && ext_plan.is_some()
+                        && let Some((prev_idx, prev_agent, prev_raw)) = prev_agent_and_text.as_ref()
+                    {
+                        let problem = format_violations(&outcome.violations);
+                        let corr_user = format!(
+                            "Your CommitPlanV1 was rejected by host rules:\n{problem}\n\nPrevious JSON:\n{prev_raw}\n\nReturn only corrected valid CommitPlanV1 JSON."
+                        );
+                        let mut corr_claim = claim.clone();
+                        corr_claim.step_index = *prev_idx;
+                        let mut corr_agent = prev_agent.clone();
+                        corr_agent.output = StepOutput::Text;
+                        let corr_sys = prompt::system_prompt(&claim.pipeline_name, &corr_agent);
+                        if let Ok(call) = self
+                            .call_step_agent(
+                                &corr_claim,
+                                &corr_agent,
+                                &corr_sys,
+                                &corr_user,
+                                2,
+                                token,
+                            )
+                            .await
+                        {
+                            result.record(&call);
+                            if let Some(fixed_plan) = parse_optional_commit_plan(&call.raw) {
+                                proposed_plan = Some(fixed_plan);
+                                match execute_commit_for_pulsation(
+                                    self,
+                                    self.git_locks(),
+                                    events.as_ref(),
+                                    &claim.project_id,
+                                    &pid,
+                                    None,
+                                    proposed_plan.as_ref(),
+                                )
+                                .await
+                                {
+                                    Ok(retried) => outcome = retried,
+                                    Err(error) => return StepResult::failed(error.to_string()),
+                                }
+                            }
+                        }
+                    }
+
+                    result.git_operation_id = Some(outcome.operation_id.clone());
+                    if outcome.status != GitOperationStatus::Succeeded {
+                        result.outcome = Err(StepFailure::Failed(format!(
+                            "Commit for pulsation {pid} {}: {}",
+                            outcome.status.as_str(),
+                            format_violations(&outcome.violations)
+                        )));
+                        return result;
+                    }
+                    if outcome.skipped_already_in_head {
+                        summaries.push(format!("{pid}: skipped (already in HEAD)"));
+                    } else if let Some(receipt) = outcome.receipt {
+                        summaries.push(format!(
+                            "{pid}: committed {} commit(s) to {}",
+                            receipt.commits.len(),
+                            receipt.branch
+                        ));
+                    } else {
+                        summaries.push(format!("{pid}: committed"));
+                    }
+                }
+                result.outcome = Ok(StepOutcome::Text(summaries.join("\n")));
+                result
+            }
+            HostTool::GitPush => {
+                match execute_push_for_project(
+                    self,
+                    self.git_locks(),
+                    events.as_ref(),
+                    &claim.project_id,
+                    None,
+                )
+                .await
+                {
+                    Ok(outcome) => {
+                        result.git_operation_id = Some(outcome.operation_id);
+                        if outcome.status == GitOperationStatus::Succeeded {
+                            let summary = outcome
+                                .receipt
+                                .map(|r| r.summary)
+                                .unwrap_or_else(|| "Push succeeded.".to_owned());
+                            result.outcome = Ok(StepOutcome::Text(summary));
+                        } else {
+                            result.outcome =
+                                Err(StepFailure::Failed(format_violations(&outcome.violations)));
+                        }
+                        result
+                    }
+                    Err(error) => StepResult::failed(error.to_string()),
+                }
+            }
+            HostTool::GitPull => {
+                let owner_id = claim.slot_owner_id();
+                match execute_pull_for_project(
+                    self,
+                    self.git_locks(),
+                    events.as_ref(),
+                    &claim.project_id,
+                    Some(&owner_id),
+                    None,
+                )
+                .await
+                {
+                    Ok(outcome) => {
+                        result.git_operation_id = Some(outcome.operation_id);
+                        if outcome.status == GitOperationStatus::Succeeded {
+                            let summary = outcome
+                                .receipt
+                                .map(|r| r.summary)
+                                .unwrap_or_else(|| "Pull succeeded.".to_owned());
+                            result.outcome = Ok(StepOutcome::Text(summary));
+                        } else {
+                            result.outcome =
+                                Err(StepFailure::Failed(format_violations(&outcome.violations)));
+                        }
+                        result
+                    }
+                    Err(error) => StepResult::failed(error.to_string()),
+                }
+            }
+        }
+    }
+
+    fn source_pulsation_for_run(
+        &self,
+        run_id: &str,
+    ) -> Result<Option<String>, PersistenceServiceError> {
+        let db = self.connection()?;
+        Ok(db
+            .query_row(
+                "SELECT source_pulsation_id FROM custom_pipeline_runs WHERE id=?1",
+                [run_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
+    fn preceding_agent_plan_proposal(
+        &self,
+        claim: &AutomationClaim,
+    ) -> Option<(u32, AgentStep, String)> {
+        let prev_idx = claim.step_index.checked_sub(1)?;
+        let PipelineStep::Agent(agent) = claim.definition.steps.get(prev_idx as usize)?.clone()
+        else {
+            return None;
+        };
+        let db = self.connection().ok()?;
+        let runs = load_step_runs(&db, &claim.run_id).ok()?;
+        let raw = runs
+            .into_iter()
+            .filter(|run| run.step_index == prev_idx)
+            .max_by_key(|run| run.attempt)
+            .and_then(|run| run.output_text)?;
+        parse_optional_commit_plan(&raw)?;
+        Some((prev_idx, agent, raw))
+    }
+
     /// The step's prompt: its instructions, the trigger, the last agent
     /// step's output before it and the notes left at the gates since then.
     fn automation_step_context(
         &self,
         claim: &AutomationClaim,
+        agent: &AgentStep,
     ) -> Result<StepContext, PersistenceServiceError> {
         let db = self.connection()?;
         let workspace: String = db.query_row(
@@ -519,6 +853,15 @@ impl PersistenceService {
                         });
                     break;
                 }
+                Some(PipelineStep::Canonical(canonical)) => {
+                    previous = latest(index).and_then(|run| {
+                        run.output_text.as_ref().map(|text| PreviousOutput {
+                            label: canonical.label.clone(),
+                            text: text.clone(),
+                        })
+                    });
+                    break;
+                }
                 Some(PipelineStep::HostTool(_)) | None => {}
             }
         }
@@ -528,14 +871,14 @@ impl PersistenceService {
             [&claim.run_id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        let trigger = if trigger_kind == "default_event" {
-            prompt::event_trigger(&payload)
-        } else {
-            prompt::manual_trigger()
+        let trigger = match trigger_kind.as_str() {
+            "default_event" => prompt::event_trigger(&payload),
+            "domain_event" => prompt::domain_event_trigger(&payload),
+            _ => prompt::manual_trigger(),
         };
         Ok(StepContext {
-            system: prompt::system_prompt(&claim.pipeline_name, &claim.step),
-            user: prompt::user_prompt(&claim.step, &trigger, previous.as_ref(), &notes),
+            system: prompt::system_prompt(&claim.pipeline_name, agent),
+            user: prompt::user_prompt(agent, &trigger, previous.as_ref(), &notes),
             workspace: PathBuf::from(workspace),
         })
     }
@@ -544,14 +887,15 @@ impl PersistenceService {
     async fn call_step_agent(
         &self,
         claim: &AutomationClaim,
+        agent_step: &AgentStep,
         system: &str,
         user: &str,
         call: u32,
         token: &CancellationToken,
     ) -> Result<StepCall, StepFailure> {
-        let agent = &claim.step.agent;
-        let slot_id = automation_slot_id(&claim.project_id, &claim.pipeline_id, &claim.step.id);
-        let verdict = claim.step.output == StepOutput::Verdict;
+        let agent = &agent_step.agent;
+        let slot_id = automation_slot_id(&claim.project_id, &claim.pipeline_id, &agent_step.id);
+        let verdict = agent_step.output == StepOutput::Verdict;
         let deadline = Instant::now()
             + ikore_contracts::timeout::AgentTimeoutPolicy::automation().max_timeout();
         match agent.transport {
@@ -572,7 +916,7 @@ impl PersistenceService {
                         AutomationStepRequest {
                             project_id: claim.project_id.clone(),
                             slot_id,
-                            label: automation_slot_label(&claim.pipeline_name, &claim.step.label),
+                            label: automation_slot_label(&claim.pipeline_name, &agent_step.label),
                             origin: ExecutionOrigin::Automation,
                             pulsation_id: None,
                             backend,
@@ -684,7 +1028,9 @@ impl PersistenceService {
         tx.execute(
             "UPDATE custom_pipeline_step_runs
                 SET terminal_run_id=COALESCE(?4,terminal_run_id),
-                    llm_execution_id=COALESCE(?5,llm_execution_id),finished_at=?6
+                    llm_execution_id=COALESCE(?5,llm_execution_id),
+                    git_operation_id=COALESCE(?6,git_operation_id),
+                    finished_at=?7
               WHERE run_id=?1 AND step_index=?2 AND attempt=?3",
             params![
                 claim.run_id,
@@ -692,6 +1038,7 @@ impl PersistenceService {
                 claim.attempt,
                 result.terminal_run_id,
                 result.llm_execution_id,
+                result.git_operation_id,
                 now
             ],
         )?;
@@ -717,7 +1064,7 @@ impl PersistenceService {
             )?;
             Ok(())
         };
-        let label = claim.step.label.trim();
+        let label = claim.step.label().trim();
         if run_status.as_deref() != Some("running") {
             // Cancelled meanwhile: the run already says so.
             set_step("cancelled", None, None, None)?;
@@ -770,6 +1117,34 @@ impl PersistenceService {
         tx.commit()?;
         Ok(())
     }
+}
+
+fn format_violations(violations: &[RuleViolation]) -> String {
+    if violations.is_empty() {
+        return "Blocked without specific violation details.".to_owned();
+    }
+    violations
+        .iter()
+        .map(|v| match &v.path {
+            Some(path) => format!("[{}] ({}): {}", v.code, path, v.message),
+            None => format!("[{}] {}", v.code, v.message),
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn parse_optional_commit_plan(raw: &str) -> Option<CommitPlanV1> {
+    let trimmed = raw.trim();
+    if let Ok(plan) = serde_json::from_str::<CommitPlanV1>(trimmed) {
+        return Some(plan);
+    }
+    let stripped = trimmed
+        .strip_prefix("```json")
+        .or_else(|| trimmed.strip_prefix("```"))
+        .map(str::trim)
+        .and_then(|s| s.strip_suffix("```"))
+        .map(str::trim)?;
+    serde_json::from_str::<CommitPlanV1>(stripped).ok()
 }
 
 #[cfg(test)]

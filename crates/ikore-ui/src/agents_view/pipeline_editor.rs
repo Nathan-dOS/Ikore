@@ -8,10 +8,11 @@
 
 use gpui::{AnyElement, Context, Entity, FontWeight, IntoElement, SharedString, div, prelude::*};
 use ikore_core::custom_pipelines::{
-    AgentStep, CUSTOM_PIPELINE_SCHEMA_VERSION, CustomPipelineDefinitionV1, CustomPipelineView,
-    DecidePipelineGateRequest, DefaultEvent, GateStep, MAX_STEPS, PipelineStep, PipelineTrigger,
-    PipelineValidationError, SaveCustomPipelineOutcome, SaveCustomPipelineRequest, StepAgent,
-    StepOutput, StepTransport,
+    AgentStep, CUSTOM_PIPELINE_SCHEMA_VERSION, CanonicalPipelineRole, CanonicalStep,
+    CustomPipelineDefinitionV1, CustomPipelineView, DecidePipelineGateRequest, DefaultEvent,
+    DomainEvent, GateStep, HostTool, HostToolStep, MAX_STEPS, PipelineStep, PipelineTrigger,
+    PipelineValidationError, STAGE_VALUES, SaveCustomPipelineOutcome, SaveCustomPipelineRequest,
+    StepAgent, StepOutput, StepTransport,
 };
 use ikore_core::terminals::{CliBackend, ThinkingLevel};
 
@@ -43,6 +44,8 @@ const EFFORTS: [ThinkingLevel; 4] = [
 pub(crate) enum DraftKind {
     Agent,
     Gate,
+    HostTool,
+    Canonical,
 }
 
 /// One step of the form.
@@ -51,7 +54,7 @@ pub(crate) struct StepDraft {
     pub(crate) id: String,
     pub(crate) kind: DraftKind,
     pub(crate) label: Entity<NativeTextInput>,
-    /// The agent's instructions, or the gate's text.
+    /// The agent's instructions, the gate's text, or extra instructions for a canonical role.
     pub(crate) text: Entity<NativeTextInput>,
     pub(crate) transport: StepTransport,
     pub(crate) backend: CliBackend,
@@ -60,6 +63,8 @@ pub(crate) struct StepDraft {
     pub(crate) thinking: ThinkingLevel,
     pub(crate) route_id: Option<String>,
     pub(crate) output: StepOutput,
+    pub(crate) host_tool: HostTool,
+    pub(crate) canonical_role: CanonicalPipelineRole,
 }
 
 /// The form, while it is open.
@@ -145,6 +150,17 @@ impl PipelineEditor {
                             id: draft.id.clone(),
                             label,
                             prompt: text,
+                        }),
+                        DraftKind::HostTool => PipelineStep::HostTool(HostToolStep {
+                            id: draft.id.clone(),
+                            label,
+                            tool: draft.host_tool,
+                        }),
+                        DraftKind::Canonical => PipelineStep::Canonical(CanonicalStep {
+                            id: draft.id.clone(),
+                            label,
+                            role: draft.canonical_role,
+                            instructions_append: text,
                         }),
                         DraftKind::Agent => PipelineStep::Agent(AgentStep {
                             id: draft.id.clone(),
@@ -336,6 +352,8 @@ fn step_card(
                             match draft.kind {
                                 DraftKind::Agent => "Agent",
                                 DraftKind::Gate => "Gate",
+                                DraftKind::HostTool => "Host tool",
+                                DraftKind::Canonical => "Canonical agent",
                             }
                         )),
                 )
@@ -374,6 +392,92 @@ fn step_card(
             crate::sizing::INPUT_MEDIUM,
         ));
     match draft.kind {
+        DraftKind::HostTool => {
+            let selected_tool = draft.host_tool;
+            card = card
+                .child(label("HOST TOOL"))
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap_1()
+                        .child(choice(
+                            format!("pipeline-editor-tool-commit:{index}"),
+                            "git.commit",
+                            selected_tool == HostTool::GitCommit,
+                            true,
+                            cx,
+                            move |model, cx| {
+                                model.set_pipeline_step_host_tool(index, HostTool::GitCommit, cx)
+                            },
+                        ))
+                        .child(choice(
+                            format!("pipeline-editor-tool-push:{index}"),
+                            "git.push",
+                            selected_tool == HostTool::GitPush,
+                            true,
+                            cx,
+                            move |model, cx| {
+                                model.set_pipeline_step_host_tool(index, HostTool::GitPush, cx)
+                            },
+                        ))
+                        .child(choice(
+                            format!("pipeline-editor-tool-pull:{index}"),
+                            "git.pull",
+                            selected_tool == HostTool::GitPull,
+                            true,
+                            cx,
+                            move |model, cx| {
+                                model.set_pipeline_step_host_tool(index, HostTool::GitPull, cx)
+                            },
+                        )),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_muted())
+                        .child(match selected_tool {
+                            HostTool::GitCommit => {
+                                "Commits pending done pulsations under project git rules. Requires Pulsation done trigger."
+                            }
+                            HostTool::GitPush => {
+                                "Pushes the active non-protected branch using project git rules."
+                            }
+                            HostTool::GitPull => {
+                                "Pulls with fast-forward only when no pulsation is active."
+                            }
+                        }),
+                );
+        }
+        DraftKind::Canonical => {
+            let selected_role = draft.canonical_role;
+            let mut role_row = div().flex().flex_wrap().gap_1();
+            for role in CanonicalPipelineRole::ALL {
+                role_row = role_row.child(choice(
+                    format!("pipeline-editor-role:{index}:{}", role.as_str()),
+                    role.label(),
+                    selected_role == role,
+                    true,
+                    cx,
+                    move |model, cx| model.set_pipeline_step_canonical_role(index, role, cx),
+                ));
+            }
+            card = card
+                .child(label("CANONICAL ROLE"))
+                .child(role_row)
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_muted())
+                        .child(if selected_role.is_no_tools_no_repo() {
+                            "Uses this canonical role's hardened prompt, budget, and strict no-tools isolation."
+                        } else {
+                            "Uses this canonical role's hardened read-only prompt, budget, and role routing."
+                        }),
+                )
+                .child(label("EXTRA INSTRUCTIONS (OPTIONAL)"))
+                .child(div().w_full().child(draft.text.clone()));
+        }
         DraftKind::Gate => {
             card = card
                 .child(label("TEXT"))
@@ -593,6 +697,13 @@ pub(crate) fn pulsation_done() -> PipelineTrigger {
     }
 }
 
+pub(crate) fn domain_event(event: DomainEvent, stage: Option<&str>) -> PipelineTrigger {
+    PipelineTrigger::DomainEvent {
+        event,
+        stage: stage.map(str::to_owned),
+    }
+}
+
 /// What a trigger does, for the line under its choices.
 pub(crate) fn trigger_help(trigger: &PipelineTrigger) -> String {
     match trigger {
@@ -605,10 +716,33 @@ pub(crate) fn trigger_help(trigger: &PipelineTrigger) -> String {
             "Starts each time a pulsation passes {}, once its files are written. The Ikore pipeline does not wait for it.",
             ikore_core::custom_pipelines::trigger_stage_label(stage.as_deref().unwrap_or_default())
         ),
+        PipelineTrigger::DomainEvent {
+            event: DomainEvent::FeatureApproved,
+            ..
+        } => "Starts when Feature Forge approves a feature brief and plan.".into(),
+        PipelineTrigger::DomainEvent {
+            event: DomainEvent::NoteCaptured,
+            ..
+        } => "Starts when Companion Notes captures a new note.".into(),
+        PipelineTrigger::DomainEvent {
+            event: DomainEvent::DocsStale,
+            ..
+        } => "Starts when linked documentation goes stale after code changes.".into(),
+        PipelineTrigger::DomainEvent {
+            event: DomainEvent::CheckpointReady,
+            stage: Some(stage),
+        } => format!(
+            "Starts whenever a {} checkpoint opens for human review.",
+            ikore_core::custom_pipelines::trigger_stage_label(stage)
+        ),
+        PipelineTrigger::DomainEvent {
+            event: DomainEvent::CheckpointReady,
+            stage: None,
+        } => "Starts whenever any pulsation checkpoint opens for human review.".into(),
     }
 }
 
-/// `Manual | Stage passed | Pulsation done`, and the stage when one passes.
+/// `Manual | Stage passed | Pulsation done | Domain event`, and event/stage choices.
 /// The editor's trigger, and a project's own one in the synthesis (R4b).
 pub(crate) fn trigger_rows(
     prefix: &'static str,
@@ -631,6 +765,10 @@ pub(crate) fn trigger_rows(
             ..
         }
     );
+    let current_domain = match trigger {
+        PipelineTrigger::DomainEvent { event, stage } => Some((*event, stage.clone())),
+        _ => None,
+    };
     let mut kinds = div().flex().flex_wrap().gap_2();
     for (id, text, active, next) in [
         (
@@ -646,6 +784,15 @@ pub(crate) fn trigger_rows(
             stage_passed(stage.as_deref().unwrap_or("Code")),
         ),
         ("pulsation-done", "Pulsation done", done, pulsation_done()),
+        (
+            "domain-event",
+            "Domain event",
+            current_domain.is_some(),
+            current_domain
+                .as_ref()
+                .map(|(ev, st)| domain_event(*ev, st.as_deref()))
+                .unwrap_or_else(|| domain_event(DomainEvent::FeatureApproved, None)),
+        ),
     ] {
         let set = set.clone();
         kinds = kinds.child(choice(
@@ -672,6 +819,61 @@ pub(crate) fn trigger_rows(
         }
         row
     });
+    let domain_rows = current_domain.as_ref().map(|(active_event, active_stage)| {
+        let mut events_row = div().flex().flex_wrap().gap_2();
+        for ev in DomainEvent::ALL {
+            let set = set.clone();
+            let default_stage = (ev == DomainEvent::CheckpointReady)
+                .then(|| active_stage.clone())
+                .flatten();
+            events_row = events_row.child(choice(
+                format!("{prefix}-domain:{}", ev.as_str()),
+                ev.label(),
+                *active_event == ev,
+                true,
+                cx,
+                move |model, cx| set(model, domain_event(ev, default_stage.as_deref()), cx),
+            ));
+        }
+        let checkpoint_stages = (*active_event == DomainEvent::CheckpointReady).then(|| {
+            let mut stage_row = div().flex().flex_wrap().gap_2();
+            let set_any = set.clone();
+            stage_row = stage_row.child(choice(
+                format!("{prefix}-domain-stage:any"),
+                "Any stage",
+                active_stage.is_none(),
+                true,
+                cx,
+                move |model, cx| {
+                    set_any(model, domain_event(DomainEvent::CheckpointReady, None), cx)
+                },
+            ));
+            for value in STAGE_VALUES {
+                let set = set.clone();
+                stage_row = stage_row.child(choice(
+                    format!("{prefix}-domain-stage:{value}"),
+                    ikore_core::custom_pipelines::trigger_stage_label(value).to_owned(),
+                    active_stage.as_deref() == Some(value),
+                    true,
+                    cx,
+                    move |model, cx| {
+                        set(
+                            model,
+                            domain_event(DomainEvent::CheckpointReady, Some(value)),
+                            cx,
+                        )
+                    },
+                ));
+            }
+            stage_row
+        });
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(events_row)
+            .children(checkpoint_stages)
+    });
     let help = format!(
         "{}{}",
         trigger_help(trigger),
@@ -688,6 +890,7 @@ pub(crate) fn trigger_rows(
         .gap_2()
         .child(kinds)
         .children(stages)
+        .children(domain_rows)
         .child(div().text_xs().text_color(theme::text_muted()).child(help))
         .into_any_element()
 }
@@ -808,27 +1011,22 @@ pub(super) fn pipeline_editor_panel(model: &AppModel, cx: &mut Context<AppModel>
                     cx,
                     |model, cx| model.add_pipeline_step(DraftKind::Gate, cx),
                 ))
-                .child(
-                    div()
-                        .id("pipeline-editor-add-host-tool")
-                        .debug_selector(|| "pipeline-editor-add-host-tool".into())
-                        .tooltip(|_, cx| {
-                            cx.new(|_| {
-                                crate::widgets::Tooltip::new(
-                                    "Available after the commit tool ships",
-                                )
-                            })
-                            .into()
-                        })
-                        .child(action_button(
-                            "pipeline-editor-host-tool".into(),
-                            "Host tool".into(),
-                            false,
-                            false,
-                            cx,
-                            |_, _| {},
-                        )),
-                ),
+                .child(action_button(
+                    "pipeline-editor-host-tool".into(),
+                    "Host tool".into(),
+                    !full,
+                    false,
+                    cx,
+                    |model, cx| model.add_pipeline_step(DraftKind::HostTool, cx),
+                ))
+                .child(action_button(
+                    "pipeline-editor-canonical".into(),
+                    "Canonical".into(),
+                    !full,
+                    false,
+                    cx,
+                    |model, cx| model.add_pipeline_step(DraftKind::Canonical, cx),
+                )),
         )
         .child(
             div()
@@ -942,6 +1140,8 @@ impl AppModel {
                 match kind {
                     DraftKind::Agent => "Review",
                     DraftKind::Gate => "Approve",
+                    DraftKind::HostTool => "Commit changes",
+                    DraftKind::Canonical => CanonicalPipelineRole::NotesScribe.label(),
                 },
                 false,
                 cx,
@@ -950,6 +1150,8 @@ impl AppModel {
                 match kind {
                     DraftKind::Agent => "What the agent should do",
                     DraftKind::Gate => "What the developer should check",
+                    DraftKind::HostTool => "",
+                    DraftKind::Canonical => "Optional instructions appended to this role",
                 },
                 "",
                 true,
@@ -964,6 +1166,8 @@ impl AppModel {
             thinking: ThinkingLevel::Default,
             route_id: None,
             output: StepOutput::Text,
+            host_tool: HostTool::GitCommit,
+            canonical_role: CanonicalPipelineRole::NotesScribe,
         }
     }
 
@@ -1012,8 +1216,8 @@ impl AppModel {
             .definition
             .steps
             .iter()
-            .filter_map(|step| match step {
-                PipelineStep::Agent(agent) => Some(StepDraft {
+            .map(|step| match step {
+                PipelineStep::Agent(agent) => StepDraft {
                     id: agent.id.clone(),
                     kind: DraftKind::Agent,
                     label: input("Step label", &agent.label, false, cx),
@@ -1031,8 +1235,10 @@ impl AppModel {
                         .unwrap_or(ThinkingLevel::Default),
                     route_id: agent.agent.api_route_id.clone(),
                     output: agent.output,
-                }),
-                PipelineStep::Gate(gate) => Some(StepDraft {
+                    host_tool: HostTool::GitCommit,
+                    canonical_role: CanonicalPipelineRole::NotesScribe,
+                },
+                PipelineStep::Gate(gate) => StepDraft {
                     id: gate.id.clone(),
                     kind: DraftKind::Gate,
                     label: input("Step label", &gate.label, false, cx),
@@ -1044,18 +1250,57 @@ impl AppModel {
                     thinking: ThinkingLevel::Default,
                     route_id: None,
                     output: StepOutput::Text,
-                }),
-                // Not offered until M5.
-                PipelineStep::HostTool(_) => None,
+                    host_tool: HostTool::GitCommit,
+                    canonical_role: CanonicalPipelineRole::NotesScribe,
+                },
+                PipelineStep::HostTool(tool_step) => StepDraft {
+                    id: tool_step.id.clone(),
+                    kind: DraftKind::HostTool,
+                    label: input("Step label", &tool_step.label, false, cx),
+                    text: input("", "", false, cx),
+                    transport: StepTransport::Cli,
+                    backend: CliBackend::Codex,
+                    model: None,
+                    model_profile: None,
+                    thinking: ThinkingLevel::Default,
+                    route_id: None,
+                    output: StepOutput::Text,
+                    host_tool: tool_step.tool,
+                    canonical_role: CanonicalPipelineRole::NotesScribe,
+                },
+                PipelineStep::Canonical(canonical) => StepDraft {
+                    id: canonical.id.clone(),
+                    kind: DraftKind::Canonical,
+                    label: input("Step label", &canonical.label, false, cx),
+                    text: input(
+                        "Optional instructions appended to this role",
+                        &canonical.instructions_append,
+                        true,
+                        cx,
+                    ),
+                    transport: StepTransport::Cli,
+                    backend: CliBackend::Codex,
+                    model: None,
+                    model_profile: None,
+                    thinking: ThinkingLevel::Default,
+                    route_id: None,
+                    output: StepOutput::Text,
+                    host_tool: HostTool::GitCommit,
+                    canonical_role: canonical.role,
+                },
             })
             .collect()
     }
 
-    /// `Edit`: the form on what the project's box resolves to.
+    /// `Edit`: the form on what the project's box resolves to. Built-in
+    /// default templates cannot be edited directly.
     pub(crate) fn edit_pipeline(&mut self, pipeline_id: String, cx: &mut Context<Self>) {
         let Some(pipeline) = self.agents.read(cx).pipeline(&pipeline_id).cloned() else {
             return;
         };
+        if pipeline.is_builtin() {
+            return;
+        }
         self.open_editor_column(cx);
         let steps = self.drafts_of(&pipeline, cx);
         self.pipeline_editor = Some(PipelineEditor {
@@ -1245,6 +1490,26 @@ impl AppModel {
         cx: &mut Context<Self>,
     ) {
         self.with_step(index, |step| step.output = output);
+        cx.notify();
+    }
+
+    pub(crate) fn set_pipeline_step_host_tool(
+        &mut self,
+        index: usize,
+        tool: HostTool,
+        cx: &mut Context<Self>,
+    ) {
+        self.with_step(index, |step| step.host_tool = tool);
+        cx.notify();
+    }
+
+    pub(crate) fn set_pipeline_step_canonical_role(
+        &mut self,
+        index: usize,
+        role: CanonicalPipelineRole,
+        cx: &mut Context<Self>,
+    ) {
+        self.with_step(index, |step| step.canonical_role = role);
         cx.notify();
     }
 

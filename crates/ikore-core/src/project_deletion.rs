@@ -303,7 +303,8 @@ fn active_work(db: &Connection, id: &str) -> Result<bool, Error> {
         OR EXISTS(SELECT 1 FROM chat_messages m JOIN chat_conversations c ON c.id=m.conversation_id WHERE c.project_id=?1 AND m.status IN ('pending','streaming'))
         OR EXISTS(SELECT 1 FROM forge_turns t JOIN forge_features f ON f.id=t.feature_id WHERE f.project_id=?1 AND t.status='running')
         OR EXISTS(SELECT 1 FROM companion_note_turns t JOIN companion_notes n ON n.id=t.note_id WHERE n.project_id=?1 AND t.status='running')
-        OR EXISTS(SELECT 1 FROM stage_verifier_runs r JOIN pulsations p ON p.id=r.pulsation_id WHERE p.project_id=?1 AND r.status='running')",[id],|r|r.get(0))?;
+        OR EXISTS(SELECT 1 FROM stage_verifier_runs r JOIN pulsations p ON p.id=r.pulsation_id WHERE p.project_id=?1 AND r.status='running')
+        OR EXISTS(SELECT 1 FROM git_operations WHERE project_id=?1 AND status='running')",[id],|r|r.get(0))?;
     Ok(active)
 }
 
@@ -1290,5 +1291,78 @@ mod tests {
         );
         assert!(root.join(".git").exists());
         assert_eq!(service.pending_project_deletion_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn refuses_a_running_git_operation_and_purges_git_tables() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("git-del-proj");
+        fs::create_dir_all(&root).unwrap();
+        let service = PersistenceService::initialize(&fixture.path().join("data")).unwrap();
+        let project = service
+            .ensure_project_for_workspace(EnsureProjectForWorkspaceRequest {
+                workspace_path: root.to_string_lossy().into_owned(),
+                preferred_name: None,
+            })
+            .unwrap()
+            .project;
+
+        {
+            let db = service.connection().unwrap();
+            let sha = "c".repeat(64);
+            db.execute(
+                "INSERT INTO pulsations(id,project_id,feature_name,status,stage,queue_sequence,created_at,updated_at)
+                 VALUES('p-git',?1,'Git deletion test','done','Integrator',1,'2026-11-25T00:00:00Z','2026-11-25T00:00:00Z')",
+                [&project.id],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO git_operations(id,project_id,kind,pulsation_id,rules_version,rules_sha256,status,started_at)
+                 VALUES('op-run',?1,'commit','p-git',1,?2,'running','2026-11-25T00:00:00Z')",
+                params![project.id, sha],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO pulsation_commit_state(pulsation_id,project_id,completed_at,state,updated_at)
+                 VALUES('p-git',?1,'2026-11-25T00:00:00Z','pending','2026-11-25T00:00:00Z')",
+                [&project.id],
+            )
+            .unwrap();
+        }
+
+        let blocked = service.delete_project_permanently(&project.id, &project.name);
+        assert!(
+            blocked.is_err(),
+            "running git operation must block deletion"
+        );
+
+        {
+            let db = service.connection().unwrap();
+            db.execute(
+                "UPDATE git_operations SET status='succeeded', finished_at='2026-11-25T00:00:01Z' WHERE id='op-run'",
+                [],
+            )
+            .unwrap();
+        }
+
+        let outcome = service
+            .delete_project_permanently(&project.id, &project.name)
+            .unwrap();
+        assert!(outcome.deleted);
+        let db = service.connection().unwrap();
+        for table in [
+            "project_git_rules",
+            "git_operations",
+            "pulsation_commit_state",
+        ] {
+            let count: i64 = db
+                .query_row(
+                    &format!("SELECT count(*) FROM {table} WHERE project_id=?1"),
+                    [&project.id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 0, "{table} must be empty after deletion");
+        }
     }
 }

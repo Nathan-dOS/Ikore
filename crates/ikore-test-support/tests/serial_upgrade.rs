@@ -27,7 +27,7 @@ fn latest_migration_version() -> i64 {
 /// (no rebuild, no row rewritten), but SQLite writes it into the table's
 /// stored definition: a test of an earlier migration compares the table as
 /// that migration left it.
-const LATER_COLUMNS: [(&str, &str); 2] = [
+const LATER_COLUMNS: [(&str, &str); 3] = [
     (
         "CREATE TABLE terminal_events (",
         // V67, ADR-040 M1.
@@ -37,6 +37,11 @@ const LATER_COLUMNS: [(&str, &str); 2] = [
         "CREATE TABLE \"cli_agent_configs\" (",
         // V74, configurable CLI silence timeout.
         ", cli_silence_timeout_ms INTEGER\n  CHECK(cli_silence_timeout_ms IS NULL OR cli_silence_timeout_ms BETWEEN 30000 AND 900000)",
+    ),
+    (
+        "CREATE TABLE custom_pipelines (",
+        // V79, Feature 27.
+        ", template_key TEXT",
     ),
 ];
 
@@ -82,7 +87,9 @@ fn v65_to_v66_preserves_legacy_failures_without_inventing_validation_evidence() 
     let _reopened = PersistenceService::initialize(data.path()).unwrap();
     let db = Connection::open(path).unwrap();
     for (table, sql) in before.into_iter().filter(|(table, _)| {
-        !REBUILT_BY_V70.contains(&table.as_str()) && !REBUILT_BY_V75.contains(&table.as_str())
+        !REBUILT_BY_V70.contains(&table.as_str())
+            && !REBUILT_BY_V75.contains(&table.as_str())
+            && !REBUILT_BY_V79.contains(&table.as_str())
     }) {
         assert_eq!(
             without_later_columns(
@@ -336,6 +343,17 @@ const REBUILT_BY_V75: [&str; 3] = [
 
 fn rebuilt_by_v75(sql: &str) -> bool {
     REBUILT_BY_V75.iter().any(|table| {
+        sql.starts_with(&format!("CREATE TABLE \"{table}\" "))
+            || sql.starts_with(&format!("CREATE TABLE {table} "))
+    })
+}
+
+/// V79 rebuilds `custom_pipeline_runs` and `custom_pipeline_step_runs` to widen
+/// `trigger_kind` and `kind` checks and link `domain_trigger_outbox` (feature 27).
+const REBUILT_BY_V79: [&str; 2] = ["custom_pipeline_runs", "custom_pipeline_step_runs"];
+
+fn rebuilt_by_v79(sql: &str) -> bool {
+    REBUILT_BY_V79.iter().any(|table| {
         sql.starts_with(&format!("CREATE TABLE \"{table}\" "))
             || sql.starts_with(&format!("CREATE TABLE {table} "))
     })
@@ -2010,10 +2028,9 @@ fn v50_to_v51_adds_the_review_boundary_tables_without_rebuilding_existing_ones()
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap();
-    for table in before
-        .iter()
-        .filter(|sql| !rebuilt_by_v54(sql) && !rebuilt_by_v70(sql) && !rebuilt_by_v75(sql))
-    {
+    for table in before.iter().filter(|sql| {
+        !rebuilt_by_v54(sql) && !rebuilt_by_v70(sql) && !rebuilt_by_v75(sql) && !rebuilt_by_v79(sql)
+    }) {
         assert!(
             after.iter().any(|sql| without_later_columns(sql) == *table),
             "no existing table was rebuilt: {table}"
@@ -2132,10 +2149,9 @@ fn v51_to_v52_adds_the_risk_scrutiny_tables_without_rebuilding_existing_ones() {
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap();
-    for table in before
-        .iter()
-        .filter(|sql| !rebuilt_by_v54(sql) && !rebuilt_by_v70(sql) && !rebuilt_by_v75(sql))
-    {
+    for table in before.iter().filter(|sql| {
+        !rebuilt_by_v54(sql) && !rebuilt_by_v70(sql) && !rebuilt_by_v75(sql) && !rebuilt_by_v79(sql)
+    }) {
         assert!(
             after.iter().any(|sql| without_later_columns(sql) == *table),
             "no existing table was rebuilt: {table}"
@@ -2244,10 +2260,9 @@ fn v52_to_v53_adds_the_forge_preflight_findings_without_rebuilding_existing_ones
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap();
-    for table in before
-        .iter()
-        .filter(|sql| !rebuilt_by_v54(sql) && !rebuilt_by_v70(sql) && !rebuilt_by_v75(sql))
-    {
+    for table in before.iter().filter(|sql| {
+        !rebuilt_by_v54(sql) && !rebuilt_by_v70(sql) && !rebuilt_by_v75(sql) && !rebuilt_by_v79(sql)
+    }) {
         assert!(
             after.iter().any(|sql| without_later_columns(sql) == *table),
             "no existing table was rebuilt: {table}"
@@ -2345,10 +2360,9 @@ fn v53_to_v54_adds_the_reconciler_role_and_the_reconciliation_tables() {
             >= 54
     );
     let after = tables(&db);
-    for table in before
-        .iter()
-        .filter(|sql| !rebuilt_by_v54(sql) && !rebuilt_by_v70(sql) && !rebuilt_by_v75(sql))
-    {
+    for table in before.iter().filter(|sql| {
+        !rebuilt_by_v54(sql) && !rebuilt_by_v70(sql) && !rebuilt_by_v75(sql) && !rebuilt_by_v79(sql)
+    }) {
         assert!(
             after.iter().any(|sql| without_later_columns(sql) == *table),
             "only the role tables are rebuilt: {table}"
@@ -2516,7 +2530,9 @@ fn v54_to_v55_adds_cargo_evidence_without_rewriting_or_enabling_legacy_profiles(
         .unwrap();
     assert_eq!(preserved, (7, false, profile_json));
     for (name, definition) in before.into_iter().filter(|(name, _)| {
-        !REBUILT_BY_V70.contains(&name.as_str()) && !REBUILT_BY_V75.contains(&name.as_str())
+        !REBUILT_BY_V70.contains(&name.as_str())
+            && !REBUILT_BY_V75.contains(&name.as_str())
+            && !REBUILT_BY_V79.contains(&name.as_str())
     }) {
         let after: String = db
             .query_row(
@@ -2644,7 +2660,9 @@ fn v55_to_v57_adds_canvas_tables_without_rewriting_legacy_data() {
         "the migration is applied exactly once"
     );
     for (name, before) in definitions.into_iter().filter(|(name, _)| {
-        !REBUILT_BY_V70.contains(&name.as_str()) && !REBUILT_BY_V75.contains(&name.as_str())
+        !REBUILT_BY_V70.contains(&name.as_str())
+            && !REBUILT_BY_V75.contains(&name.as_str())
+            && !REBUILT_BY_V79.contains(&name.as_str())
     }) {
         let after: String = db
             .query_row(
@@ -2860,7 +2878,7 @@ fn v58_to_v59_adds_mandates_and_receipts_without_touching_running_pulsations() {
     let after = tables(&db);
     for table in before
         .iter()
-        .filter(|sql| !rebuilt_by_v70(sql) && !rebuilt_by_v75(sql))
+        .filter(|sql| !rebuilt_by_v70(sql) && !rebuilt_by_v75(sql) && !rebuilt_by_v79(sql))
     {
         assert!(
             after.iter().any(|sql| without_later_columns(sql) == *table),
@@ -2985,7 +3003,7 @@ fn v59_to_v60_adds_attestations_without_sealing_pulsations_that_already_ended() 
     let after = tables(&db);
     for table in before
         .iter()
-        .filter(|sql| !rebuilt_by_v70(sql) && !rebuilt_by_v75(sql))
+        .filter(|sql| !rebuilt_by_v70(sql) && !rebuilt_by_v75(sql) && !rebuilt_by_v79(sql))
     {
         assert!(
             after.iter().any(|sql| without_later_columns(sql) == *table),
@@ -3121,7 +3139,7 @@ fn v60_to_v61_adds_scope_requests_without_touching_parked_failures() {
     let after = tables(&db);
     for table in before
         .iter()
-        .filter(|sql| !rebuilt_by_v70(sql) && !rebuilt_by_v75(sql))
+        .filter(|sql| !rebuilt_by_v70(sql) && !rebuilt_by_v75(sql) && !rebuilt_by_v79(sql))
     {
         assert!(
             after.iter().any(|sql| without_later_columns(sql) == *table),
@@ -3237,7 +3255,7 @@ fn v61_to_v62_adds_the_exchange_log_without_backfilling_history() {
     let after = tables(&db);
     for table in before
         .iter()
-        .filter(|sql| !rebuilt_by_v70(sql) && !rebuilt_by_v75(sql))
+        .filter(|sql| !rebuilt_by_v70(sql) && !rebuilt_by_v75(sql) && !rebuilt_by_v79(sql))
     {
         assert!(
             after.iter().any(|sql| without_later_columns(sql) == *table),
@@ -3346,7 +3364,7 @@ fn v62_to_v63_keeps_earlier_runs_strict_and_adds_the_resume_manifest() {
     let after = tables(&db);
     for table in before
         .iter()
-        .filter(|sql| !rebuilt_by_v70(sql) && !rebuilt_by_v75(sql))
+        .filter(|sql| !rebuilt_by_v70(sql) && !rebuilt_by_v75(sql) && !rebuilt_by_v79(sql))
     {
         assert!(
             after.iter().any(|sql| without_later_columns(sql) == *table),
@@ -3469,7 +3487,7 @@ fn v63_to_v64_adds_pulsation_digests_without_backfilling_them() {
     let after = tables(&db);
     for table in before
         .iter()
-        .filter(|sql| !rebuilt_by_v70(sql) && !rebuilt_by_v75(sql))
+        .filter(|sql| !rebuilt_by_v70(sql) && !rebuilt_by_v75(sql) && !rebuilt_by_v79(sql))
     {
         assert!(
             after.iter().any(|sql| without_later_columns(sql) == *table),
@@ -3595,6 +3613,7 @@ fn v64_and_v65_to_v67_add_event_details_without_touching_old_events() {
             name != "terminal_events"
                 && !REBUILT_BY_V70.contains(&name.as_str())
                 && !REBUILT_BY_V75.contains(&name.as_str())
+                && !REBUILT_BY_V79.contains(&name.as_str())
         }) {
             assert!(
                 after
@@ -3707,7 +3726,7 @@ fn v74_to_v75_rebuilds_checkpoint_tables_and_adds_stage_verifiers() {
         )
         .unwrap();
     assert_eq!(max_version, latest_migration_version());
-    assert_eq!(max_version, 75);
+    assert!(max_version >= 75);
     let v75_count: i64 = db
         .query_row(
             "SELECT COUNT(*) FROM refinery_schema_history WHERE version=75",
@@ -3729,12 +3748,14 @@ fn v74_to_v75_rebuilds_checkpoint_tables_and_adds_stage_verifiers() {
 
     // 2. Non-rebuilt tables untouched (including terminal_runs).
     let after = table_sqls(&db);
-    for table in before
-        .iter()
-        .filter(|(name, _)| !REBUILT_BY_V75.contains(&name.as_str()))
-    {
+    for table in before.iter().filter(|(name, _)| {
+        !REBUILT_BY_V75.contains(&name.as_str()) && !REBUILT_BY_V79.contains(&name.as_str())
+    }) {
+        let expected_sql = without_later_columns(&table.1);
         assert!(
-            after.contains(table),
+            after
+                .iter()
+                .any(|(name, sql)| name == &table.0 && without_later_columns(sql) == expected_sql),
             "V75 must not rebuild table: {:?}",
             table.0
         );
@@ -4128,4 +4149,312 @@ fn v74_to_v75_rebuilds_checkpoint_tables_and_adds_stage_verifiers() {
         })
         .unwrap();
     assert_eq!(final_fk_errors, 0);
+}
+
+#[test]
+fn v75_to_v76_adds_project_git_rules() {
+    let root = tempfile::tempdir().unwrap();
+    let db_path = root.path().join("ikore.db");
+    let mut db = Connection::open(&db_path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    cli_migrations::migrations::runner()
+        .set_target(refinery::Target::Version(75))
+        .run(&mut db)
+        .unwrap();
+
+    db.execute(
+        "INSERT INTO projects(id,name,workspace_path,is_archived,created_at,updated_at)
+         VALUES('proj75','Repo','/tmp/repo',0,'2026-11-25T00:00:00Z','2026-11-25T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    drop(db);
+
+    PersistenceService::initialize(root.path()).unwrap();
+    let db = Connection::open(&db_path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    let max_version: i64 = db
+        .query_row(
+            "SELECT MAX(version) FROM refinery_schema_history",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(max_version, latest_migration_version());
+    assert!(max_version >= 76);
+
+    let sha = "a".repeat(64);
+    db.execute(
+        "INSERT INTO project_git_rules(project_id,version,enabled,rules_json,rules_sha256,created_at)
+         VALUES('proj75',1,0,'{}',?1,'2026-11-25T00:00:00Z')",
+        [&sha],
+    )
+    .expect("valid project_git_rules row inserts after V76");
+
+    db.execute(
+        "INSERT INTO project_git_rules(project_id,version,enabled,rules_json,rules_sha256,created_at)
+         VALUES('proj75',0,0,'{}',?1,'2026-11-25T00:00:00Z')",
+        [&sha],
+    )
+    .expect_err("version 0 must fail CHECK");
+
+    db.execute("DELETE FROM projects WHERE id='proj75'", [])
+        .unwrap();
+    let remaining: i64 = db
+        .query_row(
+            "SELECT count(*) FROM project_git_rules WHERE project_id='proj75'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(remaining, 0);
+    let fk_errors: i64 = db
+        .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(fk_errors, 0);
+}
+
+#[test]
+fn v76_to_v77_adds_git_operations_and_commit_state() {
+    let root = tempfile::tempdir().unwrap();
+    let db_path = root.path().join("ikore.db");
+    let mut db = Connection::open(&db_path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    cli_migrations::migrations::runner()
+        .set_target(refinery::Target::Version(76))
+        .run(&mut db)
+        .unwrap();
+
+    db.execute(
+        "INSERT INTO projects(id,name,workspace_path,is_archived,created_at,updated_at)
+         VALUES('proj76','Repo','/tmp/repo76',0,'2026-11-25T00:00:00Z','2026-11-25T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO pulsations(id,project_id,feature_name,status,stage,queue_sequence,created_at,updated_at)
+         VALUES('pulse76','proj76','Feature 76','done','Integrator',1,'2026-11-25T00:00:00Z','2026-11-25T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    drop(db);
+
+    PersistenceService::initialize(root.path()).unwrap();
+    let db = Connection::open(&db_path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    let max_version: i64 = db
+        .query_row(
+            "SELECT MAX(version) FROM refinery_schema_history",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(max_version, latest_migration_version());
+    assert!(max_version >= 77);
+
+    let sha = "b".repeat(64);
+    db.execute(
+        "INSERT INTO git_operations(id,project_id,kind,pulsation_id,rules_version,rules_sha256,status,started_at)
+         VALUES('op77','proj76','commit','pulse76',1,?1,'succeeded','2026-11-25T00:00:00Z')",
+        [&sha],
+    )
+    .expect("valid git_operations row inserts after V77");
+
+    db.execute(
+        "INSERT INTO pulsation_commit_state(pulsation_id,project_id,completed_at,state,skip_reason,updated_at)
+         VALUES('pulse76','proj76','2026-11-25T00:00:00Z','skipped','already_in_head','2026-11-25T00:00:00Z')",
+        [],
+    )
+    .expect("valid skipped pulsation_commit_state row inserts");
+
+    db.execute(
+        "INSERT INTO pulsation_commit_state(pulsation_id,project_id,completed_at,state,skip_reason,updated_at)
+         VALUES('pulse76_bad','proj76','2026-11-25T00:00:00Z','skipped','', '2026-11-25T00:00:00Z')",
+        [],
+    )
+    .expect_err("empty skip_reason must fail CHECK");
+
+    db.execute("DELETE FROM projects WHERE id='proj76'", [])
+        .unwrap();
+    let remaining_ops: i64 = db
+        .query_row("SELECT count(*) FROM git_operations", [], |r| r.get(0))
+        .unwrap();
+    let remaining_state: i64 = db
+        .query_row("SELECT count(*) FROM pulsation_commit_state", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(remaining_ops, 0);
+    assert_eq!(remaining_state, 0);
+}
+
+#[test]
+fn v77_to_v78_adds_step_run_git_operation_id() {
+    let root = tempfile::tempdir().unwrap();
+    let db_path = root.path().join("ikore.db");
+    let mut db = Connection::open(&db_path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    cli_migrations::migrations::runner()
+        .set_target(refinery::Target::Version(77))
+        .run(&mut db)
+        .unwrap();
+    drop(db);
+
+    PersistenceService::initialize(root.path()).unwrap();
+    let db = Connection::open(&db_path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    let max_version: i64 = db
+        .query_row(
+            "SELECT MAX(version) FROM refinery_schema_history",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(max_version, latest_migration_version());
+    assert!(max_version >= 78);
+
+    let has_col: bool = db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('custom_pipeline_step_runs') WHERE name='git_operation_id')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        has_col,
+        "custom_pipeline_step_runs.git_operation_id must exist after V78"
+    );
+}
+
+#[test]
+fn v78_to_v79_adds_default_agent_pipelines_and_domain_outbox() {
+    let root = tempfile::tempdir().unwrap();
+    let db_path = root.path().join("ikore.db");
+    let mut db = Connection::open(&db_path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    cli_migrations::migrations::runner()
+        .set_target(refinery::Target::Version(78))
+        .run(&mut db)
+        .unwrap();
+
+    let sha = "a".repeat(64);
+    let def = r#"{"schemaVersion":1,"trigger":{"kind":"manual"},"steps":[{"id":"git-c","kind":"host_tool","label":"Commit","tool":"git.commit"}]}"#;
+    let payload = r#"{"kind":"manual"}"#;
+    db.execute(
+        "INSERT INTO projects(id,name,workspace_path,created_at,updated_at)
+         VALUES('proj78','Project 78','C:/fixture-78','2026-11-26T00:00:00Z','2026-11-26T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO pulsations(id,project_id,feature_name,status,stage,queue_sequence,created_at,updated_at)
+         VALUES('pulse78','proj78','Feature 78','done','Integrator',1,'2026-11-26T00:00:00Z','2026-11-26T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO git_operations(id,project_id,kind,pulsation_id,rules_version,rules_sha256,status,started_at)
+         VALUES('op78','proj78','commit','pulse78',1,?1,'succeeded','2026-11-26T00:00:00Z')",
+        [&sha],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO custom_pipelines(id,scope,project_id,name,description,current_version,archived,created_at,updated_at)
+         VALUES('pipe78','project','proj78','User Flow','',1,0,'2026-11-26T00:00:00Z','2026-11-26T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO custom_pipeline_versions(pipeline_id,version,definition_json,definition_sha256,created_at)
+         VALUES('pipe78',1,?1,?2,'2026-11-26T00:00:00Z')",
+        params![def, sha],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO custom_pipeline_runs(id,pipeline_id,version,project_id,trigger_kind,trigger_payload_json,resolved_definition_json,resolved_sha256,status,current_step,created_at,updated_at)
+         VALUES('run78','pipe78',1,'proj78','manual',?1,?2,?3,'done',0,'2026-11-26T00:00:00Z','2026-11-26T00:00:00Z')",
+        params![payload, def, sha],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO custom_pipeline_step_runs(run_id,step_index,attempt,step_id,kind,status,git_operation_id)
+         VALUES('run78',0,1,'git-c','host_tool','done','op78')",
+        [],
+    )
+    .unwrap();
+    drop(db);
+
+    PersistenceService::initialize(root.path()).unwrap();
+    PersistenceService::initialize(root.path()).unwrap();
+
+    let db = Connection::open(&db_path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    let max_version: i64 = db
+        .query_row(
+            "SELECT MAX(version) FROM refinery_schema_history",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(max_version, latest_migration_version());
+    assert!(max_version >= 79);
+
+    let integrity: String = db
+        .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(integrity, "ok");
+    let fk_errors: i64 = db
+        .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(fk_errors, 0);
+
+    // Populated rows survived rebuilds intact.
+    let preserved_git_op: Option<String> = db
+        .query_row(
+            "SELECT git_operation_id FROM custom_pipeline_step_runs WHERE run_id='run78' AND step_index=0 AND attempt=1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(preserved_git_op.as_deref(), Some("op78"));
+
+    // Upgraded vs fresh V79 sqlite_master exact parity.
+    let fresh_root = tempfile::tempdir().unwrap();
+    PersistenceService::initialize(fresh_root.path()).unwrap();
+    let fresh_db = Connection::open(fresh_root.path().join("ikore.db")).unwrap();
+    let schema_objects = |conn: &Connection| -> Vec<(String, String, String, Option<String>)> {
+        conn.prepare(
+            "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name",
+        )
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+    };
+    assert_eq!(schema_objects(&db), schema_objects(&fresh_db));
+
+    // New domain_event and canonical constraints work as expected.
+    db.execute(
+        "INSERT INTO domain_trigger_outbox(id,project_id,event,stage,subject_id,payload_json,created_at)
+         VALUES('ev79','proj78','checkpoint_ready','Integrator','cp1','{\"event\":\"checkpoint_ready\"}','2026-11-26T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO custom_pipeline_runs(id,pipeline_id,version,project_id,trigger_kind,trigger_payload_json,resolved_definition_json,resolved_sha256,status,current_step,created_at,updated_at,domain_event_id)
+         VALUES('run79','pipe78',1,'proj78','domain_event',?1,?2,?3,'queued',0,'2026-11-26T00:00:00Z','2026-11-26T00:00:00Z','ev79')",
+        params![payload, def, sha],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO custom_pipeline_step_runs(run_id,step_index,attempt,step_id,kind,status)
+         VALUES('run79',0,1,'canon','canonical','queued')",
+        [],
+    )
+    .unwrap();
 }

@@ -9610,6 +9610,19 @@ impl AppModel {
                     self.refresh_doc_drift(cx);
                 }
             }
+            AppEvent::GitOperation(event) => {
+                if self.settings_modal.open
+                    && self.settings.read(cx).page == crate::settings::SettingsPage::Git
+                    && self
+                        .workspace
+                        .read(cx)
+                        .project_id
+                        .as_ref()
+                        .is_some_and(|p| p.as_ref() == event.project_id)
+                {
+                    self.refresh_git_queue_and_ops(cx);
+                }
+            }
             AppEvent::WorkspaceChanged(event) => {
                 self.activity.push_coalesced(
                     ActivityEntry {

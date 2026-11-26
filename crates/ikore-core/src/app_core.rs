@@ -426,6 +426,7 @@ impl AppCore {
             _exchange_doorbell: exchange_doorbell,
         });
 
+        core.persistence.set_git_event_bus((*core.events).clone());
         let worker = core.persistence.clone();
         let cancellation = core.worker_cancellation.clone();
         let task = runtime.spawn(async move {
@@ -781,6 +782,143 @@ impl AppCore {
             .root_path
             .clone()
             .ok_or_else(|| WorkspaceCommandError::from(WorkspaceServiceError::WorkspaceNotOpen))
+    }
+
+    pub fn get_project_git_rules(
+        &self,
+        project_id: &str,
+    ) -> Result<crate::git_tool::ProjectGitRulesRecord, PersistenceCommandError> {
+        self.persistence
+            .get_project_git_rules(project_id)
+            .map_err(PersistenceCommandError::from)
+    }
+
+    pub fn save_project_git_rules(
+        &self,
+        request: crate::git_tool::SaveProjectGitRulesRequest,
+    ) -> Result<crate::git_tool::SaveProjectGitRulesOutcome, PersistenceCommandError> {
+        self.persistence
+            .save_project_git_rules(request)
+            .map_err(PersistenceCommandError::from)
+    }
+
+    pub fn restore_default_project_git_rules(
+        &self,
+        project_id: &str,
+    ) -> Result<crate::git_tool::ProjectGitRulesRecord, PersistenceCommandError> {
+        self.persistence
+            .restore_default_project_git_rules(project_id)
+            .map_err(PersistenceCommandError::from)
+    }
+
+    pub async fn inspect_git_status(
+        &self,
+        project_id: &str,
+    ) -> Result<crate::git_tool::GitStatusV1, PersistenceCommandError> {
+        let project = self
+            .persistence
+            .active_project_by_id(project_id)
+            .map_err(PersistenceCommandError::from)?;
+        let record = self
+            .persistence
+            .get_project_git_rules(&project.id)
+            .map_err(PersistenceCommandError::from)?;
+        let workspace = PathBuf::from(&project.workspace_path);
+        let remote = record.rules.push.remote.clone();
+        Ok(crate::git_tool::inspect_git_status_for_path(&workspace, &remote).await)
+    }
+
+    pub fn git_locks(&self) -> &crate::git_tool::GitProjectLocks {
+        self.persistence.git_locks()
+    }
+
+    pub fn list_pulsation_commit_queue(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<crate::git_tool::PulsationCommitQueueEntryV1>, PersistenceCommandError> {
+        self.persistence
+            .list_pulsation_commit_queue(project_id)
+            .map_err(PersistenceCommandError::from)
+    }
+
+    pub fn skip_pulsation_commit(
+        &self,
+        request: crate::git_tool::SkipPulsationCommitRequest,
+    ) -> Result<crate::git_tool::PulsationCommitQueueEntryV1, PersistenceCommandError> {
+        self.persistence
+            .skip_pulsation_commit(request)
+            .map_err(PersistenceCommandError::from)
+    }
+
+    pub fn list_git_operations(
+        &self,
+        project_id: &str,
+        limit: usize,
+    ) -> Result<Vec<crate::git_tool::GitOperationRecordV1>, PersistenceCommandError> {
+        self.persistence
+            .list_git_operations(project_id, limit)
+            .map_err(PersistenceCommandError::from)
+    }
+
+    pub async fn preview_git_commit(
+        &self,
+        project_id: &str,
+        pulsation_id: &str,
+    ) -> Result<crate::git_tool::GitCommitPreviewV1, PersistenceCommandError> {
+        self.persistence
+            .preview_commit_for_pulsation(project_id, pulsation_id)
+            .await
+            .map_err(PersistenceCommandError::from)
+    }
+
+    pub async fn execute_git_commit(
+        &self,
+        project_id: &str,
+        pulsation_id: &str,
+        external_plan: Option<&crate::git_tool::CommitPlanV1>,
+    ) -> Result<crate::git_tool::CommitExecutionOutcomeV1, PersistenceCommandError> {
+        crate::git_tool::execute_commit_for_pulsation(
+            &self.persistence,
+            self.persistence.git_locks(),
+            Some(&self.events),
+            project_id,
+            pulsation_id,
+            None,
+            external_plan,
+        )
+        .await
+        .map_err(PersistenceCommandError::from)
+    }
+
+    pub async fn execute_git_push(
+        &self,
+        project_id: &str,
+    ) -> Result<crate::git_tool::PushExecutionOutcomeV1, PersistenceCommandError> {
+        crate::git_tool::execute_push_for_project(
+            &self.persistence,
+            self.persistence.git_locks(),
+            Some(&self.events),
+            project_id,
+            None,
+        )
+        .await
+        .map_err(PersistenceCommandError::from)
+    }
+
+    pub async fn execute_git_pull(
+        &self,
+        project_id: &str,
+    ) -> Result<crate::git_tool::PullExecutionOutcomeV1, PersistenceCommandError> {
+        crate::git_tool::execute_pull_for_project(
+            &self.persistence,
+            self.persistence.git_locks(),
+            Some(&self.events),
+            project_id,
+            None,
+            None,
+        )
+        .await
+        .map_err(PersistenceCommandError::from)
     }
 
     pub fn is_shutting_down(&self) -> bool {

@@ -66,7 +66,8 @@ const VIEW_SQL: &str = "SELECT p.id,p.scope,p.project_id,p.name,p.description,p.
         (SELECT count(*) FROM custom_pipelines c WHERE c.parent_pipeline_id=p.id),
         (SELECT count(*) FROM custom_pipeline_activations o WHERE o.pipeline_id=p.id),
         (SELECT current_version FROM custom_pipelines m WHERE m.id=p.parent_pipeline_id),
-        a.trigger_override_json
+        a.trigger_override_json,
+        p.template_key
    FROM custom_pipeline_activations a
    JOIN custom_pipelines p ON p.id=a.pipeline_id
    JOIN custom_pipeline_versions v ON v.pipeline_id=p.id AND v.version=a.adopted_version
@@ -102,6 +103,7 @@ fn map_view(row: &rusqlite::Row<'_>) -> rusqlite::Result<(CustomPipelineView, St
             trigger_override: row
                 .get::<_, Option<String>>(20)?
                 .and_then(|json| serde_json::from_str(&json).ok()),
+            template_key: row.get(21)?,
         },
         row.get(11)?,
     ))
@@ -184,13 +186,14 @@ pub(super) fn load_step_runs(
 ) -> Result<Vec<PipelineStepRunView>, PersistenceServiceError> {
     let mut statement = db.prepare_cached(
         "SELECT step_index,attempt,step_id,kind,status,terminal_run_id,llm_execution_id,
-                output_text,verdict_json,gate_decision,gate_feedback,started_at,finished_at,error
+                git_operation_id,output_text,verdict_json,gate_decision,gate_feedback,
+                started_at,finished_at,error
            FROM custom_pipeline_step_runs WHERE run_id=?1 ORDER BY step_index,attempt",
     )?;
     let rows = statement
         .query_map([run_id], |row| {
             let status: String = row.get(4)?;
-            let verdict: Option<String> = row.get(8)?;
+            let verdict: Option<String> = row.get(9)?;
             Ok(PipelineStepRunView {
                 step_index: row.get(0)?,
                 attempt: row.get(1)?,
@@ -199,13 +202,14 @@ pub(super) fn load_step_runs(
                 status: StepRunStatus::parse(&status).ok_or_else(|| bad_column(4, &status))?,
                 terminal_run_id: row.get(5)?,
                 llm_execution_id: row.get(6)?,
-                output_text: row.get(7)?,
+                git_operation_id: row.get(7)?,
+                output_text: row.get(8)?,
                 verdict: verdict.and_then(|json| serde_json::from_str(&json).ok()),
-                gate_decision: row.get(9)?,
-                gate_feedback: row.get(10)?,
-                started_at: row.get(11)?,
-                finished_at: row.get(12)?,
-                error: row.get(13)?,
+                gate_decision: row.get(10)?,
+                gate_feedback: row.get(11)?,
+                started_at: row.get(12)?,
+                finished_at: row.get(13)?,
+                error: row.get(14)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -219,31 +223,43 @@ const RUN_SQL: &str = "SELECT id,pipeline_id,version,trigger_kind,status,current
         trigger_payload_json
    FROM custom_pipeline_runs";
 
-/// `Stage passed · Code` or `Pulsation done`, from a run's payload (M3).
+/// `Stage passed · Code`, `Pulsation done`, or a domain event label from a run's payload (M3 / 27).
 fn payload_trigger_label(payload: &str) -> Option<String> {
     let value: serde_json::Value = serde_json::from_str(payload).ok()?;
-    let trigger = PipelineTrigger::DefaultEvent {
-        event: match value.get("event")?.as_str()? {
-            "stage_passed" => crate::custom_pipelines::DefaultEvent::StagePassed,
-            "pulsation_done" => crate::custom_pipelines::DefaultEvent::PulsationDone,
-            _ => return None,
+    let event_name = value.get("event")?.as_str()?;
+    let stage = value
+        .get("stage")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let trigger = match event_name {
+        "stage_passed" => PipelineTrigger::DefaultEvent {
+            event: crate::custom_pipelines::DefaultEvent::StagePassed,
+            stage,
         },
-        stage: value
-            .get("stage")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned),
+        "pulsation_done" => PipelineTrigger::DefaultEvent {
+            event: crate::custom_pipelines::DefaultEvent::PulsationDone,
+            stage,
+        },
+        other => {
+            let domain = crate::custom_pipelines::DomainEvent::parse(other)?;
+            PipelineTrigger::DomainEvent {
+                event: domain,
+                stage,
+            }
+        }
     };
     Some(crate::custom_pipelines::trigger_label(&trigger))
 }
 
 fn map_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<(PipelineRunView, String)> {
     let status: String = row.get(4)?;
+    let trigger_kind: String = row.get(3)?;
     Ok((
         PipelineRunView {
             id: row.get(0)?,
             pipeline_id: row.get(1)?,
             version: row.get(2)?,
-            trigger_kind: row.get(3)?,
+            trigger_kind: trigger_kind.clone(),
             status: PipelineRunStatus::parse(&status).ok_or_else(|| bad_column(4, &status))?,
             current_step: row.get(5)?,
             error: row.get(6)?,
@@ -258,7 +274,7 @@ fn map_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<(PipelineRunView, String
             steps: Vec::new(),
             source_pulsation_id: row.get(11)?,
             source_pulsation_title: row.get(12)?,
-            trigger_label: (row.get::<_, String>(3)? == "default_event")
+            trigger_label: matches!(trigger_kind.as_str(), "default_event" | "domain_event")
                 .then(|| row.get::<_, String>(14))
                 .transpose()?
                 .and_then(|payload| payload_trigger_label(&payload)),
@@ -319,6 +335,7 @@ pub(super) struct Shown {
     name: String,
     scope: String,
     parent: Option<String>,
+    template_key: Option<String>,
 }
 
 fn own_pipeline(
@@ -327,7 +344,7 @@ fn own_pipeline(
     pipeline_id: &str,
 ) -> Result<Shown, PersistenceServiceError> {
     tx.query_row(
-        "SELECT p.archived,p.current_version,p.name,p.scope,p.parent_pipeline_id
+        "SELECT p.archived,p.current_version,p.name,p.scope,p.parent_pipeline_id,p.template_key
            FROM custom_pipelines p
            JOIN custom_pipeline_activations a ON a.pipeline_id=p.id AND a.project_id=?1
           WHERE p.id=?2",
@@ -339,6 +356,7 @@ fn own_pipeline(
                 name: row.get(2)?,
                 scope: row.get(3)?,
                 parent: row.get(4)?,
+                template_key: row.get(5)?,
             })
         },
     )
@@ -348,6 +366,7 @@ fn own_pipeline(
 
 /// The limits a box that becomes visible must respect (R4, T9). Archived
 /// pipelines do not count, so one being restored is not counted twice.
+/// Built-in default templates never consume the user's global pipeline quota.
 pub(super) fn limit_errors(
     tx: &Transaction<'_>,
     project_id: &str,
@@ -356,7 +375,8 @@ pub(super) fn limit_errors(
     let mut errors = Vec::new();
     if scope == "global" {
         let globals: u32 = tx.query_row(
-            "SELECT count(*) FROM custom_pipelines WHERE scope='global' AND archived=0",
+            "SELECT count(*) FROM custom_pipelines
+              WHERE scope='global' AND archived=0 AND template_key IS NULL",
             [],
             |row| row.get(0),
         )?;
@@ -444,13 +464,12 @@ pub(super) fn name_taken_error() -> PipelineValidationError {
     )
 }
 
-/// Everything a definition must satisfy to be saved or run. Its trigger is
-/// `Manual` or an event of the Ikore pipeline (M3); host tools wait for M5.
+/// Everything a definition must satisfy to be saved or run (Feature 25 M5 enables host tools).
 pub(super) fn definition_errors(
     tx: &Transaction<'_>,
     definition: &CustomPipelineDefinitionV1,
 ) -> Result<Vec<PipelineValidationError>, PersistenceServiceError> {
-    let mut errors = validate_definition(definition, false);
+    let mut errors = validate_definition(definition, true);
     for step in &definition.steps {
         let PipelineStep::Agent(agent) = step else {
             continue;
@@ -533,20 +552,13 @@ pub(super) fn open_next_step(
         return Ok(());
     };
     let (step_status, run_status) = match step {
-        PipelineStep::Agent(_) => (StepRunStatus::Queued, None),
+        PipelineStep::Agent(_) | PipelineStep::HostTool(_) | PipelineStep::Canonical(_) => {
+            (StepRunStatus::Queued, None)
+        }
         PipelineStep::Gate(_) => (
             StepRunStatus::WaitingGate,
             Some(PipelineRunStatus::WaitingGate),
         ),
-        PipelineStep::HostTool(_) => {
-            // Refused by validation until M5; a stored run cannot reach one.
-            tx.execute(
-                "UPDATE custom_pipeline_runs SET status='failed',error=?2,finished_at=?3,updated_at=?3
-                  WHERE id=?1",
-                params![run_id, "Host tools are not available yet.", now],
-            )?;
-            return Ok(());
-        }
     };
     let attempt: u32 = tx.query_row(
         "SELECT COALESCE(max(attempt),0)+1 FROM custom_pipeline_step_runs
@@ -579,8 +591,8 @@ pub(super) fn open_next_step(
     Ok(())
 }
 
-/// What starts a run: `Run` on the box, or an event of the Ikore pipeline
-/// (feature 25, M3).
+/// What starts a run: `Run` on the box, an event of the Ikore pipeline
+/// (feature 25, M3), or a domain event (feature 27, Camada C).
 pub(super) enum RunTrigger {
     Manual {
         payload: String,
@@ -588,6 +600,10 @@ pub(super) enum RunTrigger {
     DefaultEvent {
         payload: String,
         pulsation_id: String,
+        outbox_id: String,
+    },
+    DomainEvent {
+        payload: String,
         outbox_id: String,
     },
 }
@@ -648,8 +664,8 @@ pub(super) fn insert_run(
     let json = definition_json(&definition)?;
     let sha = crate::exchange::render::sha256_hex(&json);
     let id = Uuid::new_v4().to_string();
-    let (kind, payload, pulsation, outbox) = match trigger {
-        RunTrigger::Manual { payload } => ("manual", payload.as_str(), None, None),
+    let (kind, payload, pulsation, outbox, domain_event_id) = match trigger {
+        RunTrigger::Manual { payload } => ("manual", payload.as_str(), None, None, None),
         RunTrigger::DefaultEvent {
             payload,
             pulsation_id,
@@ -659,13 +675,21 @@ pub(super) fn insert_run(
             payload.as_str(),
             Some(pulsation_id.as_str()),
             Some(outbox_id.as_str()),
+            None,
+        ),
+        RunTrigger::DomainEvent { payload, outbox_id } => (
+            "domain_event",
+            payload.as_str(),
+            None,
+            None,
+            Some(outbox_id.as_str()),
         ),
     };
     tx.execute(
         "INSERT INTO custom_pipeline_runs(id,pipeline_id,version,project_id,trigger_kind,
            trigger_payload_json,source_pulsation_id,resolved_definition_json,resolved_sha256,
-           status,current_step,created_at,updated_at,trigger_outbox_id)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'queued',0,?10,?10,?11)",
+           status,current_step,created_at,updated_at,trigger_outbox_id,domain_event_id)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'queued',0,?10,?10,?11,?12)",
         params![
             id,
             pipeline_id,
@@ -677,7 +701,8 @@ pub(super) fn insert_run(
             json,
             sha,
             now,
-            outbox
+            outbox,
+            domain_event_id
         ],
     )?;
     open_next_step(tx, &id, &definition, None, now)?;
@@ -714,12 +739,13 @@ impl PersistenceService {
         let available_globals = db
             .prepare(
                 "SELECT p.id,p.name,p.description,p.current_version,
-                        (SELECT name FROM custom_pipelines m WHERE m.id=p.parent_pipeline_id)
+                        (SELECT name FROM custom_pipelines m WHERE m.id=p.parent_pipeline_id),
+                        (p.template_key IS NOT NULL)
                    FROM custom_pipelines p
                   WHERE p.scope='global' AND p.archived=0
                     AND NOT EXISTS(SELECT 1 FROM custom_pipeline_activations a
                                     WHERE a.pipeline_id=p.id AND a.project_id=?1)
-                  ORDER BY lower(p.name),p.id",
+                  ORDER BY (p.template_key IS NULL),lower(p.name),p.id",
             )?
             .query_map([project_id], |row| {
                 Ok(GlobalPipelineSummary {
@@ -728,6 +754,7 @@ impl PersistenceService {
                     description: row.get(2)?,
                     current_version: row.get(3)?,
                     parent_name: row.get(4)?,
+                    is_builtin: row.get(5)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -793,6 +820,17 @@ impl PersistenceService {
             ));
         }
         let now = now();
+        if let Some(id) = pipeline_id
+            && own_pipeline(&tx, project_id, id)?.template_key.is_some()
+        {
+            return Ok(SaveCustomPipelineOutcome::Invalid {
+                errors: vec![PipelineValidationError::new(
+                    "builtin_immutable",
+                    None,
+                    "Default agent pipelines cannot be edited directly. Create a child pipeline instead.",
+                )],
+            });
+        }
         // A child stores its changes over its parent's current version (P1).
         let parent_id = match pipeline_id {
             Some(id) => own_pipeline(&tx, project_id, id)?.parent,
@@ -971,7 +1009,12 @@ impl PersistenceService {
                 });
             }
             if !archived {
-                let mut errors = limit_errors(&tx, project_id, &shown.scope)?;
+                let effective_scope = if shown.template_key.is_some() {
+                    "template"
+                } else {
+                    shown.scope.as_str()
+                };
+                let mut errors = limit_errors(&tx, project_id, effective_scope)?;
                 if name_taken(&tx, project_id, &name, Some(pipeline_id))? {
                     errors.push(name_taken_error());
                 }
@@ -1000,7 +1043,13 @@ impl PersistenceService {
         let pipeline_id = required(pipeline_id, "Pipeline")?;
         let mut db = self.connection()?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        if own_pipeline(&tx, project_id, pipeline_id)?.scope == "global" {
+        let shown = own_pipeline(&tx, project_id, pipeline_id)?;
+        if shown.template_key.is_some() {
+            return Err(invalid(
+                "Default agent pipelines cannot be deleted. Archive or remove from this project instead.",
+            ));
+        }
+        if shown.scope == "global" {
             let elsewhere: u32 = tx.query_row(
                 "SELECT count(*) FROM custom_pipeline_activations WHERE pipeline_id=?1 AND project_id<>?2",
                 params![pipeline_id, project_id],
@@ -1249,6 +1298,17 @@ impl PersistenceService {
                 "pipeline_archived",
                 "Restore the pipeline before changing its trigger.",
             );
+        }
+        let view = load_view(&tx, project_id, pipeline_id)?;
+        let effective_trigger = request
+            .trigger
+            .clone()
+            .unwrap_or_else(|| view.definition.trigger.clone());
+        let mut temp_def = view.definition;
+        temp_def.trigger = effective_trigger;
+        let def_errs = validate_definition(&temp_def, true);
+        if !def_errs.is_empty() {
+            return Ok(SaveCustomPipelineOutcome::Invalid { errors: def_errs });
         }
         let json = request
             .trigger

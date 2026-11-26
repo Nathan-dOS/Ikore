@@ -1415,6 +1415,7 @@ pub fn to_html_report(report: &Value) -> Result<PulsationReport, AnalysisError> 
         layers: None,
         provenance: None,
         verifications: None,
+        git_commit: None,
     })
 }
 

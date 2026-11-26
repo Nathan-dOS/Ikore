@@ -51,6 +51,12 @@ pub enum PipelineTrigger {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         stage: Option<String>,
     },
+    /// An event from outside the pulsation (feature 27, Camada C).
+    DomainEvent {
+        event: DomainEvent,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stage: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -62,12 +68,120 @@ pub enum DefaultEvent {
     PulsationDone,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DomainEvent {
+    /// Feature Forge approved a feature brief/plan.
+    FeatureApproved,
+    /// Companion Notes captured a new note.
+    NoteCaptured,
+    /// Doc Reconciliation detected stale documentation after code changed.
+    DocsStale,
+    /// A pulsation opened a checkpoint for review.
+    CheckpointReady,
+}
+
+impl DomainEvent {
+    pub const ALL: [Self; 4] = [
+        Self::FeatureApproved,
+        Self::NoteCaptured,
+        Self::DocsStale,
+        Self::CheckpointReady,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::FeatureApproved => "feature_approved",
+            Self::NoteCaptured => "note_captured",
+            Self::DocsStale => "docs_stale",
+            Self::CheckpointReady => "checkpoint_ready",
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::FeatureApproved => "Feature approved",
+            Self::NoteCaptured => "Note captured",
+            Self::DocsStale => "Docs stale",
+            Self::CheckpointReady => "Checkpoint ready",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|event| event.as_str() == value)
+    }
+}
+
+/// The five out-of-pulsation canonical roles permitted in a canonical pipeline step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CanonicalPipelineRole {
+    FeatureAgent,
+    LearningAgent,
+    Visualizer,
+    NotesScribe,
+    DocumentationReconciler,
+}
+
+impl CanonicalPipelineRole {
+    pub const ALL: [Self; 5] = [
+        Self::FeatureAgent,
+        Self::LearningAgent,
+        Self::Visualizer,
+        Self::NotesScribe,
+        Self::DocumentationReconciler,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::FeatureAgent => "feature_agent",
+            Self::LearningAgent => "learning_agent",
+            Self::Visualizer => "visualizer",
+            Self::NotesScribe => "notes_scribe",
+            Self::DocumentationReconciler => "documentation_reconciler",
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::FeatureAgent => "Feature agent",
+            Self::LearningAgent => "Learning agent",
+            Self::Visualizer => "Visualizer",
+            Self::NotesScribe => "Notes Scribe",
+            Self::DocumentationReconciler => "Documentation Reconciler",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|role| role.as_str() == value)
+    }
+
+    pub const fn to_agent_role(self) -> crate::llm::AgentRole {
+        match self {
+            Self::FeatureAgent => crate::llm::AgentRole::FeatureAgent,
+            Self::LearningAgent => crate::llm::AgentRole::LearningAgent,
+            Self::Visualizer => crate::llm::AgentRole::Visualizer,
+            Self::NotesScribe => crate::llm::AgentRole::NotesScribe,
+            Self::DocumentationReconciler => crate::llm::AgentRole::DocumentationReconciler,
+        }
+    }
+
+    /// True when the role keeps strict no-tools, no-repository isolation.
+    pub const fn is_no_tools_no_repo(self) -> bool {
+        matches!(
+            self,
+            Self::Visualizer | Self::NotesScribe | Self::DocumentationReconciler
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PipelineStep {
     Agent(AgentStep),
     Gate(GateStep),
     HostTool(HostToolStep),
+    Canonical(CanonicalStep),
 }
 
 impl PipelineStep {
@@ -76,6 +190,7 @@ impl PipelineStep {
             Self::Agent(step) => &step.id,
             Self::Gate(step) => &step.id,
             Self::HostTool(step) => &step.id,
+            Self::Canonical(step) => &step.id,
         }
     }
 
@@ -84,6 +199,7 @@ impl PipelineStep {
             Self::Agent(step) => &step.label,
             Self::Gate(step) => &step.label,
             Self::HostTool(step) => &step.label,
+            Self::Canonical(step) => &step.label,
         }
     }
 
@@ -92,8 +208,21 @@ impl PipelineStep {
             Self::Agent(_) => "agent",
             Self::Gate(_) => "gate",
             Self::HostTool(_) => "host_tool",
+            Self::Canonical(_) => "canonical",
         }
     }
+}
+
+/// A pipeline step that runs one of the five canonical out-of-pulsation agents
+/// using its hardened prompt, budget, and lifecycle (feature 27, Camada B).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CanonicalStep {
+    pub id: String,
+    pub label: String,
+    pub role: CanonicalPipelineRole,
+    #[serde(default)]
+    pub instructions_append: String,
 }
 
 /// An agent of the pipeline: a read-only run that returns text or a verdict.
@@ -262,6 +391,22 @@ pub fn validate_trigger(trigger: &PipelineTrigger) -> Vec<PipelineValidationErro
             )),
             _ => {}
         },
+        PipelineTrigger::DomainEvent { event, stage } => match (event, stage.as_deref()) {
+            (DomainEvent::CheckpointReady, Some(stage)) if !STAGE_VALUES.contains(&stage) => {
+                errors.push(PipelineValidationError::new(
+                    "stage_unknown",
+                    None,
+                    format!("\"{stage}\" is not a stage of the Ikore pipeline."),
+                ));
+            }
+            (DomainEvent::CheckpointReady, _) => {}
+            (_, Some(_)) => errors.push(PipelineValidationError::new(
+                "stage_not_allowed",
+                None,
+                "This domain trigger does not take a stage.",
+            )),
+            (_, None) => {}
+        },
     }
     errors
 }
@@ -337,7 +482,32 @@ pub fn validate_definition(
                     "Available after the commit tool ships.",
                 ));
             }
-            PipelineStep::HostTool(_) => {}
+            PipelineStep::HostTool(tool_step) => {
+                if tool_step.tool == HostTool::GitCommit
+                    && !matches!(
+                        definition.trigger,
+                        PipelineTrigger::DefaultEvent {
+                            event: DefaultEvent::PulsationDone,
+                            stage: None
+                        }
+                    )
+                {
+                    errors.push(PipelineValidationError::new(
+                        "git_commit_requires_pulsation_done",
+                        Some(id),
+                        "A git.commit step requires the Pulsation done trigger.",
+                    ));
+                }
+            }
+            PipelineStep::Canonical(canonical) => {
+                if canonical.instructions_append.len() > MAX_INSTRUCTIONS_BYTES {
+                    errors.push(PipelineValidationError::new(
+                        "instructions_too_long",
+                        Some(id),
+                        "Instructions have at most 16 KiB.",
+                    ));
+                }
+            }
         }
     }
     errors
@@ -670,6 +840,9 @@ pub struct StepChange {
     /// A gate's text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,
+    /// Extra instructions appended to a canonical step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions_append: Option<String>,
 }
 
 impl StepChange {
@@ -711,7 +884,7 @@ pub fn parse_child(json: &str) -> Result<CustomPipelineChildV1, PipelineValidati
 fn apply_change(step: &mut PipelineStep, change: &StepChange) -> bool {
     match step {
         PipelineStep::Agent(agent) => {
-            if change.prompt.is_some() {
+            if change.prompt.is_some() || change.instructions_append.is_some() {
                 return false;
             }
             if let Some(label) = &change.label {
@@ -729,7 +902,11 @@ fn apply_change(step: &mut PipelineStep, change: &StepChange) -> bool {
             true
         }
         PipelineStep::Gate(gate) => {
-            if change.agent.is_some() || change.instructions.is_some() || change.output.is_some() {
+            if change.agent.is_some()
+                || change.instructions.is_some()
+                || change.output.is_some()
+                || change.instructions_append.is_some()
+            {
                 return false;
             }
             if let Some(label) = &change.label {
@@ -745,11 +922,28 @@ fn apply_change(step: &mut PipelineStep, change: &StepChange) -> bool {
                 || change.instructions.is_some()
                 || change.output.is_some()
                 || change.prompt.is_some()
+                || change.instructions_append.is_some()
             {
                 return false;
             }
             if let Some(label) = &change.label {
                 tool.label.clone_from(label);
+            }
+            true
+        }
+        PipelineStep::Canonical(canonical) => {
+            if change.agent.is_some()
+                || change.instructions.is_some()
+                || change.output.is_some()
+                || change.prompt.is_some()
+            {
+                return false;
+            }
+            if let Some(label) = &change.label {
+                canonical.label.clone_from(label);
+            }
+            if let Some(append) = &change.instructions_append {
+                canonical.instructions_append.clone_from(append);
             }
             true
         }
@@ -842,6 +1036,13 @@ fn step_change(parent: &PipelineStep, edited: &PipelineStep) -> Option<StepChang
         }
         (PipelineStep::HostTool(before), PipelineStep::HostTool(after))
             if before.tool == after.tool => {}
+        (PipelineStep::Canonical(before), PipelineStep::Canonical(after))
+            if before.role == after.role =>
+        {
+            if before.instructions_append != after.instructions_append {
+                change.instructions_append = Some(after.instructions_append.clone());
+            }
+        }
         // Another kind under the same id is not a change: the caller
         // removes the parent's step and inserts the child's.
         _ => return None,
@@ -1258,7 +1459,28 @@ mod tests {
         let found = codes(&errors);
         assert!(found.contains(&"backend_not_allowed"));
         assert!(found.contains(&"host_tool_unavailable"));
-        assert!(!codes(&validate_definition(&definition, true)).contains(&"host_tool_unavailable"));
+        let enabled_errors = validate_definition(&definition, true);
+        let enabled_found = codes(&enabled_errors);
+        assert!(!enabled_found.contains(&"host_tool_unavailable"));
+        assert!(enabled_found.contains(&"git_commit_requires_pulsation_done"));
+
+        definition.trigger = PipelineTrigger::DefaultEvent {
+            event: DefaultEvent::PulsationDone,
+            stage: None,
+        };
+        let valid_commit = CustomPipelineDefinitionV1 {
+            schema_version: CUSTOM_PIPELINE_SCHEMA_VERSION,
+            trigger: PipelineTrigger::DefaultEvent {
+                event: DefaultEvent::PulsationDone,
+                stage: None,
+            },
+            steps: vec![PipelineStep::HostTool(HostToolStep {
+                id: "commit".into(),
+                label: "Commit".into(),
+                tool: HostTool::GitCommit,
+            })],
+        };
+        assert!(validate_definition(&valid_commit, true).is_empty());
     }
 
     #[test]
@@ -1401,5 +1623,70 @@ mod tests {
         let reject_problems = validate_verdict(&reject_without_blocking);
         assert_eq!(reject_problems.len(), 1);
         assert!(!reject_problems[0].contains('`'));
+    }
+
+    #[test]
+    fn canonical_steps_and_domain_triggers_validate_and_diff() {
+        let mut def = CustomPipelineDefinitionV1 {
+            schema_version: CUSTOM_PIPELINE_SCHEMA_VERSION,
+            trigger: PipelineTrigger::DomainEvent {
+                event: DomainEvent::CheckpointReady,
+                stage: Some("Integrator".into()),
+            },
+            steps: vec![PipelineStep::Canonical(CanonicalStep {
+                id: "viz".into(),
+                label: "Review note".into(),
+                role: CanonicalPipelineRole::Visualizer,
+                instructions_append: "Highlight test delta.".into(),
+            })],
+        };
+        assert!(validate_definition(&def, true).is_empty());
+        assert_eq!(def.steps[0].kind(), "canonical");
+        assert!(CanonicalPipelineRole::Visualizer.is_no_tools_no_repo());
+        assert!(!CanonicalPipelineRole::FeatureAgent.is_no_tools_no_repo());
+        assert!(CanonicalPipelineRole::ALL.iter().all(|r| {
+            CanonicalPipelineRole::parse(r.as_str()) == Some(*r) && !r.label().contains('`')
+        }));
+
+        // Bad domain stage fails cleanly without backticks.
+        def.trigger = PipelineTrigger::DomainEvent {
+            event: DomainEvent::CheckpointReady,
+            stage: Some("UnknownStage".into()),
+        };
+        let errs = validate_trigger(&def.trigger);
+        assert_eq!(errs[0].code, "stage_unknown");
+        assert!(!errs[0].message.contains('`'));
+
+        def.trigger = PipelineTrigger::DomainEvent {
+            event: DomainEvent::NoteCaptured,
+            stage: Some("Code".into()),
+        };
+        let errs = validate_trigger(&def.trigger);
+        assert_eq!(errs[0].code, "stage_not_allowed");
+        assert!(!errs[0].message.contains('`'));
+
+        // Child changes on Canonical step instructions_append round-trip.
+        def.trigger = PipelineTrigger::DomainEvent {
+            event: DomainEvent::FeatureApproved,
+            stage: None,
+        };
+        let mut edited = def.clone();
+        if let PipelineStep::Canonical(c) = &mut edited.steps[0] {
+            c.label = "Custom review note".into();
+            c.instructions_append = "Check security risks.".into();
+        }
+        let changes = child_changes(&def, &edited).unwrap();
+        let resolved = resolve_child(&def, &changes);
+        assert!(resolved.conflicts.is_empty());
+        assert_eq!(resolved.definition, edited);
+
+        // Changing canonical role produces remove + insert (cannot mutate role in place).
+        let mut role_swapped = def.clone();
+        if let PipelineStep::Canonical(c) = &mut role_swapped.steps[0] {
+            c.role = CanonicalPipelineRole::NotesScribe;
+        }
+        let swapped_changes = child_changes(&def, &role_swapped).unwrap();
+        assert_eq!(swapped_changes.remove, vec!["viz"]);
+        assert_eq!(swapped_changes.insert.len(), 1);
     }
 }

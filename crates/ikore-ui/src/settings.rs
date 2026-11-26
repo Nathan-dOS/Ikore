@@ -103,6 +103,52 @@ pub(crate) trait SettingsBackend: Send + Sync {
     ) -> SettingsFuture<()> {
         Box::pin(async { Err(mcp_unavailable()) })
     }
+    fn git_rules(
+        &self,
+        _project_id: String,
+    ) -> SettingsFuture<ikore_core::git_tool::ProjectGitRulesRecord> {
+        Box::pin(async { Err(git_tool_unavailable()) })
+    }
+    fn git_status(&self, _project_id: String) -> SettingsFuture<ikore_core::git_tool::GitStatusV1> {
+        Box::pin(async { Err(git_tool_unavailable()) })
+    }
+    fn save_git_rules(
+        &self,
+        _request: ikore_core::git_tool::SaveProjectGitRulesRequest,
+    ) -> SettingsFuture<ikore_core::git_tool::SaveProjectGitRulesOutcome> {
+        Box::pin(async { Err(git_tool_unavailable()) })
+    }
+    fn restore_default_git_rules(
+        &self,
+        _project_id: String,
+    ) -> SettingsFuture<ikore_core::git_tool::ProjectGitRulesRecord> {
+        Box::pin(async { Err(git_tool_unavailable()) })
+    }
+    fn git_commit_queue(
+        &self,
+        _project_id: String,
+    ) -> SettingsFuture<Vec<ikore_core::git_tool::PulsationCommitQueueEntryV1>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+    fn git_operations(
+        &self,
+        _project_id: String,
+    ) -> SettingsFuture<Vec<ikore_core::git_tool::GitOperationRecordV1>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+    fn preview_git_commit(
+        &self,
+        _project_id: String,
+        _pulsation_id: String,
+    ) -> SettingsFuture<ikore_core::git_tool::GitCommitPreviewV1> {
+        Box::pin(async { Err(git_tool_unavailable()) })
+    }
+    fn skip_pulsation_commit(
+        &self,
+        _request: ikore_core::git_tool::SkipPulsationCommitRequest,
+    ) -> SettingsFuture<ikore_core::git_tool::PulsationCommitQueueEntryV1> {
+        Box::pin(async { Err(git_tool_unavailable()) })
+    }
     fn verify_attestation_file(
         &self,
         bundle: String,
@@ -244,6 +290,13 @@ fn mcp_unavailable() -> UiCommandError {
     UiCommandError::from_chat_parts("mcp_unavailable", "MCP servers are not available here.")
 }
 
+fn git_tool_unavailable() -> UiCommandError {
+    UiCommandError::from_chat_parts(
+        "git_tool_unavailable",
+        "Git tool settings are not available here.",
+    )
+}
+
 impl CoreSettingsBackend {
     /// Runs a gateway operation off the UI thread (ADR-043).
     fn mcp<T: Send + 'static>(
@@ -312,6 +365,76 @@ impl SettingsBackend for CoreSettingsBackend {
 
     fn delete_mcp_server(&self, server_id: String) -> SettingsFuture<()> {
         self.mcp(move |gateway| gateway.delete_server(&server_id))
+    }
+
+    fn git_rules(
+        &self,
+        project_id: String,
+    ) -> SettingsFuture<ikore_core::git_tool::ProjectGitRulesRecord> {
+        self.blocking(move |persistence| persistence.get_project_git_rules(&project_id))
+    }
+
+    fn git_status(&self, project_id: String) -> SettingsFuture<ikore_core::git_tool::GitStatusV1> {
+        let core = self.core.clone();
+        let runtime = core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn(async move { core.inspect_git_status(&project_id).await })
+                .await
+                .map_err(|e| UiCommandError::worker(e.to_string()))?
+                .map_err(UiCommandError::from)
+        })
+    }
+
+    fn save_git_rules(
+        &self,
+        request: ikore_core::git_tool::SaveProjectGitRulesRequest,
+    ) -> SettingsFuture<ikore_core::git_tool::SaveProjectGitRulesOutcome> {
+        self.blocking(move |persistence| persistence.save_project_git_rules(request))
+    }
+
+    fn restore_default_git_rules(
+        &self,
+        project_id: String,
+    ) -> SettingsFuture<ikore_core::git_tool::ProjectGitRulesRecord> {
+        self.blocking(move |persistence| persistence.restore_default_project_git_rules(&project_id))
+    }
+
+    fn git_commit_queue(
+        &self,
+        project_id: String,
+    ) -> SettingsFuture<Vec<ikore_core::git_tool::PulsationCommitQueueEntryV1>> {
+        self.blocking(move |persistence| persistence.list_pulsation_commit_queue(&project_id))
+    }
+
+    fn git_operations(
+        &self,
+        project_id: String,
+    ) -> SettingsFuture<Vec<ikore_core::git_tool::GitOperationRecordV1>> {
+        self.blocking(move |persistence| persistence.list_git_operations(&project_id, 20))
+    }
+
+    fn preview_git_commit(
+        &self,
+        project_id: String,
+        pulsation_id: String,
+    ) -> SettingsFuture<ikore_core::git_tool::GitCommitPreviewV1> {
+        let core = self.core.clone();
+        let runtime = core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn(async move { core.preview_git_commit(&project_id, &pulsation_id).await })
+                .await
+                .map_err(|e| UiCommandError::worker(e.to_string()))?
+                .map_err(UiCommandError::from)
+        })
+    }
+
+    fn skip_pulsation_commit(
+        &self,
+        request: ikore_core::git_tool::SkipPulsationCommitRequest,
+    ) -> SettingsFuture<ikore_core::git_tool::PulsationCommitQueueEntryV1> {
+        self.blocking(move |persistence| persistence.skip_pulsation_commit(request))
     }
 
     fn set_mcp_grant(
@@ -844,6 +967,7 @@ pub(crate) enum SettingsPage {
     Mcp,
     Preparation,
     Composition,
+    Git,
     Timeouts,
     Labs,
     Security,
@@ -871,7 +995,7 @@ impl SettingsGroup {
 }
 
 impl SettingsPage {
-    pub(crate) const ALL: [Self; 17] = [
+    pub(crate) const ALL: [Self; 18] = [
         Self::General,
         Self::Usage,
         Self::Projects,
@@ -885,6 +1009,7 @@ impl SettingsPage {
         Self::Mcp,
         Self::Preparation,
         Self::Composition,
+        Self::Git,
         Self::Timeouts,
         Self::Labs,
         Self::Security,
@@ -906,6 +1031,7 @@ impl SettingsPage {
             Self::Mcp => "mcp",
             Self::Preparation => "preparation",
             Self::Composition => "composition",
+            Self::Git => "git",
             Self::Timeouts => "timeouts",
             Self::Labs => "labs",
             Self::Security => "security",
@@ -928,6 +1054,7 @@ impl SettingsPage {
             Self::Mcp => "MCP servers",
             Self::Preparation => "Preparation & context",
             Self::Composition => "Stage composition",
+            Self::Git => "Git",
             Self::Timeouts => "Agent timeouts",
             Self::Labs => "Labs",
             Self::Security => "Security",
@@ -958,6 +1085,9 @@ impl SettingsPage {
                 "Refinement before Specification, the handoff budget and learning after a run."
             }
             Self::Composition => "Host-coordinated units, checks and overrides for this project.",
+            Self::Git => {
+                "Host git tool status, commit rules, and push or pull rules for this project."
+            }
             Self::Timeouts => {
                 "Default CLI deadlines. Per-agent silence is editable in Agent Configuration; API routes have separate deadlines. Companion ceiling is per call."
             }
@@ -983,6 +1113,7 @@ impl SettingsPage {
             Self::Mcp => Icon::Plug,
             Self::Preparation => Icon::ListTodo,
             Self::Composition => Icon::Workflow,
+            Self::Git => Icon::GitBranch,
             Self::Timeouts => Icon::Clock,
             Self::Labs => Icon::FlaskConical,
             Self::Security => Icon::ShieldCheck,
@@ -1002,7 +1133,9 @@ impl SettingsPage {
             | Self::Voice
             | Self::SecondBrain
             | Self::Mcp => SettingsGroup::AiModels,
-            Self::Preparation | Self::Composition | Self::Timeouts => SettingsGroup::Pipeline,
+            Self::Preparation | Self::Composition | Self::Git | Self::Timeouts => {
+                SettingsGroup::Pipeline
+            }
             Self::Labs | Self::Security | Self::About => SettingsGroup::System,
         }
     }
@@ -1031,6 +1164,7 @@ impl SettingsPage {
             }
             Self::Preparation => "taskrefine prespec vagueness budget learning brownfield",
             Self::Composition => "v4 composed batches units validation checks overrides",
+            Self::Git => "git commit push pull branch rules conventional gh remote",
             Self::Timeouts => "deadline inactivity ceiling streaming",
             Self::Labs => "experimental preview flags beta",
             Self::Security => {
@@ -1049,6 +1183,7 @@ impl SettingsPage {
                 | Self::Shortcuts
                 | Self::Voice
                 | Self::Mcp
+                | Self::Git
                 | Self::Timeouts
                 | Self::About
         )
@@ -1207,6 +1342,8 @@ pub(crate) struct SettingsModel {
     pub(crate) usage: crate::usage::UsageState,
     /// Settings › MCP servers (ADR-043).
     pub(crate) mcp: crate::mcp_settings::McpSettings,
+    /// Settings › Git (Feature 08 M1).
+    pub(crate) git: crate::git_settings_ui::GitSettingsState,
     pub(crate) deletion_preview: Option<ProjectDeletionPreview>,
     pub(crate) deletion_project_id: Option<String>,
     pub(crate) deletion_loading: bool,
@@ -1265,6 +1402,7 @@ impl Default for SettingsModel {
             cli_connections_error: None,
             usage: Default::default(),
             mcp: Default::default(),
+            git: Default::default(),
             deletion_preview: None,
             deletion_project_id: None,
             deletion_loading: false,

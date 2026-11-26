@@ -126,7 +126,21 @@ impl NoteScribeRuntime {
             None,
         )?;
         let created = note(&tx, &request.project_id, &note_id)?;
+        PersistenceService::record_domain_event_in_tx(
+            &tx,
+            &request.project_id,
+            crate::custom_pipelines::DomainEvent::NoteCaptured,
+            None,
+            Some(&note_id),
+            serde_json::json!({
+                "kind": "domain_event",
+                "event": "note_captured",
+                "noteId": note_id,
+            }),
+            &at,
+        )?;
         tx.commit()?;
+        self.persistence.notify_automation_wakeup();
         self.spawn(
             &mut active,
             AdmittedTurn {

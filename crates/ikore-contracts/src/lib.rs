@@ -6,6 +6,7 @@ pub mod custom_pipeline;
 pub mod env;
 pub mod exchange;
 pub mod external_changes;
+pub mod git_tool;
 pub mod line_diff;
 pub mod llm;
 pub mod redaction;

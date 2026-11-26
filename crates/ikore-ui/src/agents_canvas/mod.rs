@@ -1039,7 +1039,11 @@ impl AppModel {
                 .is_some_and(|pipeline| {
                     pipeline.definition.steps.iter().any(|step| {
                         step.id() == step_id
-                            && matches!(step, ikore_core::custom_pipelines::PipelineStep::Agent(_))
+                            && matches!(
+                                step,
+                                ikore_core::custom_pipelines::PipelineStep::Agent(_)
+                                    | ikore_core::custom_pipelines::PipelineStep::Canonical(_)
+                            )
                     })
                 }),
             AgentIdentifier::StageVerifier(_) => true,

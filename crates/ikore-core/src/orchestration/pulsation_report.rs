@@ -198,6 +198,10 @@ impl PersistenceService {
         });
         report.provenance = Self::report_provenance(&self.connection()?, &pulse)?;
         report.verifications = report_verifications(&self.connection()?, &pulse)?;
+        report.git_commit = crate::git_tool::queue::latest_commit_receipt_for_pulsation(
+            &self.connection()?,
+            &pulse,
+        )?;
         Ok(report)
     }
 

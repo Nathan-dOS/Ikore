@@ -283,7 +283,7 @@ fn refused_definitions_report_every_problem() {
             "api_route_unknown",
             "backend_not_allowed",
             "description_too_long",
-            "host_tool_unavailable",
+            "git_commit_requires_pulsation_done",
             "model_required",
             "stage_unknown"
         ]
@@ -778,8 +778,21 @@ fn a_global_pipeline_serves_each_project_that_adds_it_and_is_adopted_when_it_ope
     );
     let offered = f.service.custom_pipelines_snapshot(&other).unwrap();
     assert!(offered.pipelines.is_empty());
-    assert_eq!(offered.available_globals.len(), 1);
-    assert_eq!(offered.available_globals[0].id, global.id);
+    let offered_user_globals: Vec<_> = offered
+        .available_globals
+        .iter()
+        .filter(|g| !g.is_builtin)
+        .collect();
+    assert_eq!(offered_user_globals.len(), 1);
+    assert_eq!(offered_user_globals[0].id, global.id);
+    assert!(
+        offered
+            .available_globals
+            .iter()
+            .filter(|g| g.is_builtin)
+            .count()
+            == 5
+    );
     let added = saved(
         f.service
             .activate_custom_pipeline(&other, &global.id)
@@ -791,6 +804,9 @@ fn a_global_pipeline_serves_each_project_that_adds_it_and_is_adopted_when_it_ope
             .custom_pipelines_snapshot(&other)
             .unwrap()
             .available_globals
+            .into_iter()
+            .filter(|g| !g.is_builtin)
+            .collect::<Vec<_>>()
             .is_empty()
     );
     // A run in the other project before it adopts the edit follows v1 (T4).
@@ -1051,11 +1067,14 @@ fn global_limits_scope_moves_and_project_parents_are_enforced() {
     // At most seven boxes in a project: three of its own and four globals
     // besides `Own`.
     f.create("Extra", vec![agent("a")]);
-    let globals = f
+    let globals: Vec<_> = f
         .service
         .custom_pipelines_snapshot(&f.project)
         .unwrap()
-        .available_globals;
+        .available_globals
+        .into_iter()
+        .filter(|g| !g.is_builtin)
+        .collect();
     assert_eq!(globals.len(), MAX_GLOBAL_PIPELINES - 1);
     for global in &globals {
         saved(
@@ -1110,4 +1129,764 @@ fn deleting_a_project_keeps_the_global_pipelines_it_used() {
         )
         .unwrap();
     assert_eq!(remaining, 0);
+}
+
+fn run_git_test_cmd(repo: &std::path::Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .expect("git command");
+    assert!(
+        out.status.success(),
+        "git {:?} failed: stdout={}, stderr={}",
+        args,
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_owned()
+}
+
+fn sha256_hex_str(raw: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(raw.as_bytes());
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn seed_done_pulsation_for_pipeline(
+    service: &PersistenceService,
+    project_id: &str,
+    repo: &std::path::Path,
+    pulsation_id: &str,
+    completed_at: &str,
+    file_rel: &str,
+    file_content: &str,
+    test_rel: &str,
+    test_content: &str,
+) {
+    let db = service.connection().unwrap();
+    db.execute(
+        "INSERT INTO pulsations(id, project_id, feature_name, stage, status, created_at, updated_at, queue_sequence)
+         VALUES (?1, ?2, ?3, 'Integrator', 'done', ?4, ?4, (SELECT COALESCE(MAX(queue_sequence),0)+1 FROM pulsations WHERE project_id=?2))",
+        params![pulsation_id, project_id, format!("Feature {pulsation_id}"), completed_at],
+    )
+    .unwrap();
+    let job_code = format!("job-code-{pulsation_id}");
+    let job_test = format!("job-test-{pulsation_id}");
+    for (jid, stage) in [(&job_code, "Code"), (&job_test, "Test")] {
+        db.execute(
+            "INSERT INTO jobs(id, pulsation_id, kind, status, created_at, updated_at, project_id, input_revision, generation, state_version, job_class, idempotency_key)
+             VALUES (?1, ?2, 'stage_run', 'done', ?3, ?3, ?4, 1, 1, 1, 'main', ?5)",
+            params![jid, pulsation_id, completed_at, project_id, format!("idem:{jid}")],
+        )
+        .unwrap();
+        let _ = stage;
+    }
+    let items = [
+        (
+            format!("art-c-{pulsation_id}"),
+            file_rel,
+            file_content,
+            "Code",
+            job_code,
+        ),
+        (
+            format!("art-t-{pulsation_id}"),
+            test_rel,
+            test_content,
+            "Test",
+            job_test,
+        ),
+    ];
+    for (aid, rel, content, stage, jid) in items {
+        let sha = sha256_hex_str(content);
+        db.execute(
+            "INSERT INTO artifacts(
+                id, pulsation_id, name, kind, relative_path, content_sha256, created_at, updated_at,
+                content, producer_job_id, producer_stage, generation, input_revision,
+                producer_state_version, output_position, acceptance, publication_state
+             ) VALUES (?1, ?2, ?3, 'file', ?3, ?4, ?5, ?5, ?6, ?7, ?8, 1, 1, 1, 0, 'accepted', 'applied')",
+            params![aid, pulsation_id, rel, sha, completed_at, content, jid, stage],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO artifact_publications(
+                artifact_id, project_id, pulsation_id, relative_path, expected_sha256, desired_sha256, state, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, NULL, ?5, 'applied', ?6)",
+            params![aid, project_id, pulsation_id, rel, sha, completed_at],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO pulsation_file_bases(
+                pulsation_id, path_key, relative_path, state, content_sha256, content, first_artifact_id, captured_at
+             ) VALUES (?1, ?2, ?3, 'absent', NULL, NULL, ?4, ?5)",
+            params![pulsation_id, rel.to_ascii_lowercase(), rel, aid, completed_at],
+        )
+        .unwrap();
+        let full = repo.join(rel);
+        if let Some(parent) = full.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&full, content).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn host_tool_commit_and_push_pipeline_runs_in_automation_lane_and_links_git_operation() {
+    let bare = tempfile::tempdir().unwrap();
+    run_git_test_cmd(bare.path(), &["init", "--bare", "-b", "main"]);
+    let bare_str = bare.path().to_string_lossy().replace('\\', "/");
+
+    let repo = tempfile::tempdir().unwrap();
+    run_git_test_cmd(repo.path(), &["init", "-b", "main"]);
+    run_git_test_cmd(repo.path(), &["config", "user.name", "Pipeline Tester"]);
+    run_git_test_cmd(repo.path(), &["config", "user.email", "pipe@example.com"]);
+    run_git_test_cmd(repo.path(), &["config", "core.autocrlf", "false"]);
+    std::fs::write(repo.path().join("README.md"), "# Init\n").unwrap();
+    run_git_test_cmd(repo.path(), &["add", "--all"]);
+    run_git_test_cmd(repo.path(), &["commit", "-m", "chore: init"]);
+    run_git_test_cmd(repo.path(), &["remote", "add", "origin", &bare_str]);
+    run_git_test_cmd(repo.path(), &["push", "-u", "origin", "main"]);
+
+    let data = tempfile::tempdir().unwrap();
+    let service = PersistenceService::initialize(data.path()).unwrap();
+    let project = service
+        .create_project(CreateProjectRequest {
+            workspace_path: repo.path().to_string_lossy().into_owned(),
+            name: Some("HostTool M5".into()),
+        })
+        .unwrap()
+        .project
+        .id;
+
+    // Enable git tool for the project.
+    let outcome = service
+        .save_project_git_rules(crate::git_tool::SaveProjectGitRulesRequest {
+            project_id: project.clone(),
+            enabled: true,
+            rules: crate::git_tool::CommitRulesV1::default(),
+        })
+        .unwrap();
+    assert!(matches!(
+        outcome,
+        crate::git_tool::SaveProjectGitRulesOutcome::Saved(_)
+    ));
+
+    // Seed two done pulsations in completion order (P8 test).
+    seed_done_pulsation_for_pipeline(
+        &service,
+        &project,
+        repo.path(),
+        "pulse-stack-1",
+        "2026-11-26T00:01:00Z",
+        "src/one.rs",
+        "pub fn one() {}\n",
+        "tests/one_test.rs",
+        "#[test] fn one_ok() {}\n",
+    );
+    seed_done_pulsation_for_pipeline(
+        &service,
+        &project,
+        repo.path(),
+        "pulse-stack-2",
+        "2026-11-26T00:02:00Z",
+        "src/two.rs",
+        "pub fn two() {}\n",
+        "tests/two_test.rs",
+        "#[test] fn two_ok() {}\n",
+    );
+
+    let done_def = CustomPipelineDefinitionV1 {
+        schema_version: 1,
+        trigger: PipelineTrigger::DefaultEvent {
+            event: crate::custom_pipelines::DefaultEvent::PulsationDone,
+            stage: None,
+        },
+        steps: vec![
+            PipelineStep::HostTool(HostToolStep {
+                id: "commit-step".into(),
+                label: "Commit".into(),
+                tool: HostTool::GitCommit,
+            }),
+            PipelineStep::HostTool(HostToolStep {
+                id: "push-step".into(),
+                label: "Push".into(),
+                tool: HostTool::GitPush,
+            }),
+        ],
+    };
+    let saved_pipe = match service
+        .save_custom_pipeline(SaveCustomPipelineRequest {
+            project_id: project.clone(),
+            pipeline_id: None,
+            expected_version: None,
+            scope: Some("global".into()),
+            parent_pipeline_id: None,
+            name: "Commit and push".into(),
+            description: String::new(),
+            definition: done_def,
+        })
+        .unwrap()
+    {
+        SaveCustomPipelineOutcome::Saved { pipeline } => *pipeline,
+        SaveCustomPipelineOutcome::Invalid { errors } => panic!("{errors:?}"),
+    };
+
+    // Global pipeline with git.commit cannot be overridden to Manual trigger.
+    let bad_override = service
+        .set_custom_pipeline_trigger(crate::custom_pipelines::SetPipelineTriggerRequest {
+            project_id: project.clone(),
+            pipeline_id: saved_pipe.id.clone(),
+            trigger: Some(PipelineTrigger::Manual),
+        })
+        .unwrap();
+    assert_eq!(codes(bad_override), ["git_commit_requires_pulsation_done"]);
+
+    // Enqueue a PulsationDone outbox event for pulse-stack-2 and dispatch.
+    {
+        let db = service.connection().unwrap();
+        db.execute(
+            "INSERT INTO pipeline_trigger_outbox(id,project_id,pulsation_id,event,stage,state_version,state,created_at)
+             VALUES('outbox-m5',?1,'pulse-stack-2','pulsation_done',NULL,1,'pending','2026-11-26T00:02:01Z')",
+            [&project],
+        )
+        .unwrap();
+    }
+    service.dispatch_pipeline_triggers().unwrap();
+
+    let runs = service.custom_pipelines_snapshot(&project).unwrap().runs;
+    assert_eq!(runs.len(), 1);
+    let run_id = runs[0].id.clone();
+
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    // Execute step 0: GitCommit (must commit pulse-stack-1 first, then pulse-stack-2 stacked).
+    let claim0 = service.claim_next_automation_step().unwrap().unwrap();
+    service.run_automation_step(claim0, shutdown.clone()).await;
+    // Execute step 1: GitPush.
+    let claim1 = service.claim_next_automation_step().unwrap().unwrap();
+    service.run_automation_step(claim1, shutdown).await;
+
+    let run = service.custom_pipeline_run(&project, &run_id).unwrap();
+    assert_eq!(
+        run.status,
+        PipelineRunStatus::Done,
+        "run error: {:?}",
+        run.error
+    );
+    let s0 = run.step(0).unwrap();
+    let s1 = run.step(1).unwrap();
+    assert_eq!(s0.status, StepRunStatus::Done);
+    assert!(s0.git_operation_id.is_some());
+    assert_eq!(s1.status, StepRunStatus::Done);
+    assert!(s1.git_operation_id.is_some());
+
+    // Queue entries are committed and remote bare repo received the second branch.
+    let queue = service.list_pulsation_commit_queue(&project).unwrap();
+    assert_eq!(queue.len(), 2);
+    assert_eq!(
+        queue[0].state,
+        crate::git_tool::PulsationCommitQueueState::Committed
+    );
+    assert_eq!(
+        queue[1].state,
+        crate::git_tool::PulsationCommitQueueState::Committed
+    );
+    let remote_heads = run_git_test_cmd(
+        bare.path(),
+        &["for-each-ref", "refs/heads", "--format=%(refname:short)"],
+    );
+    let p2_branch = queue[1].branch.as_deref().unwrap();
+    assert!(remote_heads.lines().any(|b| b == p2_branch));
+}
+
+#[tokio::test]
+async fn host_tool_pull_step_ignores_its_own_automation_slot_and_fast_forwards() {
+    let bare = tempfile::tempdir().unwrap();
+    run_git_test_cmd(bare.path(), &["init", "--bare", "-b", "main"]);
+    let bare_str = bare.path().to_string_lossy().replace('\\', "/");
+
+    let repo = tempfile::tempdir().unwrap();
+    run_git_test_cmd(repo.path(), &["init", "-b", "main"]);
+    run_git_test_cmd(repo.path(), &["config", "user.name", "Pull Step Tester"]);
+    run_git_test_cmd(repo.path(), &["config", "user.email", "pull@example.com"]);
+    std::fs::write(repo.path().join("file.txt"), "one\n").unwrap();
+    run_git_test_cmd(repo.path(), &["add", "--all"]);
+    run_git_test_cmd(repo.path(), &["commit", "-m", "chore: initial"]);
+    run_git_test_cmd(repo.path(), &["remote", "add", "origin", &bare_str]);
+    run_git_test_cmd(repo.path(), &["switch", "-c", "feat/sync"]);
+    run_git_test_cmd(repo.path(), &["push", "-u", "origin", "feat/sync"]);
+
+    let writer = tempfile::tempdir().unwrap();
+    run_git_test_cmd(writer.path(), &["clone", "-b", "feat/sync", &bare_str, "."]);
+    run_git_test_cmd(writer.path(), &["config", "user.name", "Writer"]);
+    run_git_test_cmd(
+        writer.path(),
+        &["config", "user.email", "writer@example.com"],
+    );
+    std::fs::write(writer.path().join("file.txt"), "two\n").unwrap();
+    run_git_test_cmd(writer.path(), &["add", "--all"]);
+    run_git_test_cmd(writer.path(), &["commit", "-m", "feat: upstream change"]);
+    run_git_test_cmd(writer.path(), &["push", "origin", "feat/sync"]);
+    let expected_head = run_git_test_cmd(writer.path(), &["rev-parse", "HEAD"]);
+
+    let data = tempfile::tempdir().unwrap();
+    let service = PersistenceService::initialize(data.path()).unwrap();
+    let project = service
+        .create_project(CreateProjectRequest {
+            workspace_path: repo.path().to_string_lossy().into_owned(),
+            name: Some("Pull Step M5".into()),
+        })
+        .unwrap()
+        .project
+        .id;
+    service
+        .save_project_git_rules(crate::git_tool::SaveProjectGitRulesRequest {
+            project_id: project.clone(),
+            enabled: true,
+            rules: crate::git_tool::CommitRulesV1::default(),
+        })
+        .unwrap();
+
+    let saved = match service
+        .save_custom_pipeline(SaveCustomPipelineRequest {
+            project_id: project.clone(),
+            pipeline_id: None,
+            expected_version: None,
+            scope: Some("project".into()),
+            parent_pipeline_id: None,
+            name: "Sync pull".into(),
+            description: String::new(),
+            definition: CustomPipelineDefinitionV1 {
+                schema_version: 1,
+                trigger: PipelineTrigger::Manual,
+                steps: vec![PipelineStep::HostTool(HostToolStep {
+                    id: "pull-step".into(),
+                    label: "Pull".into(),
+                    tool: HostTool::GitPull,
+                })],
+            },
+        })
+        .unwrap()
+    {
+        SaveCustomPipelineOutcome::Saved { pipeline } => *pipeline,
+        SaveCustomPipelineOutcome::Invalid { errors } => panic!("{errors:?}"),
+    };
+
+    let run_id = service
+        .start_custom_pipeline_run(&project, &saved.id)
+        .unwrap();
+    let claim = service.claim_next_automation_step().unwrap().unwrap();
+    service
+        .run_automation_step(claim, tokio_util::sync::CancellationToken::new())
+        .await;
+
+    let run = service.custom_pipeline_run(&project, &run_id).unwrap();
+    assert_eq!(
+        run.status,
+        PipelineRunStatus::Done,
+        "run error: {:?}",
+        run.error
+    );
+    assert!(run.step(0).unwrap().git_operation_id.is_some());
+    assert_eq!(
+        run_git_test_cmd(repo.path(), &["rev-parse", "HEAD"]),
+        expected_head
+    );
+}
+
+#[test]
+fn builtin_default_pipelines_seed_idempotently_and_keep_user_global_quota() {
+    let f = fixture();
+    let snapshot = f.service.custom_pipelines_snapshot(&f.project).unwrap();
+    let builtins: Vec<_> = snapshot
+        .available_globals
+        .iter()
+        .filter(|g| g.is_builtin)
+        .collect();
+    assert_eq!(builtins.len(), 5);
+    assert!(
+        snapshot
+            .available_globals
+            .iter()
+            .take(5)
+            .all(|g| g.is_builtin)
+    );
+
+    // Reopening leaves the five templates unique and preserves zero user global count.
+    drop(snapshot);
+    let _reopened = PersistenceService::initialize(f._data.path()).unwrap();
+    let db = f.db();
+    let template_count: i64 = db
+        .query_row(
+            "SELECT count(*) FROM custom_pipelines WHERE template_key IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(template_count, 5);
+
+    // User can still create all MAX_GLOBAL_PIPELINES user global pipelines.
+    for idx in 0..MAX_GLOBAL_PIPELINES {
+        let out = f.create_in(
+            &f.project,
+            &format!("User Global {idx}"),
+            "global",
+            None,
+            vec![agent("a")],
+        );
+        assert!(
+            matches!(out, SaveCustomPipelineOutcome::Saved { .. }),
+            "idx={idx}"
+        );
+    }
+    assert_eq!(
+        codes(f.create_in(&f.project, "One too many", "global", None, vec![agent("a")])),
+        ["global_limit"]
+    );
+}
+
+#[test]
+fn builtin_templates_are_immutable_but_support_activate_trigger_override_archive_and_children() {
+    let f = fixture();
+    let activated = saved(
+        f.service
+            .activate_custom_pipeline(&f.project, "builtin-companion-notes")
+            .unwrap(),
+    );
+    assert!(activated.is_builtin());
+    assert!(activated.is_global());
+
+    // Direct edits, deletes, and move-to-project are refused with builtin_immutable / error.
+    let edit_err = f
+        .service
+        .save_custom_pipeline(SaveCustomPipelineRequest {
+            project_id: f.project.clone(),
+            pipeline_id: Some(activated.id.clone()),
+            expected_version: Some(activated.current_version),
+            name: "Renamed".into(),
+            description: String::new(),
+            definition: activated.definition.clone(),
+            scope: None,
+            parent_pipeline_id: None,
+        })
+        .unwrap();
+    assert_eq!(codes(edit_err), ["builtin_immutable"]);
+
+    let move_err = f
+        .service
+        .move_custom_pipeline_to_project(&f.project, &activated.id)
+        .unwrap();
+    assert_eq!(codes(move_err), ["builtin_immutable"]);
+
+    assert!(
+        f.service
+            .delete_custom_pipeline(&f.project, &activated.id)
+            .is_err()
+    );
+
+    // Per-project trigger override, archive/restore, and creating an editable child work.
+    let overridden = saved(
+        f.service
+            .set_custom_pipeline_trigger(crate::custom_pipelines::SetPipelineTriggerRequest {
+                project_id: f.project.clone(),
+                pipeline_id: activated.id.clone(),
+                trigger: Some(PipelineTrigger::DomainEvent {
+                    event: crate::custom_pipelines::DomainEvent::FeatureApproved,
+                    stage: None,
+                }),
+            })
+            .unwrap(),
+    );
+    assert_eq!(
+        overridden.trigger_override,
+        Some(PipelineTrigger::DomainEvent {
+            event: crate::custom_pipelines::DomainEvent::FeatureApproved,
+            stage: None,
+        })
+    );
+    let archived = saved(
+        f.service
+            .set_custom_pipeline_archived(&f.project, &activated.id, true)
+            .unwrap(),
+    );
+    assert!(archived.archived);
+    let restored = saved(
+        f.service
+            .set_custom_pipeline_archived(&f.project, &activated.id, false)
+            .unwrap(),
+    );
+    assert!(!restored.archived);
+
+    let mut child_def = activated.definition.clone();
+    if let PipelineStep::Canonical(c) = &mut child_def.steps[0] {
+        c.instructions_append = "Keep bullet summary under five items.".into();
+    }
+    let child = saved(f.create_in(
+        &f.project,
+        "My Companion Notes",
+        "project",
+        Some(&activated.id),
+        child_def.steps,
+    ));
+    assert!(!child.is_builtin());
+    assert_eq!(
+        child.parent_pipeline_id.as_deref(),
+        Some(activated.id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn canonical_pipeline_step_builds_hardened_context_and_refuses_custom_cli_backend() {
+    let f = fixture();
+    let activated = saved(
+        f.service
+            .activate_custom_pipeline(&f.project, "builtin-companion-notes")
+            .unwrap(),
+    );
+    let run_id = f
+        .service
+        .start_custom_pipeline_run(&f.project, &activated.id)
+        .unwrap();
+    let claim = f.service.claim_next_automation_step().unwrap().unwrap();
+    assert_eq!(claim.run_id, run_id);
+
+    // Inspect hardened no-tools context for NotesScribe.
+    let PipelineStep::Canonical(ref canon) = activated.definition.steps[0] else {
+        panic!("expected canonical step");
+    };
+    let (system, user) = f.service.canonical_step_context(&claim, canon).unwrap();
+    assert!(system.contains("strict isolation"));
+    assert!(system.contains("All tools, filesystem access, and commands are disabled"));
+    assert!(user.contains("## Trigger"));
+
+    // Configure custom CLI backend for notes_scribe and ensure execution fails cleanly.
+    f.db()
+        .execute(
+            "INSERT INTO cli_agent_configs(project_id,agent_role,execution_mode,backend,custom_executable,created_at,updated_at)
+             VALUES(?1,'notes_scribe','cli_process','custom','/bin/echo','2026-11-26T00:00:00Z','2026-11-26T00:00:00Z')",
+            [&f.project],
+        )
+        .unwrap();
+    f.service
+        .run_automation_step(claim, tokio_util::sync::CancellationToken::new())
+        .await;
+    let run = f.service.custom_pipeline_run(&f.project, &run_id).unwrap();
+    assert_eq!(run.status, PipelineRunStatus::Failed);
+    assert!(
+        run.step(0)
+            .unwrap()
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("refuses the custom CLI backend"))
+    );
+}
+
+#[test]
+fn domain_trigger_outbox_fires_on_all_four_events_and_dispatches_idempotently() {
+    use crate::companion_notes::{CaptureNoteRequest, NoteScribeRuntime, NoteSource};
+    use crate::custom_pipelines::DomainEvent;
+    use crate::doc_reconciliation::DriftOrigin;
+    use crate::doc_reconciliation::store::record_signal;
+    use crate::feature_forge::{
+        AcceptanceCriterion, CreateFeatureRequest, FeatureBrief, FeatureForgeService, TaskDraft,
+        TaskKind,
+    };
+
+    let f = fixture();
+    // Activate all four domain-event built-in pipelines in this project.
+    for id in [
+        "builtin-companion-notes",
+        "builtin-docs-reconciliation",
+        "builtin-checkpoint-visualizer",
+        "builtin-feature-handoff",
+    ] {
+        saved(f.service.activate_custom_pipeline(&f.project, id).unwrap());
+    }
+
+    // 1. FeatureApproved via FeatureForgeService::approve
+    let forge = FeatureForgeService::new(f.service.clone());
+    let created = forge
+        .create(CreateFeatureRequest {
+            project_id: f.project.clone(),
+            request_id: uuid::Uuid::new_v4().to_string(),
+            title: "Approve trigger check".into(),
+            idea: "Add domain trigger support with explicit verification".into(),
+        })
+        .unwrap();
+    let brief = FeatureBrief {
+        objective: "Ship domain triggers cleanly".into(),
+        audience: "Project developers".into(),
+        behavior: "Emit domain event inside transaction".into(),
+        scope: "Bounded workflow".into(),
+        criteria: vec![AcceptanceCriterion {
+            id: "ac-1".into(),
+            description: "Fires once per approval".into(),
+        }],
+        tasks: vec![TaskDraft {
+            title: "Wire emitter".into(),
+            kind: TaskKind::Bug,
+            description: "When approved, queue FeatureApproved event cleanly".into(),
+            criteria: vec![AcceptanceCriterion {
+                id: "ac-1".into(),
+                description: "Fires once per approval".into(),
+            }],
+            dependencies: vec![],
+            feature_id: None,
+        }],
+        coverage: "unavailable".into(),
+        ..Default::default()
+    };
+    let revised = forge
+        .revise(&f.project, &created.id, created.revision, brief)
+        .unwrap();
+    forge
+        .approve(&f.project, &revised.id, revised.revision)
+        .unwrap();
+
+    // 2. DocsStale via doc_reconciliation::store::record_signal
+    let db = f.db();
+    record_signal(
+        &db,
+        &f.project,
+        "Vault/architecture.md",
+        "src/lib.rs",
+        Some("old"),
+        Some("new"),
+        DriftOrigin::Watcher,
+        None,
+    )
+    .unwrap();
+
+    // 3. CheckpointReady (Integrator) via PersistenceService::open_checkpoint
+    db.execute(
+        "INSERT INTO pulsations(id,project_id,feature_name,status,stage,queue_sequence,created_at,updated_at)
+         VALUES('pulse-dom',?1,'Feature X','running','Integrator',1,'2026-11-26T00:00:00Z','2026-11-26T00:00:00Z')",
+        [&f.project],
+    )
+    .unwrap();
+    PersistenceService::open_checkpoint(
+        &db,
+        "pulse-dom",
+        ikore_contracts::stages::PulsationStage::Integrator,
+    )
+    .unwrap();
+    drop(db);
+
+    // 4. NoteCaptured via NoteScribeRuntime::capture
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let bus = std::sync::Arc::new(crate::AppEventBus::default());
+    let scribe = std::sync::Arc::new(
+        NoteScribeRuntime::new(f.service.clone(), bus, rt.handle().clone()).unwrap(),
+    );
+    scribe
+        .capture(CaptureNoteRequest {
+            project_id: f.project.clone(),
+            request_id: "req-note-cap".into(),
+            source_type: NoteSource::Text,
+            raw_input: "Remember to wire domain triggers cleanly.".into(),
+        })
+        .unwrap();
+
+    let outbox_count: i64 = f
+        .db()
+        .query_row(
+            "SELECT count(*) FROM domain_trigger_outbox WHERE project_id=?1 AND state='pending'",
+            [&f.project],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(outbox_count, 4);
+
+    // First dispatch creates 4 runs (1 per listener); second dispatch is idempotent (0).
+    let started_first = f.service.dispatch_domain_triggers().unwrap();
+    assert_eq!(started_first, 4);
+    assert_eq!(f.service.dispatch_domain_triggers().unwrap(), 0);
+
+    let runs = f
+        .service
+        .custom_pipelines_snapshot(&f.project)
+        .unwrap()
+        .runs;
+    assert_eq!(runs.len(), 4);
+    assert!(runs.iter().all(|r| r.trigger_kind == "domain_event"));
+    assert!(
+        runs.iter()
+            .any(|r| r.trigger_label.as_deref() == Some("Feature approved"))
+    );
+    assert!(
+        runs.iter()
+            .any(|r| r.trigger_label.as_deref() == Some("Note captured"))
+    );
+    assert!(
+        runs.iter()
+            .any(|r| r.trigger_label.as_deref() == Some("Docs stale"))
+    );
+    assert!(
+        runs.iter()
+            .any(|r| r.trigger_label.as_deref() == Some("Checkpoint ready \u{b7} Integrator"))
+    );
+
+    // Non-Integrator checkpoint opens no outbox event when listener asks for Integrator only.
+    let db = f.db();
+    let emitted_code = PersistenceService::record_domain_event_in_tx(
+        &db,
+        &f.project,
+        DomainEvent::CheckpointReady,
+        Some("Code"),
+        Some("cp-code"),
+        serde_json::json!({"event":"checkpoint_ready","stage":"Code"}),
+        "2026-11-26T00:00:00Z",
+    )
+    .unwrap();
+    assert!(!emitted_code);
+}
+
+#[test]
+fn deleting_a_project_purges_domain_trigger_outbox_and_keeps_builtins() {
+    let f = fixture();
+    let (_other_ws, other) = second_project(&f, "Temp Outbox");
+    saved(
+        f.service
+            .activate_custom_pipeline(&other, "builtin-feature-handoff")
+            .unwrap(),
+    );
+    let db = f.db();
+    PersistenceService::record_domain_event_in_tx(
+        &db,
+        &other,
+        crate::custom_pipelines::DomainEvent::FeatureApproved,
+        None,
+        Some("feat-temp"),
+        serde_json::json!({"kind":"domain_event","event":"feature_approved"}),
+        "2026-11-26T00:00:00Z",
+    )
+    .unwrap();
+    drop(db);
+    assert_eq!(f.service.dispatch_domain_triggers().unwrap(), 1);
+
+    f.service
+        .delete_project_permanently(&other, "Temp Outbox")
+        .unwrap();
+
+    let remaining_outbox: i64 = f
+        .db()
+        .query_row(
+            "SELECT count(*) FROM domain_trigger_outbox WHERE project_id=?1",
+            [&other],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(remaining_outbox, 0);
+
+    let remaining_builtins: i64 = f
+        .db()
+        .query_row(
+            "SELECT count(*) FROM custom_pipelines WHERE template_key IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(remaining_builtins, 5);
 }
