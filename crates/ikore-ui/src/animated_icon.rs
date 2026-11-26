@@ -45,11 +45,16 @@ pub(crate) enum AnimClip {
     NavCanvas,
     NavWorkspace,
     HeaderHealth,
+    AgentsGhost,
+    AgentsTerminal,
+    AgentsApi,
+    AgentsWand,
+    AgentsOracle,
 }
 
 impl AnimClip {
     #[cfg(test)]
-    pub(crate) const ALL: [Self; 17] = [
+    pub(crate) const ALL: [Self; 22] = [
         Self::IkoreBrand,
         Self::StatusSaved,
         Self::StatusLoading,
@@ -67,6 +72,11 @@ impl AnimClip {
         Self::NavCanvas,
         Self::NavWorkspace,
         Self::HeaderHealth,
+        Self::AgentsGhost,
+        Self::AgentsTerminal,
+        Self::AgentsApi,
+        Self::AgentsWand,
+        Self::AgentsOracle,
     ];
 
     pub(crate) const fn slug(self) -> &'static str {
@@ -88,6 +98,11 @@ impl AnimClip {
             Self::NavCanvas => "nav-canvas",
             Self::NavWorkspace => "nav-workspace",
             Self::HeaderHealth => "header-health",
+            Self::AgentsGhost => "agents-ghost",
+            Self::AgentsTerminal => "agents-terminal",
+            Self::AgentsApi => "agents-api",
+            Self::AgentsWand => "agents-wand",
+            Self::AgentsOracle => "agents-oracle",
         }
     }
 
@@ -116,7 +131,10 @@ impl AnimClip {
             Self::StatusLoading => Duration::from_millis(1_200),
             Self::IkoreBrand => Duration::from_millis(1_400),
             Self::StatusAttention => Duration::from_millis(520),
+            Self::AgentsApi => Duration::from_millis(780),
+            Self::AgentsTerminal => Duration::from_millis(760),
             Self::NavChat | Self::NavNotes | Self::StatusIdle => Duration::from_millis(750),
+            Self::AgentsGhost | Self::AgentsWand => Duration::from_millis(720),
             _ => Duration::from_millis(620),
         }
     }
@@ -222,8 +240,6 @@ pub(crate) enum IconHoverSpec {
 }
 
 /// Maps static [`Icon`] glyphs to their hover animation.
-///
-/// `Icon::Bot` intentionally returns `None` to leave the Agents tab untouched in this milestone.
 pub(crate) const fn hover_spec(icon: Icon) -> Option<IconHoverSpec> {
     match icon {
         Icon::House => Some(IconHoverSpec::Clip(AnimClip::NavHome)),
@@ -255,7 +271,7 @@ pub(crate) const fn hover_spec(icon: Icon) -> Option<IconHoverSpec> {
             icon,
             effect: GpuEffect::SpinFull,
         }),
-        Icon::Bot => None,
+        Icon::Bot => Some(IconHoverSpec::Clip(AnimClip::AgentsGhost)),
         _ => None,
     }
 }
@@ -656,8 +672,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bot_icon_stays_unanimated_until_agents_milestone() {
-        assert!(hover_spec(Icon::Bot).is_none());
+    fn hover_specs_cover_primary_navigation_and_agents_icons() {
+        assert_eq!(
+            hover_spec(Icon::Bot),
+            Some(IconHoverSpec::Clip(AnimClip::AgentsGhost))
+        );
         assert!(hover_spec(Icon::Hammer).is_some());
         assert!(hover_spec(Icon::Vault).is_some());
         assert!(hover_spec(Icon::Settings).is_some());

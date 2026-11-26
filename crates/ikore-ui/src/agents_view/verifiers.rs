@@ -2,7 +2,7 @@
 //! canvas nodes under Labs, read-only synthesis without Run, history drawer,
 //! and create/edit form.
 
-use gpui::{AnyElement, Context, Entity, FontWeight, SharedString, div, prelude::*};
+use gpui::{AnyElement, Context, Entity, FontWeight, SharedString, div, prelude::*, px};
 use ikore_core::custom_pipelines::STAGE_VALUES;
 use ikore_core::persistence_service::PulsationStage;
 use ikore_core::stage_verifiers::{
@@ -15,6 +15,7 @@ use ikore_core::terminals::{CliBackend, ThinkingLevel};
 use crate::agents::{AgentDetailTab, AgentIdentifier, AgentsModel, CliModelPickerTarget};
 use crate::agents_canvas::layout::stage_column;
 use crate::agents_canvas::{CanvasNode, NodeState};
+use crate::animated_icon::{AnimClip, AnimatedIcon, PlayMode};
 use crate::app_model::AppModel;
 use crate::icons::Icon;
 use crate::session::HeaderNoticeKind;
@@ -282,6 +283,7 @@ pub(super) fn canvas_verifiers(
                     agent: AgentIdentifier::StageVerifier(verifier.id.clone()),
                     label: verifier.label.clone(),
                     color: theme::purple(),
+                    clip: AnimClip::AgentsOracle,
                     state,
                     status,
                     transport: verifier_transport(model, &verifier.agent, cx),
@@ -373,7 +375,16 @@ pub(super) fn verifier_synthesis(
                 .flex()
                 .items_center()
                 .gap_2()
-                .child(crate::widgets::status_dot(theme::purple()))
+                .child(
+                    AnimatedIcon::clip(
+                        format!("verifier-header-icon:{}", verifier.id),
+                        AnimClip::AgentsOracle,
+                        PlayMode::HoverOneshot,
+                        px(16.0),
+                        theme::purple(),
+                    )
+                    .hover_pad(px(4.0)),
+                )
                 .child(
                     div()
                         .flex_1()

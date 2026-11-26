@@ -9,6 +9,7 @@ use ikore_core::terminals::{
 };
 
 use crate::agents::{AgentDetailTab, AgentIdentifier};
+use crate::animated_icon::{AnimClip, AnimatedIcon, PlayMode};
 use crate::app_model::AppModel;
 use crate::icons::Icon;
 use crate::theme;
@@ -559,6 +560,7 @@ pub(super) fn agent_card(
                 name: descriptor.name.to_owned(),
                 subtitle: Some(descriptor.stage.to_owned()),
                 color,
+                clip: super::model::canonical_clip(role, agent.config.execution_mode),
                 status,
                 status_color: status_color(agent.recent_runs.first().map(|run| run.status)),
                 model_chip,
@@ -579,6 +581,7 @@ pub(super) struct DetailHeader {
     /// The pipeline stage, for a stage's agent.
     pub(super) subtitle: Option<String>,
     pub(super) color: Rgba,
+    pub(super) clip: AnimClip,
     pub(super) status: &'static str,
     pub(super) status_color: Rgba,
     pub(super) model_chip: String,
@@ -595,6 +598,7 @@ pub(super) fn detail_header(header: DetailHeader, cx: &mut Context<AppModel>) ->
         name,
         subtitle,
         color,
+        clip,
         status,
         status_color,
         model_chip,
@@ -609,7 +613,16 @@ pub(super) fn detail_header(header: DetailHeader, cx: &mut Context<AppModel>) ->
         .items_center()
         .gap_2()
         // The agent's colour marks the title instead of outlining the whole card.
-        .child(crate::widgets::status_dot(color))
+        .child(
+            AnimatedIcon::clip(
+                format!("agent-header-icon:{key}"),
+                clip,
+                PlayMode::HoverOneshot,
+                px(16.0),
+                color,
+            )
+            .hover_pad(px(4.0)),
+        )
         .child(
             div()
                 .min_w_0()

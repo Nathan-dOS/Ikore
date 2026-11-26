@@ -196,6 +196,11 @@ pub(crate) static ANIM_GROUPS: &[AnimClipGroup] = &[
     anim_clip_16!("nav-canvas"),
     anim_clip_16!("nav-workspace"),
     anim_clip_16!("header-health"),
+    anim_clip_16!("agents-ghost"),
+    anim_clip_16!("agents-terminal"),
+    anim_clip_16!("agents-api"),
+    anim_clip_16!("agents-wand"),
+    anim_clip_16!("agents-oracle"),
 ];
 
 fn load_anim_asset(path: &str) -> Option<&'static [u8]> {
@@ -285,7 +290,7 @@ mod tests {
             .flat_map(|(_, frames)| frames.iter().map(|(path, _)| *path))
             .collect();
         let total = paths.len();
-        assert_eq!(total, 270);
+        assert_eq!(total, 350);
         paths.sort_unstable();
         paths.dedup();
         assert_eq!(paths.len(), total, "duplicate path in ANIM_GROUPS");

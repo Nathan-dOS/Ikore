@@ -23,6 +23,7 @@ use gpui::{
 };
 
 use crate::agents::AgentIdentifier;
+use crate::animated_icon::{AnimClip, AnimatedIcon, PlayMode, StatusGlyph, status_glyph};
 use crate::app_model::AppModel;
 use crate::icons::Icon;
 use crate::theme;
@@ -53,6 +54,7 @@ pub(crate) struct CanvasNode {
     pub(crate) agent: AgentIdentifier,
     pub(crate) label: String,
     pub(crate) color: Rgba,
+    pub(crate) clip: AnimClip,
     pub(crate) state: NodeState,
     /// `Running 3:04 · 2 units`, `Waiting on you`, `Done · 2m ago`…
     pub(crate) status: String,
@@ -671,6 +673,36 @@ fn pipeline_box(
     let id = pipeline.id.clone();
     let selector = format!("agents-box:{id}");
     let title_selector = format!("agents-box-title:{id}");
+    let icon_id = format!("agents-box-icon:{id}");
+    let box_icon = match pipeline.state {
+        NodeState::Running => status_glyph(
+            icon_id,
+            StatusGlyph::Loading,
+            px(13.0 * zoom),
+            theme::running(),
+        ),
+        NodeState::Waiting => status_glyph(
+            icon_id,
+            StatusGlyph::Attention,
+            px(13.0 * zoom),
+            theme::warning(),
+        ),
+        NodeState::Attention => status_glyph(
+            icon_id,
+            StatusGlyph::Error,
+            px(13.0 * zoom),
+            theme::danger(),
+        ),
+        NodeState::Idle | NodeState::Done => AnimatedIcon::clip(
+            icon_id,
+            AnimClip::AgentsWand,
+            PlayMode::HoverOneshot,
+            px(13.0 * zoom),
+            theme::text_muted(),
+        )
+        .hover_pad(px(3.0 * zoom))
+        .into_any_element(),
+    };
     div()
         .id(SharedString::from(selector.clone()))
         .debug_selector(move || selector.clone())
@@ -705,13 +737,7 @@ fn pipeline_box(
                     window.focus(&model.agents_canvas.focus);
                     model.select_canvas_pipeline(id.clone(), cx);
                 }))
-                .child(
-                    div()
-                        .flex_shrink_0()
-                        .size(px(8.0 * zoom))
-                        .rounded_full()
-                        .bg(state_color(pipeline.state)),
-                )
+                .child(box_icon)
                 .child(
                     div()
                         .min_w_0()
@@ -807,11 +833,14 @@ fn node_element(
                 .gap(px(6.0 * zoom))
                 .min_w_0()
                 .child(
-                    div()
-                        .flex_shrink_0()
-                        .size(px(8.0 * zoom))
-                        .rounded_full()
-                        .bg(node.color),
+                    AnimatedIcon::clip(
+                        format!("agents-node-icon:{key}"),
+                        node.clip,
+                        PlayMode::HoverOneshot,
+                        px(14.0 * zoom),
+                        node.color,
+                    )
+                    .hover_pad(px(3.0 * zoom)),
                 )
                 .child(
                     div()
@@ -840,6 +869,11 @@ fn node_element(
                 )
                 .when(node.checkpoint, |row| {
                     let id = format!("agents-node-gate:{key}");
+                    let gate_color = if node.state == NodeState::Waiting {
+                        theme::warning()
+                    } else {
+                        theme::text_muted()
+                    };
                     row.child(
                         div()
                             .id(SharedString::from(id.clone()))
@@ -849,11 +883,16 @@ fn node_element(
                                 cx.new(|_| crate::widgets::Tooltip::new("Human checkpoint"))
                                     .into()
                             })
-                            .child(crate::widgets::icon(
-                                Icon::Eye,
-                                px(11.0 * zoom),
-                                theme::text_muted(),
-                            )),
+                            .child(
+                                AnimatedIcon::clip(
+                                    format!("agents-node-gate-icon:{key}"),
+                                    AnimClip::AgentsOracle,
+                                    PlayMode::HoverOneshot,
+                                    px(13.0 * zoom),
+                                    gate_color,
+                                )
+                                .hover_pad(px(2.0 * zoom)),
+                            ),
                     )
                 }),
         )
@@ -939,11 +978,20 @@ fn ghost_node(
                 .hover(|style| style.bg(theme::hover_bg()))
                 .on_click(cx.listener(|model, _, _, cx| model.create_free_form_agent(cx)))
         })
-        .child(crate::widgets::icon(
-            Icon::Plus,
-            px(12.0 * zoom),
-            theme::text_muted(),
-        ))
+        .child(
+            AnimatedIcon::clip(
+                "agents-node-ghost-icon",
+                AnimClip::AgentsWand,
+                PlayMode::HoverOneshot,
+                px(14.0 * zoom),
+                if enabled {
+                    theme::text_muted()
+                } else {
+                    theme::text_subtle()
+                },
+            )
+            .hover_pad(px(4.0 * zoom)),
+        )
         .child("New freeform agent")
         .into_any_element()
 }

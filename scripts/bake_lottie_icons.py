@@ -62,6 +62,11 @@ CLIPS = [
     ("nav-canvas", "nav-canvas-layers.json", 16, "hover", False),
     ("nav-workspace", "nav-workspace-code.json", 16, "hover", False),
     ("header-health", "header-health-shield-heart.json", 16, "hover", False),
+    ("agents-ghost", "agents-ghost.json", 16, "hover", False),
+    ("agents-terminal", "agents-browser-terminal.json", 16, "hover", True),
+    ("agents-api", "agents-rest-api.json", 16, "hover", True),
+    ("agents-wand", "agents-magic-wand.json", 16, "hover", True),
+    ("agents-oracle", "agents-crystal-ball-eye.json", 16, "hover", True),
 ]
 
 WIRED_STROKE_FACTOR = 2.15
@@ -329,7 +334,7 @@ def generate_preview_png(browser: pathlib.Path, baked: dict[str, list[str]], out
             "--headless=new",
             "--disable-gpu",
             "--no-sandbox",
-            "--window-size=1100,980",
+            "--window-size=1100,1180",
             f"--screenshot={out_png}",
             preview_html.as_uri(),
         ],

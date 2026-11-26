@@ -2,7 +2,7 @@
 //! boxes on the canvas, the synthesis a box's title opens, a step's synthesis
 //! and the archived pipelines. The editor is `pipeline_editor.rs`.
 
-use gpui::{AnyElement, Context, FontWeight, IntoElement, SharedString, div, prelude::*};
+use gpui::{AnyElement, Context, FontWeight, IntoElement, SharedString, div, prelude::*, px};
 use ikore_core::custom_pipelines::{
     CustomPipelineView, FindingSeverity, MAX_PROJECT_PIPELINES, PipelineRunStatus, PipelineRunView,
     PipelineStep, PipelineStepRunView, StageVerdictV1, StepRunStatus, StepTransport,
@@ -10,6 +10,7 @@ use ikore_core::custom_pipelines::{
 
 use crate::agents::{AgentIdentifier, AgentsModel};
 use crate::agents_canvas::{CanvasNode, CanvasPipeline, NodeState};
+use crate::animated_icon::{AnimClip, AnimatedIcon, PlayMode, StatusGlyph, status_glyph};
 use crate::app_model::AppModel;
 use crate::icons::Icon;
 use crate::theme;
@@ -115,6 +116,17 @@ pub(crate) fn step_transport(model: &AppModel, step: &PipelineStep, cx: &gpui::A
     }
 }
 
+fn step_clip(step: &PipelineStep) -> AnimClip {
+    match step {
+        PipelineStep::Agent(agent) => match agent.agent.transport {
+            StepTransport::Cli => AnimClip::AgentsTerminal,
+            StepTransport::Api => AnimClip::AgentsApi,
+        },
+        PipelineStep::Gate(_) => AnimClip::AgentsOracle,
+        PipelineStep::HostTool(_) => AnimClip::AgentsTerminal,
+    }
+}
+
 /// The boxes the canvas draws below the default one, in their order.
 pub(super) fn canvas_pipelines(model: &AppModel, cx: &gpui::App) -> Vec<CanvasPipeline> {
     let agents = model.agents.read(cx);
@@ -156,6 +168,7 @@ pub(super) fn canvas_pipelines(model: &AppModel, cx: &gpui::App) -> Vec<CanvasPi
                             PipelineStep::Gate(_) => theme::warning(),
                             PipelineStep::HostTool(_) => theme::text_muted(),
                         },
+                        clip: step_clip(step),
                         state,
                         status,
                         transport: step_transport(model, step, cx),
@@ -226,7 +239,7 @@ fn muted(text: impl Into<SharedString>) -> AnyElement {
 
 fn panel_header(
     selector: &'static str,
-    color: gpui::Rgba,
+    icon: AnyElement,
     title: String,
     chip: Option<String>,
     cx: &mut Context<AppModel>,
@@ -236,7 +249,7 @@ fn panel_header(
         .flex()
         .items_center()
         .gap_2()
-        .child(crate::widgets::status_dot(color))
+        .child(icon)
         .child(
             div()
                 .flex_1()
@@ -512,12 +525,21 @@ fn run_detail(
                 .flex()
                 .items_center()
                 .gap_2()
-                .child(crate::widgets::status_dot(match state {
-                    NodeState::Running => theme::running(),
-                    NodeState::Waiting => theme::warning(),
-                    NodeState::Attention => theme::danger(),
-                    NodeState::Idle | NodeState::Done => theme::text_muted(),
-                }))
+                .child({
+                    let (glyph, color) = match state {
+                        NodeState::Running => (StatusGlyph::Loading, theme::running()),
+                        NodeState::Waiting => (StatusGlyph::Attention, theme::warning()),
+                        NodeState::Attention => (StatusGlyph::Error, theme::danger()),
+                        NodeState::Done => (StatusGlyph::Success, theme::text_muted()),
+                        NodeState::Idle => (StatusGlyph::Idle, theme::text_muted()),
+                    };
+                    status_glyph(
+                        format!("pipeline-run-status-icon:{}", run.id),
+                        glyph,
+                        px(14.0),
+                        color,
+                    )
+                })
                 .child(
                     div()
                         .flex_1()
@@ -762,15 +784,39 @@ pub(super) fn pipeline_synthesis(
             .into_any_element(),
         );
     }
+    let header_icon = match state {
+        NodeState::Running => status_glyph(
+            "agents-pipeline-synthesis-icon",
+            StatusGlyph::Loading,
+            px(15.0),
+            theme::running(),
+        ),
+        NodeState::Waiting => status_glyph(
+            "agents-pipeline-synthesis-icon",
+            StatusGlyph::Attention,
+            px(15.0),
+            theme::warning(),
+        ),
+        NodeState::Attention => status_glyph(
+            "agents-pipeline-synthesis-icon",
+            StatusGlyph::Error,
+            px(15.0),
+            theme::danger(),
+        ),
+        NodeState::Idle | NodeState::Done => AnimatedIcon::clip(
+            "agents-pipeline-synthesis-icon",
+            AnimClip::AgentsWand,
+            PlayMode::HoverOneshot,
+            px(16.0),
+            theme::accent(),
+        )
+        .hover_pad(px(4.0))
+        .into_any_element(),
+    };
     let mut content = panel("agents-pipeline-synthesis")
         .child(panel_header(
             "agents-pipeline-synthesis-header",
-            match state {
-                NodeState::Running => theme::running(),
-                NodeState::Waiting => theme::warning(),
-                NodeState::Attention => theme::danger(),
-                NodeState::Idle | NodeState::Done => theme::accent(),
-            },
+            header_icon,
             pipeline.name.clone(),
             Some(format!("v{} \u{b7} adopted", pipeline.adopted_version)),
             cx,
@@ -974,13 +1020,23 @@ pub(super) fn step_synthesis(
         PipelineStep::Gate(gate) => gate.prompt.clone(),
         PipelineStep::HostTool(_) => String::new(),
     };
+    let step_color = match step {
+        PipelineStep::Gate(_) => theme::warning(),
+        PipelineStep::HostTool(_) => theme::text_muted(),
+        PipelineStep::Agent(_) => theme::accent(),
+    };
     panel("agents-step-synthesis")
         .child(panel_header(
             "agents-step-synthesis-header",
-            match step {
-                PipelineStep::Gate(_) => theme::warning(),
-                _ => theme::accent(),
-            },
+            AnimatedIcon::clip(
+                "agents-step-synthesis-icon",
+                step_clip(step),
+                PlayMode::HoverOneshot,
+                px(16.0),
+                step_color,
+            )
+            .hover_pad(px(4.0))
+            .into_any_element(),
             step.label().to_owned(),
             Some(format!(
                 "Step {} of {}",

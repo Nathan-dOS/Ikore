@@ -6,6 +6,7 @@ use gpui::{AnyElement, Context, FontWeight, IntoElement, SharedString, div, prel
 use ikore_core::llm::AgentRole;
 
 use crate::agents::{AgentDetailTab, AgentIdentifier, ApiActivityFilter};
+use crate::animated_icon::{AnimClip, AnimatedIcon, PlayMode};
 use crate::app_model::AppModel;
 use crate::icons::Icon;
 use crate::theme;
@@ -57,7 +58,16 @@ pub(super) fn api_detail_panel(
                     .flex()
                     .items_center()
                     .gap_3()
-                    .child(crate::widgets::status_dot(theme::agent_color(role)))
+                    .child(
+                        AnimatedIcon::clip(
+                            format!("agent-api-header-icon:{}", role.as_str()),
+                            AnimClip::AgentsApi,
+                            PlayMode::HoverOneshot,
+                            px(16.0),
+                            theme::agent_color(role),
+                        )
+                        .hover_pad(px(4.0)),
+                    )
                     .child(
                         div()
                             .min_w_0()
@@ -133,10 +143,14 @@ pub(super) fn api_detail_panel(
                                 .items_center()
                                 .gap_3()
                                 .child(
-                                    div()
-                                        .text_color(theme::accent())
-                                        .font_weight(FontWeight::BOLD)
-                                        .child("+"),
+                                    AnimatedIcon::clip(
+                                        format!("agent-api-free-form-icon:{inner_slot_id}"),
+                                        AnimClip::AgentsApi,
+                                        PlayMode::HoverOneshot,
+                                        px(16.0),
+                                        theme::accent(),
+                                    )
+                                    .hover_pad(px(4.0)),
                                 )
                                 .child(
                                     div()
@@ -288,7 +302,16 @@ pub(super) fn api_inline_editor(
                 .items_center()
                 .gap_2()
                 // Same marker as the CLI card: the agent colour beside the title, not the outline.
-                .child(crate::widgets::status_dot(theme::agent_color(role)))
+                .child(
+                    AnimatedIcon::clip(
+                        format!("agent-api-config-icon:{}", role.as_str()),
+                        AnimClip::AgentsApi,
+                        PlayMode::HoverOneshot,
+                        px(15.0),
+                        theme::agent_color(role),
+                    )
+                    .hover_pad(px(4.0)),
+                )
                 .child(
                     div()
                         .flex_1()
@@ -502,6 +525,16 @@ pub(super) fn free_form_api_inline_editor(
                     .flex_wrap()
                     .items_center()
                     .gap_2()
+                    .child(
+                        AnimatedIcon::clip(
+                            format!("agent-api-free-form-config-icon:{slot_id}"),
+                            AnimClip::AgentsApi,
+                            PlayMode::HoverOneshot,
+                            px(15.0),
+                            theme::accent(),
+                        )
+                        .hover_pad(px(4.0)),
+                    )
                     .child(
                         div()
                             .flex_1()

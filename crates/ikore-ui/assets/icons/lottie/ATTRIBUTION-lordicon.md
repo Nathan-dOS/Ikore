@@ -2,9 +2,9 @@
 
 **Required attribution:** Icons by [Lordicon.com](https://lordicon.com/)
 
-All animated icon Lottie JSON files under `active/` and `staged-agents/` were downloaded under Lordicon's **Free** tier (attribution required unless upgraded to a Lordicon PRO license).
+All animated icon Lottie JSON files under `active/` were downloaded under Lordicon's **Free** tier (attribution required unless upgraded to a Lordicon PRO license).
 
-## Active Icons (`active/` — 18 files)
+## Active Icons (`active/` — 23 files)
 
 | Local Filename | Lordicon ID | State | Source URL |
 | :--- | :--- | :--- | :--- |
@@ -26,13 +26,8 @@ All animated icon Lottie JSON files under `active/` and `staged-agents/` were do
 | `nav-workspace-code.json` | `system-outline-369-code` | `hover-pinch` | https://lordicon.com/icons/system/outline#i:system-outline-369-code;q:code;f:1 |
 | `header-health-shield-heart.json` | `system-outline-4481-shield-heart` | `hover-pinch` | https://lordicon.com/icons/system/outline#i:system-outline-4481-shield-heart;q:shield;f:1 |
 | `header-notifications-alarm.json` | `system-outline-236-alarm` | `hover-pinch` | https://lordicon.com/icons/system/outline#i:system-outline-236-alarm;q:alarm;f:1 |
-
-## Staged Agents Icons (`staged-agents/` — 5 files, reserved for future Agents tab update)
-
-| Local Filename | Lordicon ID | State | Source URL |
-| :--- | :--- | :--- | :--- |
+| `agents-ghost.json` | `system-outline-2815-ghost` | `hover-pinch` | https://lordicon.com/icons/system/outline#i:system-outline-2815-ghost;q:ghost;f:1 |
 | `agents-browser-terminal.json` | `wired-outline-1326-browser-terminal` | `hover-blinking` | https://lordicon.com/icons/wired/outline#i:wired-outline-1326-browser-terminal;q:terminal;f:1 |
+| `agents-rest-api.json` | `wired-outline-1330-rest-api` | `hover-pinch` | https://lordicon.com/icons/wired/outline#i:wired-outline-1330-rest-api;q:rest%20api;f:1 |
 | `agents-magic-wand.json` | `wired-outline-2844-magic-wand` | `hover-pinch` | https://lordicon.com/icons/wired/outline#i:wired-outline-2844-magic-wand;q:magic;f:1 |
 | `agents-crystal-ball-eye.json` | `wired-outline-3160-crystal-ball-eye` | `hover-pinch` | https://lordicon.com/icons/wired/outline#i:wired-outline-3160-crystal-ball-eye;q:crystal;f:1 |
-| `agents-ghost.json` | `system-outline-2815-ghost` | `hover-pinch` | https://lordicon.com/icons/system/outline#i:system-outline-2815-ghost;q:ghost;f:1 |
-| `agents-rest-api.json` | `wired-outline-1330-rest-api` | `hover-pinch` | https://lordicon.com/icons/wired/outline#i:wired-outline-1330-rest-api;q:rest%20api;f:1 |
