@@ -124,6 +124,31 @@ pub(crate) trait SettingsBackend: Send + Sync {
     ) -> SettingsFuture<ikore_core::git_tool::ProjectGitRulesRecord> {
         Box::pin(async { Err(git_tool_unavailable()) })
     }
+    fn git_commit_queue(
+        &self,
+        _project_id: String,
+    ) -> SettingsFuture<Vec<ikore_core::git_tool::PulsationCommitQueueEntryV1>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+    fn git_operations(
+        &self,
+        _project_id: String,
+    ) -> SettingsFuture<Vec<ikore_core::git_tool::GitOperationRecordV1>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+    fn preview_git_commit(
+        &self,
+        _project_id: String,
+        _pulsation_id: String,
+    ) -> SettingsFuture<ikore_core::git_tool::GitCommitPreviewV1> {
+        Box::pin(async { Err(git_tool_unavailable()) })
+    }
+    fn skip_pulsation_commit(
+        &self,
+        _request: ikore_core::git_tool::SkipPulsationCommitRequest,
+    ) -> SettingsFuture<ikore_core::git_tool::PulsationCommitQueueEntryV1> {
+        Box::pin(async { Err(git_tool_unavailable()) })
+    }
     fn verify_attestation_file(
         &self,
         bundle: String,
@@ -373,6 +398,43 @@ impl SettingsBackend for CoreSettingsBackend {
         project_id: String,
     ) -> SettingsFuture<ikore_core::git_tool::ProjectGitRulesRecord> {
         self.blocking(move |persistence| persistence.restore_default_project_git_rules(&project_id))
+    }
+
+    fn git_commit_queue(
+        &self,
+        project_id: String,
+    ) -> SettingsFuture<Vec<ikore_core::git_tool::PulsationCommitQueueEntryV1>> {
+        self.blocking(move |persistence| persistence.list_pulsation_commit_queue(&project_id))
+    }
+
+    fn git_operations(
+        &self,
+        project_id: String,
+    ) -> SettingsFuture<Vec<ikore_core::git_tool::GitOperationRecordV1>> {
+        self.blocking(move |persistence| persistence.list_git_operations(&project_id, 20))
+    }
+
+    fn preview_git_commit(
+        &self,
+        project_id: String,
+        pulsation_id: String,
+    ) -> SettingsFuture<ikore_core::git_tool::GitCommitPreviewV1> {
+        let core = self.core.clone();
+        let runtime = core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn(async move { core.preview_git_commit(&project_id, &pulsation_id).await })
+                .await
+                .map_err(|e| UiCommandError::worker(e.to_string()))?
+                .map_err(UiCommandError::from)
+        })
+    }
+
+    fn skip_pulsation_commit(
+        &self,
+        request: ikore_core::git_tool::SkipPulsationCommitRequest,
+    ) -> SettingsFuture<ikore_core::git_tool::PulsationCommitQueueEntryV1> {
+        self.blocking(move |persistence| persistence.skip_pulsation_commit(request))
     }
 
     fn set_mcp_grant(

@@ -688,6 +688,14 @@ pub(crate) static ENTRIES: &[SettingsEntry] = &[
         "git gh auth status branch remote user.name user.email credential helper",
     ),
     entry(
+        "git-preview",
+        P::Git,
+        "Preview against a finished pulsation",
+        "Commit queue, dry-run plan, and skip",
+        "Inspect queued finished pulsations, preview the planned commit groups and rule checks without writing to git, or skip a blocked pulsation.",
+        "preview commit queue plan skip pulsation violations already_in_head",
+    ),
+    entry(
         "git-commit-rules",
         P::Git,
         "Commit rules",

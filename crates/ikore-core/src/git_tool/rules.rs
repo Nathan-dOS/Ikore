@@ -211,6 +211,9 @@ impl PersistenceService {
                 &created_at
             ],
         )?;
+        if request.enabled {
+            crate::git_tool::queue::backfill_done_pulsations_in_tx(&tx, &project_id)?;
+        }
         tx.commit()?;
 
         Ok(SaveProjectGitRulesOutcome::Saved(Box::new(

@@ -4160,7 +4160,7 @@ fn v75_to_v76_adds_project_git_rules() {
         )
         .unwrap();
     assert_eq!(max_version, latest_migration_version());
-    assert_eq!(max_version, 76);
+    assert!(max_version >= 76);
 
     let sha = "a".repeat(64);
     db.execute(
@@ -4193,4 +4193,78 @@ fn v75_to_v76_adds_project_git_rules() {
         })
         .unwrap();
     assert_eq!(fk_errors, 0);
+}
+
+#[test]
+fn v76_to_v77_adds_git_operations_and_commit_state() {
+    let root = tempfile::tempdir().unwrap();
+    let db_path = root.path().join("ikore.db");
+    let mut db = Connection::open(&db_path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    cli_migrations::migrations::runner()
+        .set_target(refinery::Target::Version(76))
+        .run(&mut db)
+        .unwrap();
+
+    db.execute(
+        "INSERT INTO projects(id,name,workspace_path,is_archived,created_at,updated_at)
+         VALUES('proj76','Repo','/tmp/repo76',0,'2026-11-25T00:00:00Z','2026-11-25T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO pulsations(id,project_id,feature_name,status,stage,queue_sequence,created_at,updated_at)
+         VALUES('pulse76','proj76','Feature 76','done','Integrator',1,'2026-11-25T00:00:00Z','2026-11-25T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    drop(db);
+
+    PersistenceService::initialize(root.path()).unwrap();
+    let db = Connection::open(&db_path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    let max_version: i64 = db
+        .query_row(
+            "SELECT MAX(version) FROM refinery_schema_history",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(max_version, latest_migration_version());
+    assert!(max_version >= 77);
+
+    let sha = "b".repeat(64);
+    db.execute(
+        "INSERT INTO git_operations(id,project_id,kind,pulsation_id,rules_version,rules_sha256,status,started_at)
+         VALUES('op77','proj76','commit','pulse76',1,?1,'succeeded','2026-11-25T00:00:00Z')",
+        [&sha],
+    )
+    .expect("valid git_operations row inserts after V77");
+
+    db.execute(
+        "INSERT INTO pulsation_commit_state(pulsation_id,project_id,completed_at,state,skip_reason,updated_at)
+         VALUES('pulse76','proj76','2026-11-25T00:00:00Z','skipped','already_in_head','2026-11-25T00:00:00Z')",
+        [],
+    )
+    .expect("valid skipped pulsation_commit_state row inserts");
+
+    db.execute(
+        "INSERT INTO pulsation_commit_state(pulsation_id,project_id,completed_at,state,skip_reason,updated_at)
+         VALUES('pulse76_bad','proj76','2026-11-25T00:00:00Z','skipped','', '2026-11-25T00:00:00Z')",
+        [],
+    )
+    .expect_err("empty skip_reason must fail CHECK");
+
+    db.execute("DELETE FROM projects WHERE id='proj76'", [])
+        .unwrap();
+    let remaining_ops: i64 = db
+        .query_row("SELECT count(*) FROM git_operations", [], |r| r.get(0))
+        .unwrap();
+    let remaining_state: i64 = db
+        .query_row("SELECT count(*) FROM pulsation_commit_state", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(remaining_ops, 0);
+    assert_eq!(remaining_state, 0);
 }

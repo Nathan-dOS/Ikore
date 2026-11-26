@@ -43,6 +43,9 @@ pub struct PulsationReport {
     /// Stage verifier runs executed during this pulsation (feature 25 M4).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verifications: Option<ReportVerifications>,
+    /// Host-managed commit receipt for this pulsation (feature 08 M2, ADR-027).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_commit: Option<ikore_contracts::git_tool::CommitReceiptV1>,
 }
 
 /// Stage verifier executions recorded for the pulsation (ADR-027, feature 25 M4).
@@ -375,6 +378,9 @@ pub fn render_pulsation_report(report: &PulsationReport) -> String {
     if let Some(verifications) = &report.verifications {
         page.push(&verifications_section(verifications));
     }
+    if let Some(git_commit) = &report.git_commit {
+        page.push(&git_commit_section(git_commit));
+    }
     page.push(&run_context(&report.run));
     if !report.rejected_outputs.is_empty() {
         page.push(&rejected_outputs(&report.rejected_outputs));
@@ -497,6 +503,21 @@ fn observed_report(report: &PulsationReport) -> PulsationReport {
                 text(&mut finding.message);
                 optional(&mut finding.file);
             }
+        }
+    }
+    if let Some(git_commit) = &mut report.git_commit {
+        text(&mut git_commit.branch);
+        text(&mut git_commit.base_head);
+        text(&mut git_commit.git_version);
+        for entry in &mut git_commit.commits {
+            text(&mut entry.sha);
+            text(&mut entry.message);
+            strings(&mut entry.files);
+        }
+        for warning in &mut git_commit.warnings {
+            text(&mut warning.code);
+            optional(&mut warning.path);
+            text(&mut warning.message);
         }
     }
     report
@@ -804,6 +825,9 @@ fn navigation(report: &PulsationReport) -> SafeHtml {
     }
     if report.verifications.is_some() {
         html.push_markup("<li><a href=\"#verifications\">Verifications</a></li>");
+    }
+    if report.git_commit.is_some() {
+        html.push_markup("<li><a href=\"#git-commit\">Git commit</a></li>");
     }
     html.push_markup("<li><a href=\"#run\">Run context</a></li>");
     if !report.rejected_outputs.is_empty() {
@@ -1901,6 +1925,41 @@ fn verifications_section(verifications: &ReportVerifications) -> SafeHtml {
     html
 }
 
+fn git_commit_section(receipt: &ikore_contracts::git_tool::CommitReceiptV1) -> SafeHtml {
+    let mut html = SafeHtml::markup(
+        "<section id=\"git-commit\" aria-labelledby=\"git-commit-h\"><div class=\"sec-head\"><h2 id=\"git-commit-h\">Host git commit</h2><p>Commits created by the host git tool under project commit rules.</p></div><div class=\"card\"><dl class=\"facts\"><dt>Branch</dt><dd>",
+    );
+    html.push_text(&receipt.branch)
+        .push_markup("</dd><dt>Base HEAD</dt><dd><code>")
+        .push_text(&receipt.base_head)
+        .push_markup("</code></dd><dt>Rules version</dt><dd>")
+        .push_text(&format!(
+            "v{} · {} ({})",
+            receipt.rules_version, receipt.rules_sha256, receipt.git_version
+        ))
+        .push_markup("</dd></dl><div class=\"table-wrap\"><table class=\"wide\"><thead><tr><th>Commit</th><th>Tasks</th><th>Files</th><th>Lines</th></tr></thead><tbody>");
+    for commit in &receipt.commits {
+        let tasks = if commit.task_ids.is_empty() {
+            "—".to_owned()
+        } else {
+            commit.task_ids.join(", ")
+        };
+        html.push_markup("<tr><td><code>")
+            .push_text(short_id(&commit.sha))
+            .push_markup("</code> · ")
+            .push_text(commit.message.lines().next().unwrap_or_default())
+            .push_markup("</td><td class=\"wrap-text\">")
+            .push_text(&tasks)
+            .push_markup("</td><td class=\"num\">")
+            .push_text(&commit.files.len().to_string())
+            .push_markup("</td><td class=\"num\">")
+            .push_text(&commit.lines.to_string())
+            .push_markup("</td></tr>");
+    }
+    html.push_markup("</tbody></table></div></div></section>");
+    html
+}
+
 fn footer() -> SafeHtml {
     SafeHtml::markup(
         "<footer><span>Rendered by the host from validated payloads, host receipts and usage records. Same inputs, same bytes. Not a document of record.</span><span>No scripts, no network requests, no external assets. Agent-written text is escaped and labelled.</span></footer>",
@@ -2268,6 +2327,7 @@ mod tests {
                 ],
             }),
             verifications: None,
+            git_commit: None,
         }
     }
 

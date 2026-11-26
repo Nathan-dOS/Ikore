@@ -11193,16 +11193,87 @@ fn settings_git_page_renders_status_rules_errors_and_fixed_guardrails(cx: &mut T
     for selector in [
         "settings-row:git-tool-enabled",
         "settings-row:git-status",
+        "settings-row:git-preview",
         "settings-row:git-commit-rules",
         "settings-row:git-push-pull-rules",
         "settings-row:git-fixed-rules",
         "git-refresh-status",
+        "git-preview-refresh",
         "git-rules-save",
         "git-rules-restore",
     ] {
         assert!(
             visual.debug_bounds(selector).is_some(),
             "missing Settings > Git selector {selector}"
+        );
+    }
+
+    // Dry-run commit preview and queue entries render without any commit execution button.
+    model.update(visual, |m, cx| {
+        use ikore_contracts::git_tool::{
+            CommitPlanGroupV1, CommitPlanV1, GitCommitPreviewV1, PulsationCommitQueueEntryV1,
+            PulsationCommitQueueState, RuleViolation,
+        };
+        m.settings.update(cx, |settings, _| {
+            settings.git.queue = vec![PulsationCommitQueueEntryV1 {
+                pulsation_id: "pulse-qa-1".into(),
+                project_id: "layout-project".into(),
+                feature_name: "Preview QA feature".into(),
+                completed_at: "2026-11-26T00:00:00Z".into(),
+                state: PulsationCommitQueueState::Pending,
+                skip_reason: None,
+                branch: None,
+                head_commit: None,
+                updated_at: "2026-11-26T00:00:00Z".into(),
+            }];
+            settings.git.selected_preview_pulsation_id = Some("pulse-qa-1".into());
+            settings.git.preview = Some(GitCommitPreviewV1 {
+                project_id: "layout-project".into(),
+                pulsation_id: "pulse-qa-1".into(),
+                feature_name: "Preview QA feature".into(),
+                queue_state: Some(PulsationCommitQueueState::Pending),
+                already_in_head: false,
+                plan: CommitPlanV1 {
+                    project_id: "layout-project".into(),
+                    pulsation_id: "pulse-qa-1".into(),
+                    branch: "ikore/preview-qa".into(),
+                    base_head: "abc123456789".into(),
+                    groups: vec![CommitPlanGroupV1 {
+                        task_ids: vec!["task-1".into()],
+                        commit_type: "feat".into(),
+                        scope: Some("preview-qa".into()),
+                        subject: "implement preview widget".into(),
+                        body: "Dry run preview body.".into(),
+                        trailers: vec!["Ikore-Pulsation: pulse-qa-1".into()],
+                        paths: vec!["src/lib.rs".into()],
+                        counted_files: 1,
+                        counted_lines: 12,
+                    }],
+                    warnings: vec![],
+                    blocking_violations: vec![RuleViolation {
+                        code: "missing_tests".into(),
+                        path: Some("src/lib.rs".into()),
+                        task_id: Some("task-1".into()),
+                        message: "Code changed without test updates.".into(),
+                    }],
+                },
+                rules_version: 1,
+                rules_sha256: "deadbeef".into(),
+            });
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    for selector in [
+        "git-queue-entry-pulse-qa-1",
+        "git-preview-select-pulse-qa-1",
+        "git-preview-skip-pulse-qa-1",
+        "git-preview-plan",
+        "git-preview-group-0",
+    ] {
+        assert!(
+            visual.debug_bounds(selector).is_some(),
+            "missing Settings > Git preview selector {selector}"
         );
     }
 

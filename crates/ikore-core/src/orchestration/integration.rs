@@ -59,6 +59,12 @@ impl PersistenceService {
                 ),
             )?;
             tx.execute("UPDATE project_pipeline_state SET base_epoch=base_epoch+1,active_pulsation_id=NULL,base_state='ready',blocking_reason=NULL,state_version=state_version+1 WHERE active_pulsation_id=?1", [&id])?;
+            crate::git_tool::queue::enqueue_done_pulsation_in_tx(
+                &tx,
+                &current.project_id,
+                &id,
+                &current.updated_at,
+            )?;
             Self::enqueue_learning(&tx, &id)?;
             Self::block_held_successors(&tx)?;
         }

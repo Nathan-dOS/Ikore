@@ -36,6 +36,8 @@ pub enum AppEvent {
     ModelPull(ModelPullEvent),
     /// An exchange log item was committed (ADR-037 M2).
     Exchange(crate::exchange::log::ExchangeDoorbellV1),
+    /// A host git operation changed state (Feature 08 M2/M3).
+    GitOperation(crate::git_tool::GitOperationEvent),
 }
 
 /// How a subscriber that missed an event recovers it (ADR-037 M2). Every
@@ -82,6 +84,7 @@ impl AppEvent {
                 ModelPullEvent::Failed { .. } => "model_pull://failed",
             },
             Self::Exchange(_) => "exchange://doorbell",
+            Self::GitOperation(_) => "git://operation",
         }
     }
 
@@ -101,7 +104,7 @@ impl AppEvent {
                 | ChatEventKind::TurnCancelled => EventClass::Durable(StreamKind::ChatConversation),
                 _ => EventClass::OwnSequence,
             },
-            Self::Terminal(_) => EventClass::OwnSequence,
+            Self::Terminal(_) | Self::GitOperation(_) => EventClass::OwnSequence,
             Self::Llm(_)
             | Self::TerminalActivity(_)
             | Self::Indexing(_)

@@ -64,6 +64,14 @@ pub struct CommandOutput {
     pub stderr: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawCommandOutput {
+    pub status_code: Option<i32>,
+    pub success: bool,
+    pub stdout: Vec<u8>,
+    pub stderr: String,
+}
+
 /// Validates and hashes an explicit executable path or resolves the binary from `PATH`.
 pub fn resolve_host_binary(binary: HostBinary) -> Result<ResolvedHostBinary, GitToolError> {
     let path_var = std::env::var_os("PATH").unwrap_or_default();
@@ -174,11 +182,44 @@ pub async fn run_host_command(
     timeout_secs: u64,
     redactor: &SecretRedactor,
 ) -> Result<CommandOutput, GitToolError> {
+    run_host_command_with_input_and_env(
+        binary,
+        cwd,
+        args,
+        read_only,
+        timeout_secs,
+        None,
+        &[],
+        redactor,
+    )
+    .await
+}
+
+/// Runs a resolved host binary with optional raw `stdin` bytes and extra
+/// process environment variables (such as `GIT_INDEX_FILE` during plumbing),
+/// returning unredacted stdout bytes for cryptographic hashing of repository blobs.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_host_command_raw_stdout(
+    binary: &ResolvedHostBinary,
+    cwd: &Path,
+    args: &[&OsStr],
+    read_only: bool,
+    timeout_secs: u64,
+    stdin_bytes: Option<&[u8]>,
+    extra_env: &[(&str, &OsStr)],
+    redactor: &SecretRedactor,
+) -> Result<RawCommandOutput, GitToolError> {
+    use tokio::io::AsyncWriteExt;
+
     let mut command = Command::new(&binary.path);
     command
         .args(args)
         .current_dir(cwd)
-        .stdin(std::process::Stdio::null())
+        .stdin(if stdin_bytes.is_some() {
+            std::process::Stdio::piped()
+        } else {
+            std::process::Stdio::null()
+        })
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true)
@@ -188,6 +229,9 @@ pub async fn run_host_command(
         .env("GCM_INTERACTIVE", "never");
     if read_only {
         command.env("GIT_OPTIONAL_LOCKS", "0");
+    }
+    for (key, value) in extra_env {
+        command.env(key, value);
     }
     #[cfg(windows)]
     {
@@ -201,6 +245,18 @@ pub async fn run_host_command(
             return Err(GitToolError::Process(error.to_string()));
         }
     };
+
+    if let Some(bytes) = stdin_bytes {
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| GitToolError::Process("Stdin pipe unavailable.".into()))?;
+        let owned = bytes.to_vec();
+        tokio::spawn(async move {
+            let _ = stdin.write_all(&owned).await;
+            let _ = stdin.shutdown().await;
+        });
+    }
 
     let budget = Arc::new(AtomicUsize::new(MAX_OUTPUT_BYTES));
     let stdout_pipe = child
@@ -259,16 +315,48 @@ pub async fn run_host_command(
         }
     };
 
-    let stdout_lossy = String::from_utf8_lossy(&raw_stdout);
     let stderr_lossy = String::from_utf8_lossy(&raw_stderr);
-    let stdout = redactor.redact(stdout_lossy.as_ref()).text;
     let stderr = redactor.redact(stderr_lossy.as_ref()).text;
 
-    Ok(CommandOutput {
+    Ok(RawCommandOutput {
         status_code: exit.code(),
         success: exit.success(),
-        stdout,
+        stdout: raw_stdout,
         stderr,
+    })
+}
+
+/// Runs a resolved host binary with optional raw `stdin` bytes and extra
+/// process environment variables (such as `GIT_INDEX_FILE` during plumbing).
+#[allow(clippy::too_many_arguments)]
+pub async fn run_host_command_with_input_and_env(
+    binary: &ResolvedHostBinary,
+    cwd: &Path,
+    args: &[&OsStr],
+    read_only: bool,
+    timeout_secs: u64,
+    stdin_bytes: Option<&[u8]>,
+    extra_env: &[(&str, &OsStr)],
+    redactor: &SecretRedactor,
+) -> Result<CommandOutput, GitToolError> {
+    let raw = run_host_command_raw_stdout(
+        binary,
+        cwd,
+        args,
+        read_only,
+        timeout_secs,
+        stdin_bytes,
+        extra_env,
+        redactor,
+    )
+    .await?;
+    let stdout_lossy = String::from_utf8_lossy(&raw.stdout);
+    let stdout = redactor.redact(stdout_lossy.as_ref()).text;
+    Ok(CommandOutput {
+        status_code: raw.status_code,
+        success: raw.success,
+        stdout,
+        stderr: raw.stderr,
     })
 }
 

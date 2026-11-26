@@ -9,9 +9,11 @@ use gpui::{AnyElement, Context, Entity, SharedString, div, prelude::*};
 use ikore_contracts::git_tool::{
     BranchMode, COMMIT_RULES_SCHEMA_VERSION, CommitBranchRules, CommitConsistencyRules,
     CommitGranularity, CommitLimitsRules, CommitMessageRules, CommitPathsRules, CommitPullRules,
-    CommitPushRules, CommitRulesV1, DocsPlacement, GitStatusV1, MessageFormat, MessageScope,
-    ProjectGitRulesRecord, PullMode, REQUIRED_MESSAGE_LANGUAGE, REQUIRED_TASK_KINDS, RuleAction,
-    RuleFieldError, SaveProjectGitRulesOutcome, SaveProjectGitRulesRequest, fixed_git_rules,
+    CommitPushRules, CommitRulesV1, DocsPlacement, GitCommitPreviewV1, GitOperationRecordV1,
+    GitStatusV1, MessageFormat, MessageScope, ProjectGitRulesRecord, PullMode,
+    PulsationCommitQueueEntryV1, PulsationCommitQueueState, REQUIRED_MESSAGE_LANGUAGE,
+    REQUIRED_TASK_KINDS, RuleAction, RuleFieldError, SaveProjectGitRulesOutcome,
+    SaveProjectGitRulesRequest, SkipPulsationCommitRequest, fixed_git_rules,
 };
 
 use crate::app_model::AppModel;
@@ -30,9 +32,17 @@ pub(crate) struct GitSettingsState {
     pub(crate) generation: u64,
     pub(crate) loading_rules: bool,
     pub(crate) loading_status: bool,
+    pub(crate) loading_queue: bool,
+    pub(crate) preview_loading: bool,
     pub(crate) saving: bool,
     pub(crate) record: Option<ProjectGitRulesRecord>,
     pub(crate) status: Option<GitStatusV1>,
+    pub(crate) queue: Vec<PulsationCommitQueueEntryV1>,
+    pub(crate) operations: Vec<GitOperationRecordV1>,
+    pub(crate) selected_preview_pulsation_id: Option<String>,
+    pub(crate) preview: Option<GitCommitPreviewV1>,
+    pub(crate) preview_error: Option<String>,
+    pub(crate) skip_reason_input: Option<Entity<NativeTextInput>>,
     pub(crate) status_error: Option<String>,
     pub(crate) error: Option<String>,
     pub(crate) notice: Option<String>,
@@ -47,9 +57,14 @@ impl std::fmt::Debug for GitSettingsState {
             .field("generation", &self.generation)
             .field("loading_rules", &self.loading_rules)
             .field("loading_status", &self.loading_status)
+            .field("loading_queue", &self.loading_queue)
+            .field("preview_loading", &self.preview_loading)
             .field("saving", &self.saving)
             .field("has_record", &self.record.is_some())
             .field("has_status", &self.status.is_some())
+            .field("queue_len", &self.queue.len())
+            .field("operations_len", &self.operations.len())
+            .field("has_preview", &self.preview.is_some())
             .field("has_form", &self.form.is_some())
             .finish()
     }
@@ -340,10 +355,24 @@ impl AppModel {
         if reset_project || self.settings.read(cx).git.form.is_none() {
             let defaults = CommitRulesV1::default();
             let form = GitRulesForm::new(false, &defaults, cx);
+            let skip_input = self
+                .settings
+                .read(cx)
+                .git
+                .skip_reason_input
+                .clone()
+                .unwrap_or_else(|| {
+                    new_input("Reason for skipping this pulsation", String::new(), cx)
+                });
             self.settings.update(cx, |settings, _| {
                 if reset_project {
                     settings.git.record = None;
                     settings.git.status = None;
+                    settings.git.queue.clear();
+                    settings.git.operations.clear();
+                    settings.git.selected_preview_pulsation_id = None;
+                    settings.git.preview = None;
+                    settings.git.preview_error = None;
                     settings.git.status_error = None;
                     settings.git.error = None;
                     settings.git.notice = None;
@@ -351,6 +380,12 @@ impl AppModel {
                 }
                 settings.git.project_id = Some(project_id.clone());
                 settings.git.form = Some(form);
+                settings.git.skip_reason_input = Some(skip_input);
+            });
+        } else if self.settings.read(cx).git.skip_reason_input.is_none() {
+            let skip_input = new_input("Reason for skipping this pulsation", String::new(), cx);
+            self.settings.update(cx, |settings, _| {
+                settings.git.skip_reason_input = Some(skip_input);
             });
         }
 
@@ -362,8 +397,10 @@ impl AppModel {
             settings.git.generation += 1;
             settings.git.loading_rules = true;
             settings.git.loading_status = true;
+            settings.git.loading_queue = true;
             settings.git.error = None;
             settings.git.status_error = None;
+            settings.git.preview_error = None;
             settings.git.generation
         });
 
@@ -410,7 +447,8 @@ impl AppModel {
         })
         .detach();
 
-        self.spawn_git_status_probe(backend, project_id, generation, cx);
+        self.spawn_git_status_probe(backend.clone(), project_id.clone(), generation, cx);
+        self.spawn_git_queue_and_ops(backend, project_id, generation, cx);
     }
 
     pub(crate) fn refresh_git_status_only(&mut self, cx: &mut Context<Self>) {
@@ -426,7 +464,199 @@ impl AppModel {
             settings.git.generation
         });
         cx.notify();
-        self.spawn_git_status_probe(backend, project_id, generation, cx);
+        self.spawn_git_status_probe(backend.clone(), project_id.clone(), generation, cx);
+        self.spawn_git_queue_and_ops(backend, project_id, generation, cx);
+    }
+
+    pub(crate) fn refresh_git_queue_and_ops(&mut self, cx: &mut Context<Self>) {
+        let (Some(backend), Some(project_id)) = (
+            self.settings_backend.clone(),
+            self.active_git_project_id(cx),
+        ) else {
+            return;
+        };
+        let generation = self.settings.update(cx, |settings, _| {
+            settings.git.loading_queue = true;
+            settings.git.generation
+        });
+        cx.notify();
+        self.spawn_git_queue_and_ops(backend, project_id, generation, cx);
+    }
+
+    fn spawn_git_queue_and_ops(
+        &self,
+        backend: std::sync::Arc<dyn crate::settings::SettingsBackend>,
+        project_id: String,
+        generation: u64,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn(async move |this, cx| {
+            let queue_res = backend.git_commit_queue(project_id.clone()).await;
+            let ops_res = backend.git_operations(project_id.clone()).await;
+            let _ = this.update(cx, |model, cx| {
+                let mut auto_preview_id = None;
+                model.settings.update(cx, |settings, _| {
+                    if settings.git.generation != generation
+                        || settings.git.project_id.as_deref() != Some(project_id.as_str())
+                    {
+                        return;
+                    }
+                    settings.git.loading_queue = false;
+                    if let Ok(queue) = queue_res {
+                        settings.git.queue = queue;
+                    }
+                    if let Ok(ops) = ops_res {
+                        settings.git.operations = ops;
+                    }
+                    if settings.git.selected_preview_pulsation_id.is_none()
+                        && let Some(first_pending) = settings
+                            .git
+                            .queue
+                            .iter()
+                            .find(|entry| entry.state == PulsationCommitQueueState::Pending)
+                            .or_else(|| settings.git.queue.first())
+                    {
+                        auto_preview_id = Some(first_pending.pulsation_id.clone());
+                    }
+                });
+                if let Some(pulsation_id) = auto_preview_id {
+                    model.preview_git_commit_for(pulsation_id, cx);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    pub(crate) fn preview_git_commit_for(&mut self, pulsation_id: String, cx: &mut Context<Self>) {
+        let Some(project_id) = self.active_git_project_id(cx) else {
+            return;
+        };
+        let generation = self.settings.update(cx, |settings, _| {
+            settings.git.selected_preview_pulsation_id = Some(pulsation_id.clone());
+            settings.git.preview_loading = true;
+            settings.git.preview_error = None;
+            settings.git.generation
+        });
+        cx.notify();
+
+        let Some(backend) = self.settings_backend.clone() else {
+            self.settings.update(cx, |settings, _| {
+                settings.git.preview_loading = false;
+            });
+            cx.notify();
+            return;
+        };
+
+        cx.spawn(async move |this, cx| {
+            let result = backend
+                .preview_git_commit(project_id.clone(), pulsation_id.clone())
+                .await;
+            let _ = this.update(cx, |model, cx| {
+                model.settings.update(cx, |settings, _| {
+                    if settings.git.generation != generation
+                        || settings.git.project_id.as_deref() != Some(project_id.as_str())
+                        || settings.git.selected_preview_pulsation_id.as_deref()
+                            != Some(pulsation_id.as_str())
+                    {
+                        return;
+                    }
+                    settings.git.preview_loading = false;
+                    match result {
+                        Ok(preview) => {
+                            settings.git.preview = Some(preview);
+                            settings.git.preview_error = None;
+                        }
+                        Err(error) => {
+                            settings.git.preview_error = Some(error.message);
+                        }
+                    }
+                });
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    pub(crate) fn skip_pulsation_commit_for(
+        &mut self,
+        pulsation_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(project_id) = self.active_git_project_id(cx) else {
+            return;
+        };
+        let reason = self
+            .settings
+            .read(cx)
+            .git
+            .skip_reason_input
+            .as_ref()
+            .map(|input| input.read(cx).value().trim().to_owned())
+            .unwrap_or_default();
+        if reason.is_empty() {
+            self.settings.update(cx, |settings, _| {
+                settings.git.preview_error =
+                    Some("Enter a reason before skipping a finished pulsation.".to_owned());
+            });
+            cx.notify();
+            return;
+        }
+        let Some(backend) = self.settings_backend.clone() else {
+            return;
+        };
+        let generation = self.settings.update(cx, |settings, _| {
+            settings.git.preview_loading = true;
+            settings.git.preview_error = None;
+            settings.git.generation
+        });
+        cx.notify();
+
+        let request = SkipPulsationCommitRequest {
+            project_id: project_id.clone(),
+            pulsation_id: pulsation_id.clone(),
+            reason,
+        };
+        cx.spawn(async move |this, cx| {
+            let result = backend.skip_pulsation_commit(request).await;
+            let _ = this.update(cx, |model, cx| {
+                let mut should_refresh = false;
+                let mut clear_reason = false;
+                model.settings.update(cx, |settings, _| {
+                    if settings.git.generation != generation
+                        || settings.git.project_id.as_deref() != Some(project_id.as_str())
+                    {
+                        return;
+                    }
+                    settings.git.preview_loading = false;
+                    match result {
+                        Ok(updated) => {
+                            settings.git.notice = Some(format!(
+                                "Marked pulsation {} as skipped.",
+                                updated.pulsation_id
+                            ));
+                            settings.git.preview_error = None;
+                            should_refresh = true;
+                            clear_reason = true;
+                        }
+                        Err(error) => {
+                            settings.git.preview_error = Some(error.message);
+                        }
+                    }
+                });
+                if clear_reason
+                    && let Some(input) = model.settings.read(cx).git.skip_reason_input.clone()
+                {
+                    set_input(&input, String::new(), cx);
+                }
+                if should_refresh {
+                    model.refresh_git_queue_and_ops(cx);
+                    model.preview_git_commit_for(pulsation_id, cx);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn spawn_git_status_probe(
@@ -553,6 +783,16 @@ impl AppModel {
                                 settings.git.form = Some(form);
                             });
                         }
+                        if let Some(selected) = model
+                            .settings
+                            .read(cx)
+                            .git
+                            .selected_preview_pulsation_id
+                            .clone()
+                        {
+                            model.preview_git_commit_for(selected, cx);
+                        }
+                        model.refresh_git_queue_and_ops(cx);
                     }
                     Ok(SaveProjectGitRulesOutcome::Invalid(errors)) => {
                         model.settings.update(cx, |settings, _| {
@@ -645,6 +885,16 @@ impl AppModel {
                                 settings.git.form = Some(form);
                             });
                         }
+                        if let Some(selected) = model
+                            .settings
+                            .read(cx)
+                            .git
+                            .selected_preview_pulsation_id
+                            .clone()
+                        {
+                            model.preview_git_commit_for(selected, cx);
+                        }
+                        model.refresh_git_queue_and_ops(cx);
                     }
                     Err(error) => {
                         model.settings.update(cx, |settings, _| {
@@ -923,6 +1173,300 @@ fn render_status_body(
                     .map(|line| warning_note(line.clone())),
             ),
         );
+    }
+
+    body.into_any_element()
+}
+
+fn render_preview_body(
+    state: &GitSettingsState,
+    busy: bool,
+    cx: &mut Context<AppModel>,
+) -> AnyElement {
+    let mut body = div().flex().flex_col().gap_3().child(
+        div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .justify_between()
+            .gap_2()
+            .child(hint(if state.loading_queue {
+                "Loading completed pulsation queue and git operations..."
+            } else {
+                "Read-only dry-run commit plan preview for completed pulsations. Commits run from agent tools or pipelines."
+            }))
+            .child(btn(
+                "git-preview-refresh",
+                if state.loading_queue {
+                    "Refreshing..."
+                } else {
+                    "Refresh queue"
+                },
+                ButtonVariant::Secondary,
+                !busy && !state.loading_queue,
+                cx,
+                |model, cx| model.refresh_git_queue_and_ops(cx),
+            )),
+    );
+
+    if let Some(err) = state.preview_error.as_ref() {
+        body = body.child(warning_note(err.clone()));
+    }
+
+    if let Some(skip_input) = state.skip_reason_input.as_ref() {
+        body = body.child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(field_label(
+                    "Skip reason (used when skipping a pending pulsation)",
+                ))
+                .child(sized_input(skip_input.clone(), INPUT_LONG)),
+        );
+    }
+
+    if state.queue.is_empty() {
+        body = body.child(hint(
+            "No completed pulsations are in the git commit queue yet.",
+        ));
+    } else {
+        let mut queue_col = div().flex().flex_col().gap_2();
+        for entry in state.queue.iter().take(12) {
+            let pid_for_preview = entry.pulsation_id.clone();
+            let pid_for_skip = entry.pulsation_id.clone();
+            let selected =
+                state.selected_preview_pulsation_id.as_deref() == Some(entry.pulsation_id.as_str());
+            let state_label = match entry.state {
+                PulsationCommitQueueState::Pending => "Pending",
+                PulsationCommitQueueState::Committed => "Committed",
+                PulsationCommitQueueState::Skipped => "Skipped",
+            };
+            let meta = match entry.state {
+                PulsationCommitQueueState::Committed => {
+                    let short_head = entry
+                        .head_commit
+                        .as_deref()
+                        .unwrap_or("")
+                        .chars()
+                        .take(8)
+                        .collect::<String>();
+                    let branch = entry.branch.as_deref().unwrap_or("branch");
+                    format!("Committed on {branch} ({short_head})")
+                }
+                PulsationCommitQueueState::Skipped => format!(
+                    "Skipped: {}",
+                    entry.skip_reason.as_deref().unwrap_or("no reason recorded")
+                ),
+                PulsationCommitQueueState::Pending => {
+                    format!("Completed at {}", entry.completed_at)
+                }
+            };
+
+            let mut actions = div().flex().items_center().gap_2().child(btn(
+                SharedString::from(format!("git-preview-select-{}", entry.pulsation_id)),
+                if selected && state.preview_loading {
+                    "Previewing..."
+                } else if selected {
+                    "Refresh preview"
+                } else {
+                    "Preview"
+                },
+                if selected {
+                    ButtonVariant::Primary
+                } else {
+                    ButtonVariant::Secondary
+                },
+                !busy && !state.preview_loading,
+                cx,
+                move |model, cx| model.preview_git_commit_for(pid_for_preview.clone(), cx),
+            ));
+            if entry.state == PulsationCommitQueueState::Pending {
+                actions = actions.child(btn(
+                    SharedString::from(format!("git-preview-skip-{}", entry.pulsation_id)),
+                    "Skip",
+                    ButtonVariant::Secondary,
+                    !busy && !state.preview_loading,
+                    cx,
+                    move |model, cx| model.skip_pulsation_commit_for(pid_for_skip.clone(), cx),
+                ));
+            }
+
+            let queue_entry_selector = format!("git-queue-entry-{}", entry.pulsation_id);
+            queue_col = queue_col.child(
+                div()
+                    .id(SharedString::from(queue_entry_selector.clone()))
+                    .debug_selector(move || queue_entry_selector.clone())
+                    .p_2()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(if selected {
+                        theme::accent()
+                    } else {
+                        theme::border()
+                    })
+                    .bg(theme::canvas())
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(theme::text())
+                                    .child(format!("{} [{}]", entry.feature_name, state_label)),
+                            )
+                            .child(
+                                div()
+                                    .font_family(theme::FONT_MONO)
+                                    .text_xs()
+                                    .text_color(theme::text_muted())
+                                    .child(format!("{} · {meta}", entry.pulsation_id)),
+                            ),
+                    )
+                    .child(actions),
+            );
+        }
+        body = body.child(queue_col);
+    }
+
+    if state.preview_loading {
+        body = body.child(hint("Building dry-run commit plan..."));
+    } else if let Some(preview) = state.preview.as_ref() {
+        let short_base: String = preview.plan.base_head.chars().take(12).collect();
+        let mut plan_box = div()
+            .id("git-preview-plan")
+            .debug_selector(|| "git-preview-plan".to_owned())
+            .p_3()
+            .rounded_md()
+            .border_1()
+            .border_color(theme::border())
+            .bg(theme::canvas())
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(status_line_row(
+                "Target branch",
+                preview.plan.branch.clone(),
+                false,
+            ))
+            .child(status_line_row(
+                "Base HEAD",
+                if short_base.is_empty() {
+                    "Unborn branch".to_owned()
+                } else {
+                    short_base
+                },
+                false,
+            ))
+            .child(status_line_row(
+                "State in HEAD",
+                if preview.already_in_head {
+                    "Already matches HEAD (would mark committed without rewriting)".to_owned()
+                } else if preview.plan.blocking_violations.is_empty() {
+                    format!("Ready ({} planned commit(s))", preview.plan.groups.len())
+                } else {
+                    format!(
+                        "Blocked ({} violation(s))",
+                        preview.plan.blocking_violations.len()
+                    )
+                },
+                !preview.plan.blocking_violations.is_empty(),
+            ));
+
+        if !preview.plan.groups.is_empty() {
+            let mut groups_col = div().flex().flex_col().gap_2();
+            for (idx, group) in preview.plan.groups.iter().enumerate() {
+                let header = match &group.scope {
+                    Some(scope) if !scope.trim().is_empty() => format!(
+                        "{}. {}({}): {}",
+                        idx + 1,
+                        group.commit_type,
+                        scope,
+                        group.subject
+                    ),
+                    _ => format!("{}. {}: {}", idx + 1, group.commit_type, group.subject),
+                };
+                let group_selector = format!("git-preview-group-{idx}");
+                groups_col = groups_col.child(
+                    div()
+                        .id(SharedString::from(group_selector.clone()))
+                        .debug_selector(move || group_selector.clone())
+                        .p_2()
+                        .rounded_sm()
+                        .border_1()
+                        .border_color(theme::border())
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(div().text_xs().text_color(theme::text()).child(header))
+                        .child(
+                            div()
+                                .font_family(theme::FONT_MONO)
+                                .text_xs()
+                                .text_color(theme::text_muted())
+                                .child(format!(
+                                    "{} path(s) · {} counted file(s), {} counted line(s)",
+                                    group.paths.len(),
+                                    group.counted_files,
+                                    group.counted_lines
+                                )),
+                        ),
+                );
+            }
+            plan_box = plan_box.child(groups_col);
+        }
+
+        for warning in &preview.plan.warnings {
+            let path_suffix = warning
+                .path
+                .as_deref()
+                .map(|p| format!(" ({p})"))
+                .unwrap_or_default();
+            plan_box = plan_box.child(note(format!(
+                "Warning [{}]{}: {}",
+                warning.code, path_suffix, warning.message
+            )));
+        }
+        for violation in &preview.plan.blocking_violations {
+            let path_suffix = violation
+                .path
+                .as_deref()
+                .map(|p| format!(" ({p})"))
+                .unwrap_or_default();
+            plan_box = plan_box.child(warning_note(format!(
+                "Blocked [{}]{}: {}",
+                violation.code, path_suffix, violation.message
+            )));
+        }
+        body = body.child(plan_box);
+    }
+
+    if !state.operations.is_empty() {
+        let mut ops_col = div().flex().flex_col().gap_1();
+        ops_col = ops_col.child(field_label("Recent git operations"));
+        for op in state.operations.iter().take(5) {
+            ops_col = ops_col.child(
+                div()
+                    .font_family(theme::FONT_MONO)
+                    .text_xs()
+                    .text_color(theme::text_muted())
+                    .child(format!(
+                        "{} · {} · {} · violations: {}",
+                        op.kind.as_str(),
+                        op.status.as_str(),
+                        op.pulsation_id.as_deref().unwrap_or("project"),
+                        op.violations.len()
+                    )),
+            );
+        }
+        body = body.child(ops_col);
     }
 
     body.into_any_element()
@@ -1605,6 +2149,18 @@ pub(crate) fn git_page(
                     "git-status",
                     hl,
                     render_status_body(git, busy, cx),
+                )],
+            ),
+        )
+        .section(
+            "Preview against a finished pulsation",
+            section(
+                "Preview against a finished pulsation",
+                None,
+                vec![stacked_row(
+                    "git-preview",
+                    hl,
+                    render_preview_body(git, busy, cx),
                 )],
             ),
         )

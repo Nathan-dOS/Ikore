@@ -287,6 +287,7 @@ pub struct AppCore {
     terminals: Arc<TerminalService>,
     /// The store MCP server variables live in (ADR-043).
     credentials: Arc<dyn CredentialStore>,
+    git_locks: crate::git_tool::GitProjectLocks,
     workspace: Mutex<WorkspaceContext>,
     worker_cancellation: CancellationToken,
     worker_task: Mutex<Option<JoinHandle<()>>>,
@@ -420,6 +421,7 @@ impl AppCore {
             voice,
             terminals,
             credentials,
+            git_locks: crate::git_tool::GitProjectLocks::default(),
             workspace: Mutex::new(WorkspaceContext::default()),
             worker_cancellation,
             worker_task: Mutex::new(None),
@@ -825,6 +827,68 @@ impl AppCore {
         let workspace = PathBuf::from(&project.workspace_path);
         let remote = record.rules.push.remote.clone();
         Ok(crate::git_tool::inspect_git_status_for_path(&workspace, &remote).await)
+    }
+
+    pub fn git_locks(&self) -> &crate::git_tool::GitProjectLocks {
+        &self.git_locks
+    }
+
+    pub fn list_pulsation_commit_queue(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<crate::git_tool::PulsationCommitQueueEntryV1>, PersistenceCommandError> {
+        self.persistence
+            .list_pulsation_commit_queue(project_id)
+            .map_err(PersistenceCommandError::from)
+    }
+
+    pub fn skip_pulsation_commit(
+        &self,
+        request: crate::git_tool::SkipPulsationCommitRequest,
+    ) -> Result<crate::git_tool::PulsationCommitQueueEntryV1, PersistenceCommandError> {
+        self.persistence
+            .skip_pulsation_commit(request)
+            .map_err(PersistenceCommandError::from)
+    }
+
+    pub fn list_git_operations(
+        &self,
+        project_id: &str,
+        limit: usize,
+    ) -> Result<Vec<crate::git_tool::GitOperationRecordV1>, PersistenceCommandError> {
+        self.persistence
+            .list_git_operations(project_id, limit)
+            .map_err(PersistenceCommandError::from)
+    }
+
+    pub async fn preview_git_commit(
+        &self,
+        project_id: &str,
+        pulsation_id: &str,
+    ) -> Result<crate::git_tool::GitCommitPreviewV1, PersistenceCommandError> {
+        self.persistence
+            .preview_commit_for_pulsation(project_id, pulsation_id)
+            .await
+            .map_err(PersistenceCommandError::from)
+    }
+
+    pub async fn execute_git_commit(
+        &self,
+        project_id: &str,
+        pulsation_id: &str,
+        external_plan: Option<&crate::git_tool::CommitPlanV1>,
+    ) -> Result<crate::git_tool::CommitExecutionOutcomeV1, PersistenceCommandError> {
+        crate::git_tool::execute_commit_for_pulsation(
+            &self.persistence,
+            &self.git_locks,
+            &self.events,
+            project_id,
+            pulsation_id,
+            None,
+            external_plan,
+        )
+        .await
+        .map_err(PersistenceCommandError::from)
     }
 
     pub fn is_shutting_down(&self) -> bool {

@@ -782,6 +782,302 @@ fn validate_remote_name(field: &str, remote: &str, errors: &mut Vec<RuleFieldErr
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PulsationCommitQueueState {
+    Pending,
+    Committed,
+    Skipped,
+}
+
+impl PulsationCommitQueueState {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Committed => "committed",
+            Self::Skipped => "skipped",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "pending" => Some(Self::Pending),
+            "committed" => Some(Self::Committed),
+            "skipped" => Some(Self::Skipped),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PulsationCommitQueueEntryV1 {
+    pub pulsation_id: String,
+    pub project_id: String,
+    pub feature_name: String,
+    pub completed_at: String,
+    pub state: PulsationCommitQueueState,
+    pub skip_reason: Option<String>,
+    pub branch: Option<String>,
+    pub head_commit: Option<String>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitOperationKind {
+    Commit,
+    Push,
+    Pull,
+}
+
+impl GitOperationKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Commit => "commit",
+            Self::Push => "push",
+            Self::Pull => "pull",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "commit" => Some(Self::Commit),
+            "push" => Some(Self::Push),
+            "pull" => Some(Self::Pull),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitOperationStatus {
+    Running,
+    Succeeded,
+    Blocked,
+    Failed,
+}
+
+impl GitOperationStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Succeeded => "succeeded",
+            Self::Blocked => "blocked",
+            Self::Failed => "failed",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "running" => Some(Self::Running),
+            "succeeded" => Some(Self::Succeeded),
+            "blocked" => Some(Self::Blocked),
+            "failed" => Some(Self::Failed),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitOperationRecordV1 {
+    pub id: String,
+    pub project_id: String,
+    pub kind: GitOperationKind,
+    pub pulsation_id: Option<String>,
+    pub rules_version: i64,
+    pub rules_sha256: String,
+    pub status: GitOperationStatus,
+    pub receipt_json: Option<String>,
+    pub violations: Vec<RuleViolation>,
+    pub started_at: String,
+    pub finished_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitCommitPreviewV1 {
+    pub project_id: String,
+    pub pulsation_id: String,
+    pub feature_name: String,
+    pub queue_state: Option<PulsationCommitQueueState>,
+    pub already_in_head: bool,
+    pub plan: CommitPlanV1,
+    pub rules_version: i64,
+    pub rules_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkipPulsationCommitRequest {
+    pub project_id: String,
+    pub pulsation_id: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitExecutionOutcomeV1 {
+    pub operation_id: String,
+    pub status: GitOperationStatus,
+    pub receipt: Option<CommitReceiptV1>,
+    pub violations: Vec<RuleViolation>,
+    pub skipped_already_in_head: bool,
+}
+
+/// Converts a feature title or scope into lowercase ASCII kebab-case bounded to `max_len`.
+pub fn slugify_branch_segment(raw: &str, max_len: usize) -> String {
+    let mut out = String::new();
+    let mut prev_hyphen = true;
+    for ch in raw.chars() {
+        let mapped = match ch {
+            'a'..='z' | '0'..='9' => Some(ch),
+            'A'..='Z' => Some(ch.to_ascii_lowercase()),
+            _ => None,
+        };
+        if let Some(c) = mapped {
+            if out.len() >= max_len {
+                break;
+            }
+            out.push(c);
+            prev_hyphen = false;
+        } else if !prev_hyphen && out.len() < max_len {
+            out.push('-');
+            prev_hyphen = true;
+        }
+    }
+    let trimmed = out.trim_end_matches('-').to_owned();
+    if trimmed.is_empty() {
+        "pulsation".to_owned()
+    } else {
+        trimmed
+    }
+}
+
+/// Renders a configured `branch.pattern` using `{pulsationShort}`, `{slug}`, and `{date}`.
+pub fn render_branch_name(
+    pattern: &str,
+    pulsation_id: &str,
+    title: &str,
+    yyyymmdd: &str,
+) -> String {
+    let short: String = pulsation_id
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '_')
+        .take(8)
+        .collect();
+    let short = if short.is_empty() {
+        "pulse".to_owned()
+    } else {
+        short
+    };
+    let slug = slugify_branch_segment(title, 40);
+    pattern
+        .trim()
+        .replace("{pulsationShort}", &short)
+        .replace("{slug}", &slug)
+        .replace("{date}", yyyymmdd)
+}
+
+/// Renders a commit message from a `CommitPlanGroupV1` without ever adding `Co-authored-by`.
+pub fn format_commit_message(
+    group: &CommitPlanGroupV1,
+    rules: &CommitMessageRules,
+    author_identity: Option<(&str, &str)>,
+) -> String {
+    let mut out = String::new();
+    match rules.format {
+        MessageFormat::Conventional => match &group.scope {
+            Some(scope) if !scope.trim().is_empty() => {
+                out.push_str(&format!("{type}({scope}): {subject}", type = group.commit_type, scope = scope.trim(), subject = group.subject.trim()));
+            }
+            _ => {
+                out.push_str(&format!("{type}: {subject}", type = group.commit_type, subject = group.subject.trim()));
+            }
+        },
+        MessageFormat::Free => {
+            out.push_str(group.subject.trim());
+        }
+    }
+
+    let body = wrap_text(group.body.trim(), rules.body_wrap.max(40) as usize);
+    if !body.is_empty() {
+        out.push_str("\n\n");
+        out.push_str(&body);
+    }
+
+    let mut trailers: Vec<String> = Vec::new();
+    if rules.trailers {
+        for line in &group.trailers {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() && !trimmed.to_ascii_lowercase().starts_with("co-authored-by:") {
+                trailers.push(trimmed.to_owned());
+            }
+        }
+    }
+    if rules.sign_off
+        && let Some((name, email)) = author_identity
+    {
+        let name = name.trim();
+        let email = email.trim();
+        if !name.is_empty() && !email.is_empty() {
+            let signoff = format!("Signed-off-by: {name} <{email}>");
+            if !trailers.iter().any(|existing| existing == &signoff) {
+                trailers.push(signoff);
+            }
+        }
+    }
+
+    if !trailers.is_empty() {
+        out.push_str("\n\n");
+        out.push_str(&trailers.join("\n"));
+    }
+    out.push('\n');
+    out
+}
+
+fn wrap_text(text: &str, width: usize) -> String {
+    let mut paragraphs = Vec::new();
+    for raw_para in text.split("\n\n") {
+        let trimmed = raw_para.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let mut lines = Vec::new();
+        for raw_line in trimmed.lines() {
+            let line = raw_line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if line.chars().count() <= width {
+                lines.push(line.to_owned());
+                continue;
+            }
+            let mut current = String::new();
+            for word in line.split_whitespace() {
+                if current.is_empty() {
+                    current.push_str(word);
+                } else if current.chars().count() + 1 + word.chars().count() <= width {
+                    current.push(' ');
+                    current.push_str(word);
+                } else {
+                    lines.push(current);
+                    current = word.to_owned();
+                }
+            }
+            if !current.is_empty() {
+                lines.push(current);
+            }
+        }
+        if !lines.is_empty() {
+            paragraphs.push(lines.join("\n"));
+        }
+    }
+    paragraphs.join("\n\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

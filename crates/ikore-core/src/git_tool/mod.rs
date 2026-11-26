@@ -2,18 +2,25 @@
 //! launch (direct argv, no shell, hidden window, `ProcessTreeJob`), project git
 //! rules persistence, and strictly read-only status inspection.
 
+pub mod commit;
+pub mod plan;
 pub mod process;
+pub mod queue;
 pub mod rules;
 pub mod status;
 #[cfg(test)]
 mod tests;
+pub mod validate;
 
 use thiserror::Error;
 
+pub use commit::{GitOperationEvent, GitProjectLocks, execute_commit_for_pulsation};
 pub use ikore_contracts::git_tool::*;
+pub use plan::build_commit_plan_for_pulsation;
 pub use process::{HostBinary, ResolvedHostBinary, resolve_host_binary};
 pub use rules::{canonical_rules_json_and_sha256, validate_commit_rules};
 pub use status::{inspect_git_status_for_path, parse_gh_auth_status, scrub_remote_url};
+pub use validate::{PlanValidationOutcome, PlannedBlob, validate_commit_plan};
 
 #[derive(Debug, Error)]
 pub enum GitToolError {
