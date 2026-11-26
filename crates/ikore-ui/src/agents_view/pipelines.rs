@@ -125,6 +125,9 @@ fn step_clip(step: &PipelineStep) -> AnimClip {
         },
         PipelineStep::Gate(_) => AnimClip::AgentsOracle,
         PipelineStep::HostTool(_) => AnimClip::AgentsTerminal,
+        // The five canonical roles a step can run all sit outside the
+        // pulsation, which the Agents list draws with the wand.
+        PipelineStep::Canonical(_) => AnimClip::AgentsWand,
     }
 }
 
@@ -1054,7 +1057,7 @@ pub(super) fn step_synthesis(
     let step_color = match step {
         PipelineStep::Gate(_) => theme::warning(),
         PipelineStep::HostTool(_) => theme::text_muted(),
-        PipelineStep::Agent(_) => theme::accent(),
+        PipelineStep::Agent(_) | PipelineStep::Canonical(_) => theme::accent(),
     };
     panel("agents-step-synthesis")
         .child(panel_header(
