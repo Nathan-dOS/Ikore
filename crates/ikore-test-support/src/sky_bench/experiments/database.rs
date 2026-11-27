@@ -22,8 +22,15 @@ CREATE TABLE constellation_embeddings(id INTEGER PRIMARY KEY,model TEXT,hash TEX
 CREATE VIRTUAL TABLE stars_fts USING fts5(text);
 CREATE TABLE sky_metrics(generation INTEGER PRIMARY KEY,project TEXT,branch TEXT,head TEXT,stars INTEGER);
 "#;
-thread_local! {static WAIT_US:Cell<u64>=const{Cell::new(0)};static TIMEOUTS:Cell<usize>=const{Cell::new(0)};}
+thread_local! {
+    static WAIT_US:Cell<u64>=const{Cell::new(0)};
+    static TIMEOUTS:Cell<usize>=const{Cell::new(0)};
+    static CONTENTIONS:Cell<usize>=const{Cell::new(0)};
+}
 fn busy(retries: i32) -> bool {
+    if retries == 0 {
+        CONTENTIONS.with(|n| n.set(n.get() + 1));
+    }
     if retries >= 100 {
         TIMEOUTS.with(|n| n.set(n.get() + 1));
         return false;
@@ -39,11 +46,16 @@ fn open(path: &Path) -> Result<Connection> {
     Ok(db)
 }
 fn reset_wait() {
+    CONTENTIONS.with(|n| n.set(0));
     WAIT_US.with(|c| c.set(0));
     TIMEOUTS.with(|c| c.set(0));
 }
-fn stats() -> (u64, usize) {
-    (WAIT_US.with(Cell::get), TIMEOUTS.with(Cell::get))
+fn stats() -> (u64, usize, usize) {
+    (
+        WAIT_US.with(Cell::get),
+        TIMEOUTS.with(Cell::get),
+        CONTENTIONS.with(Cell::get),
+    )
 }
 fn is_busy(e: &rusqlite::Error) -> bool {
     e.sqlite_error_code() == Some(rusqlite::ErrorCode::DatabaseBusy)
@@ -113,9 +125,8 @@ fn read(db: &Connection, id: usize, kind: usize) -> rusqlite::Result<()> {
     }
     Ok(())
 }
-fn writer(db: &mut Connection, n: usize, round: usize) -> rusqlite::Result<()> {
+fn writer(db: &mut Connection, n: usize, round: usize, count: usize) -> rusqlite::Result<()> {
     let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    let count = if round % 4 == 3 { 2000 } else { 256 };
     let generation = round + 2;
     for i in 0..count {
         let id = (round * 2000 + i) % n;
@@ -132,10 +143,12 @@ fn writer(db: &mut Connection, n: usize, round: usize) -> rusqlite::Result<()> {
             tx.execute("INSERT INTO stars SELECT id,constellation_id,heading,kind,text,text_hash,state,author,originPulse,lastPulse,?2,NULL FROM stars WHERE id=?1 AND to_generation=?2",params![id,generation])?;
         }
     }
-    tx.execute(
-        "INSERT INTO sky_metrics VALUES(?1,'parcel','main','fixture',?2)",
-        params![generation, n],
-    )?;
+    if count == 2000 {
+        tx.execute(
+            "INSERT INTO sky_metrics VALUES(?1,'parcel','main','fixture',?2)",
+            params![generation, n],
+        )?;
+    }
     tx.commit()
 }
 fn sample(n: usize, mode: &str) -> Result<Value> {
@@ -152,9 +165,8 @@ fn sample(n: usize, mode: &str) -> Result<Value> {
     for reader in 0..15 {
         let start = start.clone();
         let finished = finished.clone();
-        let path = path.clone();
+        let db = open(&path)?;
         readers.push(thread::spawn(move || -> Result<_> {
-            let db = open(&path)?;
             let mut latency = Vec::new();
             let mut counter = 0;
             reset_wait();
@@ -187,23 +199,32 @@ fn sample(n: usize, mode: &str) -> Result<Value> {
                 (begin + Duration::from_millis(200 * (round as u64 + 1)))
                     .saturating_duration_since(Instant::now()),
             );
-            let clock = Instant::now();
-            loop {
-                match writer(&mut db, n, round) {
-                    Ok(()) => break,
-                    Err(e) if is_busy(&e) && clock.elapsed() < Duration::from_secs(10) => continue,
-                    Err(e) => return Err(e.into()),
+            for &count in if round % 4 == 3 {
+                &[256, 2000][..]
+            } else {
+                &[256][..]
+            } {
+                let clock = Instant::now();
+                loop {
+                    match writer(&mut db, n, round, count) {
+                        Ok(()) => break,
+                        Err(e) if is_busy(&e) && clock.elapsed() < Duration::from_secs(10) => {
+                            continue;
+                        }
+                        Err(e) => return Err(e.into()),
+                    }
                 }
+                admitted.push(time(clock));
             }
-            admitted.push(time(clock));
         }
         Ok(())
     })();
     finished.store(true, Ordering::Release);
-    let (mut waits, mut timeouts) = stats();
+    let (mut waits, mut timeouts, mut contentions) = stats();
     let mut raw = Vec::new();
     for handle in readers {
-        let (xs, (w, b)) = handle.join().map_err(|_| "reader panicked")??;
+        let (xs, (w, b, c)) = handle.join().map_err(|_| "reader panicked")??;
+        contentions += c;
         raw.extend(xs);
         waits += w;
         timeouts += b;
@@ -211,7 +232,7 @@ fn sample(n: usize, mode: &str) -> Result<Value> {
     writes?;
     Ok(
         json!({"stars":n,"journal":mode,"read_count":raw.len(),"read_p50_ms":percentile(&raw,50),"read_p95_ms":percentile(&raw,95),"read_p99_ms":percentile(&raw,99),
-        "busy_timeout_expirations":timeouts,"lock_wait_ms":waits as f64/1000.,"writer_ms":admitted,"read_ms":raw}),
+        "busy_handler_activations":contentions,"writer_p95_ms":percentile(&admitted,95),"busy_timeout_expirations":timeouts,"lock_wait_ms":waits as f64/1000.,"writer_ms":admitted,"read_ms":raw}),
     )
 }
 pub fn run() -> Result<Value> {
@@ -235,6 +256,7 @@ pub fn run() -> Result<Value> {
             "read_p99_ms",
             "lock_wait_ms",
             "busy_timeout_expirations",
+            "writer_p95_ms",
         ]
         .iter()
         .any(|k| num(wal, k) > num(delete, k));
