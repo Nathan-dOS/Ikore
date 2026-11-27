@@ -1,0 +1,41 @@
+{
+  "slice": "4e",
+  "processes": 15,
+  "bridge_per_process": 1,
+  "corpora_stars": [
+    5000,
+    50000
+  ],
+  "operations": [
+    "search",
+    "read_star",
+    "search",
+    "propose_stars",
+    "search"
+  ],
+  "search_batch_sizes": [
+    1,
+    2,
+    3
+  ],
+  "parallel": [
+    "reindex 2000 Stars",
+    "publish at every stage boundary",
+    "host commits halfway through the round"
+  ],
+  "metrics": [
+    "search p50/p95/p99 at bridge and core",
+    "pool slot wait",
+    "SQLite lock wait and busy timeout expirations",
+    "publication guard p95 <= 50 ms",
+    "Ollama batch size, latency and cosine >= 0.9999",
+    "bridge working set <= 8 MB and host RAM growth",
+    "sky_busy refusals",
+    "tokens revoked by the host commit = 0"
+  ],
+  "journals": [
+    "WAL",
+    "DELETE"
+  ],
+  "decision": "WAL requires at least 20% lower search p95 or lock wait with no regression elsewhere."
+}

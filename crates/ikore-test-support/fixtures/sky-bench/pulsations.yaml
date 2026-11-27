@@ -1,0 +1,50 @@
+[
+  {
+    "feature": "intake",
+    "description": "Document the boundary checks for shipment requests at the arrival."
+  },
+  {
+    "feature": "weighing",
+    "description": "Document the boundary checks for scale readings at the weighbridge."
+  },
+  {
+    "feature": "sorting",
+    "description": "Document the boundary checks for sort assignments at the chute."
+  },
+  {
+    "feature": "packing",
+    "description": "Document the boundary checks for carton allocations at the carton."
+  },
+  {
+    "feature": "dispatch",
+    "description": "Document the boundary checks for trailer departures at the dock."
+  },
+  {
+    "feature": "tracking",
+    "description": "Document the boundary checks for scan receipts at the scanner."
+  },
+  {
+    "feature": "customs",
+    "description": "Document the boundary checks for clearance entries at the border."
+  },
+  {
+    "feature": "delivery",
+    "description": "Document the boundary checks for doorstep attempts at the courier."
+  },
+  {
+    "feature": "returns",
+    "description": "Document the boundary checks for reverse shipments at the return desk."
+  },
+  {
+    "feature": "claims",
+    "description": "Document the boundary checks for damage notices at the adjuster."
+  },
+  {
+    "feature": "billing",
+    "description": "Document the boundary checks for invoice entries at the cashier."
+  },
+  {
+    "feature": "remittance",
+    "description": "Document the boundary checks for payout records at the treasury."
+  }
+]

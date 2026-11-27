@@ -1,0 +1,53 @@
+[
+  {
+    "notes": 100,
+    "stars_per_note": [
+      4,
+      6,
+      8
+    ],
+    "degree": [
+      2,
+      3,
+      5
+    ],
+    "clusters": 1,
+    "cluster_size": 30,
+    "edges": 327,
+    "seed": 137
+  },
+  {
+    "notes": 1000,
+    "stars_per_note": [
+      4,
+      6,
+      8
+    ],
+    "degree": [
+      2,
+      3,
+      5
+    ],
+    "clusters": 3,
+    "cluster_size": 60,
+    "edges": 3171,
+    "seed": 137
+  },
+  {
+    "notes": 10000,
+    "stars_per_note": [
+      4,
+      6,
+      8
+    ],
+    "degree": [
+      2,
+      3,
+      5
+    ],
+    "clusters": 10,
+    "cluster_size": 90,
+    "edges": 30870,
+    "seed": 137
+  }
+]
