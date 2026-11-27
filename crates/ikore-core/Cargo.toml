@@ -7,6 +7,7 @@ license.workspace = true
 description = "Framework-agnostic domain and application core for Ikore"
 
 [features]
+bench-hooks = []
 # ADR-028 G10: the plan-quota collectors that read a CLI's own access token. Off by
 # default since 2026-11-10: Anthropic's Claude Code terms do not allow other
 # applications to collect or use Claude sign-in tokens, and OpenAI's terms do not
