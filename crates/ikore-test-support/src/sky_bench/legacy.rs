@@ -372,6 +372,7 @@ impl RetrievalSystem for LegacyRag {
 pub fn run(corpus: &Corpus, scale: Option<usize>) -> Result<Value> {
     let mut legacy = LegacyRag::open(corpus)?;
     let mut rows = Vec::new();
+    let mut failures = Vec::new();
     for (index, q) in corpus.questions.iter().enumerate() {
         progress(
             json!({"phase":"retrieval","question":q.id,"ordinal":index+1,"questions":corpus.questions.len(),"indexed_notes":legacy.indexed_notes,"index_problem":legacy.index_problem}),
@@ -383,7 +384,19 @@ pub fn run(corpus: &Corpus, scale: Option<usize>) -> Result<Value> {
                 modes.reverse();
             }
             for mode in modes {
-                let d = legacy.retrieve(q, mode)?;
+                let start = Instant::now();
+                let d = match legacy.retrieve(q, mode) {
+                    Ok(delivery) => delivery,
+                    Err(error) if scale.is_some() => {
+                        let reason = error
+                            .to_string()
+                            .replace(legacy.workspace.to_string_lossy().as_ref(), "<repo>");
+                        failures.push(json!({"question":q.id,"mode":mode,"repetition":repetition,
+                            "elapsed_ms":start.elapsed().as_secs_f64()*1000.0,"reason":reason}));
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                };
                 if repetition > 0 {
                     rows.push(json!({"question":q.id,"category":q.category,"mode":mode,"repetition":repetition,"max_target_jaccard":overlap,"strategy":d.strategy,
                         "metrics":metrics::score(q,&corpus.facts,&d),"delivered":d.items.iter().map(|i|json!({"path":i.path,"sha256":hash(i.text.as_bytes()),"characters":i.text.chars().count(),"similarity":i.similarity,"code_files":metrics::file_references(&i.text),"snippets":i.snippets})).collect::<Vec<_>>()}));
@@ -396,7 +409,7 @@ pub fn run(corpus: &Corpus, scale: Option<usize>) -> Result<Value> {
         let samples: Vec<_> = rows.iter().filter(|r| r["mode"] == mode).cloned().collect();
         summary[mode] = metrics::summarize(&samples);
     }
-    let result = json!({"notes":scale,"model":MODEL,"adaptive_mode":legacy.config.adaptive_context_mode.as_str(),"indexed_notes":legacy.indexed_notes,"index_problem":legacy.index_problem,"index_ms":legacy.index_ms,"db_bytes":legacy.db_bytes,"summary":summary,"samples":rows});
+    let result = json!({"notes":scale,"model":MODEL,"adaptive_mode":legacy.config.adaptive_context_mode.as_str(),"indexed_notes":legacy.indexed_notes,"index_problem":legacy.index_problem,"index_ms":legacy.index_ms,"db_bytes":legacy.db_bytes,"summary":summary,"samples":rows,"failed_attempts":failures});
     legacy.runtime.block_on(legacy.core.shutdown());
     Ok(result)
 }

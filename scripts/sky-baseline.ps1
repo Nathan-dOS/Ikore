@@ -27,9 +27,9 @@ try {
         }
     } until ($child.WaitForExit(25))
     $log = $diagnostics.GetAwaiter().GetResult()
-    if ($log) { [IO.File]::WriteAllText((Join-Path $directory.FullName "$Phase.log"), $log) }
+    [IO.File]::WriteAllText((Join-Path $directory.FullName "$Phase.log"), $log)
     $memoryFile = Join-Path $directory.FullName "$Phase-memory.json"
-    [IO.File]::WriteAllText($memoryFile, (@{phase=$Phase;peak_working_set_bytes=$peak} | ConvertTo-Json))
+    [IO.File]::WriteAllText($memoryFile, (@{phase=$Phase;peak_working_set_bytes=$peak;exit_code=$child.ExitCode} | ConvertTo-Json))
     if ($child.ExitCode -ne 0) { throw "$Phase exited with code $($child.ExitCode). $log" }
 } finally {
     $child.Dispose()
