@@ -277,6 +277,8 @@ impl Corpus {
         let mut markers = BTreeSet::new();
         let mut seen_notes = BTreeSet::new();
         let obs = root.join("observatory");
+        let mut old_counts: BTreeMap<String, usize> = BTreeMap::new();
+        let mut new_counts: BTreeMap<String, usize> = BTreeMap::new();
         for f in &self.facts {
             if !markers.insert(&f.text) {
                 return Err("duplicate fact text".into());
@@ -292,6 +294,12 @@ impl Corpus {
                 return Err("invalid fact heading".into());
             }
             if seen_notes.insert(path) {
+                for line in legacy.lines() {
+                    *old_counts.entry(line.to_owned()).or_default() += 1;
+                }
+                for line in note.lines().filter_map(|line| line.strip_prefix("> ")) {
+                    *new_counts.entry(line.to_owned()).or_default() += 1;
+                }
                 let yaml = note
                     .strip_prefix("---\n")
                     .and_then(|s| s.split_once("\n---\n"))
@@ -365,6 +373,11 @@ impl Corpus {
                 {
                     return Err(format!("invalid fingerprint on {}", f.id).into());
                 }
+            }
+        }
+        for f in &self.facts {
+            if old_counts.get(&f.text) != Some(&1) || new_counts.get(&f.text) != Some(&1) {
+                return Err(format!("fact occurs outside its assigned note: {}", f.id).into());
             }
         }
         if files(&obs.join(".sky/stars"))?.len() != self.facts.len() {

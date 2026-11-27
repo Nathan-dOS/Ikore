@@ -87,6 +87,13 @@ struct LegacyRag {
     received: std::sync::mpsc::Receiver<String>,
     index_ms: f64,
     db_bytes: u64,
+    indexed_notes: usize,
+    index_problem: Option<String>,
+}
+fn progress(update: Value) {
+    if let Some(path) = std::env::var_os("IKORE_SKY_PROGRESS_FILE") {
+        let _ = fs::write(path, update.to_string());
+    }
 }
 impl LegacyRag {
     fn open(corpus: &Corpus) -> Result<Self> {
@@ -159,28 +166,45 @@ impl LegacyRag {
             .collect::<std::collections::BTreeSet<_>>()
             .len();
         let mut previous = 0;
-        let mut progress = Instant::now();
-        loop {
+        let mut last_change = Instant::now();
+        let mut heartbeat = Instant::now();
+        let (indexed_notes, index_problem) = loop {
             let count: usize = db.query_row(
                 "SELECT count(*) FROM workspace_note_embeddings WHERE embedding_model=?1",
                 [MODEL],
                 |r| r.get(0),
             )?;
             if count >= expected {
-                break;
+                break (count, None);
             }
             if count != previous {
                 previous = count;
-                progress = Instant::now();
+                last_change = Instant::now();
             }
-            if progress.elapsed() > Duration::from_secs(120) {
-                let details:Vec<String>=db.prepare("SELECT coalesce(last_error,'unknown') FROM jobs WHERE status='failed' ORDER BY created_at DESC LIMIT 3")?.query_map([],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?;
-                return Err(
-                    format!("legacy indexing stalled at {count}/{expected}: {details:?}").into(),
+            if heartbeat.elapsed() > Duration::from_secs(15) {
+                progress(
+                    json!({"phase":"indexing","indexed":count,"expected":expected,"elapsed_seconds":now.elapsed().as_secs()}),
                 );
+                heartbeat = Instant::now();
+            }
+            if last_change.elapsed() > Duration::from_secs(180) {
+                let details:Vec<String>=db.prepare("SELECT coalesce(last_error,'unknown') FROM jobs WHERE status='failed' ORDER BY created_at DESC LIMIT 3")?.query_map([],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?;
+                let sync: Vec<String> = db
+                    .prepare(
+                        "SELECT coalesce(last_error,'no scan error') FROM embedding_sync_state",
+                    )?
+                    .query_map([], |r| r.get(0))?
+                    .collect::<rusqlite::Result<_>>()?;
+                let problem = format!(
+                    "legacy index stopped at {count}/{expected}; jobs={details:?}; scanner={sync:?}"
+                );
+                if expected >= 10000 {
+                    break (count, Some(problem));
+                }
+                return Err(problem.into());
             }
             std::thread::sleep(Duration::from_millis(100));
-        }
+        };
         let index_ms = now.elapsed().as_secs_f64() * 1000.;
         let db_bytes = db.query_row(
             "SELECT page_count*page_size FROM pragma_page_count,pragma_page_size",
@@ -212,6 +236,8 @@ impl LegacyRag {
             received,
             index_ms,
             db_bytes,
+            indexed_notes,
+            index_problem,
         })
     }
 }
@@ -347,6 +373,9 @@ pub fn run(corpus: &Corpus, scale: Option<usize>) -> Result<Value> {
     let mut legacy = LegacyRag::open(corpus)?;
     let mut rows = Vec::new();
     for (index, q) in corpus.questions.iter().enumerate() {
+        progress(
+            json!({"phase":"retrieval","question":q.id,"ordinal":index+1,"questions":corpus.questions.len(),"indexed_notes":legacy.indexed_notes,"index_problem":legacy.index_problem}),
+        );
         let overlap = metrics::overlap(q, &corpus.facts)?;
         for repetition in 0..=5 {
             let mut modes = [Mode::Native, Mode::Question];
@@ -357,7 +386,7 @@ pub fn run(corpus: &Corpus, scale: Option<usize>) -> Result<Value> {
                 let d = legacy.retrieve(q, mode)?;
                 if repetition > 0 {
                     rows.push(json!({"question":q.id,"category":q.category,"mode":mode,"repetition":repetition,"max_target_jaccard":overlap,"strategy":d.strategy,
-                        "metrics":metrics::score(q,&corpus.facts,&d),"delivered":d.items.iter().map(|i|json!({"path":i.path,"sha256":hash(i.text.as_bytes()),"characters":i.text.chars().count(),"similarity":i.similarity,"snippets":i.snippets})).collect::<Vec<_>>()}));
+                        "metrics":metrics::score(q,&corpus.facts,&d),"delivered":d.items.iter().map(|i|json!({"path":i.path,"sha256":hash(i.text.as_bytes()),"characters":i.text.chars().count(),"similarity":i.similarity,"code_files":metrics::file_references(&i.text),"snippets":i.snippets})).collect::<Vec<_>>()}));
                 }
             }
         }
@@ -367,7 +396,7 @@ pub fn run(corpus: &Corpus, scale: Option<usize>) -> Result<Value> {
         let samples: Vec<_> = rows.iter().filter(|r| r["mode"] == mode).cloned().collect();
         summary[mode] = metrics::summarize(&samples);
     }
-    let result = json!({"notes":scale,"model":MODEL,"adaptive_mode":legacy.config.adaptive_context_mode.as_str(),"index_ms":legacy.index_ms,"db_bytes":legacy.db_bytes,"summary":summary,"samples":rows});
+    let result = json!({"notes":scale,"model":MODEL,"adaptive_mode":legacy.config.adaptive_context_mode.as_str(),"indexed_notes":legacy.indexed_notes,"index_problem":legacy.index_problem,"index_ms":legacy.index_ms,"db_bytes":legacy.db_bytes,"summary":summary,"samples":rows});
     legacy.runtime.block_on(legacy.core.shutdown());
     Ok(result)
 }
@@ -410,6 +439,7 @@ pub fn mutations(corpus: &Corpus) -> Result<Value> {
     Ok(json!(rows))
 }
 mod pulse;
+pub mod replay;
 pub fn pulsations(corpus: &Corpus, live: bool) -> Result<Value> {
     pulse::run(corpus, live)
 }

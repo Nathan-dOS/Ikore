@@ -3,11 +3,29 @@ use ikore_test_support::sky_bench::{self as bench, Corpus, Result, experiments, 
 use std::{env, fs, path::Path};
 fn main() -> Result<()> {
     let args: Vec<_> = env::args().skip(1).collect();
+    if let [command, input, output] = args.as_slice()
+        && command == "replay-files"
+    {
+        return legacy::replay::file_hits(&Corpus::load()?, Path::new(input), Path::new(output));
+    }
+    if let [command, config, directory] = args.as_slice()
+        && command == "generate-scale"
+    {
+        let config: bench::scale::Scale = serde_yaml::from_slice(&fs::read(config)?)?;
+        let directory = empty_destination(directory)?;
+        return config.generate()?.render(directory);
+    }
     let [phase, out] = args.as_slice() else {
-        return Err("usage: sky_baseline <retrieval|scale-100|scale-1000|scale-10000|mutations|pulsations|e7|sqlite> <output.json>".into());
+        return Err("expected a measurement and output file, generate <empty-directory>, or generate-scale <config.yaml> <empty-directory>".into());
     };
     let manifest = bench::manifest()?;
     let corpus = Corpus::load()?;
+    if phase == "generate" {
+        let directory = empty_destination(out)?;
+        bench::materialize(directory)?;
+        corpus.render(directory)?;
+        return corpus.validate(directory);
+    }
     let raw = match phase.as_str() {
         "sqlite" => experiments::database::run()?,
         "e7" => tokio::runtime::Runtime::new()?.block_on(experiments::e7(&corpus))?,
@@ -29,4 +47,13 @@ fn main() -> Result<()> {
     let path = Path::new(out);
     fs::write(path, serde_json::to_vec(&output)?)?;
     Ok(())
+}
+
+fn empty_destination(directory: &str) -> Result<&Path> {
+    let path = Path::new(directory);
+    fs::create_dir_all(path)?;
+    if fs::read_dir(path)?.next().is_some() {
+        return Err("generation requires an empty destination".into());
+    }
+    Ok(path)
 }

@@ -14,8 +14,11 @@ $child.StartInfo.Arguments = "$Phase ""$outputFile"""
 $child.StartInfo.WorkingDirectory = $repository
 $child.StartInfo.UseShellExecute = $false
 $child.StartInfo.CreateNoWindow = $true
+$child.StartInfo.RedirectStandardError = $true
+$child.StartInfo.EnvironmentVariables['IKORE_SKY_PROGRESS_FILE'] = Join-Path $directory.FullName "$Phase-progress.json"
 try {
     [void]$child.Start()
+    $diagnostics = $child.StandardError.ReadToEndAsync()
     $peak = 0L
     do {
         $child.Refresh()
@@ -23,9 +26,11 @@ try {
             $peak = [Math]::Max($peak, $child.PeakWorkingSet64)
         }
     } until ($child.WaitForExit(25))
-    if ($child.ExitCode -ne 0) { throw "$Phase exited with code $($child.ExitCode)" }
+    $log = $diagnostics.GetAwaiter().GetResult()
+    if ($log) { [IO.File]::WriteAllText((Join-Path $directory.FullName "$Phase.log"), $log) }
     $memoryFile = Join-Path $directory.FullName "$Phase-memory.json"
     [IO.File]::WriteAllText($memoryFile, (@{phase=$Phase;peak_working_set_bytes=$peak} | ConvertTo-Json))
+    if ($child.ExitCode -ne 0) { throw "$Phase exited with code $($child.ExitCode). $log" }
 } finally {
     $child.Dispose()
 }

@@ -20,6 +20,24 @@ pub struct Item {
     pub snippets: Vec<Snippet>,
     pub similarity: Option<f64>,
 }
+/// File-only references visible to the agent in an actual delivered legacy note.
+pub fn file_references(body: &str) -> Vec<String> {
+    let Some((metadata, _)) = body
+        .strip_prefix("---\n")
+        .and_then(|s| s.split_once("\n---\n"))
+    else {
+        return Vec::new();
+    };
+    let Ok(metadata) = serde_yaml::from_str::<Value>(metadata) else {
+        return Vec::new();
+    };
+    ["source-files", "test-files"]
+        .iter()
+        .filter_map(|field| metadata[*field].as_array())
+        .flatten()
+        .filter_map(|entry| entry.as_str().map(str::to_owned))
+        .collect()
+}
 #[derive(Debug, Serialize)]
 pub struct Delivery {
     pub items: Vec<Item>,
@@ -112,6 +130,9 @@ pub fn score(q: &Question, facts: &[Fact], d: &Delivery) -> Value {
     let mut line_hit = false;
     let chars: usize = d.items.iter().map(|it| it.text.chars().count()).sum();
     for item in &d.items {
+        if let Some(loc) = &q.expected_location {
+            path_hit |= file_references(&item.text).contains(&loc.path);
+        }
         let mut hits: Vec<_> = facts
             .iter()
             .filter_map(|fact| item.text.find(&fact.text).map(|position| (position, fact)))
@@ -210,6 +231,21 @@ pub(super) fn check_examples() {
     let result = score(q, &corpus.facts, &d);
     assert_eq!(result["recall_5"], 1.);
     assert_eq!(result["relevant_ranks"], json!([1]));
+    let mut reference_only = Delivery {
+        latency_ms: 0.,
+        strategy: "fixture".into(),
+        items: Vec::new(),
+    };
+    let expected = &q.expected_location.as_ref().unwrap().path;
+    reference_only.items.push(Item {
+        path: "feature.md".into(),
+        text: format!("---\nsource-files: [{expected}]\n---\nA fact."),
+        snippets: Vec::new(),
+        similarity: None,
+    });
+    let file_score = score(q, &corpus.facts, &reference_only);
+    assert_eq!(file_score["file_hit"], true);
+    assert_eq!(file_score["line_hit"], false);
     let empty = Delivery { items: vec![], ..d };
     let result = score(&corpus.questions[6], &corpus.facts, &empty);
     assert_eq!(result["correct_refusal"], true);
