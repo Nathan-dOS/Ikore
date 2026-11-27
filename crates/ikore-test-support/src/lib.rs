@@ -16,6 +16,7 @@ mod parity;
 pub mod prompt_inventory;
 pub mod pulsation_benchmark;
 mod pulsation_fixture;
+pub mod sky_bench;
 
 pub use controlled_gateway::ControlledLlmGateway;
 pub use core_harness::{CoreTestHarness, DatabaseVersion, IsolatedTestEnvironment};
