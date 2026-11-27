@@ -171,6 +171,44 @@ fn span(s: &str) -> String {
     let ticks = "\u{60}".repeat(length);
     format!("{ticks}{s}{ticks}")
 }
+fn allowed_kind(note: &str, kind: &str) -> bool {
+    match note {
+        "feature" | "component" => matches!(
+            kind,
+            "behavior"
+                | "test"
+                | "contract"
+                | "invariant"
+                | "config"
+                | "data-model"
+                | "flow"
+                | "decision"
+                | "gotcha"
+        ),
+        "contract" => matches!(
+            kind,
+            "contract" | "invariant" | "data-model" | "test" | "decision" | "gotcha"
+        ),
+        "test-suite" => matches!(kind, "test" | "behavior" | "invariant" | "gotcha"),
+        "decision" => matches!(kind, "decision" | "gotcha"),
+        "hub" => matches!(kind, "glossary" | "decision" | "flow" | "gotcha"),
+        "glossary" => matches!(kind, "glossary" | "decision"),
+        _ => false,
+    }
+}
+pub(super) fn sentence_count(text: &str) -> usize {
+    let mut words = text.split_whitespace().peekable();
+    let mut count = 0;
+    while let Some(word) = words.next() {
+        if word.ends_with(['.', '?', '!'])
+            && !(words.peek().is_some()
+                && (word.eq_ignore_ascii_case("e.g.") || word.eq_ignore_ascii_case("i.e.")))
+        {
+            count += 1;
+        }
+    }
+    count
+}
 impl Corpus {
     pub fn render(&self, root: &Path) -> Result<()> {
         self.render_formats(root, true, true)
@@ -277,6 +315,9 @@ impl Corpus {
         let mut markers = BTreeSet::new();
         let mut seen_notes = BTreeSet::new();
         let obs = root.join("observatory");
+        if fs::read_to_string(obs.join("sky.toml"))? != "format_version = 1\n" {
+            return Err("invalid Observatory format version".into());
+        }
         let mut old_counts: BTreeMap<String, usize> = BTreeMap::new();
         let mut new_counts: BTreeMap<String, usize> = BTreeMap::new();
         for f in &self.facts {
@@ -290,6 +331,9 @@ impl Corpus {
                 return Err(f.id.clone().into());
             }
             let sections = headings(&f.constellation.r#type);
+            if !allowed_kind(&f.constellation.r#type, &f.kind) {
+                return Err("star kind is not allowed in its constellation".into());
+            }
             if !sections.contains(&f.constellation.heading.as_str()) {
                 return Err("invalid fact heading".into());
             }
@@ -318,19 +362,21 @@ impl Corpus {
                     return Err("invalid constellation header".into());
                 }
             }
-            if !(1..=3).contains(
-                &f.text
-                    .split_whitespace()
-                    .filter(|w| w.ends_with(['.', '!', '?']))
-                    .count(),
-            ) || f.text.chars().count() > 400
-            {
+            if !(1..=3).contains(&sentence_count(&f.text)) || f.text.chars().count() > 400 {
                 return Err("invalid prose".into());
             }
             let sid = id("star", &f.id);
             let cid = id("con", path);
             let header = format!("> [!star] {sid} · {}\n> {}", f.kind, f.text);
-            let (_, rest) = note.split_once(&header).ok_or("missing callout")?;
+            let (before, rest) = note.split_once(&header).ok_or("missing callout")?;
+            if before
+                .lines()
+                .rev()
+                .find_map(|line| line.strip_prefix("## "))
+                != Some(&f.constellation.heading)
+            {
+                return Err("callout is outside its assigned heading".into());
+            }
             let callout = format!(
                 "{header}{}",
                 rest.split_once("\n\n").map_or(rest.trim_end(), |(s, _)| s)

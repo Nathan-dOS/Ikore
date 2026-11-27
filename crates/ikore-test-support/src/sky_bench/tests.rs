@@ -61,6 +61,14 @@ fn frozen_corpus_survives_both_encodings_and_the_real_vault_parser() {
 #[test]
 fn metrics_handle_unanswered_questions_and_duplicate_evidence() {
     metrics::check_examples();
+    assert_eq!(
+        vault::sentence_count(
+            "Use a carrier, e.g. Atlas. Check its ID, i.e. the ledger ID. Save changes!"
+        ),
+        3
+    );
+    assert_eq!(vault::sentence_count("At the end, e.g."), 1);
+    assert_eq!(vault::sentence_count("Wait... Really?!"), 2);
 }
 
 #[test]
