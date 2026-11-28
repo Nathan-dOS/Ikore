@@ -8,6 +8,7 @@ historical check applies to the source and environment identified in that report
 
 | Topic | Public reference |
 |---|---|
+| Sky Layer 2, frozen parcel corpus, legacy retrieval, Ollama and SQLite | [2026-11-27 baseline](sky-baseline-layer2-2026-11-27.md) |
 | Architecture and design | [Overview](../docs/architecture.md), [design summaries](../docs/adr/README.md) |
 | Test commands and isolation | [Testing guide](../docs/testing.md) |
 | Latest integrated baseline | [2026-10-17 merge](main-merge-validation-2026-10-17.md) |

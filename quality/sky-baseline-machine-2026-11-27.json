@@ -1,0 +1,42 @@
+{
+  "date": "2026-11-27",
+  "cpu": "Intel(R) Core(TM) Ultra 7 258V",
+  "physical_cores": 8,
+  "logical_cores": 8,
+  "ram_bytes": 33804750848,
+  "windows": "Windows 11 Home",
+  "windows_build": "26300",
+  "power_plan": "Balanced (381b4222-f694-41f0-9685-ff5bb260df2e)",
+  "rustc": "1.98.0 (88d9e12ae 2026-08-18)",
+  "cargo": "1.98.0 (797e8a9bc 2026-08-05)",
+  "target": "x86_64-pc-windows-msvc",
+  "cargo_profile": "dev",
+  "ollama": "0.34.0",
+  "model": "nomic-embed-text:137m-v1.5-fp16",
+  "model_manifest_sha256": "0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f",
+  "dimensions": 768,
+  "ikore_base": "e92603dfa077afaa63f4b7fa14982ee9e64fa2e5",
+  "architecture_base": "04eedfdc20a781c61bef40d939a25ed89bf88695",
+  "fixture_freeze": "7b599ef8a07dd1eac34862eccaae41796c50bcb3",
+  "harness": "ad65eb4e9ede594628b803fa80ba831252b1b1b8",
+  "fixture_manifest_sha256": "db3869219dc61264a55f2e39ccc1c88615dd4b9d2668fda2e27d80ad723a7230",
+  "measurement_revisions": {
+    "base_harness": "1aca6eff0824b2cc894e0a50a105eee53ec4079a",
+    "original_timed_retrieval_and_small_scales": "1aca6eff0824b2cc894e0a50a105eee53ec4079a",
+    "verified_file_reference_scoring": "71f059a5ccf9f5c117eb6b0dbdcc32174b4bbd26",
+    "periodic_batches_and_separate_publications": "72cde4263532b5c0576fdb96912a834766487a67",
+    "large_scale_index_diagnostics": "legacy.rs and wrapper as captured in 71f059a, plus failure accounting in ad65eb4",
+    "pulsation_harness": "ad65eb4e9ede594628b803fa80ba831252b1b1b8",
+    "live_initial_attempt": {
+      "head": "1aca6eff0824b2cc894e0a50a105eee53ec4079a",
+      "working_tree": "expanded pulse driver before canonical terminal slot initialization"
+    },
+    "additional_fixture_lint": "51965fa32a49cbf18e336d3acb7ff8d20e9549b4"
+  },
+  "timing_conditions": {
+    "retrieval": "Two Modern Standby/resume pairs occurred in the overnight observation window, which also included local Cargo validation.",
+    "large_scale_retry": "AC power, Balanced plan, temporary idle-sleep inhibition and zero logged standby/resume events during the final run.",
+    "peak_memory": "PeakWorkingSet64 of the benchmark process. Separate Ollama and CLI child processes are outside this count."
+  },
+  "last_measurement_finished_at": "2026-11-28T03:16:39-03:00"
+}
