@@ -1811,7 +1811,21 @@ async fn fetch_graph_candidates(
     })
 }
 
+#[cfg(feature = "bench-hooks")]
+tokio::task_local! { static BENCH_QUERY: String; }
+
+/// Runs the ordinary stage worker with only the legacy query text overridden.
+#[cfg(feature = "bench-hooks")]
+#[doc(hidden)]
+pub async fn bench_with_query<T>(query: String, stage: impl Future<Output = T>) -> T {
+    BENCH_QUERY.scope(query, stage).await
+}
+
 fn context_embedding_query(input: &StageExecutionInput) -> String {
+    #[cfg(feature = "bench-hooks")]
+    if let Ok(query) = BENCH_QUERY.try_with(Clone::clone) {
+        return query;
+    }
     format!(
         "feature: {}\nstage: {}\nproject: {}\n",
         input.feature_name, input.stage_name, input.project_id
@@ -2873,6 +2887,20 @@ mod m4_context_tests {
             agent_run_id: None,
         }
     }
+    #[cfg(feature = "bench-hooks")]
+    #[tokio::test]
+    async fn benchmark_query_is_scoped_to_the_wrapped_stage() {
+        let input = input(std::path::Path::new("."));
+        let native = context_embedding_query(&input);
+        let override_query = bench_with_query("parcel question".into(), async {
+            tokio::task::yield_now().await;
+            context_embedding_query(&input)
+        })
+        .await;
+        assert_eq!(override_query, "parcel question");
+        assert_eq!(context_embedding_query(&input), native);
+    }
+
     fn db(input: &StageExecutionInput) -> Connection {
         let db = Connection::open(&input.runtime_db_path).unwrap();
         db.execute_batch("CREATE TABLE workspace_note_embeddings(workspace_path TEXT,relative_path TEXT,embedding_model TEXT,revision_hash TEXT,embedding_vector_json TEXT,sanitization_policy_version TEXT NOT NULL DEFAULT '');").unwrap();

@@ -1,0 +1,6 @@
+[package]
+name = "parcel-clearinghouse"
+version = "1.0.0"
+edition = "2021"
+
+[workspace]

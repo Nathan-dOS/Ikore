@@ -1,0 +1,1358 @@
+[
+  {
+    "id": "Q001",
+    "text": "How big can one group arriving at the arrival be?",
+    "required_facts": [
+      "F0001"
+    ],
+    "expected_location": {
+      "path": "src/intake.rs",
+      "line": 2
+    },
+    "feature": "intake",
+    "stage": "Specification",
+    "category": "behavior",
+    "chain": []
+  },
+  {
+    "id": "Q002",
+    "text": "Which intake check exercises a decimal quantity on screen?",
+    "required_facts": [
+      "F0009"
+    ],
+    "expected_location": {
+      "path": "ui/intake.test.ts",
+      "line": 6
+    },
+    "feature": "intake",
+    "stage": "Test",
+    "category": "test",
+    "chain": []
+  },
+  {
+    "id": "Q003",
+    "text": "What starting amount does the ledger bill for each new consignment?",
+    "required_facts": [
+      "F0004"
+    ],
+    "expected_location": {
+      "path": "src/intake.rs",
+      "line": 4
+    },
+    "feature": "intake",
+    "stage": "Contract",
+    "category": "contract",
+    "chain": []
+  },
+  {
+    "id": "Q004",
+    "text": "Where is the capacity setting for shipment requests kept?",
+    "required_facts": [
+      "F0017"
+    ],
+    "expected_location": {
+      "path": "config/intake.json",
+      "line": 2
+    },
+    "feature": "intake",
+    "stage": "Code",
+    "category": "location",
+    "chain": []
+  },
+  {
+    "id": "Q005",
+    "text": "For intake, trace the admission ceiling to the pricing agreement and its overflow check.",
+    "required_facts": [
+      "F0001",
+      "F0004",
+      "F0003"
+    ],
+    "expected_location": {
+      "path": "src/intake.rs",
+      "line": 37
+    },
+    "feature": "intake",
+    "stage": "Contract",
+    "category": "multi-hop",
+    "chain": [
+      {
+        "source": "F0001",
+        "type": "contracts",
+        "target": "F0004"
+      },
+      {
+        "source": "F0004",
+        "type": "tested-by",
+        "target": "F0003"
+      }
+    ]
+  },
+  {
+    "id": "Q006",
+    "text": "What outcome does Parcel.IntakeBridge.Quote(int, int) guarantee for excess credit?",
+    "required_facts": [
+      "F0014"
+    ],
+    "expected_location": {
+      "path": "integration/Intake.cs",
+      "line": 14
+    },
+    "feature": "intake",
+    "stage": "Code",
+    "category": "symbol",
+    "chain": []
+  },
+  {
+    "id": "Q007",
+    "text": "Which overseas insurer underwrites the arrival on public holidays?",
+    "required_facts": [],
+    "expected_location": null,
+    "feature": "intake",
+    "stage": "Specification",
+    "category": "unanswered",
+    "chain": []
+  },
+  {
+    "id": "Q008",
+    "text": "How big can one group arriving at the weighbridge be?",
+    "required_facts": [
+      "F0025"
+    ],
+    "expected_location": {
+      "path": "src/weighing.rs",
+      "line": 2
+    },
+    "feature": "weighing",
+    "stage": "Specification",
+    "category": "behavior",
+    "chain": []
+  },
+  {
+    "id": "Q009",
+    "text": "Which weighing check exercises a decimal quantity on screen?",
+    "required_facts": [
+      "F0033"
+    ],
+    "expected_location": {
+      "path": "ui/weighing.test.ts",
+      "line": 6
+    },
+    "feature": "weighing",
+    "stage": "Test",
+    "category": "test",
+    "chain": []
+  },
+  {
+    "id": "Q010",
+    "text": "What starting amount does the ledger bill for each new mass?",
+    "required_facts": [
+      "F0028"
+    ],
+    "expected_location": {
+      "path": "src/weighing.rs",
+      "line": 4
+    },
+    "feature": "weighing",
+    "stage": "Contract",
+    "category": "contract",
+    "chain": []
+  },
+  {
+    "id": "Q011",
+    "text": "Where is the capacity setting for scale readings kept?",
+    "required_facts": [
+      "F0041"
+    ],
+    "expected_location": {
+      "path": "config/weighing.yaml",
+      "line": 1
+    },
+    "feature": "weighing",
+    "stage": "Code",
+    "category": "location",
+    "chain": []
+  },
+  {
+    "id": "Q012",
+    "text": "For weighing, trace the admission ceiling to the pricing agreement and its overflow check.",
+    "required_facts": [
+      "F0025",
+      "F0028",
+      "F0027"
+    ],
+    "expected_location": {
+      "path": "src/weighing.rs",
+      "line": 37
+    },
+    "feature": "weighing",
+    "stage": "Contract",
+    "category": "multi-hop",
+    "chain": [
+      {
+        "source": "F0025",
+        "type": "contracts",
+        "target": "F0028"
+      },
+      {
+        "source": "F0028",
+        "type": "tested-by",
+        "target": "F0027"
+      }
+    ]
+  },
+  {
+    "id": "Q013",
+    "text": "What outcome does Parcel.WeighingBridge.Quote(int, int) guarantee for excess credit?",
+    "required_facts": [
+      "F0038"
+    ],
+    "expected_location": {
+      "path": "integration/Weighing.cs",
+      "line": 14
+    },
+    "feature": "weighing",
+    "stage": "Code",
+    "category": "symbol",
+    "chain": []
+  },
+  {
+    "id": "Q014",
+    "text": "Which overseas insurer underwrites the weighbridge on public holidays?",
+    "required_facts": [],
+    "expected_location": null,
+    "feature": "weighing",
+    "stage": "Specification",
+    "category": "unanswered",
+    "chain": []
+  },
+  {
+    "id": "Q015",
+    "text": "How big can one group arriving at the chute be?",
+    "required_facts": [
+      "F0049"
+    ],
+    "expected_location": {
+      "path": "src/sorting.rs",
+      "line": 2
+    },
+    "feature": "sorting",
+    "stage": "Specification",
+    "category": "behavior",
+    "chain": []
+  },
+  {
+    "id": "Q016",
+    "text": "Which sorting check exercises a decimal quantity on screen?",
+    "required_facts": [
+      "F0057"
+    ],
+    "expected_location": {
+      "path": "ui/sorting.test.ts",
+      "line": 6
+    },
+    "feature": "sorting",
+    "stage": "Test",
+    "category": "test",
+    "chain": []
+  },
+  {
+    "id": "Q017",
+    "text": "What starting amount does the ledger bill for each new diversion?",
+    "required_facts": [
+      "F0052"
+    ],
+    "expected_location": {
+      "path": "src/sorting.rs",
+      "line": 4
+    },
+    "feature": "sorting",
+    "stage": "Contract",
+    "category": "contract",
+    "chain": []
+  },
+  {
+    "id": "Q018",
+    "text": "Where is the capacity setting for sort assignments kept?",
+    "required_facts": [
+      "F0065"
+    ],
+    "expected_location": {
+      "path": "config/sorting.toml",
+      "line": 1
+    },
+    "feature": "sorting",
+    "stage": "Code",
+    "category": "location",
+    "chain": []
+  },
+  {
+    "id": "Q019",
+    "text": "For sorting, trace the admission ceiling to the pricing agreement and its overflow check.",
+    "required_facts": [
+      "F0049",
+      "F0052",
+      "F0051"
+    ],
+    "expected_location": {
+      "path": "src/sorting.rs",
+      "line": 37
+    },
+    "feature": "sorting",
+    "stage": "Contract",
+    "category": "multi-hop",
+    "chain": [
+      {
+        "source": "F0049",
+        "type": "contracts",
+        "target": "F0052"
+      },
+      {
+        "source": "F0052",
+        "type": "tested-by",
+        "target": "F0051"
+      }
+    ]
+  },
+  {
+    "id": "Q020",
+    "text": "What outcome does Parcel.SortingBridge.Quote(int, int) guarantee for excess credit?",
+    "required_facts": [
+      "F0062"
+    ],
+    "expected_location": {
+      "path": "integration/Sorting.cs",
+      "line": 14
+    },
+    "feature": "sorting",
+    "stage": "Code",
+    "category": "symbol",
+    "chain": []
+  },
+  {
+    "id": "Q021",
+    "text": "Which overseas insurer underwrites the chute on public holidays?",
+    "required_facts": [],
+    "expected_location": null,
+    "feature": "sorting",
+    "stage": "Specification",
+    "category": "unanswered",
+    "chain": []
+  },
+  {
+    "id": "Q022",
+    "text": "How big can one group arriving at the carton be?",
+    "required_facts": [
+      "F0073"
+    ],
+    "expected_location": {
+      "path": "src/packing.rs",
+      "line": 2
+    },
+    "feature": "packing",
+    "stage": "Specification",
+    "category": "behavior",
+    "chain": []
+  },
+  {
+    "id": "Q023",
+    "text": "Which packing check exercises a decimal quantity on screen?",
+    "required_facts": [
+      "F0081"
+    ],
+    "expected_location": {
+      "path": "ui/packing.test.ts",
+      "line": 6
+    },
+    "feature": "packing",
+    "stage": "Test",
+    "category": "test",
+    "chain": []
+  },
+  {
+    "id": "Q024",
+    "text": "What starting amount does the ledger bill for each new void fill?",
+    "required_facts": [
+      "F0076"
+    ],
+    "expected_location": {
+      "path": "src/packing.rs",
+      "line": 4
+    },
+    "feature": "packing",
+    "stage": "Contract",
+    "category": "contract",
+    "chain": []
+  },
+  {
+    "id": "Q025",
+    "text": "Where is the capacity setting for carton allocations kept?",
+    "required_facts": [
+      "F0089"
+    ],
+    "expected_location": {
+      "path": "config/packing.json",
+      "line": 2
+    },
+    "feature": "packing",
+    "stage": "Code",
+    "category": "location",
+    "chain": []
+  },
+  {
+    "id": "Q026",
+    "text": "For packing, trace the admission ceiling to the pricing agreement and its overflow check.",
+    "required_facts": [
+      "F0073",
+      "F0076",
+      "F0075"
+    ],
+    "expected_location": {
+      "path": "src/packing.rs",
+      "line": 37
+    },
+    "feature": "packing",
+    "stage": "Contract",
+    "category": "multi-hop",
+    "chain": [
+      {
+        "source": "F0073",
+        "type": "contracts",
+        "target": "F0076"
+      },
+      {
+        "source": "F0076",
+        "type": "tested-by",
+        "target": "F0075"
+      }
+    ]
+  },
+  {
+    "id": "Q027",
+    "text": "What outcome does Parcel.PackingBridge.Quote(int, int) guarantee for excess credit?",
+    "required_facts": [
+      "F0086"
+    ],
+    "expected_location": {
+      "path": "integration/Packing.cs",
+      "line": 14
+    },
+    "feature": "packing",
+    "stage": "Code",
+    "category": "symbol",
+    "chain": []
+  },
+  {
+    "id": "Q028",
+    "text": "Which overseas insurer underwrites the carton on public holidays?",
+    "required_facts": [],
+    "expected_location": null,
+    "feature": "packing",
+    "stage": "Specification",
+    "category": "unanswered",
+    "chain": []
+  },
+  {
+    "id": "Q029",
+    "text": "How big can one group arriving at the dock be?",
+    "required_facts": [
+      "F0097"
+    ],
+    "expected_location": {
+      "path": "src/dispatch.rs",
+      "line": 2
+    },
+    "feature": "dispatch",
+    "stage": "Specification",
+    "category": "behavior",
+    "chain": []
+  },
+  {
+    "id": "Q030",
+    "text": "Which dispatch check exercises a decimal quantity on screen?",
+    "required_facts": [
+      "F0105"
+    ],
+    "expected_location": {
+      "path": "ui/dispatch.test.ts",
+      "line": 6
+    },
+    "feature": "dispatch",
+    "stage": "Test",
+    "category": "test",
+    "chain": []
+  },
+  {
+    "id": "Q031",
+    "text": "What starting amount does the ledger bill for each new departure?",
+    "required_facts": [
+      "F0100"
+    ],
+    "expected_location": {
+      "path": "src/dispatch.rs",
+      "line": 4
+    },
+    "feature": "dispatch",
+    "stage": "Contract",
+    "category": "contract",
+    "chain": []
+  },
+  {
+    "id": "Q032",
+    "text": "Where is the capacity setting for trailer departures kept?",
+    "required_facts": [
+      "F0113"
+    ],
+    "expected_location": {
+      "path": "config/dispatch.yaml",
+      "line": 1
+    },
+    "feature": "dispatch",
+    "stage": "Code",
+    "category": "location",
+    "chain": []
+  },
+  {
+    "id": "Q033",
+    "text": "For dispatch, trace the admission ceiling to the pricing agreement and its overflow check.",
+    "required_facts": [
+      "F0097",
+      "F0100",
+      "F0099"
+    ],
+    "expected_location": {
+      "path": "src/dispatch.rs",
+      "line": 37
+    },
+    "feature": "dispatch",
+    "stage": "Contract",
+    "category": "multi-hop",
+    "chain": [
+      {
+        "source": "F0097",
+        "type": "contracts",
+        "target": "F0100"
+      },
+      {
+        "source": "F0100",
+        "type": "tested-by",
+        "target": "F0099"
+      }
+    ]
+  },
+  {
+    "id": "Q034",
+    "text": "What outcome does Parcel.DispatchBridge.Quote(int, int) guarantee for excess credit?",
+    "required_facts": [
+      "F0110"
+    ],
+    "expected_location": {
+      "path": "integration/Dispatch.cs",
+      "line": 14
+    },
+    "feature": "dispatch",
+    "stage": "Code",
+    "category": "symbol",
+    "chain": []
+  },
+  {
+    "id": "Q035",
+    "text": "Which overseas insurer underwrites the dock on public holidays?",
+    "required_facts": [],
+    "expected_location": null,
+    "feature": "dispatch",
+    "stage": "Specification",
+    "category": "unanswered",
+    "chain": []
+  },
+  {
+    "id": "Q036",
+    "text": "How big can one group arriving at the scanner be?",
+    "required_facts": [
+      "F0121"
+    ],
+    "expected_location": {
+      "path": "src/tracking.rs",
+      "line": 2
+    },
+    "feature": "tracking",
+    "stage": "Specification",
+    "category": "behavior",
+    "chain": []
+  },
+  {
+    "id": "Q037",
+    "text": "Which tracking check exercises a decimal quantity on screen?",
+    "required_facts": [
+      "F0129"
+    ],
+    "expected_location": {
+      "path": "ui/tracking.test.ts",
+      "line": 6
+    },
+    "feature": "tracking",
+    "stage": "Test",
+    "category": "test",
+    "chain": []
+  },
+  {
+    "id": "Q038",
+    "text": "What starting amount does the ledger bill for each new checkpoint?",
+    "required_facts": [
+      "F0124"
+    ],
+    "expected_location": {
+      "path": "src/tracking.rs",
+      "line": 4
+    },
+    "feature": "tracking",
+    "stage": "Contract",
+    "category": "contract",
+    "chain": []
+  },
+  {
+    "id": "Q039",
+    "text": "Where is the capacity setting for scan receipts kept?",
+    "required_facts": [
+      "F0137"
+    ],
+    "expected_location": {
+      "path": "config/tracking.toml",
+      "line": 1
+    },
+    "feature": "tracking",
+    "stage": "Code",
+    "category": "location",
+    "chain": []
+  },
+  {
+    "id": "Q040",
+    "text": "For tracking, trace the admission ceiling to the pricing agreement and its overflow check.",
+    "required_facts": [
+      "F0121",
+      "F0124",
+      "F0123"
+    ],
+    "expected_location": {
+      "path": "src/tracking.rs",
+      "line": 37
+    },
+    "feature": "tracking",
+    "stage": "Contract",
+    "category": "multi-hop",
+    "chain": [
+      {
+        "source": "F0121",
+        "type": "contracts",
+        "target": "F0124"
+      },
+      {
+        "source": "F0124",
+        "type": "tested-by",
+        "target": "F0123"
+      }
+    ]
+  },
+  {
+    "id": "Q041",
+    "text": "What outcome does Parcel.TrackingBridge.Quote(int, int) guarantee for excess credit?",
+    "required_facts": [
+      "F0134"
+    ],
+    "expected_location": {
+      "path": "integration/Tracking.cs",
+      "line": 14
+    },
+    "feature": "tracking",
+    "stage": "Code",
+    "category": "symbol",
+    "chain": []
+  },
+  {
+    "id": "Q042",
+    "text": "Which overseas insurer underwrites the scanner on public holidays?",
+    "required_facts": [],
+    "expected_location": null,
+    "feature": "tracking",
+    "stage": "Specification",
+    "category": "unanswered",
+    "chain": []
+  },
+  {
+    "id": "Q043",
+    "text": "How big can one group arriving at the border be?",
+    "required_facts": [
+      "F0145"
+    ],
+    "expected_location": {
+      "path": "src/customs.rs",
+      "line": 2
+    },
+    "feature": "customs",
+    "stage": "Specification",
+    "category": "behavior",
+    "chain": []
+  },
+  {
+    "id": "Q044",
+    "text": "Which customs check exercises a decimal quantity on screen?",
+    "required_facts": [
+      "F0153"
+    ],
+    "expected_location": {
+      "path": "ui/customs.test.ts",
+      "line": 6
+    },
+    "feature": "customs",
+    "stage": "Test",
+    "category": "test",
+    "chain": []
+  },
+  {
+    "id": "Q045",
+    "text": "What starting amount does the ledger bill for each new declaration?",
+    "required_facts": [
+      "F0148"
+    ],
+    "expected_location": {
+      "path": "src/customs.rs",
+      "line": 4
+    },
+    "feature": "customs",
+    "stage": "Contract",
+    "category": "contract",
+    "chain": []
+  },
+  {
+    "id": "Q046",
+    "text": "Where is the capacity setting for clearance entries kept?",
+    "required_facts": [
+      "F0161"
+    ],
+    "expected_location": {
+      "path": "config/customs.json",
+      "line": 2
+    },
+    "feature": "customs",
+    "stage": "Code",
+    "category": "location",
+    "chain": []
+  },
+  {
+    "id": "Q047",
+    "text": "For customs, trace the admission ceiling to the pricing agreement and its overflow check.",
+    "required_facts": [
+      "F0145",
+      "F0148",
+      "F0147"
+    ],
+    "expected_location": {
+      "path": "src/customs.rs",
+      "line": 37
+    },
+    "feature": "customs",
+    "stage": "Contract",
+    "category": "multi-hop",
+    "chain": [
+      {
+        "source": "F0145",
+        "type": "contracts",
+        "target": "F0148"
+      },
+      {
+        "source": "F0148",
+        "type": "tested-by",
+        "target": "F0147"
+      }
+    ]
+  },
+  {
+    "id": "Q048",
+    "text": "What outcome does Parcel.CustomsBridge.Quote(int, int) guarantee for excess credit?",
+    "required_facts": [
+      "F0158"
+    ],
+    "expected_location": {
+      "path": "integration/Customs.cs",
+      "line": 14
+    },
+    "feature": "customs",
+    "stage": "Code",
+    "category": "symbol",
+    "chain": []
+  },
+  {
+    "id": "Q049",
+    "text": "Which overseas insurer underwrites the border on public holidays?",
+    "required_facts": [],
+    "expected_location": null,
+    "feature": "customs",
+    "stage": "Specification",
+    "category": "unanswered",
+    "chain": []
+  },
+  {
+    "id": "Q050",
+    "text": "How big can one group arriving at the courier be?",
+    "required_facts": [
+      "F0169"
+    ],
+    "expected_location": {
+      "path": "src/delivery.rs",
+      "line": 2
+    },
+    "feature": "delivery",
+    "stage": "Specification",
+    "category": "behavior",
+    "chain": []
+  },
+  {
+    "id": "Q051",
+    "text": "Which delivery check exercises a decimal quantity on screen?",
+    "required_facts": [
+      "F0177"
+    ],
+    "expected_location": {
+      "path": "ui/delivery.test.ts",
+      "line": 6
+    },
+    "feature": "delivery",
+    "stage": "Test",
+    "category": "test",
+    "chain": []
+  },
+  {
+    "id": "Q052",
+    "text": "What starting amount does the ledger bill for each new handoff?",
+    "required_facts": [
+      "F0172"
+    ],
+    "expected_location": {
+      "path": "src/delivery.rs",
+      "line": 4
+    },
+    "feature": "delivery",
+    "stage": "Contract",
+    "category": "contract",
+    "chain": []
+  },
+  {
+    "id": "Q053",
+    "text": "Where is the capacity setting for doorstep attempts kept?",
+    "required_facts": [
+      "F0185"
+    ],
+    "expected_location": {
+      "path": "config/delivery.yaml",
+      "line": 1
+    },
+    "feature": "delivery",
+    "stage": "Code",
+    "category": "location",
+    "chain": []
+  },
+  {
+    "id": "Q054",
+    "text": "For delivery, trace the admission ceiling to the pricing agreement and its overflow check.",
+    "required_facts": [
+      "F0169",
+      "F0172",
+      "F0171"
+    ],
+    "expected_location": {
+      "path": "src/delivery.rs",
+      "line": 37
+    },
+    "feature": "delivery",
+    "stage": "Contract",
+    "category": "multi-hop",
+    "chain": [
+      {
+        "source": "F0169",
+        "type": "contracts",
+        "target": "F0172"
+      },
+      {
+        "source": "F0172",
+        "type": "tested-by",
+        "target": "F0171"
+      }
+    ]
+  },
+  {
+    "id": "Q055",
+    "text": "What outcome does Parcel.DeliveryBridge.Quote(int, int) guarantee for excess credit?",
+    "required_facts": [
+      "F0182"
+    ],
+    "expected_location": {
+      "path": "integration/Delivery.cs",
+      "line": 14
+    },
+    "feature": "delivery",
+    "stage": "Code",
+    "category": "symbol",
+    "chain": []
+  },
+  {
+    "id": "Q056",
+    "text": "Which overseas insurer underwrites the courier on public holidays?",
+    "required_facts": [],
+    "expected_location": null,
+    "feature": "delivery",
+    "stage": "Specification",
+    "category": "unanswered",
+    "chain": []
+  },
+  {
+    "id": "Q057",
+    "text": "How big can one group arriving at the return desk be?",
+    "required_facts": [
+      "F0193"
+    ],
+    "expected_location": {
+      "path": "src/returns.rs",
+      "line": 2
+    },
+    "feature": "returns",
+    "stage": "Specification",
+    "category": "behavior",
+    "chain": []
+  },
+  {
+    "id": "Q058",
+    "text": "Which returns check exercises a decimal quantity on screen?",
+    "required_facts": [
+      "F0201"
+    ],
+    "expected_location": {
+      "path": "ui/returns.test.ts",
+      "line": 6
+    },
+    "feature": "returns",
+    "stage": "Test",
+    "category": "test",
+    "chain": []
+  },
+  {
+    "id": "Q059",
+    "text": "What starting amount does the ledger bill for each new recovery?",
+    "required_facts": [
+      "F0196"
+    ],
+    "expected_location": {
+      "path": "src/returns.rs",
+      "line": 4
+    },
+    "feature": "returns",
+    "stage": "Contract",
+    "category": "contract",
+    "chain": []
+  },
+  {
+    "id": "Q060",
+    "text": "Where is the capacity setting for reverse shipments kept?",
+    "required_facts": [
+      "F0209"
+    ],
+    "expected_location": {
+      "path": "config/returns.toml",
+      "line": 1
+    },
+    "feature": "returns",
+    "stage": "Code",
+    "category": "location",
+    "chain": []
+  },
+  {
+    "id": "Q061",
+    "text": "For returns, trace the admission ceiling to the pricing agreement and its overflow check.",
+    "required_facts": [
+      "F0193",
+      "F0196",
+      "F0195"
+    ],
+    "expected_location": {
+      "path": "src/returns.rs",
+      "line": 37
+    },
+    "feature": "returns",
+    "stage": "Contract",
+    "category": "multi-hop",
+    "chain": [
+      {
+        "source": "F0193",
+        "type": "contracts",
+        "target": "F0196"
+      },
+      {
+        "source": "F0196",
+        "type": "tested-by",
+        "target": "F0195"
+      }
+    ]
+  },
+  {
+    "id": "Q062",
+    "text": "What outcome does Parcel.ReturnsBridge.Quote(int, int) guarantee for excess credit?",
+    "required_facts": [
+      "F0206"
+    ],
+    "expected_location": {
+      "path": "integration/Returns.cs",
+      "line": 14
+    },
+    "feature": "returns",
+    "stage": "Code",
+    "category": "symbol",
+    "chain": []
+  },
+  {
+    "id": "Q063",
+    "text": "Which overseas insurer underwrites the return desk on public holidays?",
+    "required_facts": [],
+    "expected_location": null,
+    "feature": "returns",
+    "stage": "Specification",
+    "category": "unanswered",
+    "chain": []
+  },
+  {
+    "id": "Q064",
+    "text": "How big can one group arriving at the adjuster be?",
+    "required_facts": [
+      "F0217"
+    ],
+    "expected_location": {
+      "path": "src/claims.rs",
+      "line": 2
+    },
+    "feature": "claims",
+    "stage": "Specification",
+    "category": "behavior",
+    "chain": []
+  },
+  {
+    "id": "Q065",
+    "text": "Which claims check exercises a decimal quantity on screen?",
+    "required_facts": [
+      "F0225"
+    ],
+    "expected_location": {
+      "path": "ui/claims.test.ts",
+      "line": 6
+    },
+    "feature": "claims",
+    "stage": "Test",
+    "category": "test",
+    "chain": []
+  },
+  {
+    "id": "Q066",
+    "text": "What starting amount does the ledger bill for each new damage?",
+    "required_facts": [
+      "F0220"
+    ],
+    "expected_location": {
+      "path": "src/claims.rs",
+      "line": 4
+    },
+    "feature": "claims",
+    "stage": "Contract",
+    "category": "contract",
+    "chain": []
+  },
+  {
+    "id": "Q067",
+    "text": "Where is the capacity setting for damage notices kept?",
+    "required_facts": [
+      "F0233"
+    ],
+    "expected_location": {
+      "path": "config/claims.json",
+      "line": 2
+    },
+    "feature": "claims",
+    "stage": "Code",
+    "category": "location",
+    "chain": []
+  },
+  {
+    "id": "Q068",
+    "text": "For claims, trace the admission ceiling to the pricing agreement and its overflow check.",
+    "required_facts": [
+      "F0217",
+      "F0220",
+      "F0219"
+    ],
+    "expected_location": {
+      "path": "src/claims.rs",
+      "line": 37
+    },
+    "feature": "claims",
+    "stage": "Contract",
+    "category": "multi-hop",
+    "chain": [
+      {
+        "source": "F0217",
+        "type": "contracts",
+        "target": "F0220"
+      },
+      {
+        "source": "F0220",
+        "type": "tested-by",
+        "target": "F0219"
+      }
+    ]
+  },
+  {
+    "id": "Q069",
+    "text": "What outcome does Parcel.ClaimsBridge.Quote(int, int) guarantee for excess credit?",
+    "required_facts": [
+      "F0230"
+    ],
+    "expected_location": {
+      "path": "integration/Claims.cs",
+      "line": 14
+    },
+    "feature": "claims",
+    "stage": "Code",
+    "category": "symbol",
+    "chain": []
+  },
+  {
+    "id": "Q070",
+    "text": "Which overseas insurer underwrites the adjuster on public holidays?",
+    "required_facts": [],
+    "expected_location": null,
+    "feature": "claims",
+    "stage": "Specification",
+    "category": "unanswered",
+    "chain": []
+  },
+  {
+    "id": "Q071",
+    "text": "How big can one group arriving at the cashier be?",
+    "required_facts": [
+      "F0241"
+    ],
+    "expected_location": {
+      "path": "src/billing.rs",
+      "line": 2
+    },
+    "feature": "billing",
+    "stage": "Specification",
+    "category": "behavior",
+    "chain": []
+  },
+  {
+    "id": "Q072",
+    "text": "Which billing check exercises a decimal quantity on screen?",
+    "required_facts": [
+      "F0249"
+    ],
+    "expected_location": {
+      "path": "ui/billing.test.ts",
+      "line": 6
+    },
+    "feature": "billing",
+    "stage": "Test",
+    "category": "test",
+    "chain": []
+  },
+  {
+    "id": "Q073",
+    "text": "What starting amount does the ledger bill for each new settlement?",
+    "required_facts": [
+      "F0244"
+    ],
+    "expected_location": {
+      "path": "src/billing.rs",
+      "line": 4
+    },
+    "feature": "billing",
+    "stage": "Contract",
+    "category": "contract",
+    "chain": []
+  },
+  {
+    "id": "Q074",
+    "text": "Where is the capacity setting for invoice entries kept?",
+    "required_facts": [
+      "F0257"
+    ],
+    "expected_location": {
+      "path": "config/billing.yaml",
+      "line": 1
+    },
+    "feature": "billing",
+    "stage": "Code",
+    "category": "location",
+    "chain": []
+  },
+  {
+    "id": "Q075",
+    "text": "For billing, trace the admission ceiling to the pricing agreement and its overflow check.",
+    "required_facts": [
+      "F0241",
+      "F0244",
+      "F0243"
+    ],
+    "expected_location": {
+      "path": "src/billing.rs",
+      "line": 37
+    },
+    "feature": "billing",
+    "stage": "Contract",
+    "category": "multi-hop",
+    "chain": [
+      {
+        "source": "F0241",
+        "type": "contracts",
+        "target": "F0244"
+      },
+      {
+        "source": "F0244",
+        "type": "tested-by",
+        "target": "F0243"
+      }
+    ]
+  },
+  {
+    "id": "Q076",
+    "text": "What outcome does Parcel.BillingBridge.Quote(int, int) guarantee for excess credit?",
+    "required_facts": [
+      "F0254"
+    ],
+    "expected_location": {
+      "path": "integration/Billing.cs",
+      "line": 14
+    },
+    "feature": "billing",
+    "stage": "Code",
+    "category": "symbol",
+    "chain": []
+  },
+  {
+    "id": "Q077",
+    "text": "Which overseas insurer underwrites the cashier on public holidays?",
+    "required_facts": [],
+    "expected_location": null,
+    "feature": "billing",
+    "stage": "Specification",
+    "category": "unanswered",
+    "chain": []
+  },
+  {
+    "id": "Q078",
+    "text": "How big can one group arriving at the treasury be?",
+    "required_facts": [
+      "F0265"
+    ],
+    "expected_location": {
+      "path": "src/remittance.rs",
+      "line": 2
+    },
+    "feature": "remittance",
+    "stage": "Specification",
+    "category": "behavior",
+    "chain": []
+  },
+  {
+    "id": "Q079",
+    "text": "Which remittance check exercises a decimal quantity on screen?",
+    "required_facts": [
+      "F0273"
+    ],
+    "expected_location": {
+      "path": "ui/remittance.test.ts",
+      "line": 6
+    },
+    "feature": "remittance",
+    "stage": "Test",
+    "category": "test",
+    "chain": []
+  },
+  {
+    "id": "Q080",
+    "text": "What starting amount does the ledger bill for each new disbursement?",
+    "required_facts": [
+      "F0268"
+    ],
+    "expected_location": {
+      "path": "src/remittance.rs",
+      "line": 4
+    },
+    "feature": "remittance",
+    "stage": "Contract",
+    "category": "contract",
+    "chain": []
+  },
+  {
+    "id": "Q081",
+    "text": "Where is the capacity setting for payout records kept?",
+    "required_facts": [
+      "F0281"
+    ],
+    "expected_location": {
+      "path": "config/remittance.toml",
+      "line": 1
+    },
+    "feature": "remittance",
+    "stage": "Code",
+    "category": "location",
+    "chain": []
+  },
+  {
+    "id": "Q082",
+    "text": "For remittance, trace the admission ceiling to the pricing agreement and its overflow check.",
+    "required_facts": [
+      "F0265",
+      "F0268",
+      "F0267"
+    ],
+    "expected_location": {
+      "path": "src/remittance.rs",
+      "line": 37
+    },
+    "feature": "remittance",
+    "stage": "Contract",
+    "category": "multi-hop",
+    "chain": [
+      {
+        "source": "F0265",
+        "type": "contracts",
+        "target": "F0268"
+      },
+      {
+        "source": "F0268",
+        "type": "tested-by",
+        "target": "F0267"
+      }
+    ]
+  },
+  {
+    "id": "Q083",
+    "text": "What outcome does Parcel.RemittanceBridge.Quote(int, int) guarantee for excess credit?",
+    "required_facts": [
+      "F0278"
+    ],
+    "expected_location": {
+      "path": "integration/Remittance.cs",
+      "line": 14
+    },
+    "feature": "remittance",
+    "stage": "Code",
+    "category": "symbol",
+    "chain": []
+  },
+  {
+    "id": "Q084",
+    "text": "Which overseas insurer underwrites the treasury on public holidays?",
+    "required_facts": [],
+    "expected_location": null,
+    "feature": "remittance",
+    "stage": "Specification",
+    "category": "unanswered",
+    "chain": []
+  }
+]

@@ -1,0 +1,6698 @@
+[
+  {
+    "id": "F0001",
+    "text": "The arrival admits at most 37 requests per batch.",
+    "kind": "behavior",
+    "feature": "intake",
+    "constellation": {
+      "path": "features/intake.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/intake.rs",
+      "symbol": "crate::intake::CAPACITY",
+      "lines": [
+        2,
+        2
+      ],
+      "fp": "pub const CAPACITY: u32 = 37;"
+    },
+    "relations": [
+      {
+        "type": "contracts",
+        "target": "F0004"
+      },
+      {
+        "type": "link",
+        "target": "F0022"
+      }
+    ]
+  },
+  {
+    "id": "F0002",
+    "text": "At least 2 requests are required to open a consignment ticket.",
+    "kind": "invariant",
+    "feature": "intake",
+    "constellation": {
+      "path": "features/intake.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/intake.rs",
+      "symbol": "crate::intake::MINIMUM",
+      "lines": [
+        3,
+        3
+      ],
+      "fp": "pub const MINIMUM: u32 = 2;"
+    },
+    "relations": [
+      {
+        "type": "tested-by",
+        "target": "F0009"
+      }
+    ]
+  },
+  {
+    "id": "F0003",
+    "text": "The intake regression rejects one unit beyond the admission ceiling.",
+    "kind": "test",
+    "feature": "intake",
+    "constellation": {
+      "path": "tests/intake-test-suite.md",
+      "type": "test-suite",
+      "heading": "Tests"
+    },
+    "code": {
+      "path": "src/intake.rs",
+      "symbol": "crate::intake::tests::rejects_overflow",
+      "lines": [
+        37,
+        37
+      ],
+      "fp": "assert_eq!(Ticket::open(CAPACITY + 1), None);"
+    },
+    "relations": [
+      {
+        "type": "affects",
+        "target": "F0001"
+      }
+    ]
+  },
+  {
+    "id": "F0004",
+    "text": "Each accepted consignment ticket includes an opening charge of 11 cents.",
+    "kind": "contract",
+    "feature": "intake",
+    "constellation": {
+      "path": "contracts/intake-contract.md",
+      "type": "contract",
+      "heading": "Contract"
+    },
+    "code": {
+      "path": "src/intake.rs",
+      "symbol": "crate::intake::OPENING_CENTS",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "pub const OPENING_CENTS: u32 = 11;"
+    },
+    "relations": [
+      {
+        "type": "tested-by",
+        "target": "F0003"
+      }
+    ]
+  },
+  {
+    "id": "F0005",
+    "text": "Every additional unit of intake costs 2 cents before credit.",
+    "kind": "contract",
+    "feature": "intake",
+    "constellation": {
+      "path": "contracts/intake-contract.md",
+      "type": "contract",
+      "heading": "Contract"
+    },
+    "code": {
+      "path": "src/intake.rs",
+      "symbol": "crate::intake::UNIT_CENTS",
+      "lines": [
+        5,
+        5
+      ],
+      "fp": "pub const UNIT_CENTS: u32 = 2;"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0006",
+    "text": "Splitting shipment requests opens two independently eligible tickets.",
+    "kind": "flow",
+    "feature": "intake",
+    "constellation": {
+      "path": "features/intake.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/intake.rs",
+      "symbol": "crate::intake::Ticket::split",
+      "lines": [
+        28,
+        28
+      ],
+      "fp": "Some((Self::open(left)?, Self::open(right)?))"
+    },
+    "relations": [
+      {
+        "type": "writes",
+        "target": "F0008"
+      },
+      {
+        "type": "emits",
+        "target": "F0022"
+      }
+    ]
+  },
+  {
+    "id": "F0007",
+    "text": "The intake console marks fractional quantities invalid.",
+    "kind": "behavior",
+    "feature": "intake",
+    "constellation": {
+      "path": "components/intake-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "ui/intake.tsx",
+      "symbol": "ui/intake.tsx#classify",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "if (!Number.isInteger(count)) return \"invalid\";"
+    },
+    "relations": [
+      {
+        "type": "tested-by",
+        "target": "F0009"
+      }
+    ]
+  },
+  {
+    "id": "F0008",
+    "text": "A consignment receipt stores both the admitted quantity and the total in cents.",
+    "kind": "data-model",
+    "feature": "intake",
+    "constellation": {
+      "path": "features/intake.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/intake.rs",
+      "symbol": "crate::intake::Ticket::open",
+      "lines": [
+        23,
+        23
+      ],
+      "fp": "Some(Self { units, cents })"
+    },
+    "relations": [
+      {
+        "type": "decided-by",
+        "target": "F0021"
+      }
+    ]
+  },
+  {
+    "id": "F0009",
+    "text": "The arrival console suite checks a fractional entry of one and a half.",
+    "kind": "test",
+    "feature": "intake",
+    "constellation": {
+      "path": "tests/intake-test-suite.md",
+      "type": "test-suite",
+      "heading": "Tests"
+    },
+    "code": {
+      "path": "ui/intake.test.ts",
+      "symbol": "describe(\"Intake\") > it(\"rejects fractions\")",
+      "lines": [
+        6,
+        6
+      ],
+      "fp": "assert.equal(classify(1.5), \"invalid\");"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0010",
+    "text": "The intake export drops ineligible quantities before summing the rest.",
+    "kind": "flow",
+    "feature": "intake",
+    "constellation": {
+      "path": "components/intake-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "tools/intake.js",
+      "symbol": "tools/intake.js#default",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "const eligible = values.filter((count) => accepted(count));"
+    },
+    "relations": [
+      {
+        "type": "depends-on",
+        "target": "F0001"
+      },
+      {
+        "type": "reads",
+        "target": "F0008"
+      }
+    ]
+  },
+  {
+    "id": "F0011",
+    "text": "During intake reconciliation Boolean values are excluded from numeric receipts.",
+    "kind": "invariant",
+    "feature": "intake",
+    "constellation": {
+      "path": "components/intake-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "jobs/intake.py",
+      "symbol": "jobs.intake.reconcile.valid",
+      "lines": [
+        13,
+        13
+      ],
+      "fp": "return type(value) is int and 2 <= value <= 37"
+    },
+    "relations": [
+      {
+        "type": "consumes",
+        "target": "F0022"
+      }
+    ]
+  },
+  {
+    "id": "F0012",
+    "text": "The native arrival scanner returns minus one for an inadmissible quantity.",
+    "kind": "contract",
+    "feature": "intake",
+    "constellation": {
+      "path": "components/intake-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "native/intake.c",
+      "symbol": "native/intake.c::intake_charge",
+      "lines": [
+        8,
+        8
+      ],
+      "fp": "if (!in_range(count)) return -1;"
+    },
+    "relations": [
+      {
+        "type": "implements",
+        "target": "F0015"
+      },
+      {
+        "type": "exposes",
+        "target": "F0004"
+      }
+    ]
+  },
+  {
+    "id": "F0013",
+    "text": "The native intake range check accepts both boundaries inclusively.",
+    "kind": "behavior",
+    "feature": "intake",
+    "constellation": {
+      "path": "components/intake-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "native/intake.c",
+      "symbol": "native/intake.c::in_range",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "return count >= 2 && count <= 37;"
+    },
+    "relations": [
+      {
+        "type": "part-of",
+        "target": "F0023"
+      }
+    ]
+  },
+  {
+    "id": "F0014",
+    "text": "Carrier credits cannot push a consignment charge below zero.",
+    "kind": "behavior",
+    "feature": "intake",
+    "constellation": {
+      "path": "components/intake-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "integration/Intake.cs",
+      "symbol": "Parcel.IntakeBridge.Quote(int, int)",
+      "lines": [
+        14,
+        14
+      ],
+      "fp": "return charge < 0 ? charge : Math.Max(0, charge - Math.Max(0, credit));"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0015",
+    "text": "The uncredited intake bridge rejects out-of-band requests before pricing.",
+    "kind": "contract",
+    "feature": "intake",
+    "constellation": {
+      "path": "contracts/intake-contract.md",
+      "type": "contract",
+      "heading": "Contract"
+    },
+    "code": {
+      "path": "integration/Intake.cs",
+      "symbol": "Parcel.IntakeBridge.Quote(int)",
+      "lines": [
+        7,
+        7
+      ],
+      "fp": "if (units < 2 || units > 37) return -1;"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0016",
+    "text": "The partial consignment bridge excludes rejected quotes from batch totals.",
+    "kind": "behavior",
+    "feature": "intake",
+    "constellation": {
+      "path": "components/intake-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "integration/IntakeBatch.cs",
+      "symbol": "Parcel.IntakeBridge.QuoteBatch(int[])",
+      "lines": [
+        6,
+        6
+      ],
+      "fp": "return batches.Select(units => Quote(units)).Where(cents => cents >= 0).Sum();"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0017",
+    "text": "The arrival configuration declares its capacity as 37 requests.",
+    "kind": "config",
+    "feature": "intake",
+    "constellation": {
+      "path": "features/intake.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "config/intake.json",
+      "symbol": "config/intake.json::capacity",
+      "lines": [
+        2,
+        2
+      ],
+      "fp": "\"capacity\": 37"
+    },
+    "relations": [
+      {
+        "type": "configures",
+        "target": "F0013"
+      }
+    ]
+  },
+  {
+    "id": "F0018",
+    "text": "The stand-alone intake job prints the result of reconciling an empty input.",
+    "kind": "flow",
+    "feature": "intake",
+    "constellation": {
+      "path": "components/intake-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "jobs/intake.py",
+      "symbol": "jobs.intake:main",
+      "lines": [
+        17,
+        17
+      ],
+      "fp": "print(reconcile([]))"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0019",
+    "text": "A local macro enforces the closed interval for consignment ticket creation.",
+    "kind": "invariant",
+    "feature": "intake",
+    "constellation": {
+      "path": "components/intake-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "src/intake.rs",
+      "symbol": "crate::intake::bounded_units!",
+      "lines": [
+        14,
+        14
+      ],
+      "fp": "(MINIMUM..=CAPACITY).contains(&$count)"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0020",
+    "text": "The consignment export test mixes a valid maximum with two invalid counts.",
+    "kind": "test",
+    "feature": "intake",
+    "constellation": {
+      "path": "tests/intake-test-suite.md",
+      "type": "test-suite",
+      "heading": "Tests"
+    },
+    "code": {
+      "path": "tools/intake.test.js",
+      "symbol": "describe(\"Intake\") > it(\"skips outside entries\")",
+      "lines": [
+        7,
+        7
+      ],
+      "fp": "assert.equal(tally([0, 37, 38]), 37);"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0021",
+    "text": "Intake settled on a fixed opening fee to account for handling individual tickets.",
+    "kind": "decision",
+    "feature": "intake",
+    "constellation": {
+      "path": "decisions/intake-decision.md",
+      "type": "decision",
+      "heading": "Decision"
+    },
+    "code": null,
+    "relations": [
+      {
+        "type": "supersedes",
+        "target": "F0024"
+      }
+    ]
+  },
+  {
+    "id": "F0022",
+    "text": "A consignment ticket is a priced admission record at the arrival.",
+    "kind": "glossary",
+    "feature": "intake",
+    "constellation": {
+      "path": "terms/intake-glossary.md",
+      "type": "glossary",
+      "heading": "Terms"
+    },
+    "code": null,
+    "relations": []
+  },
+  {
+    "id": "F0023",
+    "text": "Comparing totals across shipment requests must account for the opening fee on each accepted batch.",
+    "kind": "gotcha",
+    "feature": "intake",
+    "constellation": {
+      "path": "maps/intake-hub.md",
+      "type": "hub",
+      "heading": "Map"
+    },
+    "code": null,
+    "relations": [
+      {
+        "type": "risks",
+        "target": "F0013"
+      }
+    ]
+  },
+  {
+    "id": "F0024",
+    "text": "The arrival retired its original flat invoice in favor of unit-based pricing.",
+    "kind": "decision",
+    "feature": "intake",
+    "constellation": {
+      "path": "decisions/intake-previous.md",
+      "type": "decision",
+      "heading": "Decision"
+    },
+    "code": null,
+    "relations": []
+  },
+  {
+    "id": "F0025",
+    "text": "The weighbridge admits at most 44 grams per batch.",
+    "kind": "behavior",
+    "feature": "weighing",
+    "constellation": {
+      "path": "features/weighing.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/weighing.rs",
+      "symbol": "crate::weighing::CAPACITY",
+      "lines": [
+        2,
+        2
+      ],
+      "fp": "pub const CAPACITY: u32 = 44;"
+    },
+    "relations": [
+      {
+        "type": "contracts",
+        "target": "F0028"
+      },
+      {
+        "type": "link",
+        "target": "F0046"
+      }
+    ]
+  },
+  {
+    "id": "F0026",
+    "text": "At least 3 grams are required to open a mass ticket.",
+    "kind": "invariant",
+    "feature": "weighing",
+    "constellation": {
+      "path": "features/weighing.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/weighing.rs",
+      "symbol": "crate::weighing::MINIMUM",
+      "lines": [
+        3,
+        3
+      ],
+      "fp": "pub const MINIMUM: u32 = 3;"
+    },
+    "relations": [
+      {
+        "type": "tested-by",
+        "target": "F0033"
+      }
+    ]
+  },
+  {
+    "id": "F0027",
+    "text": "The weighing regression rejects one unit beyond the admission ceiling.",
+    "kind": "test",
+    "feature": "weighing",
+    "constellation": {
+      "path": "tests/weighing-test-suite.md",
+      "type": "test-suite",
+      "heading": "Tests"
+    },
+    "code": {
+      "path": "src/weighing.rs",
+      "symbol": "crate::weighing::tests::rejects_overflow",
+      "lines": [
+        37,
+        37
+      ],
+      "fp": "assert_eq!(Ticket::open(CAPACITY + 1), None);"
+    },
+    "relations": [
+      {
+        "type": "affects",
+        "target": "F0025"
+      }
+    ]
+  },
+  {
+    "id": "F0028",
+    "text": "Each accepted mass ticket includes an opening charge of 14 cents.",
+    "kind": "contract",
+    "feature": "weighing",
+    "constellation": {
+      "path": "contracts/weighing-contract.md",
+      "type": "contract",
+      "heading": "Contract"
+    },
+    "code": {
+      "path": "src/weighing.rs",
+      "symbol": "crate::weighing::OPENING_CENTS",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "pub const OPENING_CENTS: u32 = 14;"
+    },
+    "relations": [
+      {
+        "type": "tested-by",
+        "target": "F0027"
+      }
+    ]
+  },
+  {
+    "id": "F0029",
+    "text": "Every additional unit of weighing costs 3 cents before credit.",
+    "kind": "contract",
+    "feature": "weighing",
+    "constellation": {
+      "path": "contracts/weighing-contract.md",
+      "type": "contract",
+      "heading": "Contract"
+    },
+    "code": {
+      "path": "src/weighing.rs",
+      "symbol": "crate::weighing::UNIT_CENTS",
+      "lines": [
+        5,
+        5
+      ],
+      "fp": "pub const UNIT_CENTS: u32 = 3;"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0030",
+    "text": "Splitting scale readings opens two independently eligible tickets.",
+    "kind": "flow",
+    "feature": "weighing",
+    "constellation": {
+      "path": "features/weighing.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/weighing.rs",
+      "symbol": "crate::weighing::Ticket::split",
+      "lines": [
+        28,
+        28
+      ],
+      "fp": "Some((Self::open(left)?, Self::open(right)?))"
+    },
+    "relations": [
+      {
+        "type": "writes",
+        "target": "F0032"
+      },
+      {
+        "type": "emits",
+        "target": "F0046"
+      }
+    ]
+  },
+  {
+    "id": "F0031",
+    "text": "The weighing console marks fractional quantities invalid.",
+    "kind": "behavior",
+    "feature": "weighing",
+    "constellation": {
+      "path": "components/weighing-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "ui/weighing.tsx",
+      "symbol": "ui/weighing.tsx#classify",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "if (!Number.isInteger(count)) return \"invalid\";"
+    },
+    "relations": [
+      {
+        "type": "tested-by",
+        "target": "F0033"
+      }
+    ]
+  },
+  {
+    "id": "F0032",
+    "text": "A mass receipt stores both the admitted quantity and the total in cents.",
+    "kind": "data-model",
+    "feature": "weighing",
+    "constellation": {
+      "path": "features/weighing.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/weighing.rs",
+      "symbol": "crate::weighing::Ticket::open",
+      "lines": [
+        23,
+        23
+      ],
+      "fp": "Some(Self { units, cents })"
+    },
+    "relations": [
+      {
+        "type": "decided-by",
+        "target": "F0045"
+      }
+    ]
+  },
+  {
+    "id": "F0033",
+    "text": "The weighbridge console suite checks a fractional entry of one and a half.",
+    "kind": "test",
+    "feature": "weighing",
+    "constellation": {
+      "path": "tests/weighing-test-suite.md",
+      "type": "test-suite",
+      "heading": "Tests"
+    },
+    "code": {
+      "path": "ui/weighing.test.ts",
+      "symbol": "describe(\"Weighing\") > it(\"rejects fractions\")",
+      "lines": [
+        6,
+        6
+      ],
+      "fp": "assert.equal(classify(1.5), \"invalid\");"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0034",
+    "text": "The weighing export drops ineligible quantities before summing the rest.",
+    "kind": "flow",
+    "feature": "weighing",
+    "constellation": {
+      "path": "components/weighing-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "tools/weighing.js",
+      "symbol": "tools/weighing.js#default",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "const eligible = values.filter((count) => accepted(count));"
+    },
+    "relations": [
+      {
+        "type": "depends-on",
+        "target": "F0025"
+      },
+      {
+        "type": "reads",
+        "target": "F0032"
+      }
+    ]
+  },
+  {
+    "id": "F0035",
+    "text": "During weighing reconciliation Boolean values are excluded from numeric receipts.",
+    "kind": "invariant",
+    "feature": "weighing",
+    "constellation": {
+      "path": "components/weighing-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "jobs/weighing.py",
+      "symbol": "jobs.weighing.reconcile.valid",
+      "lines": [
+        13,
+        13
+      ],
+      "fp": "return type(value) is int and 3 <= value <= 44"
+    },
+    "relations": [
+      {
+        "type": "consumes",
+        "target": "F0046"
+      }
+    ]
+  },
+  {
+    "id": "F0036",
+    "text": "The native weighbridge scanner returns minus one for an inadmissible quantity.",
+    "kind": "contract",
+    "feature": "weighing",
+    "constellation": {
+      "path": "components/weighing-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "native/weighing.c",
+      "symbol": "native/weighing.c::weighing_charge",
+      "lines": [
+        8,
+        8
+      ],
+      "fp": "if (!in_range(count)) return -1;"
+    },
+    "relations": [
+      {
+        "type": "implements",
+        "target": "F0039"
+      },
+      {
+        "type": "exposes",
+        "target": "F0028"
+      }
+    ]
+  },
+  {
+    "id": "F0037",
+    "text": "The native weighing range check accepts both boundaries inclusively.",
+    "kind": "behavior",
+    "feature": "weighing",
+    "constellation": {
+      "path": "components/weighing-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "native/weighing.c",
+      "symbol": "native/weighing.c::in_range",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "return count >= 3 && count <= 44;"
+    },
+    "relations": [
+      {
+        "type": "part-of",
+        "target": "F0047"
+      }
+    ]
+  },
+  {
+    "id": "F0038",
+    "text": "Carrier credits cannot push a mass charge below zero.",
+    "kind": "behavior",
+    "feature": "weighing",
+    "constellation": {
+      "path": "components/weighing-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "integration/Weighing.cs",
+      "symbol": "Parcel.WeighingBridge.Quote(int, int)",
+      "lines": [
+        14,
+        14
+      ],
+      "fp": "return charge < 0 ? charge : Math.Max(0, charge - Math.Max(0, credit));"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0039",
+    "text": "The uncredited weighing bridge rejects out-of-band requests before pricing.",
+    "kind": "contract",
+    "feature": "weighing",
+    "constellation": {
+      "path": "contracts/weighing-contract.md",
+      "type": "contract",
+      "heading": "Contract"
+    },
+    "code": {
+      "path": "integration/Weighing.cs",
+      "symbol": "Parcel.WeighingBridge.Quote(int)",
+      "lines": [
+        7,
+        7
+      ],
+      "fp": "if (units < 3 || units > 44) return -1;"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0040",
+    "text": "The partial mass bridge excludes rejected quotes from batch totals.",
+    "kind": "behavior",
+    "feature": "weighing",
+    "constellation": {
+      "path": "components/weighing-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "integration/WeighingBatch.cs",
+      "symbol": "Parcel.WeighingBridge.QuoteBatch(int[])",
+      "lines": [
+        6,
+        6
+      ],
+      "fp": "return batches.Select(units => Quote(units)).Where(cents => cents >= 0).Sum();"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0041",
+    "text": "The weighbridge configuration declares its capacity as 44 grams.",
+    "kind": "config",
+    "feature": "weighing",
+    "constellation": {
+      "path": "features/weighing.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "config/weighing.yaml",
+      "symbol": "config/weighing.yaml::capacity",
+      "lines": [
+        1,
+        1
+      ],
+      "fp": "capacity: 44"
+    },
+    "relations": [
+      {
+        "type": "configures",
+        "target": "F0037"
+      }
+    ]
+  },
+  {
+    "id": "F0042",
+    "text": "The stand-alone weighing job prints the result of reconciling an empty input.",
+    "kind": "flow",
+    "feature": "weighing",
+    "constellation": {
+      "path": "components/weighing-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "jobs/weighing.py",
+      "symbol": "jobs.weighing:main",
+      "lines": [
+        17,
+        17
+      ],
+      "fp": "print(reconcile([]))"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0043",
+    "text": "A local macro enforces the closed interval for mass ticket creation.",
+    "kind": "invariant",
+    "feature": "weighing",
+    "constellation": {
+      "path": "components/weighing-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "src/weighing.rs",
+      "symbol": "crate::weighing::bounded_units!",
+      "lines": [
+        14,
+        14
+      ],
+      "fp": "(MINIMUM..=CAPACITY).contains(&$count)"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0044",
+    "text": "The mass export test mixes a valid maximum with two invalid counts.",
+    "kind": "test",
+    "feature": "weighing",
+    "constellation": {
+      "path": "tests/weighing-test-suite.md",
+      "type": "test-suite",
+      "heading": "Tests"
+    },
+    "code": {
+      "path": "tools/weighing.test.js",
+      "symbol": "describe(\"Weighing\") > it(\"skips outside entries\")",
+      "lines": [
+        7,
+        7
+      ],
+      "fp": "assert.equal(tally([0, 44, 45]), 44);"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0045",
+    "text": "Weighing settled on a fixed opening fee to account for handling individual tickets.",
+    "kind": "decision",
+    "feature": "weighing",
+    "constellation": {
+      "path": "decisions/weighing-decision.md",
+      "type": "decision",
+      "heading": "Decision"
+    },
+    "code": null,
+    "relations": [
+      {
+        "type": "supersedes",
+        "target": "F0048"
+      }
+    ]
+  },
+  {
+    "id": "F0046",
+    "text": "A mass ticket is a priced admission record at the weighbridge.",
+    "kind": "glossary",
+    "feature": "weighing",
+    "constellation": {
+      "path": "terms/weighing-glossary.md",
+      "type": "glossary",
+      "heading": "Terms"
+    },
+    "code": null,
+    "relations": []
+  },
+  {
+    "id": "F0047",
+    "text": "Comparing totals across scale readings must account for the opening fee on each accepted batch.",
+    "kind": "gotcha",
+    "feature": "weighing",
+    "constellation": {
+      "path": "maps/weighing-hub.md",
+      "type": "hub",
+      "heading": "Map"
+    },
+    "code": null,
+    "relations": [
+      {
+        "type": "risks",
+        "target": "F0037"
+      }
+    ]
+  },
+  {
+    "id": "F0048",
+    "text": "The weighbridge retired its original flat invoice in favor of unit-based pricing.",
+    "kind": "decision",
+    "feature": "weighing",
+    "constellation": {
+      "path": "decisions/weighing-previous.md",
+      "type": "decision",
+      "heading": "Decision"
+    },
+    "code": null,
+    "relations": []
+  },
+  {
+    "id": "F0049",
+    "text": "The chute admits at most 51 parcels per batch.",
+    "kind": "behavior",
+    "feature": "sorting",
+    "constellation": {
+      "path": "features/sorting.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/sorting.rs",
+      "symbol": "crate::sorting::CAPACITY",
+      "lines": [
+        2,
+        2
+      ],
+      "fp": "pub const CAPACITY: u32 = 51;"
+    },
+    "relations": [
+      {
+        "type": "contracts",
+        "target": "F0052"
+      },
+      {
+        "type": "link",
+        "target": "F0070"
+      }
+    ]
+  },
+  {
+    "id": "F0050",
+    "text": "At least 4 parcels are required to open a diversion ticket.",
+    "kind": "invariant",
+    "feature": "sorting",
+    "constellation": {
+      "path": "features/sorting.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/sorting.rs",
+      "symbol": "crate::sorting::MINIMUM",
+      "lines": [
+        3,
+        3
+      ],
+      "fp": "pub const MINIMUM: u32 = 4;"
+    },
+    "relations": [
+      {
+        "type": "tested-by",
+        "target": "F0057"
+      }
+    ]
+  },
+  {
+    "id": "F0051",
+    "text": "The sorting regression rejects one unit beyond the admission ceiling.",
+    "kind": "test",
+    "feature": "sorting",
+    "constellation": {
+      "path": "tests/sorting-test-suite.md",
+      "type": "test-suite",
+      "heading": "Tests"
+    },
+    "code": {
+      "path": "src/sorting.rs",
+      "symbol": "crate::sorting::tests::rejects_overflow",
+      "lines": [
+        37,
+        37
+      ],
+      "fp": "assert_eq!(Ticket::open(CAPACITY + 1), None);"
+    },
+    "relations": [
+      {
+        "type": "affects",
+        "target": "F0049"
+      }
+    ]
+  },
+  {
+    "id": "F0052",
+    "text": "Each accepted diversion ticket includes an opening charge of 17 cents.",
+    "kind": "contract",
+    "feature": "sorting",
+    "constellation": {
+      "path": "contracts/sorting-contract.md",
+      "type": "contract",
+      "heading": "Contract"
+    },
+    "code": {
+      "path": "src/sorting.rs",
+      "symbol": "crate::sorting::OPENING_CENTS",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "pub const OPENING_CENTS: u32 = 17;"
+    },
+    "relations": [
+      {
+        "type": "tested-by",
+        "target": "F0051"
+      }
+    ]
+  },
+  {
+    "id": "F0053",
+    "text": "Every additional unit of sorting costs 4 cents before credit.",
+    "kind": "contract",
+    "feature": "sorting",
+    "constellation": {
+      "path": "contracts/sorting-contract.md",
+      "type": "contract",
+      "heading": "Contract"
+    },
+    "code": {
+      "path": "src/sorting.rs",
+      "symbol": "crate::sorting::UNIT_CENTS",
+      "lines": [
+        5,
+        5
+      ],
+      "fp": "pub const UNIT_CENTS: u32 = 4;"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0054",
+    "text": "Splitting sort assignments opens two independently eligible tickets.",
+    "kind": "flow",
+    "feature": "sorting",
+    "constellation": {
+      "path": "features/sorting.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/sorting.rs",
+      "symbol": "crate::sorting::Ticket::split",
+      "lines": [
+        28,
+        28
+      ],
+      "fp": "Some((Self::open(left)?, Self::open(right)?))"
+    },
+    "relations": [
+      {
+        "type": "writes",
+        "target": "F0056"
+      },
+      {
+        "type": "emits",
+        "target": "F0070"
+      }
+    ]
+  },
+  {
+    "id": "F0055",
+    "text": "The sorting console marks fractional quantities invalid.",
+    "kind": "behavior",
+    "feature": "sorting",
+    "constellation": {
+      "path": "components/sorting-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "ui/sorting.tsx",
+      "symbol": "ui/sorting.tsx#classify",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "if (!Number.isInteger(count)) return \"invalid\";"
+    },
+    "relations": [
+      {
+        "type": "tested-by",
+        "target": "F0057"
+      }
+    ]
+  },
+  {
+    "id": "F0056",
+    "text": "A diversion receipt stores both the admitted quantity and the total in cents.",
+    "kind": "data-model",
+    "feature": "sorting",
+    "constellation": {
+      "path": "features/sorting.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/sorting.rs",
+      "symbol": "crate::sorting::Ticket::open",
+      "lines": [
+        23,
+        23
+      ],
+      "fp": "Some(Self { units, cents })"
+    },
+    "relations": [
+      {
+        "type": "decided-by",
+        "target": "F0069"
+      }
+    ]
+  },
+  {
+    "id": "F0057",
+    "text": "The chute console suite checks a fractional entry of one and a half.",
+    "kind": "test",
+    "feature": "sorting",
+    "constellation": {
+      "path": "tests/sorting-test-suite.md",
+      "type": "test-suite",
+      "heading": "Tests"
+    },
+    "code": {
+      "path": "ui/sorting.test.ts",
+      "symbol": "describe(\"Sorting\") > it(\"rejects fractions\")",
+      "lines": [
+        6,
+        6
+      ],
+      "fp": "assert.equal(classify(1.5), \"invalid\");"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0058",
+    "text": "The sorting export drops ineligible quantities before summing the rest.",
+    "kind": "flow",
+    "feature": "sorting",
+    "constellation": {
+      "path": "components/sorting-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "tools/sorting.js",
+      "symbol": "tools/sorting.js#default",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "const eligible = values.filter((count) => accepted(count));"
+    },
+    "relations": [
+      {
+        "type": "depends-on",
+        "target": "F0049"
+      },
+      {
+        "type": "reads",
+        "target": "F0056"
+      }
+    ]
+  },
+  {
+    "id": "F0059",
+    "text": "During sorting reconciliation Boolean values are excluded from numeric receipts.",
+    "kind": "invariant",
+    "feature": "sorting",
+    "constellation": {
+      "path": "components/sorting-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "jobs/sorting.py",
+      "symbol": "jobs.sorting.reconcile.valid",
+      "lines": [
+        13,
+        13
+      ],
+      "fp": "return type(value) is int and 4 <= value <= 51"
+    },
+    "relations": [
+      {
+        "type": "consumes",
+        "target": "F0070"
+      }
+    ]
+  },
+  {
+    "id": "F0060",
+    "text": "The native chute scanner returns minus one for an inadmissible quantity.",
+    "kind": "contract",
+    "feature": "sorting",
+    "constellation": {
+      "path": "components/sorting-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "native/sorting.c",
+      "symbol": "native/sorting.c::sorting_charge",
+      "lines": [
+        8,
+        8
+      ],
+      "fp": "if (!in_range(count)) return -1;"
+    },
+    "relations": [
+      {
+        "type": "implements",
+        "target": "F0063"
+      },
+      {
+        "type": "exposes",
+        "target": "F0052"
+      }
+    ]
+  },
+  {
+    "id": "F0061",
+    "text": "The native sorting range check accepts both boundaries inclusively.",
+    "kind": "behavior",
+    "feature": "sorting",
+    "constellation": {
+      "path": "components/sorting-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "native/sorting.c",
+      "symbol": "native/sorting.c::in_range",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "return count >= 4 && count <= 51;"
+    },
+    "relations": [
+      {
+        "type": "part-of",
+        "target": "F0071"
+      }
+    ]
+  },
+  {
+    "id": "F0062",
+    "text": "Carrier credits cannot push a diversion charge below zero.",
+    "kind": "behavior",
+    "feature": "sorting",
+    "constellation": {
+      "path": "components/sorting-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "integration/Sorting.cs",
+      "symbol": "Parcel.SortingBridge.Quote(int, int)",
+      "lines": [
+        14,
+        14
+      ],
+      "fp": "return charge < 0 ? charge : Math.Max(0, charge - Math.Max(0, credit));"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0063",
+    "text": "The uncredited sorting bridge rejects out-of-band requests before pricing.",
+    "kind": "contract",
+    "feature": "sorting",
+    "constellation": {
+      "path": "contracts/sorting-contract.md",
+      "type": "contract",
+      "heading": "Contract"
+    },
+    "code": {
+      "path": "integration/Sorting.cs",
+      "symbol": "Parcel.SortingBridge.Quote(int)",
+      "lines": [
+        7,
+        7
+      ],
+      "fp": "if (units < 4 || units > 51) return -1;"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0064",
+    "text": "The partial diversion bridge excludes rejected quotes from batch totals.",
+    "kind": "behavior",
+    "feature": "sorting",
+    "constellation": {
+      "path": "components/sorting-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "integration/SortingBatch.cs",
+      "symbol": "Parcel.SortingBridge.QuoteBatch(int[])",
+      "lines": [
+        6,
+        6
+      ],
+      "fp": "return batches.Select(units => Quote(units)).Where(cents => cents >= 0).Sum();"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0065",
+    "text": "The chute configuration declares its capacity as 51 parcels.",
+    "kind": "config",
+    "feature": "sorting",
+    "constellation": {
+      "path": "features/sorting.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "config/sorting.toml",
+      "symbol": "config/sorting.toml::capacity",
+      "lines": [
+        1,
+        1
+      ],
+      "fp": "capacity = 51"
+    },
+    "relations": [
+      {
+        "type": "configures",
+        "target": "F0061"
+      }
+    ]
+  },
+  {
+    "id": "F0066",
+    "text": "The stand-alone sorting job prints the result of reconciling an empty input.",
+    "kind": "flow",
+    "feature": "sorting",
+    "constellation": {
+      "path": "components/sorting-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "jobs/sorting.py",
+      "symbol": "jobs.sorting:main",
+      "lines": [
+        17,
+        17
+      ],
+      "fp": "print(reconcile([]))"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0067",
+    "text": "A local macro enforces the closed interval for diversion ticket creation.",
+    "kind": "invariant",
+    "feature": "sorting",
+    "constellation": {
+      "path": "components/sorting-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "src/sorting.rs",
+      "symbol": "crate::sorting::bounded_units!",
+      "lines": [
+        14,
+        14
+      ],
+      "fp": "(MINIMUM..=CAPACITY).contains(&$count)"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0068",
+    "text": "The diversion export test mixes a valid maximum with two invalid counts.",
+    "kind": "test",
+    "feature": "sorting",
+    "constellation": {
+      "path": "tests/sorting-test-suite.md",
+      "type": "test-suite",
+      "heading": "Tests"
+    },
+    "code": {
+      "path": "tools/sorting.test.js",
+      "symbol": "describe(\"Sorting\") > it(\"skips outside entries\")",
+      "lines": [
+        7,
+        7
+      ],
+      "fp": "assert.equal(tally([0, 51, 52]), 51);"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0069",
+    "text": "Sorting settled on a fixed opening fee to account for handling individual tickets.",
+    "kind": "decision",
+    "feature": "sorting",
+    "constellation": {
+      "path": "decisions/sorting-decision.md",
+      "type": "decision",
+      "heading": "Decision"
+    },
+    "code": null,
+    "relations": [
+      {
+        "type": "supersedes",
+        "target": "F0072"
+      }
+    ]
+  },
+  {
+    "id": "F0070",
+    "text": "A diversion ticket is a priced admission record at the chute.",
+    "kind": "glossary",
+    "feature": "sorting",
+    "constellation": {
+      "path": "terms/sorting-glossary.md",
+      "type": "glossary",
+      "heading": "Terms"
+    },
+    "code": null,
+    "relations": []
+  },
+  {
+    "id": "F0071",
+    "text": "Comparing totals across sort assignments must account for the opening fee on each accepted batch.",
+    "kind": "gotcha",
+    "feature": "sorting",
+    "constellation": {
+      "path": "maps/sorting-hub.md",
+      "type": "hub",
+      "heading": "Map"
+    },
+    "code": null,
+    "relations": [
+      {
+        "type": "risks",
+        "target": "F0061"
+      }
+    ]
+  },
+  {
+    "id": "F0072",
+    "text": "The chute retired its original flat invoice in favor of unit-based pricing.",
+    "kind": "decision",
+    "feature": "sorting",
+    "constellation": {
+      "path": "decisions/sorting-previous.md",
+      "type": "decision",
+      "heading": "Decision"
+    },
+    "code": null,
+    "relations": []
+  },
+  {
+    "id": "F0073",
+    "text": "The carton admits at most 58 boxes per batch.",
+    "kind": "behavior",
+    "feature": "packing",
+    "constellation": {
+      "path": "features/packing.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/packing.rs",
+      "symbol": "crate::packing::CAPACITY",
+      "lines": [
+        2,
+        2
+      ],
+      "fp": "pub const CAPACITY: u32 = 58;"
+    },
+    "relations": [
+      {
+        "type": "contracts",
+        "target": "F0076"
+      },
+      {
+        "type": "link",
+        "target": "F0094"
+      }
+    ]
+  },
+  {
+    "id": "F0074",
+    "text": "At least 5 boxes are required to open a void fill ticket.",
+    "kind": "invariant",
+    "feature": "packing",
+    "constellation": {
+      "path": "features/packing.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/packing.rs",
+      "symbol": "crate::packing::MINIMUM",
+      "lines": [
+        3,
+        3
+      ],
+      "fp": "pub const MINIMUM: u32 = 5;"
+    },
+    "relations": [
+      {
+        "type": "tested-by",
+        "target": "F0081"
+      }
+    ]
+  },
+  {
+    "id": "F0075",
+    "text": "The packing regression rejects one unit beyond the admission ceiling.",
+    "kind": "test",
+    "feature": "packing",
+    "constellation": {
+      "path": "tests/packing-test-suite.md",
+      "type": "test-suite",
+      "heading": "Tests"
+    },
+    "code": {
+      "path": "src/packing.rs",
+      "symbol": "crate::packing::tests::rejects_overflow",
+      "lines": [
+        37,
+        37
+      ],
+      "fp": "assert_eq!(Ticket::open(CAPACITY + 1), None);"
+    },
+    "relations": [
+      {
+        "type": "affects",
+        "target": "F0073"
+      }
+    ]
+  },
+  {
+    "id": "F0076",
+    "text": "Each accepted void fill ticket includes an opening charge of 20 cents.",
+    "kind": "contract",
+    "feature": "packing",
+    "constellation": {
+      "path": "contracts/packing-contract.md",
+      "type": "contract",
+      "heading": "Contract"
+    },
+    "code": {
+      "path": "src/packing.rs",
+      "symbol": "crate::packing::OPENING_CENTS",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "pub const OPENING_CENTS: u32 = 20;"
+    },
+    "relations": [
+      {
+        "type": "tested-by",
+        "target": "F0075"
+      }
+    ]
+  },
+  {
+    "id": "F0077",
+    "text": "Every additional unit of packing costs 5 cents before credit.",
+    "kind": "contract",
+    "feature": "packing",
+    "constellation": {
+      "path": "contracts/packing-contract.md",
+      "type": "contract",
+      "heading": "Contract"
+    },
+    "code": {
+      "path": "src/packing.rs",
+      "symbol": "crate::packing::UNIT_CENTS",
+      "lines": [
+        5,
+        5
+      ],
+      "fp": "pub const UNIT_CENTS: u32 = 5;"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0078",
+    "text": "Splitting carton allocations opens two independently eligible tickets.",
+    "kind": "flow",
+    "feature": "packing",
+    "constellation": {
+      "path": "features/packing.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/packing.rs",
+      "symbol": "crate::packing::Ticket::split",
+      "lines": [
+        28,
+        28
+      ],
+      "fp": "Some((Self::open(left)?, Self::open(right)?))"
+    },
+    "relations": [
+      {
+        "type": "writes",
+        "target": "F0080"
+      },
+      {
+        "type": "emits",
+        "target": "F0094"
+      }
+    ]
+  },
+  {
+    "id": "F0079",
+    "text": "The packing console marks fractional quantities invalid.",
+    "kind": "behavior",
+    "feature": "packing",
+    "constellation": {
+      "path": "components/packing-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "ui/packing.tsx",
+      "symbol": "ui/packing.tsx#classify",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "if (!Number.isInteger(count)) return \"invalid\";"
+    },
+    "relations": [
+      {
+        "type": "tested-by",
+        "target": "F0081"
+      }
+    ]
+  },
+  {
+    "id": "F0080",
+    "text": "A void fill receipt stores both the admitted quantity and the total in cents.",
+    "kind": "data-model",
+    "feature": "packing",
+    "constellation": {
+      "path": "features/packing.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/packing.rs",
+      "symbol": "crate::packing::Ticket::open",
+      "lines": [
+        23,
+        23
+      ],
+      "fp": "Some(Self { units, cents })"
+    },
+    "relations": [
+      {
+        "type": "decided-by",
+        "target": "F0093"
+      }
+    ]
+  },
+  {
+    "id": "F0081",
+    "text": "The carton console suite checks a fractional entry of one and a half.",
+    "kind": "test",
+    "feature": "packing",
+    "constellation": {
+      "path": "tests/packing-test-suite.md",
+      "type": "test-suite",
+      "heading": "Tests"
+    },
+    "code": {
+      "path": "ui/packing.test.ts",
+      "symbol": "describe(\"Packing\") > it(\"rejects fractions\")",
+      "lines": [
+        6,
+        6
+      ],
+      "fp": "assert.equal(classify(1.5), \"invalid\");"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0082",
+    "text": "The packing export drops ineligible quantities before summing the rest.",
+    "kind": "flow",
+    "feature": "packing",
+    "constellation": {
+      "path": "components/packing-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "tools/packing.js",
+      "symbol": "tools/packing.js#default",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "const eligible = values.filter((count) => accepted(count));"
+    },
+    "relations": [
+      {
+        "type": "depends-on",
+        "target": "F0073"
+      },
+      {
+        "type": "reads",
+        "target": "F0080"
+      }
+    ]
+  },
+  {
+    "id": "F0083",
+    "text": "During packing reconciliation Boolean values are excluded from numeric receipts.",
+    "kind": "invariant",
+    "feature": "packing",
+    "constellation": {
+      "path": "components/packing-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "jobs/packing.py",
+      "symbol": "jobs.packing.reconcile.valid",
+      "lines": [
+        13,
+        13
+      ],
+      "fp": "return type(value) is int and 5 <= value <= 58"
+    },
+    "relations": [
+      {
+        "type": "consumes",
+        "target": "F0094"
+      }
+    ]
+  },
+  {
+    "id": "F0084",
+    "text": "The native carton scanner returns minus one for an inadmissible quantity.",
+    "kind": "contract",
+    "feature": "packing",
+    "constellation": {
+      "path": "components/packing-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "native/packing.c",
+      "symbol": "native/packing.c::packing_charge",
+      "lines": [
+        8,
+        8
+      ],
+      "fp": "if (!in_range(count)) return -1;"
+    },
+    "relations": [
+      {
+        "type": "implements",
+        "target": "F0087"
+      },
+      {
+        "type": "exposes",
+        "target": "F0076"
+      }
+    ]
+  },
+  {
+    "id": "F0085",
+    "text": "The native packing range check accepts both boundaries inclusively.",
+    "kind": "behavior",
+    "feature": "packing",
+    "constellation": {
+      "path": "components/packing-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "native/packing.c",
+      "symbol": "native/packing.c::in_range",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "return count >= 5 && count <= 58;"
+    },
+    "relations": [
+      {
+        "type": "part-of",
+        "target": "F0095"
+      }
+    ]
+  },
+  {
+    "id": "F0086",
+    "text": "Carrier credits cannot push a void fill charge below zero.",
+    "kind": "behavior",
+    "feature": "packing",
+    "constellation": {
+      "path": "components/packing-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "integration/Packing.cs",
+      "symbol": "Parcel.PackingBridge.Quote(int, int)",
+      "lines": [
+        14,
+        14
+      ],
+      "fp": "return charge < 0 ? charge : Math.Max(0, charge - Math.Max(0, credit));"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0087",
+    "text": "The uncredited packing bridge rejects out-of-band requests before pricing.",
+    "kind": "contract",
+    "feature": "packing",
+    "constellation": {
+      "path": "contracts/packing-contract.md",
+      "type": "contract",
+      "heading": "Contract"
+    },
+    "code": {
+      "path": "integration/Packing.cs",
+      "symbol": "Parcel.PackingBridge.Quote(int)",
+      "lines": [
+        7,
+        7
+      ],
+      "fp": "if (units < 5 || units > 58) return -1;"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0088",
+    "text": "The partial void fill bridge excludes rejected quotes from batch totals.",
+    "kind": "behavior",
+    "feature": "packing",
+    "constellation": {
+      "path": "components/packing-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "integration/PackingBatch.cs",
+      "symbol": "Parcel.PackingBridge.QuoteBatch(int[])",
+      "lines": [
+        6,
+        6
+      ],
+      "fp": "return batches.Select(units => Quote(units)).Where(cents => cents >= 0).Sum();"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0089",
+    "text": "The carton configuration declares its capacity as 58 boxes.",
+    "kind": "config",
+    "feature": "packing",
+    "constellation": {
+      "path": "features/packing.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "config/packing.json",
+      "symbol": "config/packing.json::capacity",
+      "lines": [
+        2,
+        2
+      ],
+      "fp": "\"capacity\": 58"
+    },
+    "relations": [
+      {
+        "type": "configures",
+        "target": "F0085"
+      }
+    ]
+  },
+  {
+    "id": "F0090",
+    "text": "The stand-alone packing job prints the result of reconciling an empty input.",
+    "kind": "flow",
+    "feature": "packing",
+    "constellation": {
+      "path": "components/packing-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "jobs/packing.py",
+      "symbol": "jobs.packing:main",
+      "lines": [
+        17,
+        17
+      ],
+      "fp": "print(reconcile([]))"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0091",
+    "text": "A local macro enforces the closed interval for void fill ticket creation.",
+    "kind": "invariant",
+    "feature": "packing",
+    "constellation": {
+      "path": "components/packing-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "src/packing.rs",
+      "symbol": "crate::packing::bounded_units!",
+      "lines": [
+        14,
+        14
+      ],
+      "fp": "(MINIMUM..=CAPACITY).contains(&$count)"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0092",
+    "text": "The void fill export test mixes a valid maximum with two invalid counts.",
+    "kind": "test",
+    "feature": "packing",
+    "constellation": {
+      "path": "tests/packing-test-suite.md",
+      "type": "test-suite",
+      "heading": "Tests"
+    },
+    "code": {
+      "path": "tools/packing.test.js",
+      "symbol": "describe(\"Packing\") > it(\"skips outside entries\")",
+      "lines": [
+        7,
+        7
+      ],
+      "fp": "assert.equal(tally([0, 58, 59]), 58);"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0093",
+    "text": "Packing settled on a fixed opening fee to account for handling individual tickets.",
+    "kind": "decision",
+    "feature": "packing",
+    "constellation": {
+      "path": "decisions/packing-decision.md",
+      "type": "decision",
+      "heading": "Decision"
+    },
+    "code": null,
+    "relations": [
+      {
+        "type": "supersedes",
+        "target": "F0096"
+      }
+    ]
+  },
+  {
+    "id": "F0094",
+    "text": "A void fill ticket is a priced admission record at the carton.",
+    "kind": "glossary",
+    "feature": "packing",
+    "constellation": {
+      "path": "terms/packing-glossary.md",
+      "type": "glossary",
+      "heading": "Terms"
+    },
+    "code": null,
+    "relations": []
+  },
+  {
+    "id": "F0095",
+    "text": "Comparing totals across carton allocations must account for the opening fee on each accepted batch.",
+    "kind": "gotcha",
+    "feature": "packing",
+    "constellation": {
+      "path": "maps/packing-hub.md",
+      "type": "hub",
+      "heading": "Map"
+    },
+    "code": null,
+    "relations": [
+      {
+        "type": "risks",
+        "target": "F0085"
+      }
+    ]
+  },
+  {
+    "id": "F0096",
+    "text": "The carton retired its original flat invoice in favor of unit-based pricing.",
+    "kind": "decision",
+    "feature": "packing",
+    "constellation": {
+      "path": "decisions/packing-previous.md",
+      "type": "decision",
+      "heading": "Decision"
+    },
+    "code": null,
+    "relations": []
+  },
+  {
+    "id": "F0097",
+    "text": "The dock admits at most 65 loads per batch.",
+    "kind": "behavior",
+    "feature": "dispatch",
+    "constellation": {
+      "path": "features/dispatch.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/dispatch.rs",
+      "symbol": "crate::dispatch::CAPACITY",
+      "lines": [
+        2,
+        2
+      ],
+      "fp": "pub const CAPACITY: u32 = 65;"
+    },
+    "relations": [
+      {
+        "type": "contracts",
+        "target": "F0100"
+      },
+      {
+        "type": "link",
+        "target": "F0118"
+      }
+    ]
+  },
+  {
+    "id": "F0098",
+    "text": "At least 2 loads are required to open a departure ticket.",
+    "kind": "invariant",
+    "feature": "dispatch",
+    "constellation": {
+      "path": "features/dispatch.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/dispatch.rs",
+      "symbol": "crate::dispatch::MINIMUM",
+      "lines": [
+        3,
+        3
+      ],
+      "fp": "pub const MINIMUM: u32 = 2;"
+    },
+    "relations": [
+      {
+        "type": "tested-by",
+        "target": "F0105"
+      }
+    ]
+  },
+  {
+    "id": "F0099",
+    "text": "The dispatch regression rejects one unit beyond the admission ceiling.",
+    "kind": "test",
+    "feature": "dispatch",
+    "constellation": {
+      "path": "tests/dispatch-test-suite.md",
+      "type": "test-suite",
+      "heading": "Tests"
+    },
+    "code": {
+      "path": "src/dispatch.rs",
+      "symbol": "crate::dispatch::tests::rejects_overflow",
+      "lines": [
+        37,
+        37
+      ],
+      "fp": "assert_eq!(Ticket::open(CAPACITY + 1), None);"
+    },
+    "relations": [
+      {
+        "type": "affects",
+        "target": "F0097"
+      }
+    ]
+  },
+  {
+    "id": "F0100",
+    "text": "Each accepted departure ticket includes an opening charge of 23 cents.",
+    "kind": "contract",
+    "feature": "dispatch",
+    "constellation": {
+      "path": "contracts/dispatch-contract.md",
+      "type": "contract",
+      "heading": "Contract"
+    },
+    "code": {
+      "path": "src/dispatch.rs",
+      "symbol": "crate::dispatch::OPENING_CENTS",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "pub const OPENING_CENTS: u32 = 23;"
+    },
+    "relations": [
+      {
+        "type": "tested-by",
+        "target": "F0099"
+      }
+    ]
+  },
+  {
+    "id": "F0101",
+    "text": "Every additional unit of dispatch costs 6 cents before credit.",
+    "kind": "contract",
+    "feature": "dispatch",
+    "constellation": {
+      "path": "contracts/dispatch-contract.md",
+      "type": "contract",
+      "heading": "Contract"
+    },
+    "code": {
+      "path": "src/dispatch.rs",
+      "symbol": "crate::dispatch::UNIT_CENTS",
+      "lines": [
+        5,
+        5
+      ],
+      "fp": "pub const UNIT_CENTS: u32 = 6;"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0102",
+    "text": "Splitting trailer departures opens two independently eligible tickets.",
+    "kind": "flow",
+    "feature": "dispatch",
+    "constellation": {
+      "path": "features/dispatch.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/dispatch.rs",
+      "symbol": "crate::dispatch::Ticket::split",
+      "lines": [
+        28,
+        28
+      ],
+      "fp": "Some((Self::open(left)?, Self::open(right)?))"
+    },
+    "relations": [
+      {
+        "type": "writes",
+        "target": "F0104"
+      },
+      {
+        "type": "emits",
+        "target": "F0118"
+      }
+    ]
+  },
+  {
+    "id": "F0103",
+    "text": "The dispatch console marks fractional quantities invalid.",
+    "kind": "behavior",
+    "feature": "dispatch",
+    "constellation": {
+      "path": "components/dispatch-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "ui/dispatch.tsx",
+      "symbol": "ui/dispatch.tsx#classify",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "if (!Number.isInteger(count)) return \"invalid\";"
+    },
+    "relations": [
+      {
+        "type": "tested-by",
+        "target": "F0105"
+      }
+    ]
+  },
+  {
+    "id": "F0104",
+    "text": "A departure receipt stores both the admitted quantity and the total in cents.",
+    "kind": "data-model",
+    "feature": "dispatch",
+    "constellation": {
+      "path": "features/dispatch.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/dispatch.rs",
+      "symbol": "crate::dispatch::Ticket::open",
+      "lines": [
+        23,
+        23
+      ],
+      "fp": "Some(Self { units, cents })"
+    },
+    "relations": [
+      {
+        "type": "decided-by",
+        "target": "F0117"
+      }
+    ]
+  },
+  {
+    "id": "F0105",
+    "text": "The dock console suite checks a fractional entry of one and a half.",
+    "kind": "test",
+    "feature": "dispatch",
+    "constellation": {
+      "path": "tests/dispatch-test-suite.md",
+      "type": "test-suite",
+      "heading": "Tests"
+    },
+    "code": {
+      "path": "ui/dispatch.test.ts",
+      "symbol": "describe(\"Dispatch\") > it(\"rejects fractions\")",
+      "lines": [
+        6,
+        6
+      ],
+      "fp": "assert.equal(classify(1.5), \"invalid\");"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0106",
+    "text": "The dispatch export drops ineligible quantities before summing the rest.",
+    "kind": "flow",
+    "feature": "dispatch",
+    "constellation": {
+      "path": "components/dispatch-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "tools/dispatch.js",
+      "symbol": "tools/dispatch.js#default",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "const eligible = values.filter((count) => accepted(count));"
+    },
+    "relations": [
+      {
+        "type": "depends-on",
+        "target": "F0097"
+      },
+      {
+        "type": "reads",
+        "target": "F0104"
+      }
+    ]
+  },
+  {
+    "id": "F0107",
+    "text": "During dispatch reconciliation Boolean values are excluded from numeric receipts.",
+    "kind": "invariant",
+    "feature": "dispatch",
+    "constellation": {
+      "path": "components/dispatch-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "jobs/dispatch.py",
+      "symbol": "jobs.dispatch.reconcile.valid",
+      "lines": [
+        13,
+        13
+      ],
+      "fp": "return type(value) is int and 2 <= value <= 65"
+    },
+    "relations": [
+      {
+        "type": "consumes",
+        "target": "F0118"
+      }
+    ]
+  },
+  {
+    "id": "F0108",
+    "text": "The native dock scanner returns minus one for an inadmissible quantity.",
+    "kind": "contract",
+    "feature": "dispatch",
+    "constellation": {
+      "path": "components/dispatch-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "native/dispatch.c",
+      "symbol": "native/dispatch.c::dispatch_charge",
+      "lines": [
+        8,
+        8
+      ],
+      "fp": "if (!in_range(count)) return -1;"
+    },
+    "relations": [
+      {
+        "type": "implements",
+        "target": "F0111"
+      },
+      {
+        "type": "exposes",
+        "target": "F0100"
+      }
+    ]
+  },
+  {
+    "id": "F0109",
+    "text": "The native dispatch range check accepts both boundaries inclusively.",
+    "kind": "behavior",
+    "feature": "dispatch",
+    "constellation": {
+      "path": "components/dispatch-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "native/dispatch.c",
+      "symbol": "native/dispatch.c::in_range",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "return count >= 2 && count <= 65;"
+    },
+    "relations": [
+      {
+        "type": "part-of",
+        "target": "F0119"
+      }
+    ]
+  },
+  {
+    "id": "F0110",
+    "text": "Carrier credits cannot push a departure charge below zero.",
+    "kind": "behavior",
+    "feature": "dispatch",
+    "constellation": {
+      "path": "components/dispatch-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "integration/Dispatch.cs",
+      "symbol": "Parcel.DispatchBridge.Quote(int, int)",
+      "lines": [
+        14,
+        14
+      ],
+      "fp": "return charge < 0 ? charge : Math.Max(0, charge - Math.Max(0, credit));"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0111",
+    "text": "The uncredited dispatch bridge rejects out-of-band requests before pricing.",
+    "kind": "contract",
+    "feature": "dispatch",
+    "constellation": {
+      "path": "contracts/dispatch-contract.md",
+      "type": "contract",
+      "heading": "Contract"
+    },
+    "code": {
+      "path": "integration/Dispatch.cs",
+      "symbol": "Parcel.DispatchBridge.Quote(int)",
+      "lines": [
+        7,
+        7
+      ],
+      "fp": "if (units < 2 || units > 65) return -1;"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0112",
+    "text": "The partial departure bridge excludes rejected quotes from batch totals.",
+    "kind": "behavior",
+    "feature": "dispatch",
+    "constellation": {
+      "path": "components/dispatch-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "integration/DispatchBatch.cs",
+      "symbol": "Parcel.DispatchBridge.QuoteBatch(int[])",
+      "lines": [
+        6,
+        6
+      ],
+      "fp": "return batches.Select(units => Quote(units)).Where(cents => cents >= 0).Sum();"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0113",
+    "text": "The dock configuration declares its capacity as 65 loads.",
+    "kind": "config",
+    "feature": "dispatch",
+    "constellation": {
+      "path": "features/dispatch.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "config/dispatch.yaml",
+      "symbol": "config/dispatch.yaml::capacity",
+      "lines": [
+        1,
+        1
+      ],
+      "fp": "capacity: 65"
+    },
+    "relations": [
+      {
+        "type": "configures",
+        "target": "F0109"
+      }
+    ]
+  },
+  {
+    "id": "F0114",
+    "text": "The stand-alone dispatch job prints the result of reconciling an empty input.",
+    "kind": "flow",
+    "feature": "dispatch",
+    "constellation": {
+      "path": "components/dispatch-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "jobs/dispatch.py",
+      "symbol": "jobs.dispatch:main",
+      "lines": [
+        17,
+        17
+      ],
+      "fp": "print(reconcile([]))"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0115",
+    "text": "A local macro enforces the closed interval for departure ticket creation.",
+    "kind": "invariant",
+    "feature": "dispatch",
+    "constellation": {
+      "path": "components/dispatch-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "src/dispatch.rs",
+      "symbol": "crate::dispatch::bounded_units!",
+      "lines": [
+        14,
+        14
+      ],
+      "fp": "(MINIMUM..=CAPACITY).contains(&$count)"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0116",
+    "text": "The departure export test mixes a valid maximum with two invalid counts.",
+    "kind": "test",
+    "feature": "dispatch",
+    "constellation": {
+      "path": "tests/dispatch-test-suite.md",
+      "type": "test-suite",
+      "heading": "Tests"
+    },
+    "code": {
+      "path": "tools/dispatch.test.js",
+      "symbol": "describe(\"Dispatch\") > it(\"skips outside entries\")",
+      "lines": [
+        7,
+        7
+      ],
+      "fp": "assert.equal(tally([0, 65, 66]), 65);"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0117",
+    "text": "Dispatch settled on a fixed opening fee to account for handling individual tickets.",
+    "kind": "decision",
+    "feature": "dispatch",
+    "constellation": {
+      "path": "decisions/dispatch-decision.md",
+      "type": "decision",
+      "heading": "Decision"
+    },
+    "code": null,
+    "relations": [
+      {
+        "type": "supersedes",
+        "target": "F0120"
+      }
+    ]
+  },
+  {
+    "id": "F0118",
+    "text": "A departure ticket is a priced admission record at the dock.",
+    "kind": "glossary",
+    "feature": "dispatch",
+    "constellation": {
+      "path": "terms/dispatch-glossary.md",
+      "type": "glossary",
+      "heading": "Terms"
+    },
+    "code": null,
+    "relations": []
+  },
+  {
+    "id": "F0119",
+    "text": "Comparing totals across trailer departures must account for the opening fee on each accepted batch.",
+    "kind": "gotcha",
+    "feature": "dispatch",
+    "constellation": {
+      "path": "maps/dispatch-hub.md",
+      "type": "hub",
+      "heading": "Map"
+    },
+    "code": null,
+    "relations": [
+      {
+        "type": "risks",
+        "target": "F0109"
+      }
+    ]
+  },
+  {
+    "id": "F0120",
+    "text": "The dock retired its original flat invoice in favor of unit-based pricing.",
+    "kind": "decision",
+    "feature": "dispatch",
+    "constellation": {
+      "path": "decisions/dispatch-previous.md",
+      "type": "decision",
+      "heading": "Decision"
+    },
+    "code": null,
+    "relations": []
+  },
+  {
+    "id": "F0121",
+    "text": "The scanner admits at most 72 scans per batch.",
+    "kind": "behavior",
+    "feature": "tracking",
+    "constellation": {
+      "path": "features/tracking.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/tracking.rs",
+      "symbol": "crate::tracking::CAPACITY",
+      "lines": [
+        2,
+        2
+      ],
+      "fp": "pub const CAPACITY: u32 = 72;"
+    },
+    "relations": [
+      {
+        "type": "contracts",
+        "target": "F0124"
+      },
+      {
+        "type": "link",
+        "target": "F0142"
+      }
+    ]
+  },
+  {
+    "id": "F0122",
+    "text": "At least 3 scans are required to open a checkpoint ticket.",
+    "kind": "invariant",
+    "feature": "tracking",
+    "constellation": {
+      "path": "features/tracking.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/tracking.rs",
+      "symbol": "crate::tracking::MINIMUM",
+      "lines": [
+        3,
+        3
+      ],
+      "fp": "pub const MINIMUM: u32 = 3;"
+    },
+    "relations": [
+      {
+        "type": "tested-by",
+        "target": "F0129"
+      }
+    ]
+  },
+  {
+    "id": "F0123",
+    "text": "The tracking regression rejects one unit beyond the admission ceiling.",
+    "kind": "test",
+    "feature": "tracking",
+    "constellation": {
+      "path": "tests/tracking-test-suite.md",
+      "type": "test-suite",
+      "heading": "Tests"
+    },
+    "code": {
+      "path": "src/tracking.rs",
+      "symbol": "crate::tracking::tests::rejects_overflow",
+      "lines": [
+        37,
+        37
+      ],
+      "fp": "assert_eq!(Ticket::open(CAPACITY + 1), None);"
+    },
+    "relations": [
+      {
+        "type": "affects",
+        "target": "F0121"
+      }
+    ]
+  },
+  {
+    "id": "F0124",
+    "text": "Each accepted checkpoint ticket includes an opening charge of 26 cents.",
+    "kind": "contract",
+    "feature": "tracking",
+    "constellation": {
+      "path": "contracts/tracking-contract.md",
+      "type": "contract",
+      "heading": "Contract"
+    },
+    "code": {
+      "path": "src/tracking.rs",
+      "symbol": "crate::tracking::OPENING_CENTS",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "pub const OPENING_CENTS: u32 = 26;"
+    },
+    "relations": [
+      {
+        "type": "tested-by",
+        "target": "F0123"
+      }
+    ]
+  },
+  {
+    "id": "F0125",
+    "text": "Every additional unit of tracking costs 2 cents before credit.",
+    "kind": "contract",
+    "feature": "tracking",
+    "constellation": {
+      "path": "contracts/tracking-contract.md",
+      "type": "contract",
+      "heading": "Contract"
+    },
+    "code": {
+      "path": "src/tracking.rs",
+      "symbol": "crate::tracking::UNIT_CENTS",
+      "lines": [
+        5,
+        5
+      ],
+      "fp": "pub const UNIT_CENTS: u32 = 2;"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0126",
+    "text": "Splitting scan receipts opens two independently eligible tickets.",
+    "kind": "flow",
+    "feature": "tracking",
+    "constellation": {
+      "path": "features/tracking.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/tracking.rs",
+      "symbol": "crate::tracking::Ticket::split",
+      "lines": [
+        28,
+        28
+      ],
+      "fp": "Some((Self::open(left)?, Self::open(right)?))"
+    },
+    "relations": [
+      {
+        "type": "writes",
+        "target": "F0128"
+      },
+      {
+        "type": "emits",
+        "target": "F0142"
+      }
+    ]
+  },
+  {
+    "id": "F0127",
+    "text": "The tracking console marks fractional quantities invalid.",
+    "kind": "behavior",
+    "feature": "tracking",
+    "constellation": {
+      "path": "components/tracking-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "ui/tracking.tsx",
+      "symbol": "ui/tracking.tsx#classify",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "if (!Number.isInteger(count)) return \"invalid\";"
+    },
+    "relations": [
+      {
+        "type": "tested-by",
+        "target": "F0129"
+      }
+    ]
+  },
+  {
+    "id": "F0128",
+    "text": "A checkpoint receipt stores both the admitted quantity and the total in cents.",
+    "kind": "data-model",
+    "feature": "tracking",
+    "constellation": {
+      "path": "features/tracking.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/tracking.rs",
+      "symbol": "crate::tracking::Ticket::open",
+      "lines": [
+        23,
+        23
+      ],
+      "fp": "Some(Self { units, cents })"
+    },
+    "relations": [
+      {
+        "type": "decided-by",
+        "target": "F0141"
+      }
+    ]
+  },
+  {
+    "id": "F0129",
+    "text": "The scanner console suite checks a fractional entry of one and a half.",
+    "kind": "test",
+    "feature": "tracking",
+    "constellation": {
+      "path": "tests/tracking-test-suite.md",
+      "type": "test-suite",
+      "heading": "Tests"
+    },
+    "code": {
+      "path": "ui/tracking.test.ts",
+      "symbol": "describe(\"Tracking\") > it(\"rejects fractions\")",
+      "lines": [
+        6,
+        6
+      ],
+      "fp": "assert.equal(classify(1.5), \"invalid\");"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0130",
+    "text": "The tracking export drops ineligible quantities before summing the rest.",
+    "kind": "flow",
+    "feature": "tracking",
+    "constellation": {
+      "path": "components/tracking-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "tools/tracking.js",
+      "symbol": "tools/tracking.js#default",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "const eligible = values.filter((count) => accepted(count));"
+    },
+    "relations": [
+      {
+        "type": "depends-on",
+        "target": "F0121"
+      },
+      {
+        "type": "reads",
+        "target": "F0128"
+      }
+    ]
+  },
+  {
+    "id": "F0131",
+    "text": "During tracking reconciliation Boolean values are excluded from numeric receipts.",
+    "kind": "invariant",
+    "feature": "tracking",
+    "constellation": {
+      "path": "components/tracking-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "jobs/tracking.py",
+      "symbol": "jobs.tracking.reconcile.valid",
+      "lines": [
+        13,
+        13
+      ],
+      "fp": "return type(value) is int and 3 <= value <= 72"
+    },
+    "relations": [
+      {
+        "type": "consumes",
+        "target": "F0142"
+      }
+    ]
+  },
+  {
+    "id": "F0132",
+    "text": "The native scanner scanner returns minus one for an inadmissible quantity.",
+    "kind": "contract",
+    "feature": "tracking",
+    "constellation": {
+      "path": "components/tracking-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "native/tracking.c",
+      "symbol": "native/tracking.c::tracking_charge",
+      "lines": [
+        8,
+        8
+      ],
+      "fp": "if (!in_range(count)) return -1;"
+    },
+    "relations": [
+      {
+        "type": "implements",
+        "target": "F0135"
+      },
+      {
+        "type": "exposes",
+        "target": "F0124"
+      }
+    ]
+  },
+  {
+    "id": "F0133",
+    "text": "The native tracking range check accepts both boundaries inclusively.",
+    "kind": "behavior",
+    "feature": "tracking",
+    "constellation": {
+      "path": "components/tracking-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "native/tracking.c",
+      "symbol": "native/tracking.c::in_range",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "return count >= 3 && count <= 72;"
+    },
+    "relations": [
+      {
+        "type": "part-of",
+        "target": "F0143"
+      }
+    ]
+  },
+  {
+    "id": "F0134",
+    "text": "Carrier credits cannot push a checkpoint charge below zero.",
+    "kind": "behavior",
+    "feature": "tracking",
+    "constellation": {
+      "path": "components/tracking-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "integration/Tracking.cs",
+      "symbol": "Parcel.TrackingBridge.Quote(int, int)",
+      "lines": [
+        14,
+        14
+      ],
+      "fp": "return charge < 0 ? charge : Math.Max(0, charge - Math.Max(0, credit));"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0135",
+    "text": "The uncredited tracking bridge rejects out-of-band requests before pricing.",
+    "kind": "contract",
+    "feature": "tracking",
+    "constellation": {
+      "path": "contracts/tracking-contract.md",
+      "type": "contract",
+      "heading": "Contract"
+    },
+    "code": {
+      "path": "integration/Tracking.cs",
+      "symbol": "Parcel.TrackingBridge.Quote(int)",
+      "lines": [
+        7,
+        7
+      ],
+      "fp": "if (units < 3 || units > 72) return -1;"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0136",
+    "text": "The partial checkpoint bridge excludes rejected quotes from batch totals.",
+    "kind": "behavior",
+    "feature": "tracking",
+    "constellation": {
+      "path": "components/tracking-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "integration/TrackingBatch.cs",
+      "symbol": "Parcel.TrackingBridge.QuoteBatch(int[])",
+      "lines": [
+        6,
+        6
+      ],
+      "fp": "return batches.Select(units => Quote(units)).Where(cents => cents >= 0).Sum();"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0137",
+    "text": "The scanner configuration declares its capacity as 72 scans.",
+    "kind": "config",
+    "feature": "tracking",
+    "constellation": {
+      "path": "features/tracking.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "config/tracking.toml",
+      "symbol": "config/tracking.toml::capacity",
+      "lines": [
+        1,
+        1
+      ],
+      "fp": "capacity = 72"
+    },
+    "relations": [
+      {
+        "type": "configures",
+        "target": "F0133"
+      }
+    ]
+  },
+  {
+    "id": "F0138",
+    "text": "The stand-alone tracking job prints the result of reconciling an empty input.",
+    "kind": "flow",
+    "feature": "tracking",
+    "constellation": {
+      "path": "components/tracking-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "jobs/tracking.py",
+      "symbol": "jobs.tracking:main",
+      "lines": [
+        17,
+        17
+      ],
+      "fp": "print(reconcile([]))"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0139",
+    "text": "A local macro enforces the closed interval for checkpoint ticket creation.",
+    "kind": "invariant",
+    "feature": "tracking",
+    "constellation": {
+      "path": "components/tracking-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "src/tracking.rs",
+      "symbol": "crate::tracking::bounded_units!",
+      "lines": [
+        14,
+        14
+      ],
+      "fp": "(MINIMUM..=CAPACITY).contains(&$count)"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0140",
+    "text": "The checkpoint export test mixes a valid maximum with two invalid counts.",
+    "kind": "test",
+    "feature": "tracking",
+    "constellation": {
+      "path": "tests/tracking-test-suite.md",
+      "type": "test-suite",
+      "heading": "Tests"
+    },
+    "code": {
+      "path": "tools/tracking.test.js",
+      "symbol": "describe(\"Tracking\") > it(\"skips outside entries\")",
+      "lines": [
+        7,
+        7
+      ],
+      "fp": "assert.equal(tally([0, 72, 73]), 72);"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0141",
+    "text": "Tracking settled on a fixed opening fee to account for handling individual tickets.",
+    "kind": "decision",
+    "feature": "tracking",
+    "constellation": {
+      "path": "decisions/tracking-decision.md",
+      "type": "decision",
+      "heading": "Decision"
+    },
+    "code": null,
+    "relations": [
+      {
+        "type": "supersedes",
+        "target": "F0144"
+      }
+    ]
+  },
+  {
+    "id": "F0142",
+    "text": "A checkpoint ticket is a priced admission record at the scanner.",
+    "kind": "glossary",
+    "feature": "tracking",
+    "constellation": {
+      "path": "terms/tracking-glossary.md",
+      "type": "glossary",
+      "heading": "Terms"
+    },
+    "code": null,
+    "relations": []
+  },
+  {
+    "id": "F0143",
+    "text": "Comparing totals across scan receipts must account for the opening fee on each accepted batch.",
+    "kind": "gotcha",
+    "feature": "tracking",
+    "constellation": {
+      "path": "maps/tracking-hub.md",
+      "type": "hub",
+      "heading": "Map"
+    },
+    "code": null,
+    "relations": [
+      {
+        "type": "risks",
+        "target": "F0133"
+      }
+    ]
+  },
+  {
+    "id": "F0144",
+    "text": "The scanner retired its original flat invoice in favor of unit-based pricing.",
+    "kind": "decision",
+    "feature": "tracking",
+    "constellation": {
+      "path": "decisions/tracking-previous.md",
+      "type": "decision",
+      "heading": "Decision"
+    },
+    "code": null,
+    "relations": []
+  },
+  {
+    "id": "F0145",
+    "text": "The border admits at most 79 entries per batch.",
+    "kind": "behavior",
+    "feature": "customs",
+    "constellation": {
+      "path": "features/customs.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/customs.rs",
+      "symbol": "crate::customs::CAPACITY",
+      "lines": [
+        2,
+        2
+      ],
+      "fp": "pub const CAPACITY: u32 = 79;"
+    },
+    "relations": [
+      {
+        "type": "contracts",
+        "target": "F0148"
+      },
+      {
+        "type": "link",
+        "target": "F0166"
+      }
+    ]
+  },
+  {
+    "id": "F0146",
+    "text": "At least 4 entries are required to open a declaration ticket.",
+    "kind": "invariant",
+    "feature": "customs",
+    "constellation": {
+      "path": "features/customs.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/customs.rs",
+      "symbol": "crate::customs::MINIMUM",
+      "lines": [
+        3,
+        3
+      ],
+      "fp": "pub const MINIMUM: u32 = 4;"
+    },
+    "relations": [
+      {
+        "type": "tested-by",
+        "target": "F0153"
+      }
+    ]
+  },
+  {
+    "id": "F0147",
+    "text": "The customs regression rejects one unit beyond the admission ceiling.",
+    "kind": "test",
+    "feature": "customs",
+    "constellation": {
+      "path": "tests/customs-test-suite.md",
+      "type": "test-suite",
+      "heading": "Tests"
+    },
+    "code": {
+      "path": "src/customs.rs",
+      "symbol": "crate::customs::tests::rejects_overflow",
+      "lines": [
+        37,
+        37
+      ],
+      "fp": "assert_eq!(Ticket::open(CAPACITY + 1), None);"
+    },
+    "relations": [
+      {
+        "type": "affects",
+        "target": "F0145"
+      }
+    ]
+  },
+  {
+    "id": "F0148",
+    "text": "Each accepted declaration ticket includes an opening charge of 29 cents.",
+    "kind": "contract",
+    "feature": "customs",
+    "constellation": {
+      "path": "contracts/customs-contract.md",
+      "type": "contract",
+      "heading": "Contract"
+    },
+    "code": {
+      "path": "src/customs.rs",
+      "symbol": "crate::customs::OPENING_CENTS",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "pub const OPENING_CENTS: u32 = 29;"
+    },
+    "relations": [
+      {
+        "type": "tested-by",
+        "target": "F0147"
+      }
+    ]
+  },
+  {
+    "id": "F0149",
+    "text": "Every additional unit of customs costs 3 cents before credit.",
+    "kind": "contract",
+    "feature": "customs",
+    "constellation": {
+      "path": "contracts/customs-contract.md",
+      "type": "contract",
+      "heading": "Contract"
+    },
+    "code": {
+      "path": "src/customs.rs",
+      "symbol": "crate::customs::UNIT_CENTS",
+      "lines": [
+        5,
+        5
+      ],
+      "fp": "pub const UNIT_CENTS: u32 = 3;"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0150",
+    "text": "Splitting clearance entries opens two independently eligible tickets.",
+    "kind": "flow",
+    "feature": "customs",
+    "constellation": {
+      "path": "features/customs.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/customs.rs",
+      "symbol": "crate::customs::Ticket::split",
+      "lines": [
+        28,
+        28
+      ],
+      "fp": "Some((Self::open(left)?, Self::open(right)?))"
+    },
+    "relations": [
+      {
+        "type": "writes",
+        "target": "F0152"
+      },
+      {
+        "type": "emits",
+        "target": "F0166"
+      }
+    ]
+  },
+  {
+    "id": "F0151",
+    "text": "The customs console marks fractional quantities invalid.",
+    "kind": "behavior",
+    "feature": "customs",
+    "constellation": {
+      "path": "components/customs-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "ui/customs.tsx",
+      "symbol": "ui/customs.tsx#classify",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "if (!Number.isInteger(count)) return \"invalid\";"
+    },
+    "relations": [
+      {
+        "type": "tested-by",
+        "target": "F0153"
+      }
+    ]
+  },
+  {
+    "id": "F0152",
+    "text": "A declaration receipt stores both the admitted quantity and the total in cents.",
+    "kind": "data-model",
+    "feature": "customs",
+    "constellation": {
+      "path": "features/customs.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/customs.rs",
+      "symbol": "crate::customs::Ticket::open",
+      "lines": [
+        23,
+        23
+      ],
+      "fp": "Some(Self { units, cents })"
+    },
+    "relations": [
+      {
+        "type": "decided-by",
+        "target": "F0165"
+      }
+    ]
+  },
+  {
+    "id": "F0153",
+    "text": "The border console suite checks a fractional entry of one and a half.",
+    "kind": "test",
+    "feature": "customs",
+    "constellation": {
+      "path": "tests/customs-test-suite.md",
+      "type": "test-suite",
+      "heading": "Tests"
+    },
+    "code": {
+      "path": "ui/customs.test.ts",
+      "symbol": "describe(\"Customs\") > it(\"rejects fractions\")",
+      "lines": [
+        6,
+        6
+      ],
+      "fp": "assert.equal(classify(1.5), \"invalid\");"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0154",
+    "text": "The customs export drops ineligible quantities before summing the rest.",
+    "kind": "flow",
+    "feature": "customs",
+    "constellation": {
+      "path": "components/customs-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "tools/customs.js",
+      "symbol": "tools/customs.js#default",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "const eligible = values.filter((count) => accepted(count));"
+    },
+    "relations": [
+      {
+        "type": "depends-on",
+        "target": "F0145"
+      },
+      {
+        "type": "reads",
+        "target": "F0152"
+      }
+    ]
+  },
+  {
+    "id": "F0155",
+    "text": "During customs reconciliation Boolean values are excluded from numeric receipts.",
+    "kind": "invariant",
+    "feature": "customs",
+    "constellation": {
+      "path": "components/customs-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "jobs/customs.py",
+      "symbol": "jobs.customs.reconcile.valid",
+      "lines": [
+        13,
+        13
+      ],
+      "fp": "return type(value) is int and 4 <= value <= 79"
+    },
+    "relations": [
+      {
+        "type": "consumes",
+        "target": "F0166"
+      }
+    ]
+  },
+  {
+    "id": "F0156",
+    "text": "The native border scanner returns minus one for an inadmissible quantity.",
+    "kind": "contract",
+    "feature": "customs",
+    "constellation": {
+      "path": "components/customs-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "native/customs.c",
+      "symbol": "native/customs.c::customs_charge",
+      "lines": [
+        8,
+        8
+      ],
+      "fp": "if (!in_range(count)) return -1;"
+    },
+    "relations": [
+      {
+        "type": "implements",
+        "target": "F0159"
+      },
+      {
+        "type": "exposes",
+        "target": "F0148"
+      }
+    ]
+  },
+  {
+    "id": "F0157",
+    "text": "The native customs range check accepts both boundaries inclusively.",
+    "kind": "behavior",
+    "feature": "customs",
+    "constellation": {
+      "path": "components/customs-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "native/customs.c",
+      "symbol": "native/customs.c::in_range",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "return count >= 4 && count <= 79;"
+    },
+    "relations": [
+      {
+        "type": "part-of",
+        "target": "F0167"
+      }
+    ]
+  },
+  {
+    "id": "F0158",
+    "text": "Carrier credits cannot push a declaration charge below zero.",
+    "kind": "behavior",
+    "feature": "customs",
+    "constellation": {
+      "path": "components/customs-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "integration/Customs.cs",
+      "symbol": "Parcel.CustomsBridge.Quote(int, int)",
+      "lines": [
+        14,
+        14
+      ],
+      "fp": "return charge < 0 ? charge : Math.Max(0, charge - Math.Max(0, credit));"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0159",
+    "text": "The uncredited customs bridge rejects out-of-band requests before pricing.",
+    "kind": "contract",
+    "feature": "customs",
+    "constellation": {
+      "path": "contracts/customs-contract.md",
+      "type": "contract",
+      "heading": "Contract"
+    },
+    "code": {
+      "path": "integration/Customs.cs",
+      "symbol": "Parcel.CustomsBridge.Quote(int)",
+      "lines": [
+        7,
+        7
+      ],
+      "fp": "if (units < 4 || units > 79) return -1;"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0160",
+    "text": "The partial declaration bridge excludes rejected quotes from batch totals.",
+    "kind": "behavior",
+    "feature": "customs",
+    "constellation": {
+      "path": "components/customs-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "integration/CustomsBatch.cs",
+      "symbol": "Parcel.CustomsBridge.QuoteBatch(int[])",
+      "lines": [
+        6,
+        6
+      ],
+      "fp": "return batches.Select(units => Quote(units)).Where(cents => cents >= 0).Sum();"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0161",
+    "text": "The border configuration declares its capacity as 79 entries.",
+    "kind": "config",
+    "feature": "customs",
+    "constellation": {
+      "path": "features/customs.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "config/customs.json",
+      "symbol": "config/customs.json::capacity",
+      "lines": [
+        2,
+        2
+      ],
+      "fp": "\"capacity\": 79"
+    },
+    "relations": [
+      {
+        "type": "configures",
+        "target": "F0157"
+      }
+    ]
+  },
+  {
+    "id": "F0162",
+    "text": "The stand-alone customs job prints the result of reconciling an empty input.",
+    "kind": "flow",
+    "feature": "customs",
+    "constellation": {
+      "path": "components/customs-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "jobs/customs.py",
+      "symbol": "jobs.customs:main",
+      "lines": [
+        17,
+        17
+      ],
+      "fp": "print(reconcile([]))"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0163",
+    "text": "A local macro enforces the closed interval for declaration ticket creation.",
+    "kind": "invariant",
+    "feature": "customs",
+    "constellation": {
+      "path": "components/customs-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "src/customs.rs",
+      "symbol": "crate::customs::bounded_units!",
+      "lines": [
+        14,
+        14
+      ],
+      "fp": "(MINIMUM..=CAPACITY).contains(&$count)"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0164",
+    "text": "The declaration export test mixes a valid maximum with two invalid counts.",
+    "kind": "test",
+    "feature": "customs",
+    "constellation": {
+      "path": "tests/customs-test-suite.md",
+      "type": "test-suite",
+      "heading": "Tests"
+    },
+    "code": {
+      "path": "tools/customs.test.js",
+      "symbol": "describe(\"Customs\") > it(\"skips outside entries\")",
+      "lines": [
+        7,
+        7
+      ],
+      "fp": "assert.equal(tally([0, 79, 80]), 79);"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0165",
+    "text": "Customs settled on a fixed opening fee to account for handling individual tickets.",
+    "kind": "decision",
+    "feature": "customs",
+    "constellation": {
+      "path": "decisions/customs-decision.md",
+      "type": "decision",
+      "heading": "Decision"
+    },
+    "code": null,
+    "relations": [
+      {
+        "type": "supersedes",
+        "target": "F0168"
+      }
+    ]
+  },
+  {
+    "id": "F0166",
+    "text": "A declaration ticket is a priced admission record at the border.",
+    "kind": "glossary",
+    "feature": "customs",
+    "constellation": {
+      "path": "terms/customs-glossary.md",
+      "type": "glossary",
+      "heading": "Terms"
+    },
+    "code": null,
+    "relations": []
+  },
+  {
+    "id": "F0167",
+    "text": "Comparing totals across clearance entries must account for the opening fee on each accepted batch.",
+    "kind": "gotcha",
+    "feature": "customs",
+    "constellation": {
+      "path": "maps/customs-hub.md",
+      "type": "hub",
+      "heading": "Map"
+    },
+    "code": null,
+    "relations": [
+      {
+        "type": "risks",
+        "target": "F0157"
+      }
+    ]
+  },
+  {
+    "id": "F0168",
+    "text": "The border retired its original flat invoice in favor of unit-based pricing.",
+    "kind": "decision",
+    "feature": "customs",
+    "constellation": {
+      "path": "decisions/customs-previous.md",
+      "type": "decision",
+      "heading": "Decision"
+    },
+    "code": null,
+    "relations": []
+  },
+  {
+    "id": "F0169",
+    "text": "The courier admits at most 86 stops per batch.",
+    "kind": "behavior",
+    "feature": "delivery",
+    "constellation": {
+      "path": "features/delivery.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/delivery.rs",
+      "symbol": "crate::delivery::CAPACITY",
+      "lines": [
+        2,
+        2
+      ],
+      "fp": "pub const CAPACITY: u32 = 86;"
+    },
+    "relations": [
+      {
+        "type": "contracts",
+        "target": "F0172"
+      },
+      {
+        "type": "link",
+        "target": "F0190"
+      }
+    ]
+  },
+  {
+    "id": "F0170",
+    "text": "At least 5 stops are required to open a handoff ticket.",
+    "kind": "invariant",
+    "feature": "delivery",
+    "constellation": {
+      "path": "features/delivery.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/delivery.rs",
+      "symbol": "crate::delivery::MINIMUM",
+      "lines": [
+        3,
+        3
+      ],
+      "fp": "pub const MINIMUM: u32 = 5;"
+    },
+    "relations": [
+      {
+        "type": "tested-by",
+        "target": "F0177"
+      }
+    ]
+  },
+  {
+    "id": "F0171",
+    "text": "The delivery regression rejects one unit beyond the admission ceiling.",
+    "kind": "test",
+    "feature": "delivery",
+    "constellation": {
+      "path": "tests/delivery-test-suite.md",
+      "type": "test-suite",
+      "heading": "Tests"
+    },
+    "code": {
+      "path": "src/delivery.rs",
+      "symbol": "crate::delivery::tests::rejects_overflow",
+      "lines": [
+        37,
+        37
+      ],
+      "fp": "assert_eq!(Ticket::open(CAPACITY + 1), None);"
+    },
+    "relations": [
+      {
+        "type": "affects",
+        "target": "F0169"
+      }
+    ]
+  },
+  {
+    "id": "F0172",
+    "text": "Each accepted handoff ticket includes an opening charge of 32 cents.",
+    "kind": "contract",
+    "feature": "delivery",
+    "constellation": {
+      "path": "contracts/delivery-contract.md",
+      "type": "contract",
+      "heading": "Contract"
+    },
+    "code": {
+      "path": "src/delivery.rs",
+      "symbol": "crate::delivery::OPENING_CENTS",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "pub const OPENING_CENTS: u32 = 32;"
+    },
+    "relations": [
+      {
+        "type": "tested-by",
+        "target": "F0171"
+      }
+    ]
+  },
+  {
+    "id": "F0173",
+    "text": "Every additional unit of delivery costs 4 cents before credit.",
+    "kind": "contract",
+    "feature": "delivery",
+    "constellation": {
+      "path": "contracts/delivery-contract.md",
+      "type": "contract",
+      "heading": "Contract"
+    },
+    "code": {
+      "path": "src/delivery.rs",
+      "symbol": "crate::delivery::UNIT_CENTS",
+      "lines": [
+        5,
+        5
+      ],
+      "fp": "pub const UNIT_CENTS: u32 = 4;"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0174",
+    "text": "Splitting doorstep attempts opens two independently eligible tickets.",
+    "kind": "flow",
+    "feature": "delivery",
+    "constellation": {
+      "path": "features/delivery.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/delivery.rs",
+      "symbol": "crate::delivery::Ticket::split",
+      "lines": [
+        28,
+        28
+      ],
+      "fp": "Some((Self::open(left)?, Self::open(right)?))"
+    },
+    "relations": [
+      {
+        "type": "writes",
+        "target": "F0176"
+      },
+      {
+        "type": "emits",
+        "target": "F0190"
+      }
+    ]
+  },
+  {
+    "id": "F0175",
+    "text": "The delivery console marks fractional quantities invalid.",
+    "kind": "behavior",
+    "feature": "delivery",
+    "constellation": {
+      "path": "components/delivery-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "ui/delivery.tsx",
+      "symbol": "ui/delivery.tsx#classify",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "if (!Number.isInteger(count)) return \"invalid\";"
+    },
+    "relations": [
+      {
+        "type": "tested-by",
+        "target": "F0177"
+      }
+    ]
+  },
+  {
+    "id": "F0176",
+    "text": "A handoff receipt stores both the admitted quantity and the total in cents.",
+    "kind": "data-model",
+    "feature": "delivery",
+    "constellation": {
+      "path": "features/delivery.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/delivery.rs",
+      "symbol": "crate::delivery::Ticket::open",
+      "lines": [
+        23,
+        23
+      ],
+      "fp": "Some(Self { units, cents })"
+    },
+    "relations": [
+      {
+        "type": "decided-by",
+        "target": "F0189"
+      }
+    ]
+  },
+  {
+    "id": "F0177",
+    "text": "The courier console suite checks a fractional entry of one and a half.",
+    "kind": "test",
+    "feature": "delivery",
+    "constellation": {
+      "path": "tests/delivery-test-suite.md",
+      "type": "test-suite",
+      "heading": "Tests"
+    },
+    "code": {
+      "path": "ui/delivery.test.ts",
+      "symbol": "describe(\"Delivery\") > it(\"rejects fractions\")",
+      "lines": [
+        6,
+        6
+      ],
+      "fp": "assert.equal(classify(1.5), \"invalid\");"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0178",
+    "text": "The delivery export drops ineligible quantities before summing the rest.",
+    "kind": "flow",
+    "feature": "delivery",
+    "constellation": {
+      "path": "components/delivery-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "tools/delivery.js",
+      "symbol": "tools/delivery.js#default",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "const eligible = values.filter((count) => accepted(count));"
+    },
+    "relations": [
+      {
+        "type": "depends-on",
+        "target": "F0169"
+      },
+      {
+        "type": "reads",
+        "target": "F0176"
+      }
+    ]
+  },
+  {
+    "id": "F0179",
+    "text": "During delivery reconciliation Boolean values are excluded from numeric receipts.",
+    "kind": "invariant",
+    "feature": "delivery",
+    "constellation": {
+      "path": "components/delivery-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "jobs/delivery.py",
+      "symbol": "jobs.delivery.reconcile.valid",
+      "lines": [
+        13,
+        13
+      ],
+      "fp": "return type(value) is int and 5 <= value <= 86"
+    },
+    "relations": [
+      {
+        "type": "consumes",
+        "target": "F0190"
+      }
+    ]
+  },
+  {
+    "id": "F0180",
+    "text": "The native courier scanner returns minus one for an inadmissible quantity.",
+    "kind": "contract",
+    "feature": "delivery",
+    "constellation": {
+      "path": "components/delivery-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "native/delivery.c",
+      "symbol": "native/delivery.c::delivery_charge",
+      "lines": [
+        8,
+        8
+      ],
+      "fp": "if (!in_range(count)) return -1;"
+    },
+    "relations": [
+      {
+        "type": "implements",
+        "target": "F0183"
+      },
+      {
+        "type": "exposes",
+        "target": "F0172"
+      }
+    ]
+  },
+  {
+    "id": "F0181",
+    "text": "The native delivery range check accepts both boundaries inclusively.",
+    "kind": "behavior",
+    "feature": "delivery",
+    "constellation": {
+      "path": "components/delivery-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "native/delivery.c",
+      "symbol": "native/delivery.c::in_range",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "return count >= 5 && count <= 86;"
+    },
+    "relations": [
+      {
+        "type": "part-of",
+        "target": "F0191"
+      }
+    ]
+  },
+  {
+    "id": "F0182",
+    "text": "Carrier credits cannot push a handoff charge below zero.",
+    "kind": "behavior",
+    "feature": "delivery",
+    "constellation": {
+      "path": "components/delivery-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "integration/Delivery.cs",
+      "symbol": "Parcel.DeliveryBridge.Quote(int, int)",
+      "lines": [
+        14,
+        14
+      ],
+      "fp": "return charge < 0 ? charge : Math.Max(0, charge - Math.Max(0, credit));"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0183",
+    "text": "The uncredited delivery bridge rejects out-of-band requests before pricing.",
+    "kind": "contract",
+    "feature": "delivery",
+    "constellation": {
+      "path": "contracts/delivery-contract.md",
+      "type": "contract",
+      "heading": "Contract"
+    },
+    "code": {
+      "path": "integration/Delivery.cs",
+      "symbol": "Parcel.DeliveryBridge.Quote(int)",
+      "lines": [
+        7,
+        7
+      ],
+      "fp": "if (units < 5 || units > 86) return -1;"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0184",
+    "text": "The partial handoff bridge excludes rejected quotes from batch totals.",
+    "kind": "behavior",
+    "feature": "delivery",
+    "constellation": {
+      "path": "components/delivery-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "integration/DeliveryBatch.cs",
+      "symbol": "Parcel.DeliveryBridge.QuoteBatch(int[])",
+      "lines": [
+        6,
+        6
+      ],
+      "fp": "return batches.Select(units => Quote(units)).Where(cents => cents >= 0).Sum();"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0185",
+    "text": "The courier configuration declares its capacity as 86 stops.",
+    "kind": "config",
+    "feature": "delivery",
+    "constellation": {
+      "path": "features/delivery.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "config/delivery.yaml",
+      "symbol": "config/delivery.yaml::capacity",
+      "lines": [
+        1,
+        1
+      ],
+      "fp": "capacity: 86"
+    },
+    "relations": [
+      {
+        "type": "configures",
+        "target": "F0181"
+      }
+    ]
+  },
+  {
+    "id": "F0186",
+    "text": "The stand-alone delivery job prints the result of reconciling an empty input.",
+    "kind": "flow",
+    "feature": "delivery",
+    "constellation": {
+      "path": "components/delivery-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "jobs/delivery.py",
+      "symbol": "jobs.delivery:main",
+      "lines": [
+        17,
+        17
+      ],
+      "fp": "print(reconcile([]))"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0187",
+    "text": "A local macro enforces the closed interval for handoff ticket creation.",
+    "kind": "invariant",
+    "feature": "delivery",
+    "constellation": {
+      "path": "components/delivery-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "src/delivery.rs",
+      "symbol": "crate::delivery::bounded_units!",
+      "lines": [
+        14,
+        14
+      ],
+      "fp": "(MINIMUM..=CAPACITY).contains(&$count)"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0188",
+    "text": "The handoff export test mixes a valid maximum with two invalid counts.",
+    "kind": "test",
+    "feature": "delivery",
+    "constellation": {
+      "path": "tests/delivery-test-suite.md",
+      "type": "test-suite",
+      "heading": "Tests"
+    },
+    "code": {
+      "path": "tools/delivery.test.js",
+      "symbol": "describe(\"Delivery\") > it(\"skips outside entries\")",
+      "lines": [
+        7,
+        7
+      ],
+      "fp": "assert.equal(tally([0, 86, 87]), 86);"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0189",
+    "text": "Delivery settled on a fixed opening fee to account for handling individual tickets.",
+    "kind": "decision",
+    "feature": "delivery",
+    "constellation": {
+      "path": "decisions/delivery-decision.md",
+      "type": "decision",
+      "heading": "Decision"
+    },
+    "code": null,
+    "relations": [
+      {
+        "type": "supersedes",
+        "target": "F0192"
+      }
+    ]
+  },
+  {
+    "id": "F0190",
+    "text": "A handoff ticket is a priced admission record at the courier.",
+    "kind": "glossary",
+    "feature": "delivery",
+    "constellation": {
+      "path": "terms/delivery-glossary.md",
+      "type": "glossary",
+      "heading": "Terms"
+    },
+    "code": null,
+    "relations": []
+  },
+  {
+    "id": "F0191",
+    "text": "Comparing totals across doorstep attempts must account for the opening fee on each accepted batch.",
+    "kind": "gotcha",
+    "feature": "delivery",
+    "constellation": {
+      "path": "maps/delivery-hub.md",
+      "type": "hub",
+      "heading": "Map"
+    },
+    "code": null,
+    "relations": [
+      {
+        "type": "risks",
+        "target": "F0181"
+      }
+    ]
+  },
+  {
+    "id": "F0192",
+    "text": "The courier retired its original flat invoice in favor of unit-based pricing.",
+    "kind": "decision",
+    "feature": "delivery",
+    "constellation": {
+      "path": "decisions/delivery-previous.md",
+      "type": "decision",
+      "heading": "Decision"
+    },
+    "code": null,
+    "relations": []
+  },
+  {
+    "id": "F0193",
+    "text": "The return desk admits at most 93 items per batch.",
+    "kind": "behavior",
+    "feature": "returns",
+    "constellation": {
+      "path": "features/returns.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/returns.rs",
+      "symbol": "crate::returns::CAPACITY",
+      "lines": [
+        2,
+        2
+      ],
+      "fp": "pub const CAPACITY: u32 = 93;"
+    },
+    "relations": [
+      {
+        "type": "contracts",
+        "target": "F0196"
+      },
+      {
+        "type": "link",
+        "target": "F0214"
+      }
+    ]
+  },
+  {
+    "id": "F0194",
+    "text": "At least 2 items are required to open a recovery ticket.",
+    "kind": "invariant",
+    "feature": "returns",
+    "constellation": {
+      "path": "features/returns.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/returns.rs",
+      "symbol": "crate::returns::MINIMUM",
+      "lines": [
+        3,
+        3
+      ],
+      "fp": "pub const MINIMUM: u32 = 2;"
+    },
+    "relations": [
+      {
+        "type": "tested-by",
+        "target": "F0201"
+      }
+    ]
+  },
+  {
+    "id": "F0195",
+    "text": "The returns regression rejects one unit beyond the admission ceiling.",
+    "kind": "test",
+    "feature": "returns",
+    "constellation": {
+      "path": "tests/returns-test-suite.md",
+      "type": "test-suite",
+      "heading": "Tests"
+    },
+    "code": {
+      "path": "src/returns.rs",
+      "symbol": "crate::returns::tests::rejects_overflow",
+      "lines": [
+        37,
+        37
+      ],
+      "fp": "assert_eq!(Ticket::open(CAPACITY + 1), None);"
+    },
+    "relations": [
+      {
+        "type": "affects",
+        "target": "F0193"
+      }
+    ]
+  },
+  {
+    "id": "F0196",
+    "text": "Each accepted recovery ticket includes an opening charge of 35 cents.",
+    "kind": "contract",
+    "feature": "returns",
+    "constellation": {
+      "path": "contracts/returns-contract.md",
+      "type": "contract",
+      "heading": "Contract"
+    },
+    "code": {
+      "path": "src/returns.rs",
+      "symbol": "crate::returns::OPENING_CENTS",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "pub const OPENING_CENTS: u32 = 35;"
+    },
+    "relations": [
+      {
+        "type": "tested-by",
+        "target": "F0195"
+      }
+    ]
+  },
+  {
+    "id": "F0197",
+    "text": "Every additional unit of returns costs 5 cents before credit.",
+    "kind": "contract",
+    "feature": "returns",
+    "constellation": {
+      "path": "contracts/returns-contract.md",
+      "type": "contract",
+      "heading": "Contract"
+    },
+    "code": {
+      "path": "src/returns.rs",
+      "symbol": "crate::returns::UNIT_CENTS",
+      "lines": [
+        5,
+        5
+      ],
+      "fp": "pub const UNIT_CENTS: u32 = 5;"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0198",
+    "text": "Splitting reverse shipments opens two independently eligible tickets.",
+    "kind": "flow",
+    "feature": "returns",
+    "constellation": {
+      "path": "features/returns.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/returns.rs",
+      "symbol": "crate::returns::Ticket::split",
+      "lines": [
+        28,
+        28
+      ],
+      "fp": "Some((Self::open(left)?, Self::open(right)?))"
+    },
+    "relations": [
+      {
+        "type": "writes",
+        "target": "F0200"
+      },
+      {
+        "type": "emits",
+        "target": "F0214"
+      }
+    ]
+  },
+  {
+    "id": "F0199",
+    "text": "The returns console marks fractional quantities invalid.",
+    "kind": "behavior",
+    "feature": "returns",
+    "constellation": {
+      "path": "components/returns-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "ui/returns.tsx",
+      "symbol": "ui/returns.tsx#classify",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "if (!Number.isInteger(count)) return \"invalid\";"
+    },
+    "relations": [
+      {
+        "type": "tested-by",
+        "target": "F0201"
+      }
+    ]
+  },
+  {
+    "id": "F0200",
+    "text": "A recovery receipt stores both the admitted quantity and the total in cents.",
+    "kind": "data-model",
+    "feature": "returns",
+    "constellation": {
+      "path": "features/returns.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/returns.rs",
+      "symbol": "crate::returns::Ticket::open",
+      "lines": [
+        23,
+        23
+      ],
+      "fp": "Some(Self { units, cents })"
+    },
+    "relations": [
+      {
+        "type": "decided-by",
+        "target": "F0213"
+      }
+    ]
+  },
+  {
+    "id": "F0201",
+    "text": "The return desk console suite checks a fractional entry of one and a half.",
+    "kind": "test",
+    "feature": "returns",
+    "constellation": {
+      "path": "tests/returns-test-suite.md",
+      "type": "test-suite",
+      "heading": "Tests"
+    },
+    "code": {
+      "path": "ui/returns.test.ts",
+      "symbol": "describe(\"Returns\") > it(\"rejects fractions\")",
+      "lines": [
+        6,
+        6
+      ],
+      "fp": "assert.equal(classify(1.5), \"invalid\");"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0202",
+    "text": "The returns export drops ineligible quantities before summing the rest.",
+    "kind": "flow",
+    "feature": "returns",
+    "constellation": {
+      "path": "components/returns-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "tools/returns.js",
+      "symbol": "tools/returns.js#default",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "const eligible = values.filter((count) => accepted(count));"
+    },
+    "relations": [
+      {
+        "type": "depends-on",
+        "target": "F0193"
+      },
+      {
+        "type": "reads",
+        "target": "F0200"
+      }
+    ]
+  },
+  {
+    "id": "F0203",
+    "text": "During returns reconciliation Boolean values are excluded from numeric receipts.",
+    "kind": "invariant",
+    "feature": "returns",
+    "constellation": {
+      "path": "components/returns-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "jobs/returns.py",
+      "symbol": "jobs.returns.reconcile.valid",
+      "lines": [
+        13,
+        13
+      ],
+      "fp": "return type(value) is int and 2 <= value <= 93"
+    },
+    "relations": [
+      {
+        "type": "consumes",
+        "target": "F0214"
+      }
+    ]
+  },
+  {
+    "id": "F0204",
+    "text": "The native return desk scanner returns minus one for an inadmissible quantity.",
+    "kind": "contract",
+    "feature": "returns",
+    "constellation": {
+      "path": "components/returns-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "native/returns.c",
+      "symbol": "native/returns.c::returns_charge",
+      "lines": [
+        8,
+        8
+      ],
+      "fp": "if (!in_range(count)) return -1;"
+    },
+    "relations": [
+      {
+        "type": "implements",
+        "target": "F0207"
+      },
+      {
+        "type": "exposes",
+        "target": "F0196"
+      }
+    ]
+  },
+  {
+    "id": "F0205",
+    "text": "The native returns range check accepts both boundaries inclusively.",
+    "kind": "behavior",
+    "feature": "returns",
+    "constellation": {
+      "path": "components/returns-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "native/returns.c",
+      "symbol": "native/returns.c::in_range",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "return count >= 2 && count <= 93;"
+    },
+    "relations": [
+      {
+        "type": "part-of",
+        "target": "F0215"
+      }
+    ]
+  },
+  {
+    "id": "F0206",
+    "text": "Carrier credits cannot push a recovery charge below zero.",
+    "kind": "behavior",
+    "feature": "returns",
+    "constellation": {
+      "path": "components/returns-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "integration/Returns.cs",
+      "symbol": "Parcel.ReturnsBridge.Quote(int, int)",
+      "lines": [
+        14,
+        14
+      ],
+      "fp": "return charge < 0 ? charge : Math.Max(0, charge - Math.Max(0, credit));"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0207",
+    "text": "The uncredited returns bridge rejects out-of-band requests before pricing.",
+    "kind": "contract",
+    "feature": "returns",
+    "constellation": {
+      "path": "contracts/returns-contract.md",
+      "type": "contract",
+      "heading": "Contract"
+    },
+    "code": {
+      "path": "integration/Returns.cs",
+      "symbol": "Parcel.ReturnsBridge.Quote(int)",
+      "lines": [
+        7,
+        7
+      ],
+      "fp": "if (units < 2 || units > 93) return -1;"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0208",
+    "text": "The partial recovery bridge excludes rejected quotes from batch totals.",
+    "kind": "behavior",
+    "feature": "returns",
+    "constellation": {
+      "path": "components/returns-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "integration/ReturnsBatch.cs",
+      "symbol": "Parcel.ReturnsBridge.QuoteBatch(int[])",
+      "lines": [
+        6,
+        6
+      ],
+      "fp": "return batches.Select(units => Quote(units)).Where(cents => cents >= 0).Sum();"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0209",
+    "text": "The return desk configuration declares its capacity as 93 items.",
+    "kind": "config",
+    "feature": "returns",
+    "constellation": {
+      "path": "features/returns.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "config/returns.toml",
+      "symbol": "config/returns.toml::capacity",
+      "lines": [
+        1,
+        1
+      ],
+      "fp": "capacity = 93"
+    },
+    "relations": [
+      {
+        "type": "configures",
+        "target": "F0205"
+      }
+    ]
+  },
+  {
+    "id": "F0210",
+    "text": "The stand-alone returns job prints the result of reconciling an empty input.",
+    "kind": "flow",
+    "feature": "returns",
+    "constellation": {
+      "path": "components/returns-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "jobs/returns.py",
+      "symbol": "jobs.returns:main",
+      "lines": [
+        17,
+        17
+      ],
+      "fp": "print(reconcile([]))"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0211",
+    "text": "A local macro enforces the closed interval for recovery ticket creation.",
+    "kind": "invariant",
+    "feature": "returns",
+    "constellation": {
+      "path": "components/returns-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "src/returns.rs",
+      "symbol": "crate::returns::bounded_units!",
+      "lines": [
+        14,
+        14
+      ],
+      "fp": "(MINIMUM..=CAPACITY).contains(&$count)"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0212",
+    "text": "The recovery export test mixes a valid maximum with two invalid counts.",
+    "kind": "test",
+    "feature": "returns",
+    "constellation": {
+      "path": "tests/returns-test-suite.md",
+      "type": "test-suite",
+      "heading": "Tests"
+    },
+    "code": {
+      "path": "tools/returns.test.js",
+      "symbol": "describe(\"Returns\") > it(\"skips outside entries\")",
+      "lines": [
+        7,
+        7
+      ],
+      "fp": "assert.equal(tally([0, 93, 94]), 93);"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0213",
+    "text": "Returns settled on a fixed opening fee to account for handling individual tickets.",
+    "kind": "decision",
+    "feature": "returns",
+    "constellation": {
+      "path": "decisions/returns-decision.md",
+      "type": "decision",
+      "heading": "Decision"
+    },
+    "code": null,
+    "relations": [
+      {
+        "type": "supersedes",
+        "target": "F0216"
+      }
+    ]
+  },
+  {
+    "id": "F0214",
+    "text": "A recovery ticket is a priced admission record at the return desk.",
+    "kind": "glossary",
+    "feature": "returns",
+    "constellation": {
+      "path": "terms/returns-glossary.md",
+      "type": "glossary",
+      "heading": "Terms"
+    },
+    "code": null,
+    "relations": []
+  },
+  {
+    "id": "F0215",
+    "text": "Comparing totals across reverse shipments must account for the opening fee on each accepted batch.",
+    "kind": "gotcha",
+    "feature": "returns",
+    "constellation": {
+      "path": "maps/returns-hub.md",
+      "type": "hub",
+      "heading": "Map"
+    },
+    "code": null,
+    "relations": [
+      {
+        "type": "risks",
+        "target": "F0205"
+      }
+    ]
+  },
+  {
+    "id": "F0216",
+    "text": "The return desk retired its original flat invoice in favor of unit-based pricing.",
+    "kind": "decision",
+    "feature": "returns",
+    "constellation": {
+      "path": "decisions/returns-previous.md",
+      "type": "decision",
+      "heading": "Decision"
+    },
+    "code": null,
+    "relations": []
+  },
+  {
+    "id": "F0217",
+    "text": "The adjuster admits at most 100 claims per batch.",
+    "kind": "behavior",
+    "feature": "claims",
+    "constellation": {
+      "path": "features/claims.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/claims.rs",
+      "symbol": "crate::claims::CAPACITY",
+      "lines": [
+        2,
+        2
+      ],
+      "fp": "pub const CAPACITY: u32 = 100;"
+    },
+    "relations": [
+      {
+        "type": "contracts",
+        "target": "F0220"
+      },
+      {
+        "type": "link",
+        "target": "F0238"
+      }
+    ]
+  },
+  {
+    "id": "F0218",
+    "text": "At least 3 claims are required to open a damage ticket.",
+    "kind": "invariant",
+    "feature": "claims",
+    "constellation": {
+      "path": "features/claims.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/claims.rs",
+      "symbol": "crate::claims::MINIMUM",
+      "lines": [
+        3,
+        3
+      ],
+      "fp": "pub const MINIMUM: u32 = 3;"
+    },
+    "relations": [
+      {
+        "type": "tested-by",
+        "target": "F0225"
+      }
+    ]
+  },
+  {
+    "id": "F0219",
+    "text": "The claims regression rejects one unit beyond the admission ceiling.",
+    "kind": "test",
+    "feature": "claims",
+    "constellation": {
+      "path": "tests/claims-test-suite.md",
+      "type": "test-suite",
+      "heading": "Tests"
+    },
+    "code": {
+      "path": "src/claims.rs",
+      "symbol": "crate::claims::tests::rejects_overflow",
+      "lines": [
+        37,
+        37
+      ],
+      "fp": "assert_eq!(Ticket::open(CAPACITY + 1), None);"
+    },
+    "relations": [
+      {
+        "type": "affects",
+        "target": "F0217"
+      }
+    ]
+  },
+  {
+    "id": "F0220",
+    "text": "Each accepted damage ticket includes an opening charge of 38 cents.",
+    "kind": "contract",
+    "feature": "claims",
+    "constellation": {
+      "path": "contracts/claims-contract.md",
+      "type": "contract",
+      "heading": "Contract"
+    },
+    "code": {
+      "path": "src/claims.rs",
+      "symbol": "crate::claims::OPENING_CENTS",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "pub const OPENING_CENTS: u32 = 38;"
+    },
+    "relations": [
+      {
+        "type": "tested-by",
+        "target": "F0219"
+      }
+    ]
+  },
+  {
+    "id": "F0221",
+    "text": "Every additional unit of claims costs 6 cents before credit.",
+    "kind": "contract",
+    "feature": "claims",
+    "constellation": {
+      "path": "contracts/claims-contract.md",
+      "type": "contract",
+      "heading": "Contract"
+    },
+    "code": {
+      "path": "src/claims.rs",
+      "symbol": "crate::claims::UNIT_CENTS",
+      "lines": [
+        5,
+        5
+      ],
+      "fp": "pub const UNIT_CENTS: u32 = 6;"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0222",
+    "text": "Splitting damage notices opens two independently eligible tickets.",
+    "kind": "flow",
+    "feature": "claims",
+    "constellation": {
+      "path": "features/claims.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/claims.rs",
+      "symbol": "crate::claims::Ticket::split",
+      "lines": [
+        28,
+        28
+      ],
+      "fp": "Some((Self::open(left)?, Self::open(right)?))"
+    },
+    "relations": [
+      {
+        "type": "writes",
+        "target": "F0224"
+      },
+      {
+        "type": "emits",
+        "target": "F0238"
+      }
+    ]
+  },
+  {
+    "id": "F0223",
+    "text": "The claims console marks fractional quantities invalid.",
+    "kind": "behavior",
+    "feature": "claims",
+    "constellation": {
+      "path": "components/claims-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "ui/claims.tsx",
+      "symbol": "ui/claims.tsx#classify",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "if (!Number.isInteger(count)) return \"invalid\";"
+    },
+    "relations": [
+      {
+        "type": "tested-by",
+        "target": "F0225"
+      }
+    ]
+  },
+  {
+    "id": "F0224",
+    "text": "A damage receipt stores both the admitted quantity and the total in cents.",
+    "kind": "data-model",
+    "feature": "claims",
+    "constellation": {
+      "path": "features/claims.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/claims.rs",
+      "symbol": "crate::claims::Ticket::open",
+      "lines": [
+        23,
+        23
+      ],
+      "fp": "Some(Self { units, cents })"
+    },
+    "relations": [
+      {
+        "type": "decided-by",
+        "target": "F0237"
+      }
+    ]
+  },
+  {
+    "id": "F0225",
+    "text": "The adjuster console suite checks a fractional entry of one and a half.",
+    "kind": "test",
+    "feature": "claims",
+    "constellation": {
+      "path": "tests/claims-test-suite.md",
+      "type": "test-suite",
+      "heading": "Tests"
+    },
+    "code": {
+      "path": "ui/claims.test.ts",
+      "symbol": "describe(\"Claims\") > it(\"rejects fractions\")",
+      "lines": [
+        6,
+        6
+      ],
+      "fp": "assert.equal(classify(1.5), \"invalid\");"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0226",
+    "text": "The claims export drops ineligible quantities before summing the rest.",
+    "kind": "flow",
+    "feature": "claims",
+    "constellation": {
+      "path": "components/claims-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "tools/claims.js",
+      "symbol": "tools/claims.js#default",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "const eligible = values.filter((count) => accepted(count));"
+    },
+    "relations": [
+      {
+        "type": "depends-on",
+        "target": "F0217"
+      },
+      {
+        "type": "reads",
+        "target": "F0224"
+      }
+    ]
+  },
+  {
+    "id": "F0227",
+    "text": "During claims reconciliation Boolean values are excluded from numeric receipts.",
+    "kind": "invariant",
+    "feature": "claims",
+    "constellation": {
+      "path": "components/claims-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "jobs/claims.py",
+      "symbol": "jobs.claims.reconcile.valid",
+      "lines": [
+        13,
+        13
+      ],
+      "fp": "return type(value) is int and 3 <= value <= 100"
+    },
+    "relations": [
+      {
+        "type": "consumes",
+        "target": "F0238"
+      }
+    ]
+  },
+  {
+    "id": "F0228",
+    "text": "The native adjuster scanner returns minus one for an inadmissible quantity.",
+    "kind": "contract",
+    "feature": "claims",
+    "constellation": {
+      "path": "components/claims-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "native/claims.c",
+      "symbol": "native/claims.c::claims_charge",
+      "lines": [
+        8,
+        8
+      ],
+      "fp": "if (!in_range(count)) return -1;"
+    },
+    "relations": [
+      {
+        "type": "implements",
+        "target": "F0231"
+      },
+      {
+        "type": "exposes",
+        "target": "F0220"
+      }
+    ]
+  },
+  {
+    "id": "F0229",
+    "text": "The native claims range check accepts both boundaries inclusively.",
+    "kind": "behavior",
+    "feature": "claims",
+    "constellation": {
+      "path": "components/claims-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "native/claims.c",
+      "symbol": "native/claims.c::in_range",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "return count >= 3 && count <= 100;"
+    },
+    "relations": [
+      {
+        "type": "part-of",
+        "target": "F0239"
+      }
+    ]
+  },
+  {
+    "id": "F0230",
+    "text": "Carrier credits cannot push a damage charge below zero.",
+    "kind": "behavior",
+    "feature": "claims",
+    "constellation": {
+      "path": "components/claims-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "integration/Claims.cs",
+      "symbol": "Parcel.ClaimsBridge.Quote(int, int)",
+      "lines": [
+        14,
+        14
+      ],
+      "fp": "return charge < 0 ? charge : Math.Max(0, charge - Math.Max(0, credit));"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0231",
+    "text": "The uncredited claims bridge rejects out-of-band requests before pricing.",
+    "kind": "contract",
+    "feature": "claims",
+    "constellation": {
+      "path": "contracts/claims-contract.md",
+      "type": "contract",
+      "heading": "Contract"
+    },
+    "code": {
+      "path": "integration/Claims.cs",
+      "symbol": "Parcel.ClaimsBridge.Quote(int)",
+      "lines": [
+        7,
+        7
+      ],
+      "fp": "if (units < 3 || units > 100) return -1;"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0232",
+    "text": "The partial damage bridge excludes rejected quotes from batch totals.",
+    "kind": "behavior",
+    "feature": "claims",
+    "constellation": {
+      "path": "components/claims-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "integration/ClaimsBatch.cs",
+      "symbol": "Parcel.ClaimsBridge.QuoteBatch(int[])",
+      "lines": [
+        6,
+        6
+      ],
+      "fp": "return batches.Select(units => Quote(units)).Where(cents => cents >= 0).Sum();"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0233",
+    "text": "The adjuster configuration declares its capacity as 100 claims.",
+    "kind": "config",
+    "feature": "claims",
+    "constellation": {
+      "path": "features/claims.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "config/claims.json",
+      "symbol": "config/claims.json::capacity",
+      "lines": [
+        2,
+        2
+      ],
+      "fp": "\"capacity\": 100"
+    },
+    "relations": [
+      {
+        "type": "configures",
+        "target": "F0229"
+      }
+    ]
+  },
+  {
+    "id": "F0234",
+    "text": "The stand-alone claims job prints the result of reconciling an empty input.",
+    "kind": "flow",
+    "feature": "claims",
+    "constellation": {
+      "path": "components/claims-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "jobs/claims.py",
+      "symbol": "jobs.claims:main",
+      "lines": [
+        17,
+        17
+      ],
+      "fp": "print(reconcile([]))"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0235",
+    "text": "A local macro enforces the closed interval for damage ticket creation.",
+    "kind": "invariant",
+    "feature": "claims",
+    "constellation": {
+      "path": "components/claims-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "src/claims.rs",
+      "symbol": "crate::claims::bounded_units!",
+      "lines": [
+        14,
+        14
+      ],
+      "fp": "(MINIMUM..=CAPACITY).contains(&$count)"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0236",
+    "text": "The damage export test mixes a valid maximum with two invalid counts.",
+    "kind": "test",
+    "feature": "claims",
+    "constellation": {
+      "path": "tests/claims-test-suite.md",
+      "type": "test-suite",
+      "heading": "Tests"
+    },
+    "code": {
+      "path": "tools/claims.test.js",
+      "symbol": "describe(\"Claims\") > it(\"skips outside entries\")",
+      "lines": [
+        7,
+        7
+      ],
+      "fp": "assert.equal(tally([0, 100, 101]), 100);"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0237",
+    "text": "Claims settled on a fixed opening fee to account for handling individual tickets.",
+    "kind": "decision",
+    "feature": "claims",
+    "constellation": {
+      "path": "decisions/claims-decision.md",
+      "type": "decision",
+      "heading": "Decision"
+    },
+    "code": null,
+    "relations": [
+      {
+        "type": "supersedes",
+        "target": "F0240"
+      }
+    ]
+  },
+  {
+    "id": "F0238",
+    "text": "A damage ticket is a priced admission record at the adjuster.",
+    "kind": "glossary",
+    "feature": "claims",
+    "constellation": {
+      "path": "terms/claims-glossary.md",
+      "type": "glossary",
+      "heading": "Terms"
+    },
+    "code": null,
+    "relations": []
+  },
+  {
+    "id": "F0239",
+    "text": "Comparing totals across damage notices must account for the opening fee on each accepted batch.",
+    "kind": "gotcha",
+    "feature": "claims",
+    "constellation": {
+      "path": "maps/claims-hub.md",
+      "type": "hub",
+      "heading": "Map"
+    },
+    "code": null,
+    "relations": [
+      {
+        "type": "risks",
+        "target": "F0229"
+      }
+    ]
+  },
+  {
+    "id": "F0240",
+    "text": "The adjuster retired its original flat invoice in favor of unit-based pricing.",
+    "kind": "decision",
+    "feature": "claims",
+    "constellation": {
+      "path": "decisions/claims-previous.md",
+      "type": "decision",
+      "heading": "Decision"
+    },
+    "code": null,
+    "relations": []
+  },
+  {
+    "id": "F0241",
+    "text": "The cashier admits at most 107 charges per batch.",
+    "kind": "behavior",
+    "feature": "billing",
+    "constellation": {
+      "path": "features/billing.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/billing.rs",
+      "symbol": "crate::billing::CAPACITY",
+      "lines": [
+        2,
+        2
+      ],
+      "fp": "pub const CAPACITY: u32 = 107;"
+    },
+    "relations": [
+      {
+        "type": "contracts",
+        "target": "F0244"
+      },
+      {
+        "type": "link",
+        "target": "F0262"
+      }
+    ]
+  },
+  {
+    "id": "F0242",
+    "text": "At least 4 charges are required to open a settlement ticket.",
+    "kind": "invariant",
+    "feature": "billing",
+    "constellation": {
+      "path": "features/billing.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/billing.rs",
+      "symbol": "crate::billing::MINIMUM",
+      "lines": [
+        3,
+        3
+      ],
+      "fp": "pub const MINIMUM: u32 = 4;"
+    },
+    "relations": [
+      {
+        "type": "tested-by",
+        "target": "F0249"
+      }
+    ]
+  },
+  {
+    "id": "F0243",
+    "text": "The billing regression rejects one unit beyond the admission ceiling.",
+    "kind": "test",
+    "feature": "billing",
+    "constellation": {
+      "path": "tests/billing-test-suite.md",
+      "type": "test-suite",
+      "heading": "Tests"
+    },
+    "code": {
+      "path": "src/billing.rs",
+      "symbol": "crate::billing::tests::rejects_overflow",
+      "lines": [
+        37,
+        37
+      ],
+      "fp": "assert_eq!(Ticket::open(CAPACITY + 1), None);"
+    },
+    "relations": [
+      {
+        "type": "affects",
+        "target": "F0241"
+      }
+    ]
+  },
+  {
+    "id": "F0244",
+    "text": "Each accepted settlement ticket includes an opening charge of 41 cents.",
+    "kind": "contract",
+    "feature": "billing",
+    "constellation": {
+      "path": "contracts/billing-contract.md",
+      "type": "contract",
+      "heading": "Contract"
+    },
+    "code": {
+      "path": "src/billing.rs",
+      "symbol": "crate::billing::OPENING_CENTS",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "pub const OPENING_CENTS: u32 = 41;"
+    },
+    "relations": [
+      {
+        "type": "tested-by",
+        "target": "F0243"
+      }
+    ]
+  },
+  {
+    "id": "F0245",
+    "text": "Every additional unit of billing costs 2 cents before credit.",
+    "kind": "contract",
+    "feature": "billing",
+    "constellation": {
+      "path": "contracts/billing-contract.md",
+      "type": "contract",
+      "heading": "Contract"
+    },
+    "code": {
+      "path": "src/billing.rs",
+      "symbol": "crate::billing::UNIT_CENTS",
+      "lines": [
+        5,
+        5
+      ],
+      "fp": "pub const UNIT_CENTS: u32 = 2;"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0246",
+    "text": "Splitting invoice entries opens two independently eligible tickets.",
+    "kind": "flow",
+    "feature": "billing",
+    "constellation": {
+      "path": "features/billing.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/billing.rs",
+      "symbol": "crate::billing::Ticket::split",
+      "lines": [
+        28,
+        28
+      ],
+      "fp": "Some((Self::open(left)?, Self::open(right)?))"
+    },
+    "relations": [
+      {
+        "type": "writes",
+        "target": "F0248"
+      },
+      {
+        "type": "emits",
+        "target": "F0262"
+      }
+    ]
+  },
+  {
+    "id": "F0247",
+    "text": "The billing console marks fractional quantities invalid.",
+    "kind": "behavior",
+    "feature": "billing",
+    "constellation": {
+      "path": "components/billing-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "ui/billing.tsx",
+      "symbol": "ui/billing.tsx#classify",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "if (!Number.isInteger(count)) return \"invalid\";"
+    },
+    "relations": [
+      {
+        "type": "tested-by",
+        "target": "F0249"
+      }
+    ]
+  },
+  {
+    "id": "F0248",
+    "text": "A settlement receipt stores both the admitted quantity and the total in cents.",
+    "kind": "data-model",
+    "feature": "billing",
+    "constellation": {
+      "path": "features/billing.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/billing.rs",
+      "symbol": "crate::billing::Ticket::open",
+      "lines": [
+        23,
+        23
+      ],
+      "fp": "Some(Self { units, cents })"
+    },
+    "relations": [
+      {
+        "type": "decided-by",
+        "target": "F0261"
+      }
+    ]
+  },
+  {
+    "id": "F0249",
+    "text": "The cashier console suite checks a fractional entry of one and a half.",
+    "kind": "test",
+    "feature": "billing",
+    "constellation": {
+      "path": "tests/billing-test-suite.md",
+      "type": "test-suite",
+      "heading": "Tests"
+    },
+    "code": {
+      "path": "ui/billing.test.ts",
+      "symbol": "describe(\"Billing\") > it(\"rejects fractions\")",
+      "lines": [
+        6,
+        6
+      ],
+      "fp": "assert.equal(classify(1.5), \"invalid\");"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0250",
+    "text": "The billing export drops ineligible quantities before summing the rest.",
+    "kind": "flow",
+    "feature": "billing",
+    "constellation": {
+      "path": "components/billing-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "tools/billing.js",
+      "symbol": "tools/billing.js#default",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "const eligible = values.filter((count) => accepted(count));"
+    },
+    "relations": [
+      {
+        "type": "depends-on",
+        "target": "F0241"
+      },
+      {
+        "type": "reads",
+        "target": "F0248"
+      }
+    ]
+  },
+  {
+    "id": "F0251",
+    "text": "During billing reconciliation Boolean values are excluded from numeric receipts.",
+    "kind": "invariant",
+    "feature": "billing",
+    "constellation": {
+      "path": "components/billing-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "jobs/billing.py",
+      "symbol": "jobs.billing.reconcile.valid",
+      "lines": [
+        13,
+        13
+      ],
+      "fp": "return type(value) is int and 4 <= value <= 107"
+    },
+    "relations": [
+      {
+        "type": "consumes",
+        "target": "F0262"
+      }
+    ]
+  },
+  {
+    "id": "F0252",
+    "text": "The native cashier scanner returns minus one for an inadmissible quantity.",
+    "kind": "contract",
+    "feature": "billing",
+    "constellation": {
+      "path": "components/billing-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "native/billing.c",
+      "symbol": "native/billing.c::billing_charge",
+      "lines": [
+        8,
+        8
+      ],
+      "fp": "if (!in_range(count)) return -1;"
+    },
+    "relations": [
+      {
+        "type": "implements",
+        "target": "F0255"
+      },
+      {
+        "type": "exposes",
+        "target": "F0244"
+      }
+    ]
+  },
+  {
+    "id": "F0253",
+    "text": "The native billing range check accepts both boundaries inclusively.",
+    "kind": "behavior",
+    "feature": "billing",
+    "constellation": {
+      "path": "components/billing-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "native/billing.c",
+      "symbol": "native/billing.c::in_range",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "return count >= 4 && count <= 107;"
+    },
+    "relations": [
+      {
+        "type": "part-of",
+        "target": "F0263"
+      }
+    ]
+  },
+  {
+    "id": "F0254",
+    "text": "Carrier credits cannot push a settlement charge below zero.",
+    "kind": "behavior",
+    "feature": "billing",
+    "constellation": {
+      "path": "components/billing-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "integration/Billing.cs",
+      "symbol": "Parcel.BillingBridge.Quote(int, int)",
+      "lines": [
+        14,
+        14
+      ],
+      "fp": "return charge < 0 ? charge : Math.Max(0, charge - Math.Max(0, credit));"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0255",
+    "text": "The uncredited billing bridge rejects out-of-band requests before pricing.",
+    "kind": "contract",
+    "feature": "billing",
+    "constellation": {
+      "path": "contracts/billing-contract.md",
+      "type": "contract",
+      "heading": "Contract"
+    },
+    "code": {
+      "path": "integration/Billing.cs",
+      "symbol": "Parcel.BillingBridge.Quote(int)",
+      "lines": [
+        7,
+        7
+      ],
+      "fp": "if (units < 4 || units > 107) return -1;"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0256",
+    "text": "The partial settlement bridge excludes rejected quotes from batch totals.",
+    "kind": "behavior",
+    "feature": "billing",
+    "constellation": {
+      "path": "components/billing-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "integration/BillingBatch.cs",
+      "symbol": "Parcel.BillingBridge.QuoteBatch(int[])",
+      "lines": [
+        6,
+        6
+      ],
+      "fp": "return batches.Select(units => Quote(units)).Where(cents => cents >= 0).Sum();"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0257",
+    "text": "The cashier configuration declares its capacity as 107 charges.",
+    "kind": "config",
+    "feature": "billing",
+    "constellation": {
+      "path": "features/billing.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "config/billing.yaml",
+      "symbol": "config/billing.yaml::capacity",
+      "lines": [
+        1,
+        1
+      ],
+      "fp": "capacity: 107"
+    },
+    "relations": [
+      {
+        "type": "configures",
+        "target": "F0253"
+      }
+    ]
+  },
+  {
+    "id": "F0258",
+    "text": "The stand-alone billing job prints the result of reconciling an empty input.",
+    "kind": "flow",
+    "feature": "billing",
+    "constellation": {
+      "path": "components/billing-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "jobs/billing.py",
+      "symbol": "jobs.billing:main",
+      "lines": [
+        17,
+        17
+      ],
+      "fp": "print(reconcile([]))"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0259",
+    "text": "A local macro enforces the closed interval for settlement ticket creation.",
+    "kind": "invariant",
+    "feature": "billing",
+    "constellation": {
+      "path": "components/billing-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "src/billing.rs",
+      "symbol": "crate::billing::bounded_units!",
+      "lines": [
+        14,
+        14
+      ],
+      "fp": "(MINIMUM..=CAPACITY).contains(&$count)"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0260",
+    "text": "The settlement export test mixes a valid maximum with two invalid counts.",
+    "kind": "test",
+    "feature": "billing",
+    "constellation": {
+      "path": "tests/billing-test-suite.md",
+      "type": "test-suite",
+      "heading": "Tests"
+    },
+    "code": {
+      "path": "tools/billing.test.js",
+      "symbol": "describe(\"Billing\") > it(\"skips outside entries\")",
+      "lines": [
+        7,
+        7
+      ],
+      "fp": "assert.equal(tally([0, 107, 108]), 107);"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0261",
+    "text": "Billing settled on a fixed opening fee to account for handling individual tickets.",
+    "kind": "decision",
+    "feature": "billing",
+    "constellation": {
+      "path": "decisions/billing-decision.md",
+      "type": "decision",
+      "heading": "Decision"
+    },
+    "code": null,
+    "relations": [
+      {
+        "type": "supersedes",
+        "target": "F0264"
+      }
+    ]
+  },
+  {
+    "id": "F0262",
+    "text": "A settlement ticket is a priced admission record at the cashier.",
+    "kind": "glossary",
+    "feature": "billing",
+    "constellation": {
+      "path": "terms/billing-glossary.md",
+      "type": "glossary",
+      "heading": "Terms"
+    },
+    "code": null,
+    "relations": []
+  },
+  {
+    "id": "F0263",
+    "text": "Comparing totals across invoice entries must account for the opening fee on each accepted batch.",
+    "kind": "gotcha",
+    "feature": "billing",
+    "constellation": {
+      "path": "maps/billing-hub.md",
+      "type": "hub",
+      "heading": "Map"
+    },
+    "code": null,
+    "relations": [
+      {
+        "type": "risks",
+        "target": "F0253"
+      }
+    ]
+  },
+  {
+    "id": "F0264",
+    "text": "The cashier retired its original flat invoice in favor of unit-based pricing.",
+    "kind": "decision",
+    "feature": "billing",
+    "constellation": {
+      "path": "decisions/billing-previous.md",
+      "type": "decision",
+      "heading": "Decision"
+    },
+    "code": null,
+    "relations": []
+  },
+  {
+    "id": "F0265",
+    "text": "The treasury admits at most 114 transfers per batch.",
+    "kind": "behavior",
+    "feature": "remittance",
+    "constellation": {
+      "path": "features/remittance.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/remittance.rs",
+      "symbol": "crate::remittance::CAPACITY",
+      "lines": [
+        2,
+        2
+      ],
+      "fp": "pub const CAPACITY: u32 = 114;"
+    },
+    "relations": [
+      {
+        "type": "contracts",
+        "target": "F0268"
+      },
+      {
+        "type": "link",
+        "target": "F0286"
+      }
+    ]
+  },
+  {
+    "id": "F0266",
+    "text": "At least 5 transfers are required to open a disbursement ticket.",
+    "kind": "invariant",
+    "feature": "remittance",
+    "constellation": {
+      "path": "features/remittance.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/remittance.rs",
+      "symbol": "crate::remittance::MINIMUM",
+      "lines": [
+        3,
+        3
+      ],
+      "fp": "pub const MINIMUM: u32 = 5;"
+    },
+    "relations": [
+      {
+        "type": "tested-by",
+        "target": "F0273"
+      }
+    ]
+  },
+  {
+    "id": "F0267",
+    "text": "The remittance regression rejects one unit beyond the admission ceiling.",
+    "kind": "test",
+    "feature": "remittance",
+    "constellation": {
+      "path": "tests/remittance-test-suite.md",
+      "type": "test-suite",
+      "heading": "Tests"
+    },
+    "code": {
+      "path": "src/remittance.rs",
+      "symbol": "crate::remittance::tests::rejects_overflow",
+      "lines": [
+        37,
+        37
+      ],
+      "fp": "assert_eq!(Ticket::open(CAPACITY + 1), None);"
+    },
+    "relations": [
+      {
+        "type": "affects",
+        "target": "F0265"
+      }
+    ]
+  },
+  {
+    "id": "F0268",
+    "text": "Each accepted disbursement ticket includes an opening charge of 44 cents.",
+    "kind": "contract",
+    "feature": "remittance",
+    "constellation": {
+      "path": "contracts/remittance-contract.md",
+      "type": "contract",
+      "heading": "Contract"
+    },
+    "code": {
+      "path": "src/remittance.rs",
+      "symbol": "crate::remittance::OPENING_CENTS",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "pub const OPENING_CENTS: u32 = 44;"
+    },
+    "relations": [
+      {
+        "type": "tested-by",
+        "target": "F0267"
+      }
+    ]
+  },
+  {
+    "id": "F0269",
+    "text": "Every additional unit of remittance costs 3 cents before credit.",
+    "kind": "contract",
+    "feature": "remittance",
+    "constellation": {
+      "path": "contracts/remittance-contract.md",
+      "type": "contract",
+      "heading": "Contract"
+    },
+    "code": {
+      "path": "src/remittance.rs",
+      "symbol": "crate::remittance::UNIT_CENTS",
+      "lines": [
+        5,
+        5
+      ],
+      "fp": "pub const UNIT_CENTS: u32 = 3;"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0270",
+    "text": "Splitting payout records opens two independently eligible tickets.",
+    "kind": "flow",
+    "feature": "remittance",
+    "constellation": {
+      "path": "features/remittance.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/remittance.rs",
+      "symbol": "crate::remittance::Ticket::split",
+      "lines": [
+        28,
+        28
+      ],
+      "fp": "Some((Self::open(left)?, Self::open(right)?))"
+    },
+    "relations": [
+      {
+        "type": "writes",
+        "target": "F0272"
+      },
+      {
+        "type": "emits",
+        "target": "F0286"
+      }
+    ]
+  },
+  {
+    "id": "F0271",
+    "text": "The remittance console marks fractional quantities invalid.",
+    "kind": "behavior",
+    "feature": "remittance",
+    "constellation": {
+      "path": "components/remittance-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "ui/remittance.tsx",
+      "symbol": "ui/remittance.tsx#classify",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "if (!Number.isInteger(count)) return \"invalid\";"
+    },
+    "relations": [
+      {
+        "type": "tested-by",
+        "target": "F0273"
+      }
+    ]
+  },
+  {
+    "id": "F0272",
+    "text": "A disbursement receipt stores both the admitted quantity and the total in cents.",
+    "kind": "data-model",
+    "feature": "remittance",
+    "constellation": {
+      "path": "features/remittance.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "src/remittance.rs",
+      "symbol": "crate::remittance::Ticket::open",
+      "lines": [
+        23,
+        23
+      ],
+      "fp": "Some(Self { units, cents })"
+    },
+    "relations": [
+      {
+        "type": "decided-by",
+        "target": "F0285"
+      }
+    ]
+  },
+  {
+    "id": "F0273",
+    "text": "The treasury console suite checks a fractional entry of one and a half.",
+    "kind": "test",
+    "feature": "remittance",
+    "constellation": {
+      "path": "tests/remittance-test-suite.md",
+      "type": "test-suite",
+      "heading": "Tests"
+    },
+    "code": {
+      "path": "ui/remittance.test.ts",
+      "symbol": "describe(\"Remittance\") > it(\"rejects fractions\")",
+      "lines": [
+        6,
+        6
+      ],
+      "fp": "assert.equal(classify(1.5), \"invalid\");"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0274",
+    "text": "The remittance export drops ineligible quantities before summing the rest.",
+    "kind": "flow",
+    "feature": "remittance",
+    "constellation": {
+      "path": "components/remittance-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "tools/remittance.js",
+      "symbol": "tools/remittance.js#default",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "const eligible = values.filter((count) => accepted(count));"
+    },
+    "relations": [
+      {
+        "type": "depends-on",
+        "target": "F0265"
+      },
+      {
+        "type": "reads",
+        "target": "F0272"
+      }
+    ]
+  },
+  {
+    "id": "F0275",
+    "text": "During remittance reconciliation Boolean values are excluded from numeric receipts.",
+    "kind": "invariant",
+    "feature": "remittance",
+    "constellation": {
+      "path": "components/remittance-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "jobs/remittance.py",
+      "symbol": "jobs.remittance.reconcile.valid",
+      "lines": [
+        13,
+        13
+      ],
+      "fp": "return type(value) is int and 5 <= value <= 114"
+    },
+    "relations": [
+      {
+        "type": "consumes",
+        "target": "F0286"
+      }
+    ]
+  },
+  {
+    "id": "F0276",
+    "text": "The native treasury scanner returns minus one for an inadmissible quantity.",
+    "kind": "contract",
+    "feature": "remittance",
+    "constellation": {
+      "path": "components/remittance-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "native/remittance.c",
+      "symbol": "native/remittance.c::remittance_charge",
+      "lines": [
+        8,
+        8
+      ],
+      "fp": "if (!in_range(count)) return -1;"
+    },
+    "relations": [
+      {
+        "type": "implements",
+        "target": "F0279"
+      },
+      {
+        "type": "exposes",
+        "target": "F0268"
+      }
+    ]
+  },
+  {
+    "id": "F0277",
+    "text": "The native remittance range check accepts both boundaries inclusively.",
+    "kind": "behavior",
+    "feature": "remittance",
+    "constellation": {
+      "path": "components/remittance-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "native/remittance.c",
+      "symbol": "native/remittance.c::in_range",
+      "lines": [
+        4,
+        4
+      ],
+      "fp": "return count >= 5 && count <= 114;"
+    },
+    "relations": [
+      {
+        "type": "part-of",
+        "target": "F0287"
+      }
+    ]
+  },
+  {
+    "id": "F0278",
+    "text": "Carrier credits cannot push a disbursement charge below zero.",
+    "kind": "behavior",
+    "feature": "remittance",
+    "constellation": {
+      "path": "components/remittance-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "integration/Remittance.cs",
+      "symbol": "Parcel.RemittanceBridge.Quote(int, int)",
+      "lines": [
+        14,
+        14
+      ],
+      "fp": "return charge < 0 ? charge : Math.Max(0, charge - Math.Max(0, credit));"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0279",
+    "text": "The uncredited remittance bridge rejects out-of-band requests before pricing.",
+    "kind": "contract",
+    "feature": "remittance",
+    "constellation": {
+      "path": "contracts/remittance-contract.md",
+      "type": "contract",
+      "heading": "Contract"
+    },
+    "code": {
+      "path": "integration/Remittance.cs",
+      "symbol": "Parcel.RemittanceBridge.Quote(int)",
+      "lines": [
+        7,
+        7
+      ],
+      "fp": "if (units < 5 || units > 114) return -1;"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0280",
+    "text": "The partial disbursement bridge excludes rejected quotes from batch totals.",
+    "kind": "behavior",
+    "feature": "remittance",
+    "constellation": {
+      "path": "components/remittance-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "integration/RemittanceBatch.cs",
+      "symbol": "Parcel.RemittanceBridge.QuoteBatch(int[])",
+      "lines": [
+        6,
+        6
+      ],
+      "fp": "return batches.Select(units => Quote(units)).Where(cents => cents >= 0).Sum();"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0281",
+    "text": "The treasury configuration declares its capacity as 114 transfers.",
+    "kind": "config",
+    "feature": "remittance",
+    "constellation": {
+      "path": "features/remittance.md",
+      "type": "feature",
+      "heading": "Behavior"
+    },
+    "code": {
+      "path": "config/remittance.toml",
+      "symbol": "config/remittance.toml::capacity",
+      "lines": [
+        1,
+        1
+      ],
+      "fp": "capacity = 114"
+    },
+    "relations": [
+      {
+        "type": "configures",
+        "target": "F0277"
+      }
+    ]
+  },
+  {
+    "id": "F0282",
+    "text": "The stand-alone remittance job prints the result of reconciling an empty input.",
+    "kind": "flow",
+    "feature": "remittance",
+    "constellation": {
+      "path": "components/remittance-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "jobs/remittance.py",
+      "symbol": "jobs.remittance:main",
+      "lines": [
+        17,
+        17
+      ],
+      "fp": "print(reconcile([]))"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0283",
+    "text": "A local macro enforces the closed interval for disbursement ticket creation.",
+    "kind": "invariant",
+    "feature": "remittance",
+    "constellation": {
+      "path": "components/remittance-component.md",
+      "type": "component",
+      "heading": "Stars"
+    },
+    "code": {
+      "path": "src/remittance.rs",
+      "symbol": "crate::remittance::bounded_units!",
+      "lines": [
+        14,
+        14
+      ],
+      "fp": "(MINIMUM..=CAPACITY).contains(&$count)"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0284",
+    "text": "The disbursement export test mixes a valid maximum with two invalid counts.",
+    "kind": "test",
+    "feature": "remittance",
+    "constellation": {
+      "path": "tests/remittance-test-suite.md",
+      "type": "test-suite",
+      "heading": "Tests"
+    },
+    "code": {
+      "path": "tools/remittance.test.js",
+      "symbol": "describe(\"Remittance\") > it(\"skips outside entries\")",
+      "lines": [
+        7,
+        7
+      ],
+      "fp": "assert.equal(tally([0, 114, 115]), 114);"
+    },
+    "relations": []
+  },
+  {
+    "id": "F0285",
+    "text": "Remittance settled on a fixed opening fee to account for handling individual tickets.",
+    "kind": "decision",
+    "feature": "remittance",
+    "constellation": {
+      "path": "decisions/remittance-decision.md",
+      "type": "decision",
+      "heading": "Decision"
+    },
+    "code": null,
+    "relations": [
+      {
+        "type": "supersedes",
+        "target": "F0288"
+      }
+    ]
+  },
+  {
+    "id": "F0286",
+    "text": "A disbursement ticket is a priced admission record at the treasury.",
+    "kind": "glossary",
+    "feature": "remittance",
+    "constellation": {
+      "path": "terms/remittance-glossary.md",
+      "type": "glossary",
+      "heading": "Terms"
+    },
+    "code": null,
+    "relations": []
+  },
+  {
+    "id": "F0287",
+    "text": "Comparing totals across payout records must account for the opening fee on each accepted batch.",
+    "kind": "gotcha",
+    "feature": "remittance",
+    "constellation": {
+      "path": "maps/remittance-hub.md",
+      "type": "hub",
+      "heading": "Map"
+    },
+    "code": null,
+    "relations": [
+      {
+        "type": "risks",
+        "target": "F0277"
+      }
+    ]
+  },
+  {
+    "id": "F0288",
+    "text": "The treasury retired its original flat invoice in favor of unit-based pricing.",
+    "kind": "decision",
+    "feature": "remittance",
+    "constellation": {
+      "path": "decisions/remittance-previous.md",
+      "type": "decision",
+      "heading": "Decision"
+    },
+    "code": null,
+    "relations": []
+  }
+]

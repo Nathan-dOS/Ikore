@@ -1,0 +1,12 @@
+Parcel.IntakeChecks.Run();
+Parcel.WeighingChecks.Run();
+Parcel.SortingChecks.Run();
+Parcel.PackingChecks.Run();
+Parcel.DispatchChecks.Run();
+Parcel.TrackingChecks.Run();
+Parcel.CustomsChecks.Run();
+Parcel.DeliveryChecks.Run();
+Parcel.ReturnsChecks.Run();
+Parcel.ClaimsChecks.Run();
+Parcel.BillingChecks.Run();
+Parcel.RemittanceChecks.Run();

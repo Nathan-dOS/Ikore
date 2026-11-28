@@ -1,0 +1,842 @@
+[
+  {
+    "id": "M001",
+    "fact": "F0006",
+    "star": "star_48CX2TC0BAA34YZCX6MCP8PY71",
+    "language": "Rust",
+    "operation": "insert",
+    "patch": "--- a/src/intake.rs\n+++ b/src/intake.rs\n@@ -1,3 +1,5 @@\n+\n+\n //! Admission and handling for shipment requests.\n pub const CAPACITY: u32 = 37;\n pub const MINIMUM: u32 = 2;\n",
+    "expected": {
+      "state": "verified",
+      "line": 30,
+      "resolved_symbol": "crate::intake::Ticket::split"
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M002",
+    "fact": "F0006",
+    "star": "star_48CX2TC0BAA34YZCX6MCP8PY71",
+    "language": "Rust",
+    "operation": "remove",
+    "patch": "--- a/src/intake.rs\n+++ b/src/intake.rs\n@@ -1,4 +1,3 @@\n-//! Admission and handling for shipment requests.\n pub const CAPACITY: u32 = 37;\n pub const MINIMUM: u32 = 2;\n pub const OPENING_CENTS: u32 = 11;\n",
+    "expected": {
+      "state": "verified",
+      "line": 27,
+      "resolved_symbol": "crate::intake::Ticket::split"
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M003",
+    "fact": "F0006",
+    "star": "star_48CX2TC0BAA34YZCX6MCP8PY71",
+    "language": "Rust",
+    "operation": "rename",
+    "patch": "--- a/src/intake.rs\n+++ b/src/intake.rs\n@@ -23,7 +23,7 @@\n         Some(Self { units, cents })\n     }\n \n-    pub fn split(&self, left: u32) -> Option<(Self, Self)> {\n+    pub fn splitRevised(&self, left: u32) -> Option<(Self, Self)> {\n         let right = self.units.checked_sub(left)?;\n         Some((Self::open(left)?, Self::open(right)?))\n     }\n",
+    "expected": {
+      "state": "verified",
+      "line": 28,
+      "resolved_symbol": "crate::intake::Ticket::splitRevised"
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M004",
+    "fact": "F0006",
+    "star": "star_48CX2TC0BAA34YZCX6MCP8PY71",
+    "language": "Rust",
+    "operation": "move",
+    "patch": "--- a/src/intake.rs\n+++ b/src/intake.rs\n@@ -23,10 +23,6 @@\n         Some(Self { units, cents })\n     }\n \n-    pub fn split(&self, left: u32) -> Option<(Self, Self)> {\n-        let right = self.units.checked_sub(left)?;\n-        Some((Self::open(left)?, Self::open(right)?))\n-    }\n }\n \n #[cfg(test)]\n--- /dev/null\n+++ b/src/intake_moved.rs\n@@ -0,0 +1,4 @@\n+    pub fn split(&self, left: u32) -> Option<(Self, Self)> {\n+        let right = self.units.checked_sub(left)?;\n+        Some((Self::open(left)?, Self::open(right)?))\n+    }\n",
+    "expected": {
+      "state": "stale",
+      "line": null,
+      "resolved_symbol": null
+    },
+    "legacy_file_correct": false
+  },
+  {
+    "id": "M005",
+    "fact": "F0006",
+    "star": "star_48CX2TC0BAA34YZCX6MCP8PY71",
+    "language": "Rust",
+    "operation": "duplicate",
+    "patch": "--- a/src/intake.rs\n+++ b/src/intake.rs\n@@ -26,6 +26,7 @@\n     pub fn split(&self, left: u32) -> Option<(Self, Self)> {\n         let right = self.units.checked_sub(left)?;\n         Some((Self::open(left)?, Self::open(right)?))\n+        Some((Self::open(left)?, Self::open(right)?))\n     }\n }\n \n",
+    "expected": {
+      "state": "stale",
+      "line": null,
+      "resolved_symbol": null
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M006",
+    "fact": "F0031",
+    "star": "star_08YB16P3EMFY5PQDGESQFQ4EMT",
+    "language": "TypeScript",
+    "operation": "insert",
+    "patch": "--- a/ui/weighing.tsx\n+++ b/ui/weighing.tsx\n@@ -1,3 +1,5 @@\n+\n+\n // Display only quantities accepted by the parcel ledger.\n export const capacity = 44;\n export function classify(count: number): string {\n",
+    "expected": {
+      "state": "verified",
+      "line": 6,
+      "resolved_symbol": "ui/weighing.tsx#classify"
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M007",
+    "fact": "F0031",
+    "star": "star_08YB16P3EMFY5PQDGESQFQ4EMT",
+    "language": "TypeScript",
+    "operation": "remove",
+    "patch": "--- a/ui/weighing.tsx\n+++ b/ui/weighing.tsx\n@@ -1,4 +1,3 @@\n-// Display only quantities accepted by the parcel ledger.\n export const capacity = 44;\n export function classify(count: number): string {\n     if (!Number.isInteger(count)) return \"invalid\";\n",
+    "expected": {
+      "state": "verified",
+      "line": 3,
+      "resolved_symbol": "ui/weighing.tsx#classify"
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M008",
+    "fact": "F0031",
+    "star": "star_08YB16P3EMFY5PQDGESQFQ4EMT",
+    "language": "TypeScript",
+    "operation": "rename",
+    "patch": "--- a/ui/weighing.tsx\n+++ b/ui/weighing.tsx\n@@ -1,12 +1,12 @@\n // Display only quantities accepted by the parcel ledger.\n export const capacity = 44;\n-export function classify(count: number): string {\n+export function classifyRevised(count: number): string {\n     if (!Number.isInteger(count)) return \"invalid\";\n     if (count < 3) return \"small\";\n     if (count > capacity) return \"large\";\n     return \"ready\";\n }\n export default function WeighingBadge(props: { count: number }) {\n-    const status = classify(props.count);\n+    const status = classifyRevised(props.count);\n     return <output>{status}</output>;\n }\n",
+    "expected": {
+      "state": "verified",
+      "line": 4,
+      "resolved_symbol": "ui/weighing.tsx#classifyRevised"
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M009",
+    "fact": "F0031",
+    "star": "star_08YB16P3EMFY5PQDGESQFQ4EMT",
+    "language": "TypeScript",
+    "operation": "move",
+    "patch": "--- a/ui/weighing.tsx\n+++ b/ui/weighing.tsx\n@@ -1,11 +1,5 @@\n // Display only quantities accepted by the parcel ledger.\n export const capacity = 44;\n-export function classify(count: number): string {\n-    if (!Number.isInteger(count)) return \"invalid\";\n-    if (count < 3) return \"small\";\n-    if (count > capacity) return \"large\";\n-    return \"ready\";\n-}\n export default function WeighingBadge(props: { count: number }) {\n     const status = classify(props.count);\n     return <output>{status}</output>;\n--- /dev/null\n+++ b/ui/weighing_moved.tsx\n@@ -0,0 +1,6 @@\n+export function classify(count: number): string {\n+    if (!Number.isInteger(count)) return \"invalid\";\n+    if (count < 3) return \"small\";\n+    if (count > capacity) return \"large\";\n+    return \"ready\";\n+}\n",
+    "expected": {
+      "state": "stale",
+      "line": null,
+      "resolved_symbol": null
+    },
+    "legacy_file_correct": false
+  },
+  {
+    "id": "M010",
+    "fact": "F0031",
+    "star": "star_08YB16P3EMFY5PQDGESQFQ4EMT",
+    "language": "TypeScript",
+    "operation": "duplicate",
+    "patch": "--- a/ui/weighing.tsx\n+++ b/ui/weighing.tsx\n@@ -1,6 +1,7 @@\n // Display only quantities accepted by the parcel ledger.\n export const capacity = 44;\n export function classify(count: number): string {\n+    if (!Number.isInteger(count)) return \"invalid\";\n     if (!Number.isInteger(count)) return \"invalid\";\n     if (count < 3) return \"small\";\n     if (count > capacity) return \"large\";\n",
+    "expected": {
+      "state": "stale",
+      "line": null,
+      "resolved_symbol": null
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M011",
+    "fact": "F0058",
+    "star": "star_6CH2XQG3Y3RZ6YAPA6KJKTDAM7",
+    "language": "JavaScript",
+    "operation": "insert",
+    "patch": "--- a/tools/sorting.js\n+++ b/tools/sorting.js\n@@ -1,3 +1,5 @@\n+\n+\n export const accepted = (count) => Number.isSafeInteger(count) && count >= 4 && count <= 51;\n \n export default function tally(values) {\n",
+    "expected": {
+      "state": "verified",
+      "line": 6,
+      "resolved_symbol": "tools/sorting.js#default"
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M012",
+    "fact": "F0058",
+    "star": "star_6CH2XQG3Y3RZ6YAPA6KJKTDAM7",
+    "language": "JavaScript",
+    "operation": "remove",
+    "patch": "--- a/tools/sorting.js\n+++ b/tools/sorting.js\n@@ -1,5 +1,4 @@\n export const accepted = (count) => Number.isSafeInteger(count) && count >= 4 && count <= 51;\n-\n export default function tally(values) {\n     const eligible = values.filter((count) => accepted(count));\n     return eligible.reduce((sum, count) => sum + count, 0);\n",
+    "expected": {
+      "state": "verified",
+      "line": 3,
+      "resolved_symbol": "tools/sorting.js#default"
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M013",
+    "fact": "F0058",
+    "star": "star_6CH2XQG3Y3RZ6YAPA6KJKTDAM7",
+    "language": "JavaScript",
+    "operation": "rename",
+    "patch": "--- a/tools/sorting.js\n+++ b/tools/sorting.js\n@@ -1,6 +1,6 @@\n export const accepted = (count) => Number.isSafeInteger(count) && count >= 4 && count <= 51;\n \n-export default function tally(values) {\n+export default function tallyRevised(values) {\n     const eligible = values.filter((count) => accepted(count));\n     return eligible.reduce((sum, count) => sum + count, 0);\n }\n",
+    "expected": {
+      "state": "verified",
+      "line": 4,
+      "resolved_symbol": "tools/sorting.js#default"
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M014",
+    "fact": "F0058",
+    "star": "star_6CH2XQG3Y3RZ6YAPA6KJKTDAM7",
+    "language": "JavaScript",
+    "operation": "move",
+    "patch": "--- a/tools/sorting.js\n+++ b/tools/sorting.js\n@@ -1,6 +1,2 @@\n export const accepted = (count) => Number.isSafeInteger(count) && count >= 4 && count <= 51;\n \n-export default function tally(values) {\n-    const eligible = values.filter((count) => accepted(count));\n-    return eligible.reduce((sum, count) => sum + count, 0);\n-}\n--- /dev/null\n+++ b/tools/sorting_moved.js\n@@ -0,0 +1,4 @@\n+export default function tally(values) {\n+    const eligible = values.filter((count) => accepted(count));\n+    return eligible.reduce((sum, count) => sum + count, 0);\n+}\n",
+    "expected": {
+      "state": "stale",
+      "line": null,
+      "resolved_symbol": null
+    },
+    "legacy_file_correct": false
+  },
+  {
+    "id": "M015",
+    "fact": "F0058",
+    "star": "star_6CH2XQG3Y3RZ6YAPA6KJKTDAM7",
+    "language": "JavaScript",
+    "operation": "duplicate",
+    "patch": "--- a/tools/sorting.js\n+++ b/tools/sorting.js\n@@ -2,5 +2,6 @@\n \n export default function tally(values) {\n     const eligible = values.filter((count) => accepted(count));\n+    const eligible = values.filter((count) => accepted(count));\n     return eligible.reduce((sum, count) => sum + count, 0);\n }\n",
+    "expected": {
+      "state": "stale",
+      "line": null,
+      "resolved_symbol": null
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M016",
+    "fact": "F0083",
+    "star": "star_2J44G3EQ30HA41FHD57T0C1XAE",
+    "language": "Python",
+    "operation": "insert",
+    "patch": "--- a/jobs/packing.py\n+++ b/jobs/packing.py\n@@ -1,3 +1,5 @@\n+\n+\n \"\"\"Reconcile carton allocations at the carton.\"\"\"\n from functools import wraps\n \n",
+    "expected": {
+      "state": "verified",
+      "line": 15,
+      "resolved_symbol": "jobs.packing.reconcile.valid"
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M017",
+    "fact": "F0083",
+    "star": "star_2J44G3EQ30HA41FHD57T0C1XAE",
+    "language": "Python",
+    "operation": "remove",
+    "patch": "--- a/jobs/packing.py\n+++ b/jobs/packing.py\n@@ -1,4 +1,3 @@\n-\"\"\"Reconcile carton allocations at the carton.\"\"\"\n from functools import wraps\n \n def audit(function):\n",
+    "expected": {
+      "state": "verified",
+      "line": 12,
+      "resolved_symbol": "jobs.packing.reconcile.valid"
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M018",
+    "fact": "F0083",
+    "star": "star_2J44G3EQ30HA41FHD57T0C1XAE",
+    "language": "Python",
+    "operation": "rename",
+    "patch": "--- a/jobs/packing.py\n+++ b/jobs/packing.py\n@@ -9,9 +9,9 @@\n \n @audit\n def reconcile(rows):\n-    def valid(value):\n+    def validRevised(value):\n         return type(value) is int and 5 <= value <= 58\n-    return sum(value for value in rows if valid(value))\n+    return sum(value for value in rows if validRevised(value))\n \n if __name__ == \"__main__\":\n     print(reconcile([]))\n",
+    "expected": {
+      "state": "verified",
+      "line": 13,
+      "resolved_symbol": "jobs.packing.reconcile.validRevised"
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M019",
+    "fact": "F0083",
+    "star": "star_2J44G3EQ30HA41FHD57T0C1XAE",
+    "language": "Python",
+    "operation": "move",
+    "patch": "--- a/jobs/packing.py\n+++ b/jobs/packing.py\n@@ -9,8 +9,6 @@\n \n @audit\n def reconcile(rows):\n-    def valid(value):\n-        return type(value) is int and 5 <= value <= 58\n     return sum(value for value in rows if valid(value))\n \n if __name__ == \"__main__\":\n--- /dev/null\n+++ b/jobs/packing_moved.py\n@@ -0,0 +1,2 @@\n+    def valid(value):\n+        return type(value) is int and 5 <= value <= 58\n",
+    "expected": {
+      "state": "stale",
+      "line": null,
+      "resolved_symbol": null
+    },
+    "legacy_file_correct": false
+  },
+  {
+    "id": "M020",
+    "fact": "F0083",
+    "star": "star_2J44G3EQ30HA41FHD57T0C1XAE",
+    "language": "Python",
+    "operation": "duplicate",
+    "patch": "--- a/jobs/packing.py\n+++ b/jobs/packing.py\n@@ -11,6 +11,7 @@\n def reconcile(rows):\n     def valid(value):\n         return type(value) is int and 5 <= value <= 58\n+        return type(value) is int and 5 <= value <= 58\n     return sum(value for value in rows if valid(value))\n \n if __name__ == \"__main__\":\n",
+    "expected": {
+      "state": "stale",
+      "line": null,
+      "resolved_symbol": null
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M021",
+    "fact": "F0109",
+    "star": "star_6DH82B38XEX6KZBFGPQH8NA5NK",
+    "language": "C",
+    "operation": "insert",
+    "patch": "--- a/native/dispatch.c\n+++ b/native/dispatch.c\n@@ -1,3 +1,5 @@\n+\n+\n #include <stdint.h>\n \n static int in_range(int count) {\n",
+    "expected": {
+      "state": "verified",
+      "line": 6,
+      "resolved_symbol": "native/dispatch.c::in_range"
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M022",
+    "fact": "F0109",
+    "star": "star_6DH82B38XEX6KZBFGPQH8NA5NK",
+    "language": "C",
+    "operation": "remove",
+    "patch": "--- a/native/dispatch.c\n+++ b/native/dispatch.c\n@@ -1,5 +1,4 @@\n #include <stdint.h>\n-\n static int in_range(int count) {\n     return count >= 2 && count <= 65;\n }\n",
+    "expected": {
+      "state": "verified",
+      "line": 3,
+      "resolved_symbol": "native/dispatch.c::in_range"
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M023",
+    "fact": "F0109",
+    "star": "star_6DH82B38XEX6KZBFGPQH8NA5NK",
+    "language": "C",
+    "operation": "rename",
+    "patch": "--- a/native/dispatch.c\n+++ b/native/dispatch.c\n@@ -1,10 +1,10 @@\n #include <stdint.h>\n \n-static int in_range(int count) {\n+static int in_rangeRevised(int count) {\n     return count >= 2 && count <= 65;\n }\n \n int dispatch_charge(int count) {\n-    if (!in_range(count)) return -1;\n+    if (!in_rangeRevised(count)) return -1;\n     return 23 + count * 6;\n }\n",
+    "expected": {
+      "state": "verified",
+      "line": 4,
+      "resolved_symbol": "native/dispatch.c::in_rangeRevised"
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M024",
+    "fact": "F0109",
+    "star": "star_6DH82B38XEX6KZBFGPQH8NA5NK",
+    "language": "C",
+    "operation": "move",
+    "patch": "--- a/native/dispatch.c\n+++ b/native/dispatch.c\n@@ -1,8 +1,5 @@\n #include <stdint.h>\n \n-static int in_range(int count) {\n-    return count >= 2 && count <= 65;\n-}\n \n int dispatch_charge(int count) {\n     if (!in_range(count)) return -1;\n--- /dev/null\n+++ b/native/dispatch_moved.c\n@@ -0,0 +1,3 @@\n+static int in_range(int count) {\n+    return count >= 2 && count <= 65;\n+}\n",
+    "expected": {
+      "state": "stale",
+      "line": null,
+      "resolved_symbol": null
+    },
+    "legacy_file_correct": false
+  },
+  {
+    "id": "M025",
+    "fact": "F0109",
+    "star": "star_6DH82B38XEX6KZBFGPQH8NA5NK",
+    "language": "C",
+    "operation": "duplicate",
+    "patch": "--- a/native/dispatch.c\n+++ b/native/dispatch.c\n@@ -1,6 +1,7 @@\n #include <stdint.h>\n \n static int in_range(int count) {\n+    return count >= 2 && count <= 65;\n     return count >= 2 && count <= 65;\n }\n \n",
+    "expected": {
+      "state": "stale",
+      "line": null,
+      "resolved_symbol": null
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M026",
+    "fact": "F0134",
+    "star": "star_1MHFZH5HWM9ZRDRDPJKB9G26JV",
+    "language": "C#",
+    "operation": "insert",
+    "patch": "--- a/integration/Tracking.cs\n+++ b/integration/Tracking.cs\n@@ -1,3 +1,5 @@\n+\n+\n namespace Parcel;\n \n public partial class TrackingBridge\n",
+    "expected": {
+      "state": "verified",
+      "line": 16,
+      "resolved_symbol": "Parcel.TrackingBridge.Quote(int, int)"
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M027",
+    "fact": "F0134",
+    "star": "star_1MHFZH5HWM9ZRDRDPJKB9G26JV",
+    "language": "C#",
+    "operation": "remove",
+    "patch": "--- a/integration/Tracking.cs\n+++ b/integration/Tracking.cs\n@@ -1,5 +1,4 @@\n namespace Parcel;\n-\n public partial class TrackingBridge\n {\n     public int Quote(int units)\n",
+    "expected": {
+      "state": "verified",
+      "line": 13,
+      "resolved_symbol": "Parcel.TrackingBridge.Quote(int, int)"
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M028",
+    "fact": "F0134",
+    "star": "star_1MHFZH5HWM9ZRDRDPJKB9G26JV",
+    "language": "C#",
+    "operation": "rename",
+    "patch": "--- a/integration/Tracking.cs\n+++ b/integration/Tracking.cs\n@@ -2,15 +2,15 @@\n \n public partial class TrackingBridge\n {\n-    public int Quote(int units)\n+    public int QuoteRevised(int units)\n     {\n         if (units < 3 || units > 72) return -1;\n         return 26 + units * 2;\n     }\n \n-    public int Quote(int units, int credit)\n+    public int QuoteRevised(int units, int credit)\n     {\n-        var charge = Quote(units);\n+        var charge = QuoteRevised(units);\n         return charge < 0 ? charge : Math.Max(0, charge - Math.Max(0, credit));\n     }\n }\n",
+    "expected": {
+      "state": "verified",
+      "line": 14,
+      "resolved_symbol": "Parcel.TrackingBridge.QuoteRevised(int, int)"
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M029",
+    "fact": "F0134",
+    "star": "star_1MHFZH5HWM9ZRDRDPJKB9G26JV",
+    "language": "C#",
+    "operation": "move",
+    "patch": "--- a/integration/Tracking.cs\n+++ b/integration/Tracking.cs\n@@ -8,9 +8,4 @@\n         return 26 + units * 2;\n     }\n \n-    public int Quote(int units, int credit)\n-    {\n-        var charge = Quote(units);\n-        return charge < 0 ? charge : Math.Max(0, charge - Math.Max(0, credit));\n-    }\n }\n--- /dev/null\n+++ b/integration/Tracking_moved.cs\n@@ -0,0 +1,5 @@\n+    public int Quote(int units, int credit)\n+    {\n+        var charge = Quote(units);\n+        return charge < 0 ? charge : Math.Max(0, charge - Math.Max(0, credit));\n+    }\n",
+    "expected": {
+      "state": "stale",
+      "line": null,
+      "resolved_symbol": null
+    },
+    "legacy_file_correct": false
+  },
+  {
+    "id": "M030",
+    "fact": "F0134",
+    "star": "star_1MHFZH5HWM9ZRDRDPJKB9G26JV",
+    "language": "C#",
+    "operation": "duplicate",
+    "patch": "--- a/integration/Tracking.cs\n+++ b/integration/Tracking.cs\n@@ -12,5 +12,6 @@\n     {\n         var charge = Quote(units);\n         return charge < 0 ? charge : Math.Max(0, charge - Math.Max(0, credit));\n+        return charge < 0 ? charge : Math.Max(0, charge - Math.Max(0, credit));\n     }\n }\n",
+    "expected": {
+      "state": "stale",
+      "line": null,
+      "resolved_symbol": null
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M031",
+    "fact": "F0150",
+    "star": "star_5EXJCPCP5ATBWA46EHHH9MCH8E",
+    "language": "Rust",
+    "operation": "insert",
+    "patch": "--- a/src/customs.rs\n+++ b/src/customs.rs\n@@ -1,3 +1,5 @@\n+\n+\n //! Admission and handling for clearance entries.\n pub const CAPACITY: u32 = 79;\n pub const MINIMUM: u32 = 4;\n",
+    "expected": {
+      "state": "verified",
+      "line": 30,
+      "resolved_symbol": "crate::customs::Ticket::split"
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M032",
+    "fact": "F0150",
+    "star": "star_5EXJCPCP5ATBWA46EHHH9MCH8E",
+    "language": "Rust",
+    "operation": "remove",
+    "patch": "--- a/src/customs.rs\n+++ b/src/customs.rs\n@@ -1,4 +1,3 @@\n-//! Admission and handling for clearance entries.\n pub const CAPACITY: u32 = 79;\n pub const MINIMUM: u32 = 4;\n pub const OPENING_CENTS: u32 = 29;\n",
+    "expected": {
+      "state": "verified",
+      "line": 27,
+      "resolved_symbol": "crate::customs::Ticket::split"
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M033",
+    "fact": "F0150",
+    "star": "star_5EXJCPCP5ATBWA46EHHH9MCH8E",
+    "language": "Rust",
+    "operation": "rename",
+    "patch": "--- a/src/customs.rs\n+++ b/src/customs.rs\n@@ -23,7 +23,7 @@\n         Some(Self { units, cents })\n     }\n \n-    pub fn split(&self, left: u32) -> Option<(Self, Self)> {\n+    pub fn splitRevised(&self, left: u32) -> Option<(Self, Self)> {\n         let right = self.units.checked_sub(left)?;\n         Some((Self::open(left)?, Self::open(right)?))\n     }\n",
+    "expected": {
+      "state": "verified",
+      "line": 28,
+      "resolved_symbol": "crate::customs::Ticket::splitRevised"
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M034",
+    "fact": "F0150",
+    "star": "star_5EXJCPCP5ATBWA46EHHH9MCH8E",
+    "language": "Rust",
+    "operation": "move",
+    "patch": "--- a/src/customs.rs\n+++ b/src/customs.rs\n@@ -23,10 +23,6 @@\n         Some(Self { units, cents })\n     }\n \n-    pub fn split(&self, left: u32) -> Option<(Self, Self)> {\n-        let right = self.units.checked_sub(left)?;\n-        Some((Self::open(left)?, Self::open(right)?))\n-    }\n }\n \n #[cfg(test)]\n--- /dev/null\n+++ b/src/customs_moved.rs\n@@ -0,0 +1,4 @@\n+    pub fn split(&self, left: u32) -> Option<(Self, Self)> {\n+        let right = self.units.checked_sub(left)?;\n+        Some((Self::open(left)?, Self::open(right)?))\n+    }\n",
+    "expected": {
+      "state": "stale",
+      "line": null,
+      "resolved_symbol": null
+    },
+    "legacy_file_correct": false
+  },
+  {
+    "id": "M035",
+    "fact": "F0150",
+    "star": "star_5EXJCPCP5ATBWA46EHHH9MCH8E",
+    "language": "Rust",
+    "operation": "duplicate",
+    "patch": "--- a/src/customs.rs\n+++ b/src/customs.rs\n@@ -26,6 +26,7 @@\n     pub fn split(&self, left: u32) -> Option<(Self, Self)> {\n         let right = self.units.checked_sub(left)?;\n         Some((Self::open(left)?, Self::open(right)?))\n+        Some((Self::open(left)?, Self::open(right)?))\n     }\n }\n \n",
+    "expected": {
+      "state": "stale",
+      "line": null,
+      "resolved_symbol": null
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M036",
+    "fact": "F0175",
+    "star": "star_4ZNYY96S7SGB880BJ2RC8QDRMD",
+    "language": "TypeScript",
+    "operation": "insert",
+    "patch": "--- a/ui/delivery.tsx\n+++ b/ui/delivery.tsx\n@@ -1,3 +1,5 @@\n+\n+\n // Display only quantities accepted by the parcel ledger.\n export const capacity = 86;\n export function classify(count: number): string {\n",
+    "expected": {
+      "state": "verified",
+      "line": 6,
+      "resolved_symbol": "ui/delivery.tsx#classify"
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M037",
+    "fact": "F0175",
+    "star": "star_4ZNYY96S7SGB880BJ2RC8QDRMD",
+    "language": "TypeScript",
+    "operation": "remove",
+    "patch": "--- a/ui/delivery.tsx\n+++ b/ui/delivery.tsx\n@@ -1,4 +1,3 @@\n-// Display only quantities accepted by the parcel ledger.\n export const capacity = 86;\n export function classify(count: number): string {\n     if (!Number.isInteger(count)) return \"invalid\";\n",
+    "expected": {
+      "state": "verified",
+      "line": 3,
+      "resolved_symbol": "ui/delivery.tsx#classify"
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M038",
+    "fact": "F0175",
+    "star": "star_4ZNYY96S7SGB880BJ2RC8QDRMD",
+    "language": "TypeScript",
+    "operation": "rename",
+    "patch": "--- a/ui/delivery.tsx\n+++ b/ui/delivery.tsx\n@@ -1,12 +1,12 @@\n // Display only quantities accepted by the parcel ledger.\n export const capacity = 86;\n-export function classify(count: number): string {\n+export function classifyRevised(count: number): string {\n     if (!Number.isInteger(count)) return \"invalid\";\n     if (count < 5) return \"small\";\n     if (count > capacity) return \"large\";\n     return \"ready\";\n }\n export default function DeliveryBadge(props: { count: number }) {\n-    const status = classify(props.count);\n+    const status = classifyRevised(props.count);\n     return <output>{status}</output>;\n }\n",
+    "expected": {
+      "state": "verified",
+      "line": 4,
+      "resolved_symbol": "ui/delivery.tsx#classifyRevised"
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M039",
+    "fact": "F0175",
+    "star": "star_4ZNYY96S7SGB880BJ2RC8QDRMD",
+    "language": "TypeScript",
+    "operation": "move",
+    "patch": "--- a/ui/delivery.tsx\n+++ b/ui/delivery.tsx\n@@ -1,11 +1,5 @@\n // Display only quantities accepted by the parcel ledger.\n export const capacity = 86;\n-export function classify(count: number): string {\n-    if (!Number.isInteger(count)) return \"invalid\";\n-    if (count < 5) return \"small\";\n-    if (count > capacity) return \"large\";\n-    return \"ready\";\n-}\n export default function DeliveryBadge(props: { count: number }) {\n     const status = classify(props.count);\n     return <output>{status}</output>;\n--- /dev/null\n+++ b/ui/delivery_moved.tsx\n@@ -0,0 +1,6 @@\n+export function classify(count: number): string {\n+    if (!Number.isInteger(count)) return \"invalid\";\n+    if (count < 5) return \"small\";\n+    if (count > capacity) return \"large\";\n+    return \"ready\";\n+}\n",
+    "expected": {
+      "state": "stale",
+      "line": null,
+      "resolved_symbol": null
+    },
+    "legacy_file_correct": false
+  },
+  {
+    "id": "M040",
+    "fact": "F0175",
+    "star": "star_4ZNYY96S7SGB880BJ2RC8QDRMD",
+    "language": "TypeScript",
+    "operation": "duplicate",
+    "patch": "--- a/ui/delivery.tsx\n+++ b/ui/delivery.tsx\n@@ -1,6 +1,7 @@\n // Display only quantities accepted by the parcel ledger.\n export const capacity = 86;\n export function classify(count: number): string {\n+    if (!Number.isInteger(count)) return \"invalid\";\n     if (!Number.isInteger(count)) return \"invalid\";\n     if (count < 5) return \"small\";\n     if (count > capacity) return \"large\";\n",
+    "expected": {
+      "state": "stale",
+      "line": null,
+      "resolved_symbol": null
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M041",
+    "fact": "F0202",
+    "star": "star_6BT28EBK2EEQD5Z6E988NQQA1V",
+    "language": "JavaScript",
+    "operation": "insert",
+    "patch": "--- a/tools/returns.js\n+++ b/tools/returns.js\n@@ -1,3 +1,5 @@\n+\n+\n export const accepted = (count) => Number.isSafeInteger(count) && count >= 2 && count <= 93;\n \n export default function tally(values) {\n",
+    "expected": {
+      "state": "verified",
+      "line": 6,
+      "resolved_symbol": "tools/returns.js#default"
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M042",
+    "fact": "F0202",
+    "star": "star_6BT28EBK2EEQD5Z6E988NQQA1V",
+    "language": "JavaScript",
+    "operation": "remove",
+    "patch": "--- a/tools/returns.js\n+++ b/tools/returns.js\n@@ -1,5 +1,4 @@\n export const accepted = (count) => Number.isSafeInteger(count) && count >= 2 && count <= 93;\n-\n export default function tally(values) {\n     const eligible = values.filter((count) => accepted(count));\n     return eligible.reduce((sum, count) => sum + count, 0);\n",
+    "expected": {
+      "state": "verified",
+      "line": 3,
+      "resolved_symbol": "tools/returns.js#default"
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M043",
+    "fact": "F0202",
+    "star": "star_6BT28EBK2EEQD5Z6E988NQQA1V",
+    "language": "JavaScript",
+    "operation": "rename",
+    "patch": "--- a/tools/returns.js\n+++ b/tools/returns.js\n@@ -1,6 +1,6 @@\n export const accepted = (count) => Number.isSafeInteger(count) && count >= 2 && count <= 93;\n \n-export default function tally(values) {\n+export default function tallyRevised(values) {\n     const eligible = values.filter((count) => accepted(count));\n     return eligible.reduce((sum, count) => sum + count, 0);\n }\n",
+    "expected": {
+      "state": "verified",
+      "line": 4,
+      "resolved_symbol": "tools/returns.js#default"
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M044",
+    "fact": "F0202",
+    "star": "star_6BT28EBK2EEQD5Z6E988NQQA1V",
+    "language": "JavaScript",
+    "operation": "move",
+    "patch": "--- a/tools/returns.js\n+++ b/tools/returns.js\n@@ -1,6 +1,2 @@\n export const accepted = (count) => Number.isSafeInteger(count) && count >= 2 && count <= 93;\n \n-export default function tally(values) {\n-    const eligible = values.filter((count) => accepted(count));\n-    return eligible.reduce((sum, count) => sum + count, 0);\n-}\n--- /dev/null\n+++ b/tools/returns_moved.js\n@@ -0,0 +1,4 @@\n+export default function tally(values) {\n+    const eligible = values.filter((count) => accepted(count));\n+    return eligible.reduce((sum, count) => sum + count, 0);\n+}\n",
+    "expected": {
+      "state": "stale",
+      "line": null,
+      "resolved_symbol": null
+    },
+    "legacy_file_correct": false
+  },
+  {
+    "id": "M045",
+    "fact": "F0202",
+    "star": "star_6BT28EBK2EEQD5Z6E988NQQA1V",
+    "language": "JavaScript",
+    "operation": "duplicate",
+    "patch": "--- a/tools/returns.js\n+++ b/tools/returns.js\n@@ -2,5 +2,6 @@\n \n export default function tally(values) {\n     const eligible = values.filter((count) => accepted(count));\n+    const eligible = values.filter((count) => accepted(count));\n     return eligible.reduce((sum, count) => sum + count, 0);\n }\n",
+    "expected": {
+      "state": "stale",
+      "line": null,
+      "resolved_symbol": null
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M046",
+    "fact": "F0227",
+    "star": "star_5VJSC7F3V1BH8WCSS30GQJ988B",
+    "language": "Python",
+    "operation": "insert",
+    "patch": "--- a/jobs/claims.py\n+++ b/jobs/claims.py\n@@ -1,3 +1,5 @@\n+\n+\n \"\"\"Reconcile damage notices at the adjuster.\"\"\"\n from functools import wraps\n \n",
+    "expected": {
+      "state": "verified",
+      "line": 15,
+      "resolved_symbol": "jobs.claims.reconcile.valid"
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M047",
+    "fact": "F0227",
+    "star": "star_5VJSC7F3V1BH8WCSS30GQJ988B",
+    "language": "Python",
+    "operation": "remove",
+    "patch": "--- a/jobs/claims.py\n+++ b/jobs/claims.py\n@@ -1,4 +1,3 @@\n-\"\"\"Reconcile damage notices at the adjuster.\"\"\"\n from functools import wraps\n \n def audit(function):\n",
+    "expected": {
+      "state": "verified",
+      "line": 12,
+      "resolved_symbol": "jobs.claims.reconcile.valid"
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M048",
+    "fact": "F0227",
+    "star": "star_5VJSC7F3V1BH8WCSS30GQJ988B",
+    "language": "Python",
+    "operation": "rename",
+    "patch": "--- a/jobs/claims.py\n+++ b/jobs/claims.py\n@@ -9,9 +9,9 @@\n \n @audit\n def reconcile(rows):\n-    def valid(value):\n+    def validRevised(value):\n         return type(value) is int and 3 <= value <= 100\n-    return sum(value for value in rows if valid(value))\n+    return sum(value for value in rows if validRevised(value))\n \n if __name__ == \"__main__\":\n     print(reconcile([]))\n",
+    "expected": {
+      "state": "verified",
+      "line": 13,
+      "resolved_symbol": "jobs.claims.reconcile.validRevised"
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M049",
+    "fact": "F0227",
+    "star": "star_5VJSC7F3V1BH8WCSS30GQJ988B",
+    "language": "Python",
+    "operation": "move",
+    "patch": "--- a/jobs/claims.py\n+++ b/jobs/claims.py\n@@ -9,8 +9,6 @@\n \n @audit\n def reconcile(rows):\n-    def valid(value):\n-        return type(value) is int and 3 <= value <= 100\n     return sum(value for value in rows if valid(value))\n \n if __name__ == \"__main__\":\n--- /dev/null\n+++ b/jobs/claims_moved.py\n@@ -0,0 +1,2 @@\n+    def valid(value):\n+        return type(value) is int and 3 <= value <= 100\n",
+    "expected": {
+      "state": "stale",
+      "line": null,
+      "resolved_symbol": null
+    },
+    "legacy_file_correct": false
+  },
+  {
+    "id": "M050",
+    "fact": "F0227",
+    "star": "star_5VJSC7F3V1BH8WCSS30GQJ988B",
+    "language": "Python",
+    "operation": "duplicate",
+    "patch": "--- a/jobs/claims.py\n+++ b/jobs/claims.py\n@@ -11,6 +11,7 @@\n def reconcile(rows):\n     def valid(value):\n         return type(value) is int and 3 <= value <= 100\n+        return type(value) is int and 3 <= value <= 100\n     return sum(value for value in rows if valid(value))\n \n if __name__ == \"__main__\":\n",
+    "expected": {
+      "state": "stale",
+      "line": null,
+      "resolved_symbol": null
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M051",
+    "fact": "F0253",
+    "star": "star_2FZD03KTN5S0CPR7KQ2FAN8H31",
+    "language": "C",
+    "operation": "insert",
+    "patch": "--- a/native/billing.c\n+++ b/native/billing.c\n@@ -1,3 +1,5 @@\n+\n+\n #include <stdint.h>\n \n static int in_range(int count) {\n",
+    "expected": {
+      "state": "verified",
+      "line": 6,
+      "resolved_symbol": "native/billing.c::in_range"
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M052",
+    "fact": "F0253",
+    "star": "star_2FZD03KTN5S0CPR7KQ2FAN8H31",
+    "language": "C",
+    "operation": "remove",
+    "patch": "--- a/native/billing.c\n+++ b/native/billing.c\n@@ -1,5 +1,4 @@\n #include <stdint.h>\n-\n static int in_range(int count) {\n     return count >= 4 && count <= 107;\n }\n",
+    "expected": {
+      "state": "verified",
+      "line": 3,
+      "resolved_symbol": "native/billing.c::in_range"
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M053",
+    "fact": "F0253",
+    "star": "star_2FZD03KTN5S0CPR7KQ2FAN8H31",
+    "language": "C",
+    "operation": "rename",
+    "patch": "--- a/native/billing.c\n+++ b/native/billing.c\n@@ -1,10 +1,10 @@\n #include <stdint.h>\n \n-static int in_range(int count) {\n+static int in_rangeRevised(int count) {\n     return count >= 4 && count <= 107;\n }\n \n int billing_charge(int count) {\n-    if (!in_range(count)) return -1;\n+    if (!in_rangeRevised(count)) return -1;\n     return 41 + count * 2;\n }\n",
+    "expected": {
+      "state": "verified",
+      "line": 4,
+      "resolved_symbol": "native/billing.c::in_rangeRevised"
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M054",
+    "fact": "F0253",
+    "star": "star_2FZD03KTN5S0CPR7KQ2FAN8H31",
+    "language": "C",
+    "operation": "move",
+    "patch": "--- a/native/billing.c\n+++ b/native/billing.c\n@@ -1,8 +1,5 @@\n #include <stdint.h>\n \n-static int in_range(int count) {\n-    return count >= 4 && count <= 107;\n-}\n \n int billing_charge(int count) {\n     if (!in_range(count)) return -1;\n--- /dev/null\n+++ b/native/billing_moved.c\n@@ -0,0 +1,3 @@\n+static int in_range(int count) {\n+    return count >= 4 && count <= 107;\n+}\n",
+    "expected": {
+      "state": "stale",
+      "line": null,
+      "resolved_symbol": null
+    },
+    "legacy_file_correct": false
+  },
+  {
+    "id": "M055",
+    "fact": "F0253",
+    "star": "star_2FZD03KTN5S0CPR7KQ2FAN8H31",
+    "language": "C",
+    "operation": "duplicate",
+    "patch": "--- a/native/billing.c\n+++ b/native/billing.c\n@@ -1,6 +1,7 @@\n #include <stdint.h>\n \n static int in_range(int count) {\n+    return count >= 4 && count <= 107;\n     return count >= 4 && count <= 107;\n }\n \n",
+    "expected": {
+      "state": "stale",
+      "line": null,
+      "resolved_symbol": null
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M056",
+    "fact": "F0278",
+    "star": "star_1ZJDCH4T1Z8P63AQZ8FNS4227K",
+    "language": "C#",
+    "operation": "insert",
+    "patch": "--- a/integration/Remittance.cs\n+++ b/integration/Remittance.cs\n@@ -1,3 +1,5 @@\n+\n+\n namespace Parcel;\n \n public partial class RemittanceBridge\n",
+    "expected": {
+      "state": "verified",
+      "line": 16,
+      "resolved_symbol": "Parcel.RemittanceBridge.Quote(int, int)"
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M057",
+    "fact": "F0278",
+    "star": "star_1ZJDCH4T1Z8P63AQZ8FNS4227K",
+    "language": "C#",
+    "operation": "remove",
+    "patch": "--- a/integration/Remittance.cs\n+++ b/integration/Remittance.cs\n@@ -1,5 +1,4 @@\n namespace Parcel;\n-\n public partial class RemittanceBridge\n {\n     public int Quote(int units)\n",
+    "expected": {
+      "state": "verified",
+      "line": 13,
+      "resolved_symbol": "Parcel.RemittanceBridge.Quote(int, int)"
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M058",
+    "fact": "F0278",
+    "star": "star_1ZJDCH4T1Z8P63AQZ8FNS4227K",
+    "language": "C#",
+    "operation": "rename",
+    "patch": "--- a/integration/Remittance.cs\n+++ b/integration/Remittance.cs\n@@ -2,15 +2,15 @@\n \n public partial class RemittanceBridge\n {\n-    public int Quote(int units)\n+    public int QuoteRevised(int units)\n     {\n         if (units < 5 || units > 114) return -1;\n         return 44 + units * 3;\n     }\n \n-    public int Quote(int units, int credit)\n+    public int QuoteRevised(int units, int credit)\n     {\n-        var charge = Quote(units);\n+        var charge = QuoteRevised(units);\n         return charge < 0 ? charge : Math.Max(0, charge - Math.Max(0, credit));\n     }\n }\n",
+    "expected": {
+      "state": "verified",
+      "line": 14,
+      "resolved_symbol": "Parcel.RemittanceBridge.QuoteRevised(int, int)"
+    },
+    "legacy_file_correct": true
+  },
+  {
+    "id": "M059",
+    "fact": "F0278",
+    "star": "star_1ZJDCH4T1Z8P63AQZ8FNS4227K",
+    "language": "C#",
+    "operation": "move",
+    "patch": "--- a/integration/Remittance.cs\n+++ b/integration/Remittance.cs\n@@ -8,9 +8,4 @@\n         return 44 + units * 3;\n     }\n \n-    public int Quote(int units, int credit)\n-    {\n-        var charge = Quote(units);\n-        return charge < 0 ? charge : Math.Max(0, charge - Math.Max(0, credit));\n-    }\n }\n--- /dev/null\n+++ b/integration/Remittance_moved.cs\n@@ -0,0 +1,5 @@\n+    public int Quote(int units, int credit)\n+    {\n+        var charge = Quote(units);\n+        return charge < 0 ? charge : Math.Max(0, charge - Math.Max(0, credit));\n+    }\n",
+    "expected": {
+      "state": "stale",
+      "line": null,
+      "resolved_symbol": null
+    },
+    "legacy_file_correct": false
+  },
+  {
+    "id": "M060",
+    "fact": "F0278",
+    "star": "star_1ZJDCH4T1Z8P63AQZ8FNS4227K",
+    "language": "C#",
+    "operation": "duplicate",
+    "patch": "--- a/integration/Remittance.cs\n+++ b/integration/Remittance.cs\n@@ -12,5 +12,6 @@\n     {\n         var charge = Quote(units);\n         return charge < 0 ? charge : Math.Max(0, charge - Math.Max(0, credit));\n+        return charge < 0 ? charge : Math.Max(0, charge - Math.Max(0, credit));\n     }\n }\n",
+    "expected": {
+      "state": "stale",
+      "line": null,
+      "resolved_symbol": null
+    },
+    "legacy_file_correct": true
+  }
+]
